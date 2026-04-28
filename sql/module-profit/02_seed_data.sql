@@ -1,70 +1,71 @@
 -- ============================================================
--- module-profit: RAG 기반 수익성분석 AI 챗봇 모듈 초기 데이터
--- 실행 환경: MariaDB 10.11+ (utf8mb4)
--- 실행 순서: 01_schema.sql 실행 후 이 파일을 실행하세요
+-- module-profit: RAG 기반 수익성분석 AI 챗봇 모듈
+-- 02_seed_data.sql - 초기 데이터 (Seed Data)
+-- 실행 순서: 반드시 01_schema.sql 실행 후 수행
 -- ============================================================
 
 -- ------------------------------------------------------------
--- 1. Ontology 컬럼 초기 데이터 (BW 테이블 컬럼 등록)
+-- 1. Ontology 컬럼 초기 데이터
+--    (BW DB 테이블 /BIC/OHYOHC0004 기준 예시)
 -- ------------------------------------------------------------
 
--- 기간 그룹
+-- ▶ 기간 그룹
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('CALMONTH', '/BIC/OHYOHC0004', '달력연도/월 (YYYYMM)', 'VARCHAR(6)', '기간', 1, 1, 'system');
+VALUES ('CALMONTH', '/BIC/OHYOHC0004', '달력연도/월', 'VARCHAR', '기간', 1, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('CALDAY', '/BIC/OHYOHC0004', '달력일 (YYYYMMDD)', 'VARCHAR(8)', '기간', 2, 1, 'system');
+VALUES ('CALDAY', '/BIC/OHYOHC0004', '달력일', 'VARCHAR', '기간', 2, 1, 'system');
 
--- 조직/사업부 그룹
+-- ▶ 조직/사업부 그룹
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('DOAREA', '/BIC/OHYOHC0004', '관리회계 영역', 'VARCHAR(10)', '조직/사업부', 10, 1, 'system');
-
-INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('PROFIT_CTR', '/BIC/OHYOHC0004', '손익 센터', 'VARCHAR(20)', '조직/사업부', 11, 1, 'system');
+VALUES ('DOAREA', '/BIC/OHYOHC0004', '관리회계 영역', 'VARCHAR', '조직/사업부', 3, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('DIVISION', '/BIC/OHYOHC0004', '제품군', 'VARCHAR(10)', '조직/사업부', 12, 1, 'system');
+VALUES ('PROFIT_CTR', '/BIC/OHYOHC0004', '손익 센터', 'VARCHAR', '조직/사업부', 4, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('PLANT', '/BIC/OHYOHC0004', '플랜트', 'VARCHAR(10)', '조직/사업부', 13, 1, 'system');
+VALUES ('DIVISION', '/BIC/OHYOHC0004', '제품군', 'VARCHAR', '조직/사업부', 5, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('DISTR_CHAN', '/BIC/OHYOHC0004', '유통 경로', 'VARCHAR(10)', '조직/사업부', 14, 1, 'system');
+VALUES ('PLANT', '/BIC/OHYOHC0004', '플랜트', 'VARCHAR', '조직/사업부', 6, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZDISTCHAN', '/BIC/OHYOHC0004', '내수/수출구분자(사업장)', 'VARCHAR(10)', '조직/사업부', 15, 1, 'system');
+VALUES ('DISTR_CHAN', '/BIC/OHYOHC0004', '유통 경로', 'VARCHAR', '조직/사업부', 7, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZORG_TEAM', '/BIC/OHYOHC0004', '영업팀(사업장그룹)', 'VARCHAR(20)', '조직/사업부', 16, 1, 'system');
+VALUES ('ZDISTCHAN', '/BIC/OHYOHC0004', '내수/수출구분자(사업장)', 'VARCHAR', '조직/사업부', 8, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('SALES_OFF', '/BIC/OHYOHC0004', '사업장', 'VARCHAR(10)', '조직/사업부', 17, 1, 'system');
-
--- 자재/제품 그룹
-INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZBRAND', '/BIC/OHYOHC0004', '브랜드', 'VARCHAR(20)', '자재/제품', 20, 1, 'system');
+VALUES ('ZORGTEAM', '/BIC/OHYOHC0004', '영업팀(사업장그룹)', 'VARCHAR', '조직/사업부', 9, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZPCODE', '/BIC/OHYOHC0004', '지종/제품구분', 'VARCHAR(20)', '자재/제품', 21, 1, 'system');
+VALUES ('SALES_OFF', '/BIC/OHYOHC0004', '사업장', 'VARCHAR', '조직/사업부', 10, 1, 'system');
+
+-- ▶ 자재/제품 그룹
+INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
+VALUES ('ZBRAND', '/BIC/OHYOHC0004', '브랜드', 'VARCHAR', '자재/제품', 11, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZKUNM2', '/BIC/OHYOHC0004', '영업사원', 'VARCHAR(20)', '자재/제품', 22, 1, 'system');
+VALUES ('ZSBRAND', '/BIC/OHYOHC0004', '서브 브랜드', 'VARCHAR', '자재/제품', 12, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZSBRAND', '/BIC/OHYOHC0004', '브랜드 2 (서브브랜드)', 'VARCHAR(20)', '자재/제품', 23, 1, 'system');
-
--- 수량 그룹
-INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZQTY_BAG', '/BIC/OHYOHC0004', '수량(BAG)', 'DECIMAL(17,3)', '수량', 30, 1, 'system');
+VALUES ('ZPCODE', '/BIC/OHYOHC0004', '제품코드', 'VARCHAR', '자재/제품', 13, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZQTY_BOX', '/BIC/OHYOHC0004', '수량(BOX)', 'DECIMAL(17,3)', '수량', 31, 1, 'system');
+VALUES ('ZKUNM2', '/BIC/OHYOHC0004', '고객명', 'VARCHAR', '자재/제품', 14, 1, 'system');
+
+-- ▶ 수량 그룹
+INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
+VALUES ('ZQTY_BAG', '/BIC/OHYOHC0004', '수량(BAG)', 'NUMERIC', '수량', 15, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZQTY_KE', '/BIC/OHYOHC0004', '수량(KG/EA)', 'DECIMAL(17,3)', '수량', 32, 1, 'system');
+VALUES ('ZQTY_BOX', '/BIC/OHYOHC0004', '수량(BOX)', 'NUMERIC', '수량', 16, 1, 'system');
 
 INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('ZUNIT', '/BIC/OHYOHC0004', '수량단위(KG/EA)', 'VARCHAR(10)', '수량', 33, 1, 'system');
+VALUES ('ZQTY_KE', '/BIC/OHYOHC0004', '수량(KG/EA)', 'NUMERIC', '수량', 17, 1, 'system');
+
+INSERT INTO profit_ontology_column (COLUMN_NAME, TABLE_NAME, COLUMN_DESCRIPTION, DATA_TYPE, COLUMN_GROUP, SORT_ORDER, IS_ACTIVE, CREATED_BY)
+VALUES ('ZUNIT', '/BIC/OHYOHC0004', '수량단위(KG/EA)', 'VARCHAR', '수량', 18, 1, 'system');
 
 
 -- ------------------------------------------------------------
@@ -72,126 +73,130 @@ VALUES ('ZUNIT', '/BIC/OHYOHC0004', '수량단위(KG/EA)', 'VARCHAR(10)', '수�
 -- ------------------------------------------------------------
 
 -- CALMONTH 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '달력연도월', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'CALMONTH';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '년월', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'CALMONTH';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '월별', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'CALMONTH';
-
--- CALDAY 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '달력일', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'CALDAY';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '일별', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'CALDAY';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '일자', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'CALDAY';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '달력연도/월', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='CALMONTH' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '연월', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='CALMONTH' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '월별', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='CALMONTH' AND TABLE_NAME='/BIC/OHYOHC0004';
 
 -- PROFIT_CTR 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '손익센터', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'PROFIT_CTR';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '사업부', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'PROFIT_CTR';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '수익센터', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'PROFIT_CTR';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '손익센터', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='PROFIT_CTR' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '사업부', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='PROFIT_CTR' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '수익센터', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='PROFIT_CTR' AND TABLE_NAME='/BIC/OHYOHC0004';
 
 -- DIVISION 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '제품군', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'DIVISION';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '사업부문', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'DIVISION';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '제품군', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='DIVISION' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '제품 카테고리', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='DIVISION' AND TABLE_NAME='/BIC/OHYOHC0004';
 
 -- PLANT 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '플랜트', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'PLANT';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '공장', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'PLANT';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '플랜트', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='PLANT' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '공장', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='PLANT' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '생산공장', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='PLANT' AND TABLE_NAME='/BIC/OHYOHC0004';
 
 -- DISTR_CHAN 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '유통경로', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'DISTR_CHAN';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '판매채널', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'DISTR_CHAN';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '유통경로', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='DISTR_CHAN' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '판매채널', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='DISTR_CHAN' AND TABLE_NAME='/BIC/OHYOHC0004';
 
 -- ZDISTCHAN 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '내수/수출구분자(사업장)', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZDISTCHAN';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '내수수출', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZDISTCHAN';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '수출구분', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZDISTCHAN';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '내수/수출구분자(사업장)', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZDISTCHAN' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '내수', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZDISTCHAN' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '수출', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZDISTCHAN' AND TABLE_NAME='/BIC/OHYOHC0004';
 
--- ZORG_TEAM 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '영업팀', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZORG_TEAM';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '영업팀(사업장그룹)', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZORG_TEAM';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '영업부서', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZORG_TEAM';
+-- ZORGTEAM 동의어
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '영업팀(사업장그룹)', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZORGTEAM' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '영업팀', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZORGTEAM' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '영업조직', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZORGTEAM' AND TABLE_NAME='/BIC/OHYOHC0004';
 
 -- ZBRAND 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '브랜드', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZBRAND';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '브랜드 1', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZBRAND';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '브랜드', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZBRAND' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '브랜드 1', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZBRAND' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '상표', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZBRAND' AND TABLE_NAME='/BIC/OHYOHC0004';
+
+-- ZSBRAND 동의어
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '서브 브랜드', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZSBRAND' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '브랜드 2', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZSBRAND' AND TABLE_NAME='/BIC/OHYOHC0004';
 
 -- ZPCODE 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '지종/제품구분', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZPCODE';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '제품코드', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZPCODE';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '제품코드', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZPCODE' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '지역/제품구분', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZPCODE' AND TABLE_NAME='/BIC/OHYOHC0004';
 
--- ZQTY_BAG 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '수량(BAG)', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZQTY_BAG';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '포대수량', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZQTY_BAG';
+-- ZKUNM2 동의어
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '고객명', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZKUNM2' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '거래처', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZKUNM2' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '고객', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZKUNM2' AND TABLE_NAME='/BIC/OHYOHC0004';
 
--- ZQTY_BOX 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '수량(BOX)', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZQTY_BOX';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '박스수량', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZQTY_BOX';
+-- 수량 동의어
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '수량(BAG)', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZQTY_BAG' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '포대수량', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZQTY_BAG' AND TABLE_NAME='/BIC/OHYOHC0004';
 
--- ZQTY_KE 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '수량(KG/EA)', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZQTY_KE';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '중량', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZQTY_KE';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '수량(BOX)', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZQTY_BOX' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '박스수량', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZQTY_BOX' AND TABLE_NAME='/BIC/OHYOHC0004';
 
--- ZUNIT 동의어
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '수량단위(KG/EA)', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZUNIT';
-INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT ONTOLOGY_COLUMN_ID, '단위', 'MANUAL' FROM profit_ontology_column WHERE COLUMN_NAME = 'ZUNIT';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '수량(KG/EA)', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZQTY_KE' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '판매수량', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZQTY_KE' AND TABLE_NAME='/BIC/OHYOHC0004';
+
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '수량단위(KG/EA)', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZUNIT' AND TABLE_NAME='/BIC/OHYOHC0004';
+INSERT INTO profit_ontology_synonym (ONTOLOGY_COLUMN_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT ONTOLOGY_COLUMN_ID, '단위', 'SYSTEM', 1 FROM profit_ontology_column WHERE COLUMN_NAME='ZUNIT' AND TABLE_NAME='/BIC/OHYOHC0004';
 
 
 -- ------------------------------------------------------------
--- 3. Metric 초기 데이터 (계산 지표 사전)
+-- 3. Metric 초기 데이터
 -- ------------------------------------------------------------
+
 INSERT INTO profit_metric (METRIC_CODE, METRIC_NAME, AGGREGATION, FORMULA, TABLE_NAME, DESCRIPTION, DISPLAY_FORMAT, UNIT, SORT_ORDER, IS_ACTIVE, CREATED_BY)
 VALUES ('NETSALES', '순매출', 'SUM', 'ZAMT001 - ZAMT002 - ZAMT004', '/BIC/OHYOHC0004',
-        '순매출액 = 총매출 - 매출할인 - 매출에누리', '#,##0', '원', 1, 1, 'system');
+        '순매출액 = 총매출(ZAMT001) - 매출할인(ZAMT002) - 매출에누리(ZAMT004)', '#,##0', '원', 1, 1, 'system');
 
 INSERT INTO profit_metric (METRIC_CODE, METRIC_NAME, AGGREGATION, FORMULA, TABLE_NAME, DESCRIPTION, DISPLAY_FORMAT, UNIT, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('FG_COST', '제품원가', 'SUM', 'ZAMT006 + ZAMT007 + ZAMT008 + ZAMT009 + ZAMT010 + ZAMT011 + ZAMT012 + ZAMT013 + ZAMT014 + ZAMT015 + ZAMT016 + ZAMT017 + ZAMT018 + ZAMT019 + ZAMT020 + ZAMT021 + ZAMT022 + ZAMT023 - ZAMT024', '/BIC/OHYOHC0004',
-        '제품원가 합계 (원재료비 + 노무비 + 경비 등)', '#,##0', '원', 2, 1, 'system');
+VALUES ('FG_COST', '제조원가', 'SUM', 'ZAMT006 + ZAMT007 + ZAMT008 + ZAMT009 + ZAMT010 + ZAMT011 + ZAMT012 + ZAMT013 + ZAMT014 + ZAMT015 + ZAMT016 + ZAMT017 + ZAMT018 + ZAMT019 + ZAMT020 + ZAMT021 + ZAMT022 + ZAMT023 - ZAMT024', '/BIC/OHYOHC0004',
+        '제조원가 = 재료비 + 노무비 + 경비 합계 - 타계정대체', '#,##0', '원', 2, 1, 'system');
 
 INSERT INTO profit_metric (METRIC_CODE, METRIC_NAME, AGGREGATION, FORMULA, TABLE_NAME, DESCRIPTION, DISPLAY_FORMAT, UNIT, SORT_ORDER, IS_ACTIVE, CREATED_BY)
 VALUES ('ET_COST', '판관비', 'SUM', 'ZAMT027 + ZAMT028 + ZAMT029 + ZAMT030 + ZAMT031', '/BIC/OHYOHC0004',
-        '판매비 및 관리비 합계', '#,##0', '원', 3, 1, 'system');
+        '판매관리비 = 판매비(ZAMT027~029) + 관리비(ZAMT030~031)', '#,##0', '원', 3, 1, 'system');
 
 INSERT INTO profit_metric (METRIC_CODE, METRIC_NAME, AGGREGATION, FORMULA, TABLE_NAME, DESCRIPTION, DISPLAY_FORMAT, UNIT, SORT_ORDER, IS_ACTIVE, CREATED_BY)
 VALUES ('GROSS_PROFIT', '매출총이익', 'SUM', '(ZAMT001 - ZAMT002 - ZAMT004) - (ZAMT006 + ZAMT007 + ZAMT008 + ZAMT009 + ZAMT010 + ZAMT011 + ZAMT012 + ZAMT013 + ZAMT014 + ZAMT015 + ZAMT016 + ZAMT017 + ZAMT018 + ZAMT019 + ZAMT020 + ZAMT021 + ZAMT022 + ZAMT023 - ZAMT024)', '/BIC/OHYOHC0004',
-        '매출총이익 = 순매출 - 제품원가', '#,##0', '원', 4, 1, 'system');
+        '매출총이익 = 순매출 - 제조원가', '#,##0', '원', 4, 1, 'system');
 
 INSERT INTO profit_metric (METRIC_CODE, METRIC_NAME, AGGREGATION, FORMULA, TABLE_NAME, DESCRIPTION, DISPLAY_FORMAT, UNIT, SORT_ORDER, IS_ACTIVE, CREATED_BY)
 VALUES ('OP_PROFIT', '영업이익', 'SUM', '(ZAMT001 - ZAMT002 - ZAMT004) - (ZAMT006 + ZAMT007 + ZAMT008 + ZAMT009 + ZAMT010 + ZAMT011 + ZAMT012 + ZAMT013 + ZAMT014 + ZAMT015 + ZAMT016 + ZAMT017 + ZAMT018 + ZAMT019 + ZAMT020 + ZAMT021 + ZAMT022 + ZAMT023 - ZAMT024) - (ZAMT027 + ZAMT028 + ZAMT029 + ZAMT030 + ZAMT031)', '/BIC/OHYOHC0004',
         '영업이익 = 매출총이익 - 판관비', '#,##0', '원', 5, 1, 'system');
-
-INSERT INTO profit_metric (METRIC_CODE, METRIC_NAME, AGGREGATION, FORMULA, TABLE_NAME, DESCRIPTION, DISPLAY_FORMAT, UNIT, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('SALES_QTY', '판매수량', 'SUM', 'ZQTY_KE', '/BIC/OHYOHC0004',
-        '판매수량 (KG/EA 기준)', '#,##0', 'KG/EA', 6, 1, 'system');
 
 
 -- ------------------------------------------------------------
@@ -199,112 +204,101 @@ VALUES ('SALES_QTY', '판매수량', 'SUM', 'ZQTY_KE', '/BIC/OHYOHC0004',
 -- ------------------------------------------------------------
 
 -- NETSALES 동의어
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '순매출', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'NETSALES';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '매출액', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'NETSALES';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '총매출', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'NETSALES';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '매출', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'NETSALES';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '순매출', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='NETSALES';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '매출액', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='NETSALES';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '총매출', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='NETSALES';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '매출', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='NETSALES';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, 'net sales', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='NETSALES';
 
 -- FG_COST 동의어
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '제품원가', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'FG_COST';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '원가', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'FG_COST';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '제조원가', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'FG_COST';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '제조원가', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='FG_COST';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '제품원가', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='FG_COST';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '원가', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='FG_COST';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, 'COGS', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='FG_COST';
 
 -- ET_COST 동의어
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '판관비', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'ET_COST';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '판매관리비', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'ET_COST';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '경비', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'ET_COST';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '판관비', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='ET_COST';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '판매관리비', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='ET_COST';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '판매비와관리비', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='ET_COST';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, 'SGA', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='ET_COST';
 
 -- GROSS_PROFIT 동의어
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '매출총이익', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'GROSS_PROFIT';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '매출이익', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'GROSS_PROFIT';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '총이익', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'GROSS_PROFIT';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '매출총이익', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='GROSS_PROFIT';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '매출이익', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='GROSS_PROFIT';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '총이익', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='GROSS_PROFIT';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, 'gross profit', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='GROSS_PROFIT';
 
 -- OP_PROFIT 동의어
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '영업이익', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'OP_PROFIT';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '영업손익', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'OP_PROFIT';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '순이익', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'OP_PROFIT';
-
--- SALES_QTY 동의어
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '판매수량', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'SALES_QTY';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '수량', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'SALES_QTY';
-INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE)
-SELECT METRIC_ID, '판매량', 'MANUAL' FROM profit_metric WHERE METRIC_CODE = 'SALES_QTY';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '영업이익', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='OP_PROFIT';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '영업손익', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='OP_PROFIT';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, '영업수익', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='OP_PROFIT';
+INSERT INTO profit_metric_synonym (METRIC_ID, SYNONYM_TEXT, SYNONYM_SOURCE, IS_ACTIVE)
+SELECT METRIC_ID, 'operating profit', 'SYSTEM', 1 FROM profit_metric WHERE METRIC_CODE='OP_PROFIT';
 
 
 -- ------------------------------------------------------------
 -- 5. JOIN 조건 초기 데이터
 -- ------------------------------------------------------------
-INSERT INTO profit_join_condition (JOIN_NAME, LEFT_COLUMN, LEFT_TABLE, RIGHT_COLUMN, RIGHT_TABLE, JOIN_TYPE, OPERATOR, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('PLANT 기준 조인', 'PLANT', '/BIC/OHYOHC0004', 'PLANT', '/BIC/OHYOHC0004', 'INNER', '=', 1, 1, 'system');
 
 INSERT INTO profit_join_condition (JOIN_NAME, LEFT_COLUMN, LEFT_TABLE, RIGHT_COLUMN, RIGHT_TABLE, JOIN_TYPE, OPERATOR, SORT_ORDER, IS_ACTIVE, CREATED_BY)
-VALUES ('SALES 기준 조인', 'SALES', '/BIC/OHYOHC0004', 'SALES001', '/BIC/OHYOHC0004', 'LEFT', '=', 2, 1, 'system');
+VALUES ('플랜트 조인', 'PLANT', '/BIC/OHYOHC0004', 'PLANT', '/BIC/OHYOHC0004', 'INNER', '=', 1, 1, 'system');
+
+INSERT INTO profit_join_condition (JOIN_NAME, LEFT_COLUMN, LEFT_TABLE, RIGHT_COLUMN, RIGHT_TABLE, JOIN_TYPE, OPERATOR, SORT_ORDER, IS_ACTIVE, CREATED_BY)
+VALUES ('사업장 조인', 'SALES_OFF', '/BIC/OHYOHC0004', 'SALES001', '/BIC/OHYOHC0004', 'LEFT', '=', 2, 1, 'system');
 
 
 -- ------------------------------------------------------------
 -- 6. 배치 상태 샘플 데이터
 -- ------------------------------------------------------------
-INSERT INTO profit_batch_status (BATCH_NAME, BATCH_TYPE, SOURCE_SYSTEM, TARGET_TABLE, STATUS, TOTAL_ROWS, PROCESSED_ROWS, ERROR_ROWS, PERIOD_YEAR, PERIOD_MONTH, STARTED_AT, COMPLETED_AT, EXECUTION_TIME_MS, CREATED_BY)
-VALUES ('2026년 3월 SAP 마감 데이터 적재', 'SAP_CLOSE', 'SAP ECC', '/BIC/OHYOHC0004', 'COMPLETED', 125000, 125000, 0, 2026, 3, '2026-04-05 02:00:00', '2026-04-05 02:35:00', 2100000, 'batch_scheduler');
 
 INSERT INTO profit_batch_status (BATCH_NAME, BATCH_TYPE, SOURCE_SYSTEM, TARGET_TABLE, STATUS, TOTAL_ROWS, PROCESSED_ROWS, ERROR_ROWS, PERIOD_YEAR, PERIOD_MONTH, STARTED_AT, COMPLETED_AT, EXECUTION_TIME_MS, CREATED_BY)
-VALUES ('2026년 3월 데이터 검증', 'VALIDATION', 'BW', '/BIC/OHYOHC0004', 'COMPLETED', 125000, 124998, 2, 2026, 3, '2026-04-05 03:00:00', '2026-04-05 03:10:00', 600000, 'batch_scheduler');
+VALUES ('2026년 3월 SAP BW 마감 데이터 적재', 'SAP_EXTRACT', 'SAP_BW', '/BIC/OHYOHC0004', 'COMPLETED', 125000, 125000, 0, 2026, 3, '2026-04-05 02:00:00', '2026-04-05 02:15:30', 930000, 'batch_scheduler');
 
 INSERT INTO profit_batch_status (BATCH_NAME, BATCH_TYPE, SOURCE_SYSTEM, TARGET_TABLE, STATUS, TOTAL_ROWS, PROCESSED_ROWS, ERROR_ROWS, PERIOD_YEAR, PERIOD_MONTH, STARTED_AT, COMPLETED_AT, EXECUTION_TIME_MS, CREATED_BY)
-VALUES ('2026년 3월 RAG 인덱스 재구성', 'INDEX_BUILD', 'BW', NULL, 'COMPLETED', NULL, NULL, 0, 2026, 3, '2026-04-05 03:15:00', '2026-04-05 03:20:00', 300000, 'batch_scheduler');
+VALUES ('2026년 3월 데이터 정합성 검증', 'VALIDATION', 'SAP_BW', '/BIC/OHYOHC0004', 'COMPLETED', 125000, 125000, 0, 2026, 3, '2026-04-05 02:16:00', '2026-04-05 02:20:00', 240000, 'batch_scheduler');
 
-INSERT INTO profit_batch_status (BATCH_NAME, BATCH_TYPE, SOURCE_SYSTEM, TARGET_TABLE, STATUS, TOTAL_ROWS, PERIOD_YEAR, PERIOD_MONTH, CREATED_BY)
-VALUES ('2026년 4월 SAP 마감 데이터 적재', 'SAP_CLOSE', 'SAP ECC', '/BIC/OHYOHC0004', 'PENDING', NULL, 2026, 4, 'batch_scheduler');
+INSERT INTO profit_batch_status (BATCH_NAME, BATCH_TYPE, SOURCE_SYSTEM, TARGET_TABLE, STATUS, TOTAL_ROWS, PROCESSED_ROWS, ERROR_ROWS, PERIOD_YEAR, PERIOD_MONTH, CREATED_BY)
+VALUES ('2026년 4월 SAP BW 마감 데이터 적재', 'SAP_EXTRACT', 'SAP_BW', '/BIC/OHYOHC0004', 'PENDING', NULL, 0, 0, 2026, 4, 'batch_scheduler');
 
 
 -- ------------------------------------------------------------
--- 7. 자연어 질의 이력 샘플 데이터
+-- 7. 질의 이력 샘플 데이터 (예시 질문)
 -- ------------------------------------------------------------
-INSERT INTO profit_nl_query_history (USER_ID, USER_NAME, NATURAL_QUERY, GENERATED_SQL, QUERY_MODE, RESULT_COUNT, RESULT_SUMMARY, METRICS_USED, FILTERS_USED, DATA_SOURCE, EXECUTION_TIME_MS, STATUS, FEEDBACK_SCORE, IS_BOOKMARKED)
-VALUES (1, 'admin', '손익센터별 총매출 합계',
-        'SELECT PROFIT_CTR AS 사업부, SUM(ZAMT001 - ZAMT002 - ZAMT004) AS 총매출 FROM `/BIC/OHYOHC0004` GROUP BY PROFIT_CTR ORDER BY 총매출 DESC',
-        'NLQ', 2, '제지사업부 23,315,156,162원, 생활용품사업부 22,094,284,048원',
-        '["NETSALES"]', NULL, '/BIC/OHYOHC0004', 245, 'SUCCESS', 5, 0);
+
+INSERT INTO profit_nl_query_history (USER_ID, USER_NAME, NATURAL_QUERY, GENERATED_SQL, QUERY_MODE, RESULT_COUNT, RESULT_SUMMARY, METRICS_USED, FILTERS_USED, DATA_SOURCE, EXECUTION_TIME_MS, STATUS, IS_BOOKMARKED)
+VALUES (1, 'admin', '손익센터별 총매출 합계', 
+        'SELECT PROFIT_CTR, SUM(ZAMT001 - ZAMT002 - ZAMT004) AS NETSALES FROM "/BIC/OHYOHC0004" GROUP BY PROFIT_CTR ORDER BY NETSALES DESC',
+        'NLQ', 2, '제지사업부: 23,315,156,162원 / 생활용품사업부: 22,094,284,048원', 
+        '["NETSALES"]', '[]', '/BIC/OHYOHC0004', 245, 'SUCCESS', 0);
 
 INSERT INTO profit_nl_query_history (USER_ID, USER_NAME, NATURAL_QUERY, GENERATED_SQL, QUERY_MODE, RESULT_COUNT, RESULT_SUMMARY, METRICS_USED, FILTERS_USED, DATA_SOURCE, EXECUTION_TIME_MS, STATUS, IS_BOOKMARKED)
 VALUES (1, 'admin', '플랜트별 매출 상위 10개',
-        'SELECT PLANT AS 플랜트, SUM(ZAMT001 - ZAMT002 - ZAMT004) AS 매출 FROM `/BIC/OHYOHC0004` GROUP BY PLANT ORDER BY 매출 DESC LIMIT 10',
-        'NLQ', 10, '상위 10개 플랜트별 매출 현황',
-        '["NETSALES"]', NULL, '/BIC/OHYOHC0004', 189, 'SUCCESS', 0);
+        'SELECT PLANT, SUM(ZAMT001 - ZAMT002 - ZAMT004) AS NETSALES FROM "/BIC/OHYOHC0004" GROUP BY PLANT ORDER BY NETSALES DESC LIMIT 10',
+        'NLQ', 10, '상위 10개 플랜트별 매출 현황', 
+        '["NETSALES"]', '[]', '/BIC/OHYOHC0004', 312, 'SUCCESS', 0);
 
-INSERT INTO profit_nl_query_history (USER_ID, USER_NAME, NATURAL_QUERY, GENERATED_SQL, QUERY_MODE, RESULT_COUNT, RESULT_SUMMARY, METRICS_USED, DATA_SOURCE, EXECUTION_TIME_MS, STATUS, IS_BOOKMARKED)
+INSERT INTO profit_nl_query_history (USER_ID, USER_NAME, NATURAL_QUERY, GENERATED_SQL, QUERY_MODE, RESULT_COUNT, RESULT_SUMMARY, METRICS_USED, FILTERS_USED, DATA_SOURCE, EXECUTION_TIME_MS, STATUS, FEEDBACK_SCORE, FEEDBACK_COMMENT, IS_BOOKMARKED)
 VALUES (1, 'admin', '제품별 매출 TOP 5',
-        'SELECT ZPCODE AS 제품, SUM(ZAMT001 - ZAMT002 - ZAMT004) AS 매출 FROM `/BIC/OHYOHC0004` GROUP BY ZPCODE ORDER BY 매출 DESC LIMIT 5',
+        'SELECT ZPCODE, SUM(ZAMT001 - ZAMT002 - ZAMT004) AS NETSALES FROM "/BIC/OHYOHC0004" GROUP BY ZPCODE ORDER BY NETSALES DESC LIMIT 5',
         'NLQ', 5, '상위 5개 제품별 매출 현황',
-        '["NETSALES"]', '/BIC/OHYOHC0004', 156, 'SUCCESS', 1);
-
-
--- ------------------------------------------------------------
--- 8. 매핑 인박스 샘플 데이터
--- ------------------------------------------------------------
-INSERT INTO profit_mapping_inbox (UNMAPPED_TERM, TERM_TYPE, ORIGINAL_QUERY, OCCURRENCE_COUNT, STATUS)
-VALUES ('고객그룹', 'COLUMN', '고객그룹별 매출총이익', 3, 'PENDING');
-
-INSERT INTO profit_mapping_inbox (UNMAPPED_TERM, TERM_TYPE, ORIGINAL_QUERY, OCCURRENCE_COUNT, STATUS)
-VALUES ('마진율', 'METRIC', '브랜드별 마진율 비교', 2, 'PENDING');
-
-INSERT INTO profit_mapping_inbox (UNMAPPED_TERM, TERM_TYPE, ORIGINAL_QUERY, SUGGESTED_COLUMN, OCCURRENCE_COUNT, STATUS, RESOLVED_BY, RESOLVED_AT, RESOLUTION_NOTE)
-VALUES ('매출증가율', 'METRIC', '월별 매출증가율 추이', NULL, 5, 'APPROVED', 'admin', '2026-04-20 10:30:00', '전월 대비 매출증가율 Metric 신규 등록 완료');
+        '["NETSALES"]', '[]', '/BIC/OHYOHC0004', 198, 'SUCCESS', 5, '정확하게 조회되었습니다', 1);
