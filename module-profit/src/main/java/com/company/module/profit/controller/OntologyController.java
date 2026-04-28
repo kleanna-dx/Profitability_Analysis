@@ -4,6 +4,7 @@ import com.company.core.common.response.ApiResponse;
 import com.company.module.profit.dto.request.OntologyColumnSaveRequest;
 import com.company.module.profit.dto.response.FieldListResponse;
 import com.company.module.profit.dto.response.OntologyColumnResponse;
+import com.company.module.profit.service.MetricService;
 import com.company.module.profit.service.OntologyService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +23,7 @@ import java.util.List;
 public class OntologyController {
 
     private final OntologyService ontologyService;
+    private final MetricService metricService;
 
     /* ───────── 컬럼 목록 조회 ───────── */
 
@@ -66,7 +68,25 @@ public class OntologyController {
 
     @GetMapping("/fields")
     public ResponseEntity<ApiResponse<FieldListResponse>> getFieldList() {
-        return ResponseEntity.ok(ApiResponse.success(ontologyService.getFieldList()));
+        FieldListResponse fieldList = ontologyService.getFieldList();
+        // Metric 필드도 함께 조합하여 비주얼 쿼리 빌더에 전달
+        var metrics = metricService.getAllWithSynonyms();
+        var metricFields = metrics.stream()
+                .map(m -> FieldListResponse.MetricField.builder()
+                        .metricId(m.getMetricId())
+                        .metricCode(m.getMetricCode())
+                        .metricName(m.getMetricName())
+                        .aggregation(m.getAggregation())
+                        .formula(m.getFormula())
+                        .tableName(m.getTableName())
+                        .unit(m.getUnit())
+                        .build())
+                .collect(java.util.stream.Collectors.toList());
+        FieldListResponse enriched = FieldListResponse.builder()
+                .fieldGroups(fieldList.getFieldGroups())
+                .metricFields(metricFields)
+                .build();
+        return ResponseEntity.ok(ApiResponse.success(enriched));
     }
 
     /* ───────── 생성 ───────── */

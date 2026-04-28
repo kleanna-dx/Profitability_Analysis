@@ -40,5 +40,5 @@ public interface BatchStatusRepository extends JpaRepository<BatchStatus, Long> 
     List<BatchStatus> findRunningBatches();
 
     @Query("SELECT bs FROM BatchStatus bs WHERE bs.targetTable = :tableName ORDER BY bs.createdAt DESC")
-    List<BatchStatus> findByTargetTable(@Param("tableName") String tableName, Pageable pageable);
+    Page<BatchStatus> findByTargetTable(@Param("tableName") String tableName, Pageable pageable);
 }
