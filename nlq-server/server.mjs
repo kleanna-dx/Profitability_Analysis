@@ -347,6 +347,215 @@ app.get('/api/suggestions', (req, res) => {
 });
 
 // ============================================================
+// 학습관리 API: Ontology (컬럼)
+// ============================================================
+// 전체 목록 (동의어 포함)
+app.get('/api/ontology', async (req, res) => {
+  try {
+    const [columns] = await pool.query(
+      `SELECT c.*, GROUP_CONCAT(s.id, ':::', s.synonym_text ORDER BY s.id SEPARATOR '|||') AS synonyms
+       FROM ontology_column c
+       LEFT JOIN ontology_synonym s ON s.column_id = c.id
+       GROUP BY c.id ORDER BY c.id`
+    );
+    const result = columns.map(row => ({
+      ...row,
+      synonyms: row.synonyms
+        ? row.synonyms.split('|||').map(s => { const [id, text] = s.split(':::'); return { id: Number(id), text }; })
+        : [],
+    }));
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 추가
+app.post('/api/ontology', async (req, res) => {
+  const { column_name, table_name, description, data_type } = req.body;
+  if (!column_name) return res.status(400).json({ error: 'column_name 필수' });
+  try {
+    const [r] = await pool.query(
+      'INSERT INTO ontology_column (column_name, table_name, description, data_type) VALUES (?,?,?,?)',
+      [column_name, table_name || 'bw_profitability_data', description || '', data_type || '']
+    );
+    res.json({ id: r.insertId, column_name, table_name: table_name || 'bw_profitability_data', description, data_type });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 수정
+app.put('/api/ontology/:id', async (req, res) => {
+  const { column_name, table_name, description, data_type } = req.body;
+  try {
+    await pool.query(
+      'UPDATE ontology_column SET column_name=?, table_name=?, description=?, data_type=? WHERE id=?',
+      [column_name, table_name, description, data_type, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 삭제
+app.delete('/api/ontology/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM ontology_synonym WHERE column_id=?', [req.params.id]);
+    await pool.query('DELETE FROM ontology_column WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 동의어 추가
+app.post('/api/ontology/:id/synonym', async (req, res) => {
+  const { synonym_text } = req.body;
+  if (!synonym_text) return res.status(400).json({ error: 'synonym_text 필수' });
+  try {
+    const [r] = await pool.query(
+      'INSERT INTO ontology_synonym (column_id, synonym_text) VALUES (?,?)',
+      [req.params.id, synonym_text]
+    );
+    res.json({ id: r.insertId, synonym_text });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 동의어 삭제
+app.delete('/api/ontology/synonym/:synId', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM ontology_synonym WHERE id=?', [req.params.synId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
+// 학습관리 API: Metric (계산 지표)
+// ============================================================
+app.get('/api/metric', async (req, res) => {
+  try {
+    const [metrics] = await pool.query(
+      `SELECT m.*, GROUP_CONCAT(s.id, ':::', s.synonym_text ORDER BY s.id SEPARATOR '|||') AS synonyms
+       FROM metric m
+       LEFT JOIN metric_synonym s ON s.metric_id = m.id
+       GROUP BY m.id ORDER BY m.id`
+    );
+    const result = metrics.map(row => ({
+      ...row,
+      synonyms: row.synonyms
+        ? row.synonyms.split('|||').map(s => { const [id, text] = s.split(':::'); return { id: Number(id), text }; })
+        : [],
+    }));
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/metric', async (req, res) => {
+  const { metric_code, aggregation, formula, table_name, description } = req.body;
+  if (!metric_code || !formula) return res.status(400).json({ error: 'metric_code, formula 필수' });
+  try {
+    const [r] = await pool.query(
+      'INSERT INTO metric (metric_code, aggregation, formula, table_name, description) VALUES (?,?,?,?,?)',
+      [metric_code, aggregation || 'SUM', formula, table_name || 'bw_profitability_data', description || '']
+    );
+    res.json({ id: r.insertId, metric_code, aggregation: aggregation || 'SUM', formula, table_name: table_name || 'bw_profitability_data', description });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/metric/:id', async (req, res) => {
+  const { metric_code, aggregation, formula, table_name, description } = req.body;
+  try {
+    await pool.query(
+      'UPDATE metric SET metric_code=?, aggregation=?, formula=?, table_name=?, description=? WHERE id=?',
+      [metric_code, aggregation, formula, table_name, description, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/metric/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM metric_synonym WHERE metric_id=?', [req.params.id]);
+    await pool.query('DELETE FROM metric WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/metric/:id/synonym', async (req, res) => {
+  const { synonym_text } = req.body;
+  if (!synonym_text) return res.status(400).json({ error: 'synonym_text 필수' });
+  try {
+    const [r] = await pool.query(
+      'INSERT INTO metric_synonym (metric_id, synonym_text) VALUES (?,?)',
+      [req.params.id, synonym_text]
+    );
+    res.json({ id: r.insertId, synonym_text });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/metric/synonym/:synId', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM metric_synonym WHERE id=?', [req.params.synId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
+// 학습관리 API: JOIN (조인 조건)
+// ============================================================
+app.get('/api/join', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM join_condition ORDER BY id');
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/join', async (req, res) => {
+  const { left_column, left_table, right_column, right_table, join_type, operator, description } = req.body;
+  if (!left_column || !left_table || !right_column || !right_table)
+    return res.status(400).json({ error: '필수 필드 누락' });
+  try {
+    const [r] = await pool.query(
+      'INSERT INTO join_condition (left_column, left_table, right_column, right_table, join_type, operator, description) VALUES (?,?,?,?,?,?,?)',
+      [left_column, left_table, right_column, right_table, join_type || 'LEFT', operator || '=', description || '']
+    );
+    res.json({ id: r.insertId, left_column, left_table, right_column, right_table, join_type: join_type || 'LEFT', operator: operator || '=' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/join/:id', async (req, res) => {
+  const { left_column, left_table, right_column, right_table, join_type, operator, description } = req.body;
+  try {
+    await pool.query(
+      'UPDATE join_condition SET left_column=?, left_table=?, right_column=?, right_table=?, join_type=?, operator=?, description=? WHERE id=?',
+      [left_column, left_table, right_column, right_table, join_type, operator, description, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/join/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM join_condition WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
+// 학습관리 API: 통계
+// ============================================================
+app.get('/api/learning/stats', async (req, res) => {
+  try {
+    const [o] = await pool.query('SELECT COUNT(*) AS cnt FROM ontology_column');
+    const [os] = await pool.query('SELECT COUNT(*) AS cnt FROM ontology_synonym');
+    const [m] = await pool.query('SELECT COUNT(*) AS cnt FROM metric');
+    const [ms] = await pool.query('SELECT COUNT(*) AS cnt FROM metric_synonym');
+    const [j] = await pool.query('SELECT COUNT(*) AS cnt FROM join_condition');
+    res.json({
+      ontologyColumns: o[0].cnt,
+      ontologySynonyms: os[0].cnt,
+      metrics: m[0].cnt,
+      metricSynonyms: ms[0].cnt,
+      joins: j[0].cnt,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
 // SPA fallback
 // ============================================================
 app.get('/{*splat}', (req, res) => {

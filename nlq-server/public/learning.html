@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>학습 관리 - 데이터 사전</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
+        *{font-family:'Noto Sans KR',sans-serif;box-sizing:border-box;margin:0;padding:0;}
+        html,body{height:100%;overflow:hidden;}
+        body{background:#f5f7fb;}
+
+        /* Sidebar */
+        .sidebar{position:fixed;left:0;top:0;bottom:0;width:280px;background:#1e1b4b;color:#fff;z-index:100;transform:translateX(-100%);transition:transform .3s ease;}
+        .sidebar.open{transform:translateX(0);}
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:99;opacity:0;pointer-events:none;transition:opacity .3s;}
+        .sidebar-overlay.active{opacity:1;pointer-events:auto;}
+        .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:12px 20px;font-size:14px;color:#c7d2fe;cursor:pointer;transition:all .15s;border-radius:8px;margin:2px 10px;}
+        .sidebar-menu-item:hover{background:rgba(255,255,255,0.1);color:#fff;}
+        .sidebar-menu-item.active{background:rgba(99,102,241,0.3);color:#fff;font-weight:600;}
+        .sidebar-menu-item i{width:20px;text-align:center;font-size:15px;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,0.1);margin:12px 16px;}
+
+        /* Main layout */
+        .main-wrapper{display:flex;flex-direction:column;height:100vh;}
+        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+        .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+
+        /* Content area */
+        .content-area{flex:1;overflow-y:auto;padding:24px;}
+
+        /* Tabs */
+        .tab-bar{display:flex;gap:4px;background:#fff;border-radius:12px;padding:4px;box-shadow:0 1px 3px rgba(0,0,0,0.06);margin-bottom:20px;flex-wrap:wrap;}
+        .tab-btn{padding:10px 20px;border-radius:8px;font-size:13px;font-weight:500;color:#64748b;cursor:pointer;transition:all .2s;border:none;background:transparent;white-space:nowrap;}
+        .tab-btn:hover{color:#4f46e5;background:#f1f5f9;}
+        .tab-btn.active{background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;font-weight:600;box-shadow:0 2px 8px rgba(79,70,229,0.25);}
+
+        /* Card */
+        .card{background:#fff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.04);}
+        .card-header{padding:16px 20px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;}
+        .card-body{padding:0;}
+
+        /* Data table */
+        .dtable{width:100%;border-collapse:collapse;font-size:13px;}
+        .dtable th{background:#f8fafc;color:#475569;font-weight:600;padding:12px 16px;text-align:left;border-bottom:2px solid #e2e8f0;white-space:nowrap;position:sticky;top:0;z-index:1;}
+        .dtable td{padding:10px 16px;border-bottom:1px solid #f1f5f9;vertical-align:middle;}
+        .dtable tbody tr:hover{background:#f8faff;}
+        .dtable .mono{font-family:'Fira Code','Consolas',monospace;font-size:12px;color:#4f46e5;}
+
+        /* Synonym chip */
+        .syn-chip{display:inline-flex;align-items:center;gap:4px;background:#eef2ff;color:#4f46e5;font-size:11px;padding:3px 10px;border-radius:12px;margin:2px;border:1px solid #c7d2fe;transition:all .15s;}
+        .syn-chip .syn-del{cursor:pointer;color:#a5b4fc;font-size:10px;margin-left:2px;transition:color .15s;}
+        .syn-chip .syn-del:hover{color:#ef4444;}
+
+        /* Buttons */
+        .btn{padding:7px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;border:none;display:inline-flex;align-items:center;gap:6px;}
+        .btn-primary{background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;box-shadow:0 2px 6px rgba(79,70,229,0.2);}
+        .btn-primary:hover{box-shadow:0 4px 12px rgba(79,70,229,0.3);transform:translateY(-1px);}
+        .btn-danger{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}
+        .btn-danger:hover{background:#dc2626;color:#fff;}
+        .btn-outline{background:#fff;color:#475569;border:1px solid #e2e8f0;}
+        .btn-outline:hover{border-color:#818cf8;color:#4f46e5;}
+        .btn-sm{padding:4px 10px;font-size:11px;}
+
+        /* Modal */
+        .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s;}
+        .modal-overlay.active{opacity:1;pointer-events:auto;}
+        .modal{background:#fff;border-radius:16px;padding:24px;width:90%;max-width:560px;box-shadow:0 20px 60px rgba(0,0,0,0.15);transform:translateY(20px);transition:transform .2s;}
+        .modal-overlay.active .modal{transform:translateY(0);}
+        .modal h3{font-size:16px;font-weight:700;color:#1e293b;margin-bottom:16px;}
+        .modal label{display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:4px;margin-top:12px;}
+        .modal input,.modal select{width:100%;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;outline:none;transition:border-color .2s;}
+        .modal input:focus,.modal select:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(129,140,248,0.12);}
+        .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;}
+
+        /* Stats cards */
+        .stat-card{background:#fff;border-radius:12px;border:1px solid #e5e7eb;padding:16px 20px;display:flex;align-items:center;gap:14px;box-shadow:0 1px 3px rgba(0,0,0,0.04);}
+        .stat-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
+        .stat-value{font-size:22px;font-weight:700;color:#1e293b;}
+        .stat-label{font-size:12px;color:#94a3b8;}
+
+        /* Scrollbar */
+        .content-area::-webkit-scrollbar{width:6px;}
+        .content-area::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+        .table-scroll{max-height:calc(100vh - 320px);overflow:auto;}
+        .table-scroll::-webkit-scrollbar{width:5px;height:5px;}
+        .table-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+
+        /* Add synonym inline */
+        .add-syn-input{border:1px solid #c7d2fe;border-radius:12px;padding:3px 10px;font-size:11px;width:100px;outline:none;background:#f8fafc;}
+        .add-syn-input:focus{border-color:#4f46e5;background:#fff;}
+
+        /* Badge */
+        .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}
+        .badge-blue{background:#dbeafe;color:#2563eb;}
+        .badge-green{background:#dcfce7;color:#16a34a;}
+        .badge-purple{background:#ede9fe;color:#7c3aed;}
+        .badge-orange{background:#ffedd5;color:#ea580c;}
+
+        /* Join type badge */
+        .join-badge{padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;}
+        .join-inner{background:#dbeafe;color:#2563eb;}
+        .join-left{background:#dcfce7;color:#16a34a;}
+        .join-right{background:#ffedd5;color:#ea580c;}
+        .join-full{background:#ede9fe;color:#7c3aed;}
+
+        .fade-in{animation:fadeIn .3s ease-out;}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    </style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav class="py-2">
+        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-comments"></i><span>자연어 질의</span>
+        </a>
+        <div class="sidebar-menu-item" onclick="alert('비주얼 쿼리 빌더 - 준비중');closeSidebar();">
+            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
+            <span style="margin-left:auto;font-size:10px;background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;">준비중</span>
+        </div>
+        <div class="sidebar-menu-item" onclick="alert('PPT 분석 장표 생성 - 준비중');closeSidebar();">
+            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
+            <span style="margin-left:auto;font-size:10px;background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;">준비중</span>
+        </div>
+        <a href="/learning.html" class="sidebar-menu-item active" style="text-decoration:none;">
+            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
+        </a>
+    </nav>
+    <div class="sidebar-divider"></div>
+    <div class="px-5 py-3">
+        <p class="text-xs text-indigo-300 font-semibold mb-2 uppercase tracking-wider">시스템 정보</p>
+        <div class="space-y-2 text-xs text-indigo-200">
+            <div class="flex items-center gap-2">
+                <span id="sideDbDot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>
+                <span id="sideDbLabel">DB 연결 확인중</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <i class="fas fa-database text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
+                <span id="sideDataLabel">데이터: -</span>
+            </div>
+        </div>
+    </div>
+</aside>
+
+<!-- MAIN -->
+<div class="main-wrapper">
+    <!-- Top Bar -->
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
+        <h1 class="text-sm font-bold text-gray-800">
+            <i class="fas fa-graduation-cap text-indigo-500 mr-1"></i>학습 관리
+        </h1>
+        <span class="text-xs text-gray-400 ml-2">데이터 사전 (Ontology / Metric / JOIN)</span>
+        <div class="ml-auto flex items-center gap-2">
+            <a href="/" class="btn btn-outline btn-sm" style="text-decoration:none;">
+                <i class="fas fa-comments"></i> 질의 화면
+            </a>
+        </div>
+    </div>
+
+    <!-- Content Area -->
+    <div class="content-area" id="contentArea">
+
+        <!-- Stats -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5" id="statsArea">
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#eef2ff;color:#4f46e5;"><i class="fas fa-columns"></i></div>
+                <div><div class="stat-value" id="statOntology">-</div><div class="stat-label">Ontology 컬럼</div></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#f0fdf4;color:#16a34a;"><i class="fas fa-tags"></i></div>
+                <div><div class="stat-value" id="statOntSyn">-</div><div class="stat-label">Ontology 동의어</div></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fdf4ff;color:#a855f7;"><i class="fas fa-calculator"></i></div>
+                <div><div class="stat-value" id="statMetric">-</div><div class="stat-label">Metric 지표</div></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fffbeb;color:#f59e0b;"><i class="fas fa-language"></i></div>
+                <div><div class="stat-value" id="statMetSyn">-</div><div class="stat-label">Metric 동의어</div></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef2f2;color:#ef4444;"><i class="fas fa-link"></i></div>
+                <div><div class="stat-value" id="statJoin">-</div><div class="stat-label">JOIN 조건</div></div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tab-bar" id="tabBar">
+            <button class="tab-btn active" data-tab="ontology" onclick="switchMainTab('ontology',this)">
+                <i class="fas fa-columns mr-1"></i>Ontology
+            </button>
+            <button class="tab-btn" data-tab="metric" onclick="switchMainTab('metric',this)">
+                <i class="fas fa-calculator mr-1"></i>Metric
+            </button>
+            <button class="tab-btn" data-tab="join" onclick="switchMainTab('join',this)">
+                <i class="fas fa-link mr-1"></i>JOIN
+            </button>
+        </div>
+
+        <!-- Ontology Panel -->
+        <div id="panel_ontology" class="panel-content">
+            <div class="card">
+                <div class="card-header">
+                    <div class="flex items-center gap-3">
+                        <h2 class="text-sm font-bold text-gray-800">Ontology 컬럼 관리</h2>
+                        <span class="badge badge-blue" id="ontologyCount">0개</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="btn btn-primary" onclick="openAddOntologyModal()">
+                            <i class="fas fa-plus"></i> 컬럼 추가
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="table-scroll">
+                        <table class="dtable" id="ontologyTable">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;">#</th>
+                                    <th>Column</th>
+                                    <th>Table</th>
+                                    <th>설명</th>
+                                    <th>데이터타입</th>
+                                    <th style="min-width:250px;">동의어(Synonyms)</th>
+                                    <th style="width:80px;">작업</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ontologyBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Metric Panel -->
+        <div id="panel_metric" class="panel-content" style="display:none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="flex items-center gap-3">
+                        <h2 class="text-sm font-bold text-gray-800">Metric 계산지표 관리</h2>
+                        <span class="badge badge-purple" id="metricCount">0개</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="btn btn-primary" onclick="openAddMetricModal()">
+                            <i class="fas fa-plus"></i> 지표 추가
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="table-scroll">
+                        <table class="dtable" id="metricTable">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;">#</th>
+                                    <th>Metric Code</th>
+                                    <th>Aggregation</th>
+                                    <th>Formula</th>
+                                    <th>Table</th>
+                                    <th>설명</th>
+                                    <th style="min-width:200px;">동의어(Synonyms)</th>
+                                    <th style="width:80px;">작업</th>
+                                </tr>
+                            </thead>
+                            <tbody id="metricBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- JOIN Panel -->
+        <div id="panel_join" class="panel-content" style="display:none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="flex items-center gap-3">
+                        <h2 class="text-sm font-bold text-gray-800">JOIN 조건 관리</h2>
+                        <span class="badge badge-orange" id="joinCount">0개</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="btn btn-primary" onclick="openAddJoinModal()">
+                            <i class="fas fa-plus"></i> JOIN 추가
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="table-scroll">
+                        <table class="dtable" id="joinTable">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;">#</th>
+                                    <th>Left Column</th>
+                                    <th>Left Table</th>
+                                    <th>Right Column</th>
+                                    <th>Right Table</th>
+                                    <th>Type</th>
+                                    <th>Operator</th>
+                                    <th>설명</th>
+                                    <th style="width:80px;">작업</th>
+                                </tr>
+                            </thead>
+                            <tbody id="joinBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: Add/Edit Ontology -->
+<div id="ontologyModal" class="modal-overlay">
+    <div class="modal">
+        <h3 id="ontModalTitle">컬럼 추가</h3>
+        <input type="hidden" id="ontEditId">
+        <label>Column Name *</label>
+        <input type="text" id="ontColName" placeholder="예: PLANT">
+        <label>Table Name</label>
+        <input type="text" id="ontTableName" value="bw_profitability_data">
+        <label>설명</label>
+        <input type="text" id="ontDesc" placeholder="예: 플랜트 코드">
+        <label>데이터 타입</label>
+        <input type="text" id="ontDataType" placeholder="예: VARCHAR(10)">
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('ontologyModal')">취소</button>
+            <button class="btn btn-primary" onclick="saveOntology()">저장</button>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: Add/Edit Metric -->
+<div id="metricModal" class="modal-overlay">
+    <div class="modal">
+        <h3 id="metModalTitle">지표 추가</h3>
+        <input type="hidden" id="metEditId">
+        <label>Metric Code *</label>
+        <input type="text" id="metCode" placeholder="예: TOTAL_SALES">
+        <label>Aggregation</label>
+        <select id="metAgg">
+            <option value="SUM">SUM</option>
+            <option value="AVG">AVG</option>
+            <option value="COUNT">COUNT</option>
+            <option value="MAX">MAX</option>
+            <option value="MIN">MIN</option>
+            <option value="CALC">CALC (계산식)</option>
+        </select>
+        <label>Formula *</label>
+        <input type="text" id="metFormula" placeholder="예: ZAMT001 또는 SUM(ZAMT001)/NULLIF(SUM(ZAMT003),0)*100">
+        <label>Table Name</label>
+        <input type="text" id="metTableName" value="bw_profitability_data">
+        <label>설명</label>
+        <input type="text" id="metDesc" placeholder="예: 총매출">
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('metricModal')">취소</button>
+            <button class="btn btn-primary" onclick="saveMetric()">저장</button>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: Add/Edit JOIN -->
+<div id="joinModal" class="modal-overlay">
+    <div class="modal">
+        <h3 id="joinModalTitle">JOIN 추가</h3>
+        <input type="hidden" id="joinEditId">
+        <div class="grid grid-cols-2 gap-3">
+            <div>
+                <label>Left Column *</label>
+                <input type="text" id="joinLeftCol" placeholder="예: PLANT">
+            </div>
+            <div>
+                <label>Left Table *</label>
+                <input type="text" id="joinLeftTable" value="bw_profitability_data">
+            </div>
+            <div>
+                <label>Right Column *</label>
+                <input type="text" id="joinRightCol" placeholder="예: PLANT">
+            </div>
+            <div>
+                <label>Right Table *</label>
+                <input type="text" id="joinRightTable" placeholder="예: plant_master">
+            </div>
+            <div>
+                <label>Join Type</label>
+                <select id="joinType">
+                    <option value="INNER">INNER</option>
+                    <option value="LEFT" selected>LEFT</option>
+                    <option value="RIGHT">RIGHT</option>
+                    <option value="FULL">FULL</option>
+                </select>
+            </div>
+            <div>
+                <label>Operator</label>
+                <select id="joinOp">
+                    <option value="=">=</option>
+                    <option value="!=">!=</option>
+                    <option value="<"><</option>
+                    <option value=">">></option>
+                </select>
+            </div>
+        </div>
+        <label>설명</label>
+        <input type="text" id="joinDesc" placeholder="예: 플랜트 마스터 조인">
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('joinModal')">취소</button>
+            <button class="btn btn-primary" onclick="saveJoin()">저장</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+let ontologyData = [];
+let metricData = [];
+let joinData = [];
+
+// ============================================================
+// Init
+// ============================================================
+window.addEventListener('DOMContentLoaded', async () => {
+    await loadStats();
+    await loadOntology();
+    await loadMetric();
+    await loadJoin();
+    // Status
+    try {
+        const res = await fetch('/api/status');
+        const d = await res.json();
+        document.getElementById('sideDbDot').style.background = '#22c55e';
+        document.getElementById('sideDbLabel').textContent = 'DB 연결됨';
+        document.getElementById('sideDataLabel').textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
+    } catch(e) {}
+});
+
+// ============================================================
+// Stats
+// ============================================================
+async function loadStats() {
+    try {
+        const res = await fetch('/api/learning/stats');
+        const d = await res.json();
+        document.getElementById('statOntology').textContent = d.ontologyColumns;
+        document.getElementById('statOntSyn').textContent = d.ontologySynonyms;
+        document.getElementById('statMetric').textContent = d.metrics;
+        document.getElementById('statMetSyn').textContent = d.metricSynonyms;
+        document.getElementById('statJoin').textContent = d.joins;
+    } catch(e) {}
+}
+
+// ============================================================
+// Tab switch
+// ============================================================
+function switchMainTab(tab, btn) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.panel-content').forEach(p => p.style.display = 'none');
+    document.getElementById('panel_' + tab).style.display = 'block';
+}
+
+// ============================================================
+// Sidebar
+// ============================================================
+function openSidebar() { document.getElementById('sidebar').classList.add('open'); document.getElementById('sidebarOverlay').classList.add('active'); }
+function closeSidebar() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('sidebarOverlay').classList.remove('active'); }
+
+// ============================================================
+// Modal helpers
+// ============================================================
+function openModal(id) { document.getElementById(id).classList.add('active'); }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+// ============================================================
+// ONTOLOGY
+// ============================================================
+async function loadOntology() {
+    const res = await fetch('/api/ontology');
+    ontologyData = await res.json();
+    renderOntology();
+}
+function renderOntology() {
+    const tbody = document.getElementById('ontologyBody');
+    document.getElementById('ontologyCount').textContent = ontologyData.length + '개';
+    if (ontologyData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">등록된 Ontology 컬럼이 없습니다.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = ontologyData.map((c, i) => `
+        <tr>
+            <td class="text-gray-400">${i+1}</td>
+            <td class="mono font-semibold">${esc(c.column_name)}</td>
+            <td class="text-xs text-gray-500">${esc(c.table_name || '')}</td>
+            <td>${esc(c.description || '')}</td>
+            <td><span class="badge badge-blue">${esc(c.data_type || '-')}</span></td>
+            <td>
+                <div class="flex flex-wrap items-center gap-1">
+                    ${(c.synonyms||[]).map(s => `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delOntSynonym(${s.id})" title="삭제">&times;</span></span>`).join('')}
+                    <input class="add-syn-input" placeholder="+ 동의어" onkeydown="if(event.key==='Enter'&&!event.isComposing)addOntSynonym(${c.id},this)" />
+                </div>
+            </td>
+            <td>
+                <div class="flex gap-1">
+                    <button class="btn btn-outline btn-sm" onclick="editOntology(${c.id})" title="수정"><i class="fas fa-pen"></i></button>
+                    <button class="btn btn-danger btn-sm" onclick="delOntology(${c.id})" title="삭제"><i class="fas fa-trash"></i></button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function openAddOntologyModal() {
+    document.getElementById('ontModalTitle').textContent = '컬럼 추가';
+    document.getElementById('ontEditId').value = '';
+    document.getElementById('ontColName').value = '';
+    document.getElementById('ontTableName').value = 'bw_profitability_data';
+    document.getElementById('ontDesc').value = '';
+    document.getElementById('ontDataType').value = '';
+    openModal('ontologyModal');
+}
+function editOntology(id) {
+    const c = ontologyData.find(x => x.id === id);
+    if (!c) return;
+    document.getElementById('ontModalTitle').textContent = '컬럼 수정';
+    document.getElementById('ontEditId').value = id;
+    document.getElementById('ontColName').value = c.column_name;
+    document.getElementById('ontTableName').value = c.table_name || '';
+    document.getElementById('ontDesc').value = c.description || '';
+    document.getElementById('ontDataType').value = c.data_type || '';
+    openModal('ontologyModal');
+}
+async function saveOntology() {
+    const editId = document.getElementById('ontEditId').value;
+    const body = {
+        column_name: document.getElementById('ontColName').value.trim(),
+        table_name: document.getElementById('ontTableName').value.trim(),
+        description: document.getElementById('ontDesc').value.trim(),
+        data_type: document.getElementById('ontDataType').value.trim(),
+    };
+    if (!body.column_name) return alert('Column Name은 필수입니다.');
+    try {
+        if (editId) {
+            await fetch('/api/ontology/' + editId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        } else {
+            await fetch('/api/ontology', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        }
+        closeModal('ontologyModal');
+        await loadOntology();
+        await loadStats();
+    } catch(e) { alert('저장 실패: ' + e.message); }
+}
+async function delOntology(id) {
+    if (!confirm('이 컬럼과 관련 동의어를 삭제하시겠습니까?')) return;
+    await fetch('/api/ontology/' + id, { method: 'DELETE' });
+    await loadOntology();
+    await loadStats();
+}
+async function addOntSynonym(colId, input) {
+    const text = input.value.trim();
+    if (!text) return;
+    await fetch('/api/ontology/' + colId + '/synonym', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ synonym_text: text })
+    });
+    input.value = '';
+    await loadOntology();
+    await loadStats();
+}
+async function delOntSynonym(synId) {
+    await fetch('/api/ontology/synonym/' + synId, { method: 'DELETE' });
+    await loadOntology();
+    await loadStats();
+}
+
+// ============================================================
+// METRIC
+// ============================================================
+async function loadMetric() {
+    const res = await fetch('/api/metric');
+    metricData = await res.json();
+    renderMetric();
+}
+function renderMetric() {
+    const tbody = document.getElementById('metricBody');
+    document.getElementById('metricCount').textContent = metricData.length + '개';
+    if (metricData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 Metric이 없습니다.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = metricData.map((m, i) => `
+        <tr>
+            <td class="text-gray-400">${i+1}</td>
+            <td class="mono font-semibold">${esc(m.metric_code)}</td>
+            <td><span class="badge ${m.aggregation==='CALC'?'badge-orange':'badge-green'}">${esc(m.aggregation||'SUM')}</span></td>
+            <td class="mono" style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(m.formula)}">${esc(m.formula)}</td>
+            <td class="text-xs text-gray-500">${esc(m.table_name || '')}</td>
+            <td>${esc(m.description || '')}</td>
+            <td>
+                <div class="flex flex-wrap items-center gap-1">
+                    ${(m.synonyms||[]).map(s => `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delMetSynonym(${s.id})" title="삭제">&times;</span></span>`).join('')}
+                    <input class="add-syn-input" placeholder="+ 동의어" onkeydown="if(event.key==='Enter'&&!event.isComposing)addMetSynonym(${m.id},this)" />
+                </div>
+            </td>
+            <td>
+                <div class="flex gap-1">
+                    <button class="btn btn-outline btn-sm" onclick="editMetric(${m.id})" title="수정"><i class="fas fa-pen"></i></button>
+                    <button class="btn btn-danger btn-sm" onclick="delMetric(${m.id})" title="삭제"><i class="fas fa-trash"></i></button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function openAddMetricModal() {
+    document.getElementById('metModalTitle').textContent = '지표 추가';
+    document.getElementById('metEditId').value = '';
+    document.getElementById('metCode').value = '';
+    document.getElementById('metAgg').value = 'SUM';
+    document.getElementById('metFormula').value = '';
+    document.getElementById('metTableName').value = 'bw_profitability_data';
+    document.getElementById('metDesc').value = '';
+    openModal('metricModal');
+}
+function editMetric(id) {
+    const m = metricData.find(x => x.id === id);
+    if (!m) return;
+    document.getElementById('metModalTitle').textContent = '지표 수정';
+    document.getElementById('metEditId').value = id;
+    document.getElementById('metCode').value = m.metric_code;
+    document.getElementById('metAgg').value = m.aggregation || 'SUM';
+    document.getElementById('metFormula').value = m.formula;
+    document.getElementById('metTableName').value = m.table_name || '';
+    document.getElementById('metDesc').value = m.description || '';
+    openModal('metricModal');
+}
+async function saveMetric() {
+    const editId = document.getElementById('metEditId').value;
+    const body = {
+        metric_code: document.getElementById('metCode').value.trim(),
+        aggregation: document.getElementById('metAgg').value,
+        formula: document.getElementById('metFormula').value.trim(),
+        table_name: document.getElementById('metTableName').value.trim(),
+        description: document.getElementById('metDesc').value.trim(),
+    };
+    if (!body.metric_code || !body.formula) return alert('Metric Code와 Formula는 필수입니다.');
+    try {
+        if (editId) {
+            await fetch('/api/metric/' + editId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        } else {
+            await fetch('/api/metric', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        }
+        closeModal('metricModal');
+        await loadMetric();
+        await loadStats();
+    } catch(e) { alert('저장 실패: ' + e.message); }
+}
+async function delMetric(id) {
+    if (!confirm('이 지표와 관련 동의어를 삭제하시겠습니까?')) return;
+    await fetch('/api/metric/' + id, { method: 'DELETE' });
+    await loadMetric();
+    await loadStats();
+}
+async function addMetSynonym(metId, input) {
+    const text = input.value.trim();
+    if (!text) return;
+    await fetch('/api/metric/' + metId + '/synonym', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ synonym_text: text })
+    });
+    input.value = '';
+    await loadMetric();
+    await loadStats();
+}
+async function delMetSynonym(synId) {
+    await fetch('/api/metric/synonym/' + synId, { method: 'DELETE' });
+    await loadMetric();
+    await loadStats();
+}
+
+// ============================================================
+// JOIN
+// ============================================================
+async function loadJoin() {
+    const res = await fetch('/api/join');
+    joinData = await res.json();
+    renderJoin();
+}
+function renderJoin() {
+    const tbody = document.getElementById('joinBody');
+    document.getElementById('joinCount').textContent = joinData.length + '개';
+    if (joinData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-400 py-8">등록된 JOIN 조건이 없습니다.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = joinData.map((j, i) => {
+        const cls = j.join_type === 'INNER' ? 'join-inner' : j.join_type === 'LEFT' ? 'join-left' : j.join_type === 'RIGHT' ? 'join-right' : 'join-full';
+        return `
+        <tr>
+            <td class="text-gray-400">${i+1}</td>
+            <td class="mono font-semibold">${esc(j.left_column)}</td>
+            <td class="text-xs text-gray-500">${esc(j.left_table)}</td>
+            <td class="mono font-semibold">${esc(j.right_column)}</td>
+            <td class="text-xs text-gray-500">${esc(j.right_table)}</td>
+            <td><span class="join-badge ${cls}">${esc(j.join_type)}</span></td>
+            <td class="mono text-center">${esc(j.operator)}</td>
+            <td>${esc(j.description || '')}</td>
+            <td>
+                <div class="flex gap-1">
+                    <button class="btn btn-outline btn-sm" onclick="editJoin(${j.id})" title="수정"><i class="fas fa-pen"></i></button>
+                    <button class="btn btn-danger btn-sm" onclick="delJoin(${j.id})" title="삭제"><i class="fas fa-trash"></i></button>
+                </div>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function openAddJoinModal() {
+    document.getElementById('joinModalTitle').textContent = 'JOIN 추가';
+    document.getElementById('joinEditId').value = '';
+    document.getElementById('joinLeftCol').value = '';
+    document.getElementById('joinLeftTable').value = 'bw_profitability_data';
+    document.getElementById('joinRightCol').value = '';
+    document.getElementById('joinRightTable').value = '';
+    document.getElementById('joinType').value = 'LEFT';
+    document.getElementById('joinOp').value = '=';
+    document.getElementById('joinDesc').value = '';
+    openModal('joinModal');
+}
+function editJoin(id) {
+    const j = joinData.find(x => x.id === id);
+    if (!j) return;
+    document.getElementById('joinModalTitle').textContent = 'JOIN 수정';
+    document.getElementById('joinEditId').value = id;
+    document.getElementById('joinLeftCol').value = j.left_column;
+    document.getElementById('joinLeftTable').value = j.left_table;
+    document.getElementById('joinRightCol').value = j.right_column;
+    document.getElementById('joinRightTable').value = j.right_table;
+    document.getElementById('joinType').value = j.join_type;
+    document.getElementById('joinOp').value = j.operator;
+    document.getElementById('joinDesc').value = j.description || '';
+    openModal('joinModal');
+}
+async function saveJoin() {
+    const editId = document.getElementById('joinEditId').value;
+    const body = {
+        left_column: document.getElementById('joinLeftCol').value.trim(),
+        left_table: document.getElementById('joinLeftTable').value.trim(),
+        right_column: document.getElementById('joinRightCol').value.trim(),
+        right_table: document.getElementById('joinRightTable').value.trim(),
+        join_type: document.getElementById('joinType').value,
+        operator: document.getElementById('joinOp').value,
+        description: document.getElementById('joinDesc').value.trim(),
+    };
+    if (!body.left_column || !body.left_table || !body.right_column || !body.right_table)
+        return alert('Left/Right Column과 Table은 필수입니다.');
+    try {
+        if (editId) {
+            await fetch('/api/join/' + editId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        } else {
+            await fetch('/api/join', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        }
+        closeModal('joinModal');
+        await loadJoin();
+        await loadStats();
+    } catch(e) { alert('저장 실패: ' + e.message); }
+}
+async function delJoin(id) {
+    if (!confirm('이 JOIN 조건을 삭제하시겠습니까?')) return;
+    await fetch('/api/join/' + id, { method: 'DELETE' });
+    await loadJoin();
+    await loadStats();
+}
+
+// ============================================================
+// Utils
+// ============================================================
+function esc(s) { if (s == null) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+</script>
+</body>
+</html>
