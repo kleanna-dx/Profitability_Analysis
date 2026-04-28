@@ -18,9 +18,15 @@
 
 ```
 sql/module-profit/
-├── 01_schema.sql      -- DDL: 테이블 8개, 인덱스, FK, UK
-├── 02_seed_data.sql   -- 초기 사전 데이터 (Ontology, Metric, Join, 샘플 이력)
-└── README.md          -- 이 문서
+├── 01_schema.sql              -- DDL: 모듈 테이블 8개, 인덱스, FK, UK
+├── 02_seed_data.sql           -- 초기 사전 데이터 (Ontology, Metric, Join, 샘플 이력)
+├── 03_bw_table_schema.sql     -- DDL: BW 수익성분석 원천 데이터 테이블 (120컬럼)
+├── 04_bw_data_part01.sql      -- BW 데이터 INSERT (1~50,000행)
+├── 04_bw_data_part02.sql      -- BW 데이터 INSERT (50,001~100,000행)
+├── 04_bw_data_part03.sql      -- BW 데이터 INSERT (100,001~150,000행)
+├── 04_bw_data_part04.sql      -- BW 데이터 INSERT (150,001~200,000행)
+├── 04_bw_data_part05.sql      -- BW 데이터 INSERT (200,001~203,562행)
+└── README.md                  -- 이 문서
 ```
 
 ---
@@ -171,6 +177,55 @@ AI가 **수식을 창작하지 않고** 이 사전만 참조하여 SQL을 생성
 |------------|-----------|---------|------|
 | BW.ZFICO_T01 | BW.ZFICO_M01 | ZMATNR | LEFT |
 | BW.ZFICO_T01 | BW.ZFICO_M02 | ZCUSTOMER | LEFT |
+
+---
+
+## BW 수익성분석 원천 데이터 테이블
+
+### 테이블: `bw_profitability_data`
+
+SAP BW에서 마감 후 적재되는 수익성분석 원천 데이터입니다.
+
+| 항목 | 내용 |
+|------|------|
+| 원본 파일 | test3.xlsb |
+| 총 컬럼 수 | 120개 (+ ID, CREATED_AT) |
+| 총 데이터 행 | 203,562행 |
+| 파일 분할 | 5개 파트 (50,000행 단위) |
+| 총 용량 | ~142MB |
+
+### 컬럼 구성 (120개)
+
+| 그룹 | 컬럼 | 설명 |
+|------|------|------|
+| 기간 | CALMONTH, CALDAY | 달력연도/월, 달력일 |
+| 조직 | CO_AREA, PROFIT_CTR, DIVISION, PLANT, DISTR_CHAN, SALES_OFF | 관리회계영역/손익센터/제품군/플랜트/유통경로/사업장 |
+| 내수/수출 | ZDISTCHAN, ZORG_TEAM | 내수/수출구분, 영업팀 |
+| 자재 | MATL_TYPE, MATERIAL, MATERIAL_NM | 자재유형/자재번호/자재명 |
+| 제품계층 | PRODH1~PRODH4, ZJPCODE, ZBRAND, ZSBRAND | 제품계층구조 4레벨/지종/브랜드1,2 |
+| 거래 | BILL_TYPE, INCOTERMS, CUST_GROUP, CUST_GRP1, COUNTRY | 대금청구유형/인도조건/고객그룹/국가 |
+| 고객/영업 | ZKUNN2, CUSTOMER | 영업사원/고객 |
+| 단위 | ZBOXUNIT, ZBAGUNIT, ZUNIT, CURRENCY | BOX/BAG/KG-EA 단위, 통화 |
+| 수량 | ZQTY_BOX, ZQTY_BAG, ZQTY_KE | BOX/BAG/KG-EA 수량 |
+| 금액 | ZAMT001~ZAMT064 | 총매출~경상이익 (64개 계정) |
+
+### BW 데이터 실행 방법
+
+```bash
+# 1단계: BW 테이블 생성
+mysql -u {user} -p {database} < sql/module-profit/03_bw_table_schema.sql
+
+# 2단계: 데이터 적재 (순서대로 실행)
+mysql -u {user} -p {database} < sql/module-profit/04_bw_data_part01.sql
+mysql -u {user} -p {database} < sql/module-profit/04_bw_data_part02.sql
+mysql -u {user} -p {database} < sql/module-profit/04_bw_data_part03.sql
+mysql -u {user} -p {database} < sql/module-profit/04_bw_data_part04.sql
+mysql -u {user} -p {database} < sql/module-profit/04_bw_data_part05.sql
+
+# 3단계: 검증
+mysql -u {user} -p {database} -e "SELECT COUNT(*) FROM bw_profitability_data;"
+# 예상 결과: 203,562
+```
 
 ---
 
