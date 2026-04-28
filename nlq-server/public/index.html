@@ -3,363 +3,385 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>수익성분석 자연어 조회 시스템</title>
+    <title>수익성분석 AI 챗봇</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
-        *{font-family:'Noto Sans KR',sans-serif;box-sizing:border-box;}
-        body{background:#f5f7fb;margin:0;}
+        *{font-family:'Noto Sans KR',sans-serif;box-sizing:border-box;margin:0;padding:0;}
+        html,body{height:100%;overflow:hidden;}
+        body{background:#f5f7fb;}
 
-        /* Header gradient - 레퍼런스와 동일한 보라~파랑 그라데이션 */
-        .header-gradient{
-            background:linear-gradient(135deg,#4f46e5 0%,#6366f1 30%,#818cf8 60%,#a78bfa 100%);
+        /* Sidebar */
+        .sidebar{
+            position:fixed;left:0;top:0;bottom:0;width:280px;
+            background:#1e1b4b;color:#fff;z-index:100;
+            transform:translateX(-100%);transition:transform .3s ease;
+        }
+        .sidebar.open{transform:translateX(0);}
+        .sidebar-overlay{
+            position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:99;
+            opacity:0;pointer-events:none;transition:opacity .3s;
+        }
+        .sidebar-overlay.active{opacity:1;pointer-events:auto;}
+        .sidebar-menu-item{
+            display:flex;align-items:center;gap:12px;padding:12px 20px;
+            font-size:14px;color:#c7d2fe;cursor:pointer;transition:all .15s;
+            border-radius:8px;margin:2px 10px;
+        }
+        .sidebar-menu-item:hover{background:rgba(255,255,255,0.1);color:#fff;}
+        .sidebar-menu-item.active{background:rgba(99,102,241,0.3);color:#fff;font-weight:600;}
+        .sidebar-menu-item i{width:20px;text-align:center;font-size:15px;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,0.1);margin:12px 16px;}
+
+        /* Main layout */
+        .main-wrapper{
+            display:flex;flex-direction:column;height:100vh;
         }
 
-        /* Tab pills */
-        .pill-active{background:#3b82f6;color:#fff;font-weight:600;box-shadow:0 2px 8px rgba(59,130,246,0.3);}
-        .pill-inactive{background:#fff;color:#64748b;font-weight:500;}
-
-        /* Tag buttons - 레퍼런스 스타일 */
-        .tag-btn{
-            border:1px solid #c7d2fe;
-            color:#4f46e5;
-            background:#eef2ff;
-            transition:all .2s;
-            cursor:pointer;
+        /* Top bar */
+        .top-bar{
+            background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;
+            display:flex;align-items:center;gap:12px;flex-shrink:0;
         }
-        .tag-btn:hover{
-            background:#4f46e5;
-            color:#fff;
-            border-color:#4f46e5;
-            transform:translateY(-1px);
-            box-shadow:0 2px 6px rgba(79,70,229,0.25);
+        .hamburger-btn{
+            width:38px;height:38px;display:flex;align-items:center;justify-content:center;
+            border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;
+            transition:all .15s;color:#475569;font-size:16px;
         }
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        .status-pill{
+            display:flex;align-items:center;gap:6px;
+            font-size:12px;color:#64748b;background:#f8fafc;
+            padding:5px 12px;border-radius:20px;border:1px solid #e5e7eb;
+        }
+        .status-pill .dot{width:7px;height:7px;border-radius:50%;background:#94a3b8;}
+        .status-pill .dot.green{background:#22c55e;box-shadow:0 0 5px rgba(34,197,94,0.4);}
 
-        /* Cards */
-        .card{
-            background:#fff;
-            border-radius:14px;
-            box-shadow:0 1px 4px rgba(0,0,0,0.05),0 4px 16px rgba(0,0,0,0.03);
-            border:1px solid rgba(0,0,0,0.04);
+        /* Chat area */
+        .chat-area{
+            flex:1;overflow-y:auto;padding:24px;
+            display:flex;flex-direction:column;gap:20px;
         }
 
-        /* Result tabs */
-        .result-tab-active{color:#4f46e5;border-bottom:2.5px solid #4f46e5;font-weight:600;}
-        .result-tab-inactive{color:#94a3b8;border-bottom:2.5px solid transparent;}
-        .result-tab-inactive:hover{color:#6366f1;}
+        /* Welcome section */
+        .welcome-section{
+            display:flex;flex-direction:column;align-items:center;
+            padding:40px 20px 20px;text-align:center;
+        }
+        .welcome-icon{
+            width:64px;height:64px;border-radius:16px;
+            background:linear-gradient(135deg,#4f46e5,#7c3aed);
+            display:flex;align-items:center;justify-content:center;
+            font-size:28px;color:#fff;margin-bottom:16px;
+            box-shadow:0 4px 16px rgba(79,70,229,0.25);
+        }
+
+        /* Suggestion chips */
+        .chip{
+            display:inline-block;border:1px solid #c7d2fe;color:#4f46e5;
+            background:#eef2ff;font-size:13px;padding:8px 16px;border-radius:20px;
+            cursor:pointer;transition:all .2s;white-space:nowrap;
+        }
+        .chip:hover{background:#4f46e5;color:#fff;border-color:#4f46e5;transform:translateY(-1px);box-shadow:0 2px 8px rgba(79,70,229,0.2);}
+
+        /* Chat messages */
+        .msg-user{
+            align-self:flex-end;max-width:75%;
+            background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;
+            padding:12px 18px;border-radius:18px 18px 4px 18px;
+            font-size:14px;line-height:1.6;box-shadow:0 2px 8px rgba(79,70,229,0.15);
+        }
+        .msg-bot{
+            align-self:flex-start;max-width:90%;width:100%;
+        }
+        .msg-bot-inner{
+            background:#fff;border:1px solid #e5e7eb;
+            padding:0;border-radius:16px;overflow:hidden;
+            box-shadow:0 1px 4px rgba(0,0,0,0.04);
+        }
+        .msg-bot-header{
+            padding:14px 18px;border-bottom:1px solid #f1f5f9;
+            display:flex;align-items:flex-start;gap:10px;
+        }
+        .bot-avatar{
+            width:32px;height:32px;border-radius:8px;flex-shrink:0;
+            background:linear-gradient(135deg,#4f46e5,#7c3aed);
+            display:flex;align-items:center;justify-content:center;
+            color:#fff;font-size:14px;
+        }
+        .msg-bot-explanation{font-size:13px;color:#475569;line-height:1.6;flex:1;}
+        .msg-bot-meta{
+            display:flex;align-items:center;gap:8px;margin-top:6px;
+        }
+        .meta-badge{
+            font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;
+        }
+        .meta-badge.rows{background:#dbeafe;color:#2563eb;}
+        .meta-badge.time{background:#f1f5f9;color:#64748b;}
+
+        /* Result tabs inside bot message */
+        .res-tabs{
+            display:flex;border-bottom:1px solid #f1f5f9;padding:0 16px;background:#fafbfc;
+        }
+        .res-tab{
+            padding:10px 16px;font-size:13px;cursor:pointer;border-bottom:2.5px solid transparent;
+            color:#94a3b8;transition:all .15s;font-weight:500;white-space:nowrap;
+        }
+        .res-tab:hover{color:#6366f1;}
+        .res-tab.active{color:#4f46e5;border-bottom-color:#4f46e5;font-weight:600;}
+
+        /* Result panels */
+        .res-panel{display:none;}
+        .res-panel.active{display:block;}
 
         /* Data table */
-        .data-table{font-size:13px;border-collapse:collapse;width:100%;}
-        .data-table th{background:#f8fafc;color:#475569;font-weight:600;padding:11px 16px;text-align:left;border-bottom:2px solid #e2e8f0;white-space:nowrap;position:sticky;top:0;z-index:1;}
-        .data-table td{padding:11px 16px;border-bottom:1px solid #f1f5f9;white-space:nowrap;}
+        .data-table{font-size:12px;border-collapse:collapse;width:100%;}
+        .data-table th{
+            background:#f8fafc;color:#475569;font-weight:600;padding:10px 14px;
+            text-align:left;border-bottom:2px solid #e2e8f0;white-space:nowrap;
+            position:sticky;top:0;z-index:1;
+        }
+        .data-table td{padding:10px 14px;border-bottom:1px solid #f1f5f9;white-space:nowrap;}
         .data-table tbody tr:hover{background:#f0f4ff;}
 
-        /* Status dots */
-        .status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
-        .dot-green{background:#22c55e;box-shadow:0 0 6px rgba(34,197,94,0.4);}
-        .dot-gray{background:#94a3b8;}
+        /* Chart container */
+        .chart-container{padding:16px;min-height:320px;position:relative;}
 
-        /* Badges */
-        .badge-green{background:#dcfce7;color:#16a34a;font-size:12px;padding:3px 12px;border-radius:20px;font-weight:600;}
-        .badge-blue{background:#e0e7ff;color:#4f46e5;font-size:12px;padding:3px 12px;border-radius:20px;font-weight:600;}
-
-        /* Header action buttons - 레퍼런스 스타일 */
-        .header-action-btn{
-            border:1px solid rgba(255,255,255,0.35);
-            color:#fff;
-            background:transparent;
-            font-size:13px;
-            padding:8px 18px;
-            border-radius:8px;
-            cursor:pointer;
-            transition:all .2s;
-            font-weight:500;
+        /* SQL display */
+        .sql-display{
+            background:#0f172a;color:#86efac;font-size:12px;padding:16px;
+            border-radius:0;overflow-x:auto;white-space:pre-wrap;
+            line-height:1.7;font-family:'Fira Code','Consolas',monospace;
         }
-        .header-action-btn:hover{background:rgba(255,255,255,0.15);}
-        .header-action-btn.active{background:rgba(255,255,255,0.2);border-color:rgba(255,255,255,0.5);}
 
-        /* Schema toggle */
-        .schema-toggle{cursor:pointer;user-select:none;}
-        .schema-toggle:hover{color:#4f46e5;}
+        /* Input bar */
+        .input-bar{
+            flex-shrink:0;background:#fff;border-top:1px solid #e5e7eb;
+            padding:16px 20px;
+        }
+        .input-row{
+            max-width:900px;margin:0 auto;display:flex;gap:10px;align-items:center;
+        }
+        .input-field{
+            flex:1;border:1.5px solid #e2e8f0;border-radius:12px;
+            padding:12px 16px;font-size:14px;outline:none;
+            transition:all .2s;background:#f8fafc;
+        }
+        .input-field:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(129,140,248,0.12);background:#fff;}
+        .send-btn{
+            width:44px;height:44px;border-radius:12px;border:none;
+            background:linear-gradient(135deg,#4f46e5,#6366f1);
+            color:#fff;font-size:16px;cursor:pointer;
+            display:flex;align-items:center;justify-content:center;
+            transition:all .2s;flex-shrink:0;
+        }
+        .send-btn:hover{box-shadow:0 4px 12px rgba(79,70,229,0.3);transform:translateY(-1px);}
+        .send-btn:disabled{opacity:0.4;cursor:not-allowed;transform:none;box-shadow:none;}
+        .mode-toggle{
+            font-size:12px;color:#94a3b8;cursor:pointer;padding:4px 10px;
+            border-radius:6px;border:1px solid #e5e7eb;background:#fff;
+            transition:all .15s;flex-shrink:0;
+        }
+        .mode-toggle:hover{color:#4f46e5;border-color:#c7d2fe;}
+        .mode-toggle.active{color:#4f46e5;background:#eef2ff;border-color:#c7d2fe;font-weight:600;}
 
-        /* Loading */
-        .loading-spinner{border:3px solid #e2e8f0;border-top:3px solid #4f46e5;border-radius:50%;width:20px;height:20px;animation:spin .8s linear infinite;display:inline-block;}
-        @keyframes spin{to{transform:rotate(360deg)}}
+        /* SQL textarea mode */
+        .sql-textarea{
+            flex:1;border:1.5px solid #e2e8f0;border-radius:12px;
+            padding:12px 16px;font-size:13px;outline:none;
+            transition:all .2s;background:#f8fafc;resize:none;
+            font-family:'Fira Code','Consolas',monospace;min-height:44px;max-height:120px;
+        }
+        .sql-textarea:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(129,140,248,0.12);background:#fff;}
 
-        /* Animations */
-        .fade-in{animation:fadeIn .35s ease-out;}
-        @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+        /* Loading animation */
+        .typing-indicator{display:flex;align-items:center;gap:4px;padding:8px 0;}
+        .typing-dot{
+            width:8px;height:8px;border-radius:50%;background:#a5b4fc;
+            animation:bounce 1.4s ease-in-out infinite;
+        }
+        .typing-dot:nth-child(2){animation-delay:.2s;}
+        .typing-dot:nth-child(3){animation-delay:.4s;}
+        @keyframes bounce{
+            0%,80%,100%{transform:translateY(0)}
+            40%{transform:translateY(-8px)}
+        }
 
         /* Scrollbar */
-        ::-webkit-scrollbar{width:6px;height:6px;}
-        ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+        .chat-area::-webkit-scrollbar{width:6px;}
+        .chat-area::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+        .table-scroll::-webkit-scrollbar{width:5px;height:5px;}
+        .table-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
 
-        /* History item */
-        .history-item{cursor:pointer;transition:all .15s;border-radius:8px;padding:10px 12px;}
-        .history-item:hover{background:#f0f4ff;}
-
-        /* Query input focus */
-        .query-input:focus{
-            border-color:#818cf8;
-            box-shadow:0 0 0 3px rgba(129,140,248,0.15);
-        }
-
-        /* Send button */
-        .send-btn{
-            background:linear-gradient(135deg,#4f46e5,#6366f1);
-            transition:all .2s;
-        }
-        .send-btn:hover{
-            background:linear-gradient(135deg,#4338ca,#4f46e5);
-            box-shadow:0 4px 12px rgba(79,70,229,0.3);
-        }
-        .send-btn:disabled{opacity:0.5;cursor:not-allowed;}
+        /* Fade-in */
+        .fade-in{animation:fadeIn .3s ease-out;}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
     </style>
 </head>
 <body>
 
-<!-- ========== HEADER ========== -->
-<header class="header-gradient text-white text-center py-9 px-4 pb-14">
-    <h1 class="text-2xl md:text-3xl font-extrabold tracking-tight mb-2">수익성분석 자연어 조회 시스템</h1>
-    <p class="text-sm text-indigo-100 mb-6 opacity-90">ChatGPT API 기반 &middot; 자연어 질문 &rarr; SQL 자동 변환 &rarr; 데이터를 표/그래프로 시각화</p>
-
-    <!-- Action Buttons (레퍼런스) -->
-    <div class="flex justify-center gap-3 mb-6 flex-wrap">
-        <button class="header-action-btn">
-            <i class="fas fa-th-large mr-1.5"></i>비주얼 쿼리 빌더
-        </button>
-        <button class="header-action-btn active">
-            <i class="fas fa-file-powerpoint mr-1.5"></i>PPT 분석 장표 생성
-        </button>
-        <button class="header-action-btn">
-            <i class="fas fa-graduation-cap mr-1.5"></i>학습 관리
-        </button>
+<!-- ========== SIDEBAR ========== -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>
+    <div class="sidebar-divider"></div>
 
-    <!-- Status Bar -->
-    <div class="flex justify-center items-center gap-6 text-sm text-indigo-100 flex-wrap">
-        <span class="flex items-center gap-1.5">
-            <span id="dbDot" class="status-dot dot-gray"></span>
-            <span id="dbLabel">DB 연결 확인중</span>
-        </span>
-        <span class="flex items-center gap-1.5">
-            <span id="aiDot" class="status-dot dot-gray"></span>
-            <span id="aiLabel">ChatGPT API</span>
-        </span>
-        <span id="modelLabel" class="opacity-80">Model: -</span>
-        <span id="learnLabel" class="opacity-80">학습: -</span>
-    </div>
-</header>
+    <!-- Menu Items -->
+    <nav class="py-2">
+        <div class="sidebar-menu-item active" onclick="closeSidebar()">
+            <i class="fas fa-comments"></i><span>자연어 질의</span>
+        </div>
+        <div class="sidebar-menu-item" onclick="alert('비주얼 쿼리 빌더 - 준비중');closeSidebar();">
+            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
+            <span style="margin-left:auto;font-size:10px;background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;">준비중</span>
+        </div>
+        <div class="sidebar-menu-item" onclick="alert('PPT 분석 장표 생성 - 준비중');closeSidebar();">
+            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
+            <span style="margin-left:auto;font-size:10px;background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;">준비중</span>
+        </div>
+        <div class="sidebar-menu-item" onclick="alert('학습 관리 - 준비중');closeSidebar();">
+            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
+            <span style="margin-left:auto;font-size:10px;background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;">준비중</span>
+        </div>
+    </nav>
 
-<!-- ========== MAIN CONTENT ========== -->
-<main class="max-w-5xl mx-auto px-4 -mt-10 pb-16 relative z-10">
+    <div class="sidebar-divider"></div>
 
-    <!-- Tab Toggle: 자연어 질의 / 직접 SQL -->
-    <div class="flex justify-center mb-6">
-        <div class="bg-white/90 backdrop-blur rounded-full p-1 flex shadow-sm border border-gray-100">
-            <button id="tabNlq" onclick="switchMode('nlq')" class="pill-active px-7 py-2.5 rounded-full text-sm transition">자연어 질의</button>
-            <button id="tabSql" onclick="switchMode('sql')" class="pill-inactive px-7 py-2.5 rounded-full text-sm transition">직접 SQL</button>
+    <!-- DB Info -->
+    <div class="px-5 py-3">
+        <p class="text-xs text-indigo-300 font-semibold mb-2 uppercase tracking-wider">시스템 정보</p>
+        <div class="space-y-2 text-xs text-indigo-200">
+            <div class="flex items-center gap-2">
+                <span id="sideDbDot" class="dot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>
+                <span id="sideDbLabel">DB 연결 확인중</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span id="sideAiDot" class="dot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>
+                <span id="sideAiLabel">ChatGPT API</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <i class="fas fa-microchip text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
+                <span id="sideModelLabel">Model: -</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <i class="fas fa-database text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
+                <span id="sideDataLabel">데이터: -</span>
+            </div>
         </div>
     </div>
 
-    <!-- Search Card -->
-    <div class="card p-6 mb-5">
-        <!-- NLQ Input -->
-        <div id="nlqInput" class="flex gap-3">
-            <input id="queryInput" type="text"
-                placeholder="자연어로 질문을 입력하세요 (예: 손익센터별 총매출 합계)"
-                class="query-input flex-1 border border-gray-200 rounded-xl px-5 py-3.5 text-sm outline-none transition bg-gray-50/50"
+    <div class="sidebar-divider"></div>
+
+    <!-- Schema toggle -->
+    <div class="px-5 py-3">
+        <div class="flex items-center gap-2 text-xs text-indigo-300 cursor-pointer hover:text-white" onclick="toggleSideSchema()">
+            <i id="sideSchemaArrow" class="fas fa-caret-right transition-transform duration-200"></i>
+            <span class="font-medium">테이블 스키마</span>
+            <span class="opacity-60">(120컬럼)</span>
+        </div>
+        <div id="sideSchemaContent" class="hidden mt-2 max-h-48 overflow-y-auto text-xs" style="font-size:11px;">
+            <table id="sideSchemaTable" class="w-full text-indigo-200" style="border-collapse:collapse;">
+            </table>
+        </div>
+    </div>
+</aside>
+
+<!-- ========== MAIN ========== -->
+<div class="main-wrapper">
+
+    <!-- Top Bar -->
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴">
+            <i class="fas fa-bars"></i>
+        </button>
+        <h1 class="text-sm font-bold text-gray-800 mr-auto">수익성분석 AI</h1>
+
+        <div class="status-pill">
+            <span id="topDbDot" class="dot"></span>
+            <span id="topDbLabel">DB</span>
+        </div>
+        <div class="status-pill">
+            <span id="topAiDot" class="dot"></span>
+            <span id="topAiLabel">AI</span>
+        </div>
+        <div class="status-pill hidden sm:flex">
+            <span id="topDataLabel">데이터: -</span>
+        </div>
+    </div>
+
+    <!-- Chat Area -->
+    <div id="chatArea" class="chat-area">
+        <!-- Welcome -->
+        <div id="welcomeSection" class="welcome-section">
+            <div class="welcome-icon">
+                <i class="fas fa-robot"></i>
+            </div>
+            <h2 class="text-xl font-bold text-gray-800 mb-2">무엇이든 물어보세요</h2>
+            <p class="text-sm text-gray-500 mb-1">자연어로 수익성 데이터를 분석합니다.</p>
+            <p class="text-sm text-gray-400 mb-6">질문을 입력하면 AI가 SQL을 생성하고 결과를 시각화합니다.</p>
+
+            <!-- Suggestion Chips -->
+            <div class="flex flex-wrap justify-center gap-2 max-w-2xl" id="chipContainer"></div>
+        </div>
+    </div>
+
+    <!-- Input Bar -->
+    <div class="input-bar">
+        <div class="input-row">
+            <button id="modeToggle" class="mode-toggle" onclick="toggleInputMode()" title="직접 SQL 모드 전환">
+                <i class="fas fa-code"></i> SQL
+            </button>
+            <input id="queryInput" type="text" class="input-field"
+                placeholder="자연어로 질문을 입력하세요 (예: 플랜트별 총매출 현황을 알려줘)"
                 autocomplete="off" />
-            <button id="sendBtn" onclick="executeQuery()"
-                class="send-btn text-white px-8 py-3.5 rounded-xl text-sm font-semibold whitespace-nowrap">
-                조회
+            <textarea id="sqlInput" class="sql-textarea hidden"
+                placeholder="SELECT ... FROM bw_profitability_data ..." rows="1"></textarea>
+            <button id="sendBtn" class="send-btn" onclick="handleSend()">
+                <i class="fas fa-paper-plane"></i>
             </button>
         </div>
-
-        <!-- Direct SQL Input (hidden) -->
-        <div id="sqlInput" class="hidden">
-            <textarea id="sqlTextarea" rows="4"
-                placeholder="SELECT ... FROM bw_profitability_data ..."
-                class="query-input w-full border border-gray-200 rounded-xl px-5 py-3.5 text-sm outline-none transition font-mono bg-gray-50/50"></textarea>
-            <div class="flex justify-end mt-3">
-                <button onclick="executeSql()"
-                    class="send-btn text-white px-8 py-3.5 rounded-xl text-sm font-semibold">
-                    SQL 실행
-                </button>
-            </div>
-        </div>
-
-        <!-- Example Tags -->
-        <div class="mt-4 flex flex-wrap gap-2 items-start">
-            <span class="text-xs text-gray-400 mt-1.5 mr-1 shrink-0">예시:</span>
-            <div id="tagContainer" class="flex flex-wrap gap-2"></div>
-        </div>
     </div>
 
-    <!-- Recent History -->
-    <div id="historyCard" class="card p-5 mb-5">
-        <h3 class="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
-            <i class="fas fa-clock text-gray-400"></i>최근 조회 이력
-        </h3>
-        <div id="historyList" class="text-sm text-gray-600">
-            <p class="text-gray-400 text-xs py-2 pl-2">조회 이력이 없습니다.</p>
-        </div>
-    </div>
-
-    <!-- Result Area -->
-    <div id="resultArea" class="hidden fade-in">
-        <!-- Result Header -->
-        <div class="flex items-center justify-between mb-3 px-1">
-            <div class="flex items-center gap-2">
-                <span id="resultQuery" class="text-sm font-medium text-gray-700">"질의 내용"</span>
-            </div>
-            <div class="flex items-center gap-3">
-                <span id="resultBadge" class="badge-blue"></span>
-                <span id="resultTime" class="text-xs text-gray-400"></span>
-            </div>
-        </div>
-
-        <!-- Result Card -->
-        <div class="card overflow-hidden mb-5">
-            <!-- Result Tabs -->
-            <div class="flex border-b border-gray-100 px-5 pt-1 gap-1">
-                <button class="res-tab result-tab-active px-4 py-3 text-sm transition" data-tab="table" onclick="switchResultTab(this)">
-                    <i class="fas fa-table mr-1"></i>표 (Table)
-                </button>
-                <button class="res-tab result-tab-inactive px-4 py-3 text-sm transition" data-tab="chart" onclick="switchResultTab(this)">
-                    <i class="fas fa-chart-bar mr-1"></i>그래프 (Chart)
-                </button>
-                <button class="res-tab result-tab-inactive px-4 py-3 text-sm transition" data-tab="sql" onclick="switchResultTab(this)">
-                    <i class="fas fa-code mr-1"></i>SQL
-                </button>
-                <button class="res-tab result-tab-inactive px-4 py-3 text-sm transition" data-tab="explain" onclick="switchResultTab(this)">
-                    <i class="fas fa-info-circle mr-1"></i>설명
-                </button>
-            </div>
-
-            <!-- Table Panel -->
-            <div id="panel-table" class="res-panel p-0" style="max-height:500px;overflow:auto;">
-                <div id="tableContainer" class="p-5">
-                    <p class="text-gray-400 text-sm">결과가 없습니다.</p>
-                </div>
-            </div>
-            <!-- Chart Panel -->
-            <div id="panel-chart" class="res-panel hidden p-5" style="min-height:380px;">
-                <canvas id="resultChart" height="340"></canvas>
-            </div>
-            <!-- SQL Panel -->
-            <div id="panel-sql" class="res-panel hidden p-5">
-                <pre id="sqlDisplay" class="bg-slate-900 text-green-400 text-xs p-5 rounded-lg overflow-x-auto whitespace-pre-wrap leading-relaxed"></pre>
-            </div>
-            <!-- Explain Panel -->
-            <div id="panel-explain" class="res-panel hidden p-5">
-                <p id="explainText" class="text-sm text-gray-600 leading-relaxed"></p>
-            </div>
-        </div>
-    </div>
-
-    <!-- Schema Toggle -->
-    <div class="card p-5">
-        <div class="schema-toggle flex items-center gap-2 text-sm text-gray-500" onclick="toggleSchema()">
-            <i id="schemaArrow" class="fas fa-caret-right transition-transform duration-200"></i>
-            <span class="font-medium">테이블 스키마 보기</span>
-            <span class="text-xs text-gray-400">(MOD_BOARD_PROFIT_ANALYSIS - 100개 컬럼)</span>
-        </div>
-        <div id="schemaContent" class="hidden mt-4 overflow-x-auto" style="max-height:400px;">
-            <table id="schemaTable" class="data-table text-xs"></table>
-        </div>
-    </div>
-
-</main>
+</div>
 
 <script>
 // ============================================================
 // State
 // ============================================================
-let currentChart = null;
-let queryHistory = [];
-let currentMode = 'nlq';
+let charts = {}; // chartId -> Chart instance
+let inputMode = 'nlq'; // 'nlq' or 'sql'
+let isLoading = false;
+let msgCounter = 0;
 
 const SUGGESTIONS = [
-    '손익센터별 총매출 합계',
-    '플랜트별 매출 상위 10개',
-    '제품별 매출 TOP 5',
-    '내수 vs 수출 매출 비교',
-    '월별 총매출 추이',
-    '브랜드별 판매수량 합계',
-    '고객그룹별 매출총이익',
-    '영업팀별 영업이익 순위',
+    '플랜트별 총매출 현황을 알려줘',
+    '제품계층1(PRODH1)별 매출 비중을 보여줘',
+    '일자별 총매출 추이를 보여줘',
+    '사업장별 총매출 TOP 10',
+    '브랜드별 총매출과 BOX수량을 비교해줘',
+    '유통경로별 총매출 구성비를 보여줘',
 ];
 
 const SCHEMA_COLUMNS = [
-    ['CALMONTH','VARCHAR(10)','달력연도/월 (YYYYMM)'],
-    ['CALDAY','VARCHAR(10)','달력일 (YYYYMMDD)'],
-    ['CO_AREA','VARCHAR(20)','관리회계 영역'],
-    ['CO_AREA_NM','VARCHAR(100)','관리회계 영역명'],
-    ['PROFIT_CTR','VARCHAR(20)','손익 센터'],
-    ['PROFIT_CTR_NM','VARCHAR(100)','손익센터명'],
-    ['DIVISION','VARCHAR(20)','제품군 코드'],
-    ['DIVISION_NM','VARCHAR(100)','제품군명'],
-    ['PLANT','VARCHAR(10)','플랜트 코드'],
-    ['PLANT_NM','VARCHAR(100)','플랜트명'],
-    ['DISTR_CHAN','VARCHAR(10)','유통 경로'],
-    ['DISTR_CHAN_NM','VARCHAR(100)','유통경로명'],
-    ['ZDISTCHAN','VARCHAR(10)','내수/수출구분자'],
-    ['ZDISTCHAN_NM','VARCHAR(100)','내수/수출구분자명'],
-    ['ZORG_TEAM','VARCHAR(20)','영업팀(사업장그룹)'],
-    ['SALES_OFF','VARCHAR(20)','사업장'],
-    ['SALES_OFF_NM','VARCHAR(100)','사업장명'],
-    ['MATL_TYPE','VARCHAR(10)','자재유형'],
-    ['MATL_TYPE_NM','VARCHAR(100)','자재유형명'],
-    ['PRODH1','VARCHAR(10)','제품계층1 코드'],
-    ['PRODH1_NM','VARCHAR(100)','제품계층1명'],
-    ['PRODH2','VARCHAR(20)','제품계층2 코드'],
-    ['PRODH2_NM','VARCHAR(100)','제품계층2명'],
-    ['PRODH3','VARCHAR(20)','제품계층3 코드'],
-    ['PRODH3_NM','VARCHAR(200)','제품계층3명'],
-    ['PRODH4','VARCHAR(20)','제품계층4 코드'],
-    ['PRODH4_NM','VARCHAR(200)','제품계층4명'],
-    ['ZJPCODE','VARCHAR(10)','지종/제품구분'],
-    ['ZJPCODE_NM','VARCHAR(100)','지종/제품구분명'],
-    ['ZBRAND','VARCHAR(20)','브랜드1 코드'],
-    ['ZBRAND_NM','VARCHAR(100)','브랜드1명'],
-    ['ZSBRAND','VARCHAR(20)','브랜드2 코드'],
-    ['ZSBRAND_NM','VARCHAR(100)','브랜드2명'],
-    ['BILL_TYPE','VARCHAR(10)','대금청구유형'],
-    ['BILL_TYPE_NM','VARCHAR(100)','대금청구유형명'],
-    ['INCOTERMS','VARCHAR(10)','인도 조건'],
-    ['INCOTERMS_NM','VARCHAR(100)','인도 조건명'],
-    ['CUST_GROUP','VARCHAR(10)','고객 그룹'],
-    ['CUST_GROUP_NM','VARCHAR(100)','고객그룹명'],
-    ['CUST_GRP1','VARCHAR(10)','고객 그룹1'],
-    ['CUST_GRP1_NM','VARCHAR(100)','고객그룹1명'],
-    ['COUNTRY','VARCHAR(10)','국가'],
-    ['COUNTRY_NM','VARCHAR(100)','국가명'],
-    ['ZKUNN2','VARCHAR(20)','영업사원'],
-    ['ZKUNN2_NM','VARCHAR(100)','영업사원명'],
-    ['CUSTOMER','VARCHAR(20)','고객 코드'],
-    ['CUSTOMER_NM','VARCHAR(200)','고객명'],
-    ['MATERIAL','VARCHAR(40)','자재 코드'],
-    ['MATERIAL_NM','VARCHAR(200)','자재명'],
-    ['ZBOXUNIT','VARCHAR(10)','수량단위(BOX)'],
-    ['ZBAGUNIT','VARCHAR(10)','수량단위(BAG)'],
-    ['ZUNIT','VARCHAR(10)','수량단위(KG/EA)'],
-    ['CURRENCY','VARCHAR(5)','통화'],
-    ['ZQTY_BOX','DECIMAL(18,3)','수량(BOX)'],
-    ['ZQTY_BAG','DECIMAL(18,3)','수량(BAG)'],
-    ['ZQTY_KE','DECIMAL(18,3)','수량(KG/EA)'],
-    ['ZAMT001','DECIMAL(18,2)','총매출'],
-    ['ZAMT002','DECIMAL(18,2)','판매장려금'],
-    ['ZAMT003','DECIMAL(18,2)','순매출'],
-    ['ZAMT004','DECIMAL(18,2)','기타매출'],
-    ['ZAMT005','DECIMAL(18,2)','매출원가(제품)'],
-    ['ZAMT034','DECIMAL(18,2)','매출원가 계'],
-    ['ZAMT035','DECIMAL(18,2)','매출총이익'],
-    ['ZAMT036','DECIMAL(18,2)','판매관리비'],
-    ['ZAMT055','DECIMAL(18,2)','영업이익'],
-    ['ZAMT064','DECIMAL(18,2)','경상이익'],
+    ['CALMONTH','VARCHAR(10)','달력연도/월'],['CALDAY','VARCHAR(10)','달력일'],
+    ['CO_AREA','VARCHAR(20)','관리회계 영역'],['PROFIT_CTR','VARCHAR(20)','손익 센터'],
+    ['DIVISION','VARCHAR(20)','제품군'],['PLANT','VARCHAR(10)','플랜트'],
+    ['DISTR_CHAN','VARCHAR(10)','유통 경로'],['SALES_OFF','VARCHAR(20)','사업장'],
+    ['MATL_TYPE','VARCHAR(10)','자재유형'],['PRODH1','VARCHAR(10)','제품계층1'],
+    ['PRODH2','VARCHAR(20)','제품계층2'],['PRODH3','VARCHAR(20)','제품계층3'],
+    ['ZBRAND','VARCHAR(20)','브랜드1'],['CUSTOMER','VARCHAR(20)','고객'],
+    ['MATERIAL','VARCHAR(40)','자재'],['ZQTY_BOX','DECIMAL','수량(BOX)'],
+    ['ZAMT001','DECIMAL','총매출'],['ZAMT003','DECIMAL','순매출'],
+    ['ZAMT035','DECIMAL','매출총이익'],['ZAMT055','DECIMAL','영업이익'],
+    ['ZAMT064','DECIMAL','경상이익'],
 ];
 
 // ============================================================
@@ -370,74 +392,143 @@ window.addEventListener('DOMContentLoaded', async () => {
     try {
         const res = await fetch('/api/status');
         const d = await res.json();
-        document.getElementById('dbDot').classList.replace('dot-gray','dot-green');
-        document.getElementById('dbLabel').textContent = 'DB 연결';
-        document.getElementById('aiDot').classList.replace('dot-gray','dot-green');
-        document.getElementById('aiLabel').textContent = 'ChatGPT API';
-        document.getElementById('modelLabel').textContent = 'Model: ' + d.ai;
-        document.getElementById('learnLabel').textContent = '학습: 내장 12건 + 피드백 1건';
+        // Top bar
+        document.getElementById('topDbDot').classList.add('green');
+        document.getElementById('topDbLabel').textContent = 'DB 연결';
+        document.getElementById('topAiDot').classList.add('green');
+        document.getElementById('topAiLabel').textContent = d.ai;
+        document.getElementById('topDataLabel').textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
+        // Sidebar
+        document.getElementById('sideDbDot').style.background = '#22c55e';
+        document.getElementById('sideDbLabel').textContent = 'DB 연결됨';
+        document.getElementById('sideAiDot').style.background = '#22c55e';
+        document.getElementById('sideAiLabel').textContent = 'ChatGPT API 연결됨';
+        document.getElementById('sideModelLabel').textContent = 'Model: ' + d.ai;
+        document.getElementById('sideDataLabel').textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
     } catch(e) {
-        document.getElementById('dbLabel').textContent = 'DB 오류';
+        document.getElementById('topDbLabel').textContent = 'DB 오류';
     }
 
-    // Render suggestion tags
-    const tagC = document.getElementById('tagContainer');
+    // Suggestion chips
+    const cc = document.getElementById('chipContainer');
     SUGGESTIONS.forEach(s => {
         const btn = document.createElement('button');
-        btn.className = 'tag-btn text-xs px-3.5 py-1.5 rounded-full inline-block';
+        btn.className = 'chip';
         btn.textContent = s;
-        btn.onclick = () => {
-            document.getElementById('queryInput').value = s;
-            executeQuery();
-        };
-        tagC.appendChild(btn);
+        btn.onclick = () => sendQuery(s);
+        cc.appendChild(btn);
     });
 
-    // Schema table
-    const st = document.getElementById('schemaTable');
-    let sh = '<thead><tr><th>#</th><th>컬럼명</th><th>데이터타입</th><th>설명</th></tr></thead><tbody>';
-    SCHEMA_COLUMNS.forEach((c,i) => {
-        sh += `<tr><td class="text-gray-400">${i+1}</td><td class="font-mono text-indigo-600 font-medium">${c[0]}</td><td class="text-gray-500">${c[1]}</td><td>${c[2]}</td></tr>`;
+    // Schema table in sidebar
+    const st = document.getElementById('sideSchemaTable');
+    let sh = '';
+    SCHEMA_COLUMNS.forEach(c => {
+        sh += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05)"><td style="padding:3px 4px;color:#a5b4fc;font-family:monospace;">${c[0]}</td><td style="padding:3px 4px;opacity:0.6;">${c[2]}</td></tr>`;
     });
-    sh += '</tbody>';
     st.innerHTML = sh;
 
     // Enter key
     document.getElementById('queryInput').addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !e.isComposing) executeQuery();
+        if (e.key === 'Enter' && !e.isComposing && !isLoading) handleSend();
     });
-
-    // Load history from sessionStorage
-    const saved = sessionStorage.getItem('nlqHistory');
-    if (saved) { queryHistory = JSON.parse(saved); renderHistory(); }
+    document.getElementById('sqlInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isLoading) { e.preventDefault(); handleSend(); }
+    });
 });
 
 // ============================================================
-// Mode Switch
+// Sidebar
 // ============================================================
-function switchMode(mode) {
-    currentMode = mode;
-    document.getElementById('tabNlq').className = mode === 'nlq'
-        ? 'pill-active px-7 py-2.5 rounded-full text-sm transition'
-        : 'pill-inactive px-7 py-2.5 rounded-full text-sm transition';
-    document.getElementById('tabSql').className = mode === 'sql'
-        ? 'pill-active px-7 py-2.5 rounded-full text-sm transition'
-        : 'pill-inactive px-7 py-2.5 rounded-full text-sm transition';
-    document.getElementById('nlqInput').classList.toggle('hidden', mode !== 'nlq');
-    document.getElementById('sqlInput').classList.toggle('hidden', mode !== 'sql');
+function openSidebar() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebarOverlay').classList.add('active');
+}
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('active');
+}
+function toggleSideSchema() {
+    const c = document.getElementById('sideSchemaContent');
+    const a = document.getElementById('sideSchemaArrow');
+    c.classList.toggle('hidden');
+    a.style.transform = c.classList.contains('hidden') ? '' : 'rotate(90deg)';
 }
 
 // ============================================================
-// Execute NLQ
+// Input Mode Toggle
 // ============================================================
-async function executeQuery() {
-    const input = document.getElementById('queryInput');
-    const query = input.value.trim();
-    if (!query) return;
+function toggleInputMode() {
+    const btn = document.getElementById('modeToggle');
+    const nlq = document.getElementById('queryInput');
+    const sql = document.getElementById('sqlInput');
+    if (inputMode === 'nlq') {
+        inputMode = 'sql';
+        nlq.classList.add('hidden');
+        sql.classList.remove('hidden');
+        btn.classList.add('active');
+        sql.focus();
+    } else {
+        inputMode = 'nlq';
+        sql.classList.add('hidden');
+        nlq.classList.remove('hidden');
+        btn.classList.remove('active');
+        nlq.focus();
+    }
+}
+
+// ============================================================
+// Send
+// ============================================================
+function handleSend() {
+    if (isLoading) return;
+    if (inputMode === 'nlq') {
+        const q = document.getElementById('queryInput').value.trim();
+        if (!q) return;
+        sendQuery(q);
+    } else {
+        const s = document.getElementById('sqlInput').value.trim();
+        if (!s) return;
+        sendQuery('직접 SQL 실행: ' + s);
+    }
+}
+
+async function sendQuery(query) {
+    if (isLoading) return;
+    isLoading = true;
 
     const btn = document.getElementById('sendBtn');
     btn.disabled = true;
-    btn.innerHTML = '<span class="loading-spinner"></span>';
+
+    // Hide welcome
+    const welcome = document.getElementById('welcomeSection');
+    if (welcome) welcome.style.display = 'none';
+
+    // Clear inputs
+    document.getElementById('queryInput').value = '';
+    document.getElementById('sqlInput').value = '';
+
+    const chatArea = document.getElementById('chatArea');
+
+    // User message
+    const userMsg = document.createElement('div');
+    userMsg.className = 'msg-user fade-in';
+    userMsg.textContent = query;
+    chatArea.appendChild(userMsg);
+
+    // Typing indicator
+    const typingEl = document.createElement('div');
+    typingEl.className = 'msg-bot fade-in';
+    typingEl.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 0;">
+            <div class="bot-avatar"><i class="fas fa-robot"></i></div>
+            <div class="typing-indicator">
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+            </div>
+        </div>`;
+    chatArea.appendChild(typingEl);
+    scrollToBottom();
 
     try {
         const res = await fetch('/api/nlq', {
@@ -447,158 +538,149 @@ async function executeQuery() {
         });
         const data = await res.json();
 
+        // Remove typing
+        typingEl.remove();
+
         if (!res.ok || data.error) {
-            showError(data.error || '서버 오류가 발생했습니다.');
-            return;
+            appendErrorMessage(data.error || '서버 오류가 발생했습니다.');
+        } else {
+            appendBotMessage(data);
         }
-
-        showResult(query, data);
-        addHistory(query, data.rowCount);
-
     } catch(err) {
-        showError('서버 연결 오류: ' + err.message);
+        typingEl.remove();
+        appendErrorMessage('서버 연결 오류: ' + err.message);
     } finally {
+        isLoading = false;
         btn.disabled = false;
-        btn.textContent = '조회';
     }
 }
 
 // ============================================================
-// Execute Direct SQL
+// Append Bot Message (Result)
 // ============================================================
-async function executeSql() {
-    const sql = document.getElementById('sqlTextarea').value.trim();
-    if (!sql) return;
+function appendBotMessage(data) {
+    msgCounter++;
+    const id = 'msg' + msgCounter;
+    const chatArea = document.getElementById('chatArea');
 
-    try {
-        const res = await fetch('/api/nlq', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: '직접 SQL 실행: ' + sql }),
-        });
-        const data = await res.json();
-        if (!res.ok || data.error) { showError(data.error || '서버 오류'); return; }
-        showResult(sql, data);
-        addHistory('SQL: ' + sql.substring(0, 50), data.rowCount);
-    } catch(err) { showError('오류: ' + err.message); }
-}
+    const botMsg = document.createElement('div');
+    botMsg.className = 'msg-bot fade-in';
 
-// ============================================================
-// Show Error
-// ============================================================
-function showError(msg) {
-    const area = document.getElementById('resultArea');
-    area.classList.remove('hidden');
-    area.classList.add('fade-in');
-    document.getElementById('resultQuery').textContent = '오류 발생';
-    document.getElementById('resultBadge').textContent = '오류';
-    document.getElementById('resultBadge').className = 'badge-green';
-    document.getElementById('resultBadge').style.background = '#fee2e2';
-    document.getElementById('resultBadge').style.color = '#dc2626';
-    document.getElementById('resultTime').textContent = '';
-    document.getElementById('tableContainer').innerHTML = `<div class="p-6 text-center"><i class="fas fa-exclamation-triangle text-red-400 text-2xl mb-3"></i><p class="text-red-500 text-sm">${esc(msg)}</p></div>`;
-    document.querySelectorAll('.res-tab').forEach(t => { t.classList.remove('result-tab-active'); t.classList.add('result-tab-inactive'); });
-    document.querySelector('.res-tab[data-tab="table"]').classList.replace('result-tab-inactive','result-tab-active');
-    document.querySelectorAll('.res-panel').forEach(p => p.classList.add('hidden'));
-    document.getElementById('panel-table').classList.remove('hidden');
-    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
+    // Build tabs content
+    const chartId = 'chart_' + id;
+    const hasChart = data.chartType && data.chartType !== 'table';
 
-// ============================================================
-// Show Result
-// ============================================================
-function showResult(query, data) {
-    const area = document.getElementById('resultArea');
-    area.classList.remove('hidden');
-    area.classList.add('fade-in');
+    let tabsHtml = `
+        <div class="res-tabs">
+            <div class="res-tab ${hasChart ? 'active' : ''}" data-panel="${id}_chart" onclick="switchTab(this,'${id}')" ${!hasChart ? 'style="display:none"' : ''}>
+                <i class="fas fa-chart-bar mr-1"></i>차트
+            </div>
+            <div class="res-tab ${!hasChart ? 'active' : ''}" data-panel="${id}_table" onclick="switchTab(this,'${id}')">
+                <i class="fas fa-table mr-1"></i>표
+            </div>
+            <div class="res-tab" data-panel="${id}_sql" onclick="switchTab(this,'${id}')">
+                <i class="fas fa-code mr-1"></i>SQL
+            </div>
+        </div>`;
 
-    // Header
-    document.getElementById('resultQuery').textContent = '"' + query + '"';
-    const badge = document.getElementById('resultBadge');
-    badge.textContent = data.rowCount + '건';
-    badge.className = 'badge-blue';
-    badge.style.background = '';
-    badge.style.color = '';
-    document.getElementById('resultTime').textContent = data.executionTimeMs + 'ms';
-
-    // Table
-    const tc = document.getElementById('tableContainer');
+    // Table HTML
+    let tableHtml = '<div class="p-4 text-center text-sm text-gray-400">결과가 없습니다.</div>';
     if (data.data && data.data.length > 0) {
         const cols = Object.keys(data.data[0]);
-        let html = '<table class="data-table"><thead><tr><th class="text-gray-400">#</th>';
-        cols.forEach(c => html += `<th>${esc(c)}</th>`);
-        html += '</tr></thead><tbody>';
+        let t = '<div class="table-scroll" style="max-height:400px;overflow:auto;"><table class="data-table"><thead><tr><th>#</th>';
+        cols.forEach(c => t += `<th>${esc(c)}</th>`);
+        t += '</tr></thead><tbody>';
         data.data.forEach((row, i) => {
-            html += `<tr><td class="text-gray-400">${i+1}</td>`;
+            t += `<tr><td class="text-gray-400">${i+1}</td>`;
             cols.forEach(c => {
                 let v = row[c];
                 if (v === null || v === undefined) v = '-';
                 else if (typeof v === 'number') v = v.toLocaleString('ko-KR');
                 const align = typeof row[c] === 'number' ? 'text-right font-mono' : '';
-                html += `<td class="${align}">${esc(String(v))}</td>`;
+                t += `<td class="${align}">${esc(String(v))}</td>`;
             });
-            html += '</tr>';
+            t += '</tr>';
         });
-        html += '</tbody></table>';
-        tc.innerHTML = html;
-    } else {
-        tc.innerHTML = '<p class="text-gray-400 text-sm py-4 text-center">결과가 없습니다.</p>';
+        t += '</tbody></table></div>';
+        tableHtml = t;
     }
 
-    // Chart
-    renderChart(data);
+    botMsg.innerHTML = `
+        <div class="msg-bot-inner">
+            <div class="msg-bot-header">
+                <div class="bot-avatar"><i class="fas fa-robot"></i></div>
+                <div style="flex:1;">
+                    <div class="msg-bot-explanation">${esc(data.explanation || '')}</div>
+                    <div class="msg-bot-meta">
+                        <span class="meta-badge rows"><i class="fas fa-table mr-1"></i>${data.rowCount || 0}행</span>
+                        <span class="meta-badge time"><i class="fas fa-clock mr-1"></i>${data.executionTimeMs || 0}ms</span>
+                    </div>
+                </div>
+            </div>
+            ${tabsHtml}
+            <div id="${id}_chart" class="res-panel ${hasChart ? 'active' : ''}" style="${!hasChart ? 'display:none' : ''}">
+                <div class="chart-container"><canvas id="${chartId}" height="300"></canvas></div>
+            </div>
+            <div id="${id}_table" class="res-panel ${!hasChart ? 'active' : ''}">
+                ${tableHtml}
+            </div>
+            <div id="${id}_sql" class="res-panel">
+                <pre class="sql-display">${esc(data.sql || '')}</pre>
+            </div>
+        </div>`;
 
-    // SQL
-    document.getElementById('sqlDisplay').textContent = data.sql || '';
+    chatArea.appendChild(botMsg);
+    scrollToBottom();
 
-    // Explanation
-    document.getElementById('explainText').textContent = data.explanation || '';
-
-    // Reset tab to table
-    document.querySelectorAll('.res-tab').forEach(t => {
-        t.classList.remove('result-tab-active');
-        t.classList.add('result-tab-inactive');
-    });
-    document.querySelector('.res-tab[data-tab="table"]').classList.replace('result-tab-inactive','result-tab-active');
-    document.querySelectorAll('.res-panel').forEach(p => p.classList.add('hidden'));
-    document.getElementById('panel-table').classList.remove('hidden');
-
-    // Scroll to result
-    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Render chart if applicable
+    if (hasChart && data.data && data.data.length > 0) {
+        setTimeout(() => renderMsgChart(chartId, data), 100);
+    }
 }
 
 // ============================================================
-// Result Tab Switch
+// Append Error Message
 // ============================================================
-function switchResultTab(btn) {
-    const tab = btn.dataset.tab;
-    document.querySelectorAll('.res-tab').forEach(t => {
-        t.classList.remove('result-tab-active');
-        t.classList.add('result-tab-inactive');
-    });
-    btn.classList.replace('result-tab-inactive','result-tab-active');
-    document.querySelectorAll('.res-panel').forEach(p => p.classList.add('hidden'));
-    document.getElementById('panel-' + tab).classList.remove('hidden');
+function appendErrorMessage(msg) {
+    const chatArea = document.getElementById('chatArea');
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#ef4444,#dc2626);">
+                <i class="fas fa-exclamation-triangle" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px 16px;border-radius:12px;flex:1;">
+                <p style="color:#dc2626;font-size:13px;font-weight:500;margin-bottom:2px;">오류가 발생했습니다</p>
+                <p style="color:#991b1b;font-size:12px;">${esc(msg)}</p>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+    scrollToBottom();
 }
 
 // ============================================================
-// Render Chart
+// Render Chart in Message
 // ============================================================
-function renderChart(data) {
-    const canvas = document.getElementById('resultChart');
+function renderMsgChart(canvasId, data) {
+    const canvas = document.getElementById(canvasId);
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    if (currentChart) { currentChart.destroy(); currentChart = null; }
 
     const rows = data.data || [];
     if (rows.length === 0) return;
 
     const chartType = data.chartType || 'bar';
+    if (chartType === 'table') return;
+
     const config = data.chartConfig || {};
     const columns = Object.keys(rows[0]);
     const labelCol = config.labelColumn || columns[0];
     let dataCols = config.dataColumns || columns.filter(c => c !== labelCol);
-    dataCols = dataCols.filter(c => typeof rows[0][c] === 'number' || (typeof rows[0][c] === 'string' && !isNaN(Number(rows[0][c]))));
+    dataCols = dataCols.filter(c => {
+        const v = rows[0][c];
+        return typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)));
+    });
     if (dataCols.length === 0) dataCols = columns.filter(c => c !== labelCol && typeof rows[0][c] === 'number');
     if (dataCols.length === 0) return;
 
@@ -616,8 +698,7 @@ function renderChart(data) {
         datasets = [{
             data: rows.map(r => Number(r[dataCols[0]]) || 0),
             backgroundColor: colors.slice(0, rows.length),
-            borderWidth: 2,
-            borderColor: '#fff',
+            borderWidth: 2, borderColor: '#fff',
         }];
     } else {
         datasets = dataCols.map((c, i) => ({
@@ -626,36 +707,31 @@ function renderChart(data) {
             backgroundColor: colors[i % colors.length],
             borderColor: borders[i % borders.length],
             borderWidth: chartType === 'line' ? 2.5 : 1,
-            tension: 0.35,
-            fill: false,
+            tension: 0.35, fill: false,
             borderRadius: chartType === 'bar' ? 4 : 0,
         }));
     }
 
-    currentChart = new Chart(ctx, {
-        type: chartType === 'doughnut' ? 'doughnut' : chartType,
+    const chart = new Chart(ctx, {
+        type: chartType,
         data: { labels, datasets },
         options: {
-            responsive: true,
-            maintainAspectRatio: false,
+            responsive: true, maintainAspectRatio: false,
             plugins: {
                 title: {
-                    display: !!config.title,
-                    text: config.title || '',
+                    display: !!config.title, text: config.title || '',
                     font: { size: 14, family: 'Noto Sans KR', weight: '600' },
-                    color: '#1e293b',
-                    padding: { bottom: 16 },
+                    color: '#1e293b', padding: { bottom: 12 },
                 },
                 legend: {
                     display: chartType === 'pie' || chartType === 'doughnut' || dataCols.length > 1,
-                    labels: { font: { size: 11, family: 'Noto Sans KR' }, usePointStyle: true, padding: 16 }
+                    labels: { font: { size: 11, family: 'Noto Sans KR' }, usePointStyle: true, padding: 12 },
                 },
                 tooltip: {
                     backgroundColor: 'rgba(15,23,42,0.9)',
                     titleFont: { family: 'Noto Sans KR', size: 12 },
                     bodyFont: { family: 'Noto Sans KR', size: 11 },
-                    padding: 10,
-                    cornerRadius: 8,
+                    padding: 10, cornerRadius: 8,
                     callbacks: {
                         label: ctx => {
                             let v = ctx.parsed.y ?? ctx.parsed;
@@ -665,67 +741,37 @@ function renderChart(data) {
                 }
             },
             scales: (chartType === 'pie' || chartType === 'doughnut') ? {} : {
-                x: {
-                    ticks: { font: { size: 10, family: 'Noto Sans KR' }, maxRotation: 45, color: '#64748b' },
-                    grid: { display: false }
-                },
-                y: {
-                    ticks: { font: { size: 10 }, callback: v => Number(v).toLocaleString('ko-KR'), color: '#64748b' },
-                    grid: { color: 'rgba(0,0,0,0.04)' }
-                }
-            }
-        }
+                x: { ticks: { font: { size: 10, family: 'Noto Sans KR' }, maxRotation: 45, color: '#64748b' }, grid: { display: false } },
+                y: { ticks: { font: { size: 10 }, callback: v => Number(v).toLocaleString('ko-KR'), color: '#64748b' }, grid: { color: 'rgba(0,0,0,0.04)' } },
+            },
+        },
     });
+    charts[canvasId] = chart;
 }
 
 // ============================================================
-// History
+// Tab switch inside message
 // ============================================================
-function addHistory(query, rowCount) {
-    const now = new Date();
-    const dateStr = (now.getMonth()+1) + '/' + now.getDate();
-    const time = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
-    queryHistory.unshift({ query, rowCount, time, dateStr });
-    if (queryHistory.length > 10) queryHistory.pop();
-    sessionStorage.setItem('nlqHistory', JSON.stringify(queryHistory));
-    renderHistory();
-}
-
-function renderHistory() {
-    const el = document.getElementById('historyList');
-    if (queryHistory.length === 0) {
-        el.innerHTML = '<p class="text-gray-400 text-xs py-2 pl-2">조회 이력이 없습니다.</p>';
-        return;
-    }
-    let html = '<div class="divide-y divide-gray-50">';
-    queryHistory.forEach(h => {
-        html += `<div class="history-item flex justify-between items-center" onclick="document.getElementById('queryInput').value='${esc(h.query)}';executeQuery();">
-            <span class="text-gray-600 truncate font-medium" style="max-width:65%">${esc(h.query)}</span>
-            <span class="text-xs text-gray-400 whitespace-nowrap ml-3">${h.rowCount}건 &middot; ${h.dateStr || ''} ${h.time}</span>
-        </div>`;
-    });
-    html += '</div>';
-    el.innerHTML = html;
-}
-
-// ============================================================
-// Schema Toggle
-// ============================================================
-function toggleSchema() {
-    const content = document.getElementById('schemaContent');
-    const arrow = document.getElementById('schemaArrow');
-    content.classList.toggle('hidden');
-    arrow.style.transform = content.classList.contains('hidden') ? '' : 'rotate(90deg)';
+function switchTab(btn, msgId) {
+    const panelId = btn.dataset.panel;
+    // Deactivate all tabs in this message
+    btn.parentElement.querySelectorAll('.res-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    // Hide all panels in this message card
+    const card = btn.closest('.msg-bot-inner');
+    card.querySelectorAll('.res-panel').forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
+    const target = document.getElementById(panelId);
+    if (target) { target.classList.add('active'); target.style.display = 'block'; }
 }
 
 // ============================================================
 // Utils
 // ============================================================
-function esc(s) {
-    const d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
+function scrollToBottom() {
+    const ca = document.getElementById('chatArea');
+    setTimeout(() => { ca.scrollTop = ca.scrollHeight; }, 50);
 }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 </script>
 </body>
 </html>
