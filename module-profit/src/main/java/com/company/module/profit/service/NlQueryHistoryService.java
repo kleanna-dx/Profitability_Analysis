@@ -165,4 +165,36 @@ public class NlQueryHistoryService {
         LocalDateTime startOfDay = LocalDate.now().atStartOfDay();
         return nlQueryHistoryRepository.avgExecutionTimeSince(startOfDay);
     }
+
+    /**
+     * 질의 이력 목록 조회 (검색 + 페이징)
+     * - NlQueryController.getList()에서 호출
+     */
+    public Page<NlQueryHistoryResponse> getList(String keyword, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        if (keyword != null && !keyword.isBlank()) {
+            return nlQueryHistoryRepository.searchByKeyword(keyword.trim(), pageable)
+                    .map(NlQueryHistoryResponse::from);
+        }
+        return nlQueryHistoryRepository.findByStatusOrderByCreatedAtDesc("SUCCESS", pageable)
+                .map(NlQueryHistoryResponse::from);
+    }
+
+    /**
+     * 질의 기록 생성 (NlQueryController.executeQuery에서 호출)
+     * - createQuery의 별칭: 동일 로직
+     */
+    @Transactional
+    public NlQueryHistoryResponse createQueryRecord(NlQueryRequest request, Long userId, String userName) {
+        return createQuery(request, userId, userName);
+    }
+
+    /**
+     * 피드백 포함 질의 이력 조회 (학습 관리용)
+     */
+    public Page<NlQueryHistoryResponse> getWithFeedback(int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return nlQueryHistoryRepository.findWithFeedback(pageable)
+                .map(NlQueryHistoryResponse::from);
+    }
 }

@@ -1,15 +1,15 @@
 package com.company.module.profit.service;
 
-import com.company.module.profit.dto.response.DashboardResponse;
+import com.company.module.profit.dto.response.DashboardStatsResponse;
 import com.company.module.profit.repository.*;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -19,9 +19,7 @@ import java.util.stream.Collectors;
 public class DashboardService {
 
     private final OntologyColumnRepository ontologyColumnRepository;
-    private final OntologySynonymRepository ontologySynonymRepository;
     private final MetricRepository metricRepository;
-    private final MetricSynonymRepository metricSynonymRepository;
     private final JoinConditionRepository joinConditionRepository;
     private final NlQueryHistoryRepository nlQueryHistoryRepository;
     private final BatchStatusRepository batchStatusRepository;
@@ -30,15 +28,8 @@ public class DashboardService {
     /**
      * 대시보드 통합 현황 데이터 조회
      */
-    public DashboardResponse getDashboard() {
+    public DashboardStatsResponse getDashboard() {
         LocalDateTime startOfDay = LocalDate.now().atStartOfDay();
-
-        // 사전 현황
-        long totalOntologyColumns = ontologyColumnRepository.count();
-        long totalSynonyms = ontologySynonymRepository.count();
-        long totalMetrics = metricRepository.count();
-        long totalMetricSynonyms = metricSynonymRepository.count();
-        long totalJoinConditions = joinConditionRepository.count();
 
         // 질의 통계
         long totalQueries = nlQueryHistoryRepository.count();
@@ -48,50 +39,40 @@ public class DashboardService {
         Double avgExecutionTimeMs = nlQueryHistoryRepository.avgExecutionTimeSince(startOfDay);
 
         // 배치 상태
-        List<Map<String, Object>> batchStatusSummary = batchStatusRepository.countByStatusGroup()
+        Map<String, Long> batchStatusCounts = batchStatusRepository.countByStatusGroup()
                 .stream()
-                .map(row -> {
-                    Map<String, Object> map = new HashMap<>();
-                    map.put("status", row[0]);
-                    map.put("count", row[1]);
-                    return map;
-                })
-                .collect(Collectors.toList());
+                .collect(Collectors.toMap(
+                        row -> (String) row[0],
+                        row -> (Long) row[1],
+                        (a, b) -> a,
+                        HashMap::new
+                ));
         long runningBatches = batchStatusRepository.findRunningBatches().size();
 
         // 매핑 인박스 현황
         long pendingMappings = mappingInboxRepository.countByStatus("PENDING");
-        List<Map<String, Object>> pendingByTermType = mappingInboxRepository.countPendingByTermType()
+        Map<String, Long> pendingMappingsByType = mappingInboxRepository.countPendingByTermType()
                 .stream()
-                .map(row -> {
-                    Map<String, Object> map = new HashMap<>();
-                    map.put("termType", row[0]);
-                    map.put("count", row[1]);
-                    return map;
-                })
-                .collect(Collectors.toList());
+                .collect(Collectors.toMap(
+                        row -> (String) row[0],
+                        row -> (Long) row[1],
+                        (a, b) -> a,
+                        HashMap::new
+                ));
 
-        // 학습 현황
-        long feedbackCount = nlQueryHistoryRepository.findWithFeedback(
-                org.springframework.data.domain.PageRequest.of(0, 1)).getTotalElements();
-
-        return DashboardResponse.builder()
-                .totalOntologyColumns(totalOntologyColumns)
-                .totalSynonyms(totalSynonyms)
-                .totalMetrics(totalMetrics)
-                .totalMetricSynonyms(totalMetricSynonyms)
-                .totalJoinConditions(totalJoinConditions)
+        return DashboardStatsResponse.builder()
                 .totalQueries(totalQueries)
                 .todayQueries(todayQueries)
                 .successQueries(successQueries)
                 .failedQueries(failedQueries)
                 .avgExecutionTimeMs(avgExecutionTimeMs)
-                .batchStatusSummary(batchStatusSummary)
-                .runningBatches(runningBatches)
+                .totalOntologyColumns(ontologyColumnRepository.count())
+                .totalMetrics(metricRepository.count())
+                .totalJoinConditions(joinConditionRepository.count())
                 .pendingMappings(pendingMappings)
-                .pendingByTermType(pendingByTermType)
-                .feedbackCount(feedbackCount)
-                .builtInLearningCount(0L)
+                .runningBatches(runningBatches)
+                .batchStatusCounts(batchStatusCounts)
+                .pendingMappingsByType(pendingMappingsByType)
                 .build();
     }
 }

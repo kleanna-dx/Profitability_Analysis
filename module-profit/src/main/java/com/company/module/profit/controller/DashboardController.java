@@ -1,7 +1,7 @@
 package com.company.module.profit.controller;
 
 import com.company.core.common.response.ApiResponse;
-import com.company.module.profit.dto.response.DashboardResponse;
+import com.company.module.profit.dto.response.DashboardStatsResponse;
 import com.company.module.profit.service.DashboardService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -25,7 +25,7 @@ public class DashboardController {
      * 대시보드 통합 현황 데이터 조회
      */
     @GetMapping
-    public ResponseEntity<ApiResponse<DashboardResponse>> getDashboard() {
+    public ResponseEntity<ApiResponse<DashboardStatsResponse>> getDashboard() {
         return ResponseEntity.ok(ApiResponse.success(dashboardService.getDashboard()));
     }
 }
