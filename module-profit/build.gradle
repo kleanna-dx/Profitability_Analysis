@@ -1,0 +1,15 @@
+// module-profit: RAG 기반 수익성분석 AI 챗봇 모듈
+dependencies {
+    // core 공통 클래스 참조 (컴파일 전용: 순환 의존 방지)
+    compileOnly project(':core')
+
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+}
+
+// spring-boot 플러그인 미적용 서브모듈: plain jar만 생성
+jar {
+    enabled = true
+}
