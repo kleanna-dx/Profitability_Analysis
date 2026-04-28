@@ -1,11 +1,10 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import mysql from 'mysql2/promise';
 import OpenAI from 'openai';
-import fs from 'fs';
-import yaml from 'js-yaml';
-import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 const app = express();
 app.use(cors());

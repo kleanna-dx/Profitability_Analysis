@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "hono": "^4.12.12",
     "js-yaml": "^4.1.1",
