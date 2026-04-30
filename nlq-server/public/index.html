@@ -151,10 +151,17 @@
 
         /* SQL display */
         .sql-display{
-            background:#0f172a;color:#86efac;font-size:12px;padding:16px;
+            background:#0f172a;color:#e2e8f0;font-size:13px;padding:20px;
             border-radius:0;overflow-x:auto;white-space:pre-wrap;
-            line-height:1.7;font-family:'Fira Code','Consolas',monospace;
+            line-height:1.8;font-family:'Fira Code','Consolas',monospace;
+            tab-size:4;
         }
+        .sql-display .kw{color:#7dd3fc;font-weight:700;}       /* SELECT, FROM, WHERE 등 */
+        .sql-display .fn{color:#c084fc;}                        /* SUM, ROUND, COALESCE 등 */
+        .sql-display .str{color:#fde68a;}                       /* 문자열 리터럴 */
+        .sql-display .num{color:#fdba74;}                       /* 숫자 */
+        .sql-display .alias{color:#86efac;font-weight:600;}     /* AS 뒤의 alias */
+        .sql-display .comment{color:#64748b;font-style:italic;} /* 주석 */
 
         /* SQL Feedback UI */
         .sql-feedback-bar{
@@ -780,7 +787,7 @@ function appendBotMessage(data) {
                         <span style="font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">GENERATED SQL</span>
                         <span style="font-size:10px;color:#1e293b;background:#86efac;padding:2px 8px;border-radius:4px;font-weight:700;">ChatGPT</span>
                     </div>
-                    <pre class="sql-display" id="${id}_sqlPre">${esc(data.sql || '')}</pre>
+                    <pre class="sql-display" id="${id}_sqlPre">${formatAndHighlightSql(data.sql || '')}</pre>
                     <div class="sql-editor-area" id="${id}_editor">
                         <textarea class="sql-editor-textarea" id="${id}_editorTa">${esc(data.sql || '')}</textarea>
                         <div class="sql-editor-actions">
@@ -953,6 +960,132 @@ function scrollToBottom() {
     setTimeout(() => { ca.scrollTop = ca.scrollHeight; }, 50);
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ============================================================
+// SQL Formatter + Syntax Highlighter
+// ============================================================
+function formatAndHighlightSql(rawSql) {
+    if (!rawSql) return '';
+    let sql = rawSql.trim().replace(/;+\s*$/, '');
+
+    // ── Step 1: 포맷팅 (줄바꿈 + 들여쓰기) ──
+    // 문자열 리터럴을 임시 치환하여 내부 키워드 매칭 방지
+    const strings = [];
+    sql = sql.replace(/'([^']*)'/g, (m) => {
+        strings.push(m);
+        return `__STR${strings.length - 1}__`;
+    });
+
+    // 세미콜론 제거
+    sql = sql.replace(/;\s*$/, '');
+
+    // 주요 키워드 앞에서 줄바꿈 (최상위 키워드)
+    const topKw = ['SELECT','FROM','WHERE','GROUP\\s+BY','ORDER\\s+BY','HAVING','LIMIT','LEFT\\s+JOIN','RIGHT\\s+JOIN','INNER\\s+JOIN','FULL\\s+JOIN','JOIN','ON','UNION\\s+ALL','UNION','INSERT','UPDATE','DELETE','SET','VALUES','INTO'];
+    for (const kw of topKw) {
+        const re = new RegExp('\\s+(' + kw + ')\\b', 'gi');
+        sql = sql.replace(re, '\n$1');
+    }
+
+    // SELECT 뒤의 컬럼들: 콤마 뒤 줄바꿈 (단, 괄호 안의 콤마는 제외)
+    const lines = sql.split('\n');
+    const formatted = [];
+    for (let line of lines) {
+        line = line.trim();
+        if (!line) continue;
+        const upper = line.toUpperCase();
+
+        if (upper.startsWith('SELECT')) {
+            // SELECT 키워드와 컬럼 분리
+            const selectPart = line.substring(0, line.toUpperCase().indexOf('SELECT') + 6);
+            let rest = line.substring(selectPart.length).trim();
+            // 괄호 깊이 추적하며 콤마 분리
+            const cols = splitByCommaOutsideParens(rest);
+            formatted.push(selectPart);
+            cols.forEach((col, i) => {
+                formatted.push('    ' + col.trim() + (i < cols.length - 1 ? ',' : ''));
+            });
+        } else if (upper.startsWith('FROM') || upper.startsWith('WHERE') ||
+                   upper.startsWith('GROUP BY') || upper.startsWith('ORDER BY') ||
+                   upper.startsWith('HAVING') || upper.startsWith('LIMIT') ||
+                   upper.startsWith('LEFT JOIN') || upper.startsWith('RIGHT JOIN') ||
+                   upper.startsWith('INNER JOIN') || upper.startsWith('FULL JOIN') ||
+                   upper.startsWith('JOIN') || upper.startsWith('ON')) {
+            formatted.push(line);
+        } else {
+            formatted.push('    ' + line);
+        }
+    }
+
+    let result = formatted.join('\n');
+
+    // 문자열 리터럴 복원
+    result = result.replace(/__STR(\d+)__/g, (_, i) => strings[Number(i)]);
+
+    // AND / OR 줄바꿈 (WHERE 내부)
+    result = result.replace(/\s+(AND|OR)\s+/gi, (m, kw) => '\n    ' + kw.toUpperCase() + ' ');
+
+    // WHEN / ELSE / END 들여쓰기
+    result = result.replace(/\s+(WHEN)\s+/gi, '\n        WHEN ');
+    result = result.replace(/\s+(ELSE)\s+/gi, '\n        ELSE ');
+    result = result.replace(/\s+(END)\s+/gi, '\n    END ');
+    result = result.replace(/\s+(END)\s*$/gim, '\n    END');
+
+    // ── Step 2: 구문 하이라이팅 (HTML) ──
+    result = highlightSql(result);
+
+    return result;
+}
+
+function splitByCommaOutsideParens(str) {
+    const result = [];
+    let depth = 0, cur = '';
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        if (ch === ',' && depth === 0) {
+            result.push(cur);
+            cur = '';
+        } else {
+            cur += ch;
+        }
+    }
+    if (cur.trim()) result.push(cur);
+    return result;
+}
+
+function highlightSql(sql) {
+    // HTML escape first
+    let h = esc(sql);
+
+    // 문자열 리터럴: '...'
+    h = h.replace(/'([^']*)'/g, '<span class="str">\'$1\'</span>');
+
+    // 숫자 (독립된 숫자만)
+    h = h.replace(/\b(\d+\.?\d*)\b/g, '<span class="num">$1</span>');
+
+    // 함수명: SUM, ROUND, COALESCE, IFNULL, COUNT, AVG, MAX, MIN, NULLIF, CASE, CONCAT 등
+    const fns = ['SUM','ROUND','COALESCE','IFNULL','COUNT','AVG','MAX','MIN','NULLIF','CONCAT','CASE','LENGTH','TRIM','UPPER','LOWER','CAST','CONVERT','DATE_FORMAT','SUBSTRING','LEFT','RIGHT','REPLACE'];
+    for (const fn of fns) {
+        const re = new RegExp('\\b(' + fn + ')\\s*(?=\\(|\\s+WHEN)', 'gi');
+        h = h.replace(re, '<span class="fn">$1</span>');
+    }
+
+    // 주요 SQL 키워드
+    const keywords = ['SELECT','DISTINCT','FROM','WHERE','AND','OR','NOT','IN','IS','NULL','BETWEEN','LIKE','EXISTS','GROUP\\s+BY','ORDER\\s+BY','HAVING','LIMIT','OFFSET','ASC','DESC','WHEN','THEN','ELSE','END','AS','ON','USING','UNION','ALL','INSERT','INTO','UPDATE','DELETE','SET','VALUES','LEFT\\s+JOIN','RIGHT\\s+JOIN','INNER\\s+JOIN','FULL\\s+JOIN','CROSS\\s+JOIN','JOIN','NATURAL'];
+    for (const kw of keywords) {
+        const re = new RegExp('\\b(' + kw + ')\\b', 'gi');
+        h = h.replace(re, (match) => {
+            // AS 뒤의 alias는 별도 처리하므로 여기서는 키워드만
+            return '<span class="kw">' + match.toUpperCase() + '</span>';
+        });
+    }
+
+    // AS 뒤의 alias 하이라이팅
+    h = h.replace(/<span class="kw">AS<\/span>\s+(\S+)/g, '<span class="kw">AS</span> <span class="alias">$1</span>');
+
+    return h;
+}
 
 // ============================================================
 // SQL Feedback (정확해요 / SQL 수정하기)
