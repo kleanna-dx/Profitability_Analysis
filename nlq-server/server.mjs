@@ -293,7 +293,7 @@ app.post('/api/nlq', async (req, res) => {
 
     console.log(`[NLQ] SQL 실행: ${execTime}ms, ${rows.length}행`);
 
-    return res.json({
+    const result = {
       success: true,
       query,
       sql,
@@ -303,12 +303,86 @@ app.post('/api/nlq', async (req, res) => {
       data: rows,
       rowCount: rows.length,
       executionTimeMs: execTime,
-    });
+    };
+
+    // 4. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
+    saveHistory(query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null)
+      .catch(e => console.error('[History] 저장 실패:', e.message));
+
+    return res.json(result);
   } catch (err) {
     console.error('[NLQ] Error:', err);
     const msg = err.sqlMessage || err.message || String(err);
+
+    // 실패 이력도 저장
+    saveHistory(query, null, null, null, null, null, 0, 0, 'FAILED', msg)
+      .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
+
     return res.status(500).json({ error: msg, query });
   }
+});
+
+// ============================================================
+// 이력 저장 헬퍼 함수
+// ============================================================
+async function saveHistory(queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg) {
+  // result_data는 최대 100행만 저장 (DB 용량 절약)
+  const trimmedData = resultData ? JSON.stringify(resultData.slice(0, 100)) : null;
+  const configJson = chartConfig ? JSON.stringify(chartConfig) : null;
+  await pool.query(
+    `INSERT INTO nl_query_history (query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg]
+  );
+}
+
+// ============================================================
+// API: 질의 이력 조회 (최근 50건)
+// ============================================================
+app.get('/api/history', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const [rows] = await pool.query(
+      `SELECT id, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message, created_at
+       FROM nl_query_history ORDER BY created_at DESC LIMIT ?`,
+      [limit]
+    );
+    // JSON 문자열 -> 객체로 파싱
+    const result = rows.map(r => ({
+      ...r,
+      chart_config: r.chart_config ? JSON.parse(r.chart_config) : null,
+      result_data: r.result_data ? JSON.parse(r.result_data) : null,
+    }));
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 이력 단건 조회 (결과 데이터 포함)
+app.get('/api/history/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM nl_query_history WHERE id=?', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: '이력을 찾을 수 없습니다.' });
+    const r = rows[0];
+    r.chart_config = r.chart_config ? JSON.parse(r.chart_config) : null;
+    r.result_data = r.result_data ? JSON.parse(r.result_data) : null;
+    res.json(r);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 이력 삭제
+app.delete('/api/history/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM nl_query_history WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 이력 전체 삭제
+app.delete('/api/history', async (req, res) => {
+  try {
+    await pool.query('TRUNCATE TABLE nl_query_history');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ============================================================
