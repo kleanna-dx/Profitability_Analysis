@@ -236,6 +236,22 @@ async function buildSystemPrompt() {
     console.error('[CodeMapping] 프롬프트 빌드 실패:', e.message);
   }
 
+  // 피드백 학습 데이터 로드
+  let feedbackText = '';
+  try {
+    const [fbRows] = await pool.query(
+      `SELECT query_text, corrected_sql FROM sql_feedback WHERE is_active = 1 ORDER BY created_at DESC LIMIT 30`
+    );
+    if (fbRows.length > 0) {
+      feedbackText = '\n\n사용자 검증 완료 SQL 예시 (이 패턴을 우선 참고하세요):\n';
+      for (const fb of fbRows) {
+        feedbackText += `질문: "${fb.query_text}"\nSQL: ${fb.corrected_sql}\n\n`;
+      }
+    }
+  } catch (e) {
+    console.error('[Feedback] 학습 데이터 로드 실패:', e.message);
+  }
+
   return `당신은 수익성 분석 데이터베이스 전문가입니다.
 사용자의 자연어 질문을 MariaDB SQL로 변환합니다.
 
@@ -273,7 +289,8 @@ chartType 선택 기준:
 ${TABLE_SCHEMA}
 
 ${METRIC_DICTIONARY}
-${codeMappingText}`;
+${codeMappingText}
+${feedbackText}`;
 }
 
 // ============================================================
@@ -736,6 +753,68 @@ app.get('/api/code-mapping/columns', async (req, res) => {
       'SELECT column_name, column_name_nm, COUNT(*) AS cnt FROM code_mapping GROUP BY column_name, column_name_nm ORDER BY column_name'
     );
     res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
+// SQL 피드백 API (정확해요 / SQL 수정하기)
+// ============================================================
+// 피드백 저장
+app.post('/api/feedback', async (req, res) => {
+  const { query_text, original_sql, corrected_sql, feedback_type } = req.body;
+  if (!query_text || !original_sql || !feedback_type)
+    return res.status(400).json({ error: 'query_text, original_sql, feedback_type 필수' });
+  if (!['correct', 'corrected'].includes(feedback_type))
+    return res.status(400).json({ error: "feedback_type은 'correct' 또는 'corrected'" });
+  try {
+    const finalSql = feedback_type === 'correct' ? original_sql : (corrected_sql || original_sql);
+    const [r] = await pool.query(
+      'INSERT INTO sql_feedback (query_text, original_sql, corrected_sql, feedback_type) VALUES (?,?,?,?)',
+      [query_text, original_sql, finalSql, feedback_type]
+    );
+    res.json({ id: r.insertId, success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 수정된 SQL 실행 (SELECT만 허용)
+app.post('/api/execute-sql', async (req, res) => {
+  const { sql } = req.body;
+  if (!sql || !sql.trim()) return res.status(400).json({ error: 'SQL을 입력하세요.' });
+
+  const sqlUpper = sql.toUpperCase().trim();
+  if (!sqlUpper.startsWith('SELECT'))
+    return res.status(400).json({ error: 'SELECT 쿼리만 허용됩니다.' });
+  const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'EXEC', 'GRANT', 'REVOKE'];
+  for (const kw of forbidden) {
+    if (sqlUpper.includes(kw))
+      return res.status(400).json({ error: `금지된 키워드: ${kw}` });
+  }
+
+  try {
+    const startTime = Date.now();
+    const [rows] = await pool.query(sql);
+    const execTime = Date.now() - startTime;
+    res.json({ success: true, data: rows, rowCount: rows.length, executionTimeMs: execTime });
+  } catch (err) {
+    res.status(400).json({ error: err.sqlMessage || err.message });
+  }
+});
+
+// 피드백 목록 조회
+app.get('/api/feedback', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM sql_feedback ORDER BY created_at DESC LIMIT 100'
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 피드백 삭제
+app.delete('/api/feedback/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM sql_feedback WHERE id=?', [req.params.id]);
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

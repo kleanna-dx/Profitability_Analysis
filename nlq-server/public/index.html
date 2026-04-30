@@ -156,6 +156,69 @@
             line-height:1.7;font-family:'Fira Code','Consolas',monospace;
         }
 
+        /* SQL Feedback UI */
+        .sql-feedback-bar{
+            display:flex;align-items:center;gap:8px;padding:12px 16px;
+            background:#f8fafc;border-top:1px solid #f1f5f9;
+        }
+        .sql-feedback-bar .fb-label{
+            font-size:12px;color:#94a3b8;margin-right:auto;
+        }
+        .fb-btn{
+            padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;
+            cursor:pointer;transition:all .2s;border:1.5px solid;
+            display:inline-flex;align-items:center;gap:5px;
+        }
+        .fb-btn-correct{
+            background:#f0fdf4;color:#16a34a;border-color:#bbf7d0;
+        }
+        .fb-btn-correct:hover{background:#16a34a;color:#fff;border-color:#16a34a;}
+        .fb-btn-correct.selected{background:#16a34a;color:#fff;border-color:#16a34a;}
+        .fb-btn-edit{
+            background:#eff6ff;color:#2563eb;border-color:#bfdbfe;
+        }
+        .fb-btn-edit:hover{background:#2563eb;color:#fff;border-color:#2563eb;}
+        .fb-btn-edit.selected{background:#2563eb;color:#fff;border-color:#2563eb;}
+        .fb-done-msg{
+            font-size:12px;color:#16a34a;font-weight:600;
+            display:inline-flex;align-items:center;gap:4px;
+        }
+
+        /* SQL Editor (수정 모드) */
+        .sql-editor-area{
+            display:none;border-top:1px solid #1e293b;
+        }
+        .sql-editor-area.active{display:block;}
+        .sql-editor-textarea{
+            width:100%;min-height:120px;max-height:260px;resize:vertical;
+            background:#1e293b;color:#a5f3fc;font-size:12px;padding:14px 16px;
+            border:none;outline:none;line-height:1.7;
+            font-family:'Fira Code','Consolas',monospace;
+        }
+        .sql-editor-textarea:focus{background:#0f172a;}
+        .sql-editor-actions{
+            display:flex;align-items:center;gap:8px;padding:10px 16px;
+            background:#1e293b;border-top:1px solid rgba(255,255,255,0.06);
+        }
+        .sql-editor-actions .btn-run{
+            padding:6px 16px;border-radius:8px;font-size:12px;font-weight:600;
+            border:none;cursor:pointer;transition:all .2s;
+            display:inline-flex;align-items:center;gap:5px;
+            background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;
+        }
+        .sql-editor-actions .btn-run:hover{box-shadow:0 2px 8px rgba(79,70,229,0.3);}
+        .sql-editor-actions .btn-cancel{
+            padding:6px 14px;border-radius:8px;font-size:12px;
+            border:1px solid rgba(255,255,255,0.15);background:transparent;
+            color:#94a3b8;cursor:pointer;transition:all .15s;
+        }
+        .sql-editor-actions .btn-cancel:hover{border-color:#94a3b8;color:#fff;}
+        .sql-editor-result{
+            padding:10px 16px;font-size:12px;border-top:1px solid rgba(255,255,255,0.06);
+        }
+        .sql-editor-result.success{color:#86efac;background:#0f172a;}
+        .sql-editor-result.error{color:#fca5a5;background:#1a0000;}
+
         /* Suggestion chips bar (always visible above input) */
         .chips-bar{
             flex-shrink:0;background:#fff;border-top:1px solid #f1f5f9;
@@ -712,11 +775,42 @@ function appendBotMessage(data) {
                 ${tableHtml}
             </div>
             <div id="${id}_sql" class="res-panel">
-                <pre class="sql-display">${esc(data.sql || '')}</pre>
+                <div class="sql-display-wrap">
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px 0;background:#0f172a;">
+                        <span style="font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">GENERATED SQL</span>
+                        <span style="font-size:10px;color:#1e293b;background:#86efac;padding:2px 8px;border-radius:4px;font-weight:700;">ChatGPT</span>
+                    </div>
+                    <pre class="sql-display" id="${id}_sqlPre">${esc(data.sql || '')}</pre>
+                    <div class="sql-editor-area" id="${id}_editor">
+                        <textarea class="sql-editor-textarea" id="${id}_editorTa">${esc(data.sql || '')}</textarea>
+                        <div class="sql-editor-actions">
+                            <button class="btn-run" onclick="executeEditedSql('${id}')">
+                                <i class="fas fa-play"></i> 실행하기
+                            </button>
+                            <button class="btn-cancel" onclick="cancelSqlEdit('${id}')">
+                                취소
+                            </button>
+                            <span id="${id}_editorStatus" style="margin-left:auto;font-size:11px;color:#64748b;"></span>
+                        </div>
+                    </div>
+                    <div class="sql-feedback-bar" id="${id}_fbBar">
+                        <span class="fb-label">이 SQL이 정확한가요?</span>
+                        <button class="fb-btn fb-btn-correct" onclick="submitFeedback('${id}','correct')" id="${id}_fbCorrect">
+                            <i class="fas fa-check-circle"></i> 정확해요
+                        </button>
+                        <button class="fb-btn fb-btn-edit" onclick="openSqlEditor('${id}')" id="${id}_fbEdit">
+                            <i class="fas fa-pen"></i> SQL 수정하기
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>`;
 
     chatArea.appendChild(botMsg);
+
+    // Store data on the element for feedback
+    botMsg._nlqData = data;
+
     scrollToBottom();
 
     // Render chart if applicable
@@ -859,6 +953,148 @@ function scrollToBottom() {
     setTimeout(() => { ca.scrollTop = ca.scrollHeight; }, 50);
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ============================================================
+// SQL Feedback (정확해요 / SQL 수정하기)
+// ============================================================
+function getMsgData(msgId) {
+    // Find the bot message element that contains this msgId
+    const sqlPre = document.getElementById(msgId + '_sqlPre');
+    if (!sqlPre) return null;
+    const botEl = sqlPre.closest('.msg-bot');
+    return botEl ? botEl._nlqData : null;
+}
+
+async function submitFeedback(msgId, type, correctedSql) {
+    const data = getMsgData(msgId);
+    if (!data) return alert('데이터를 찾을 수 없습니다.');
+
+    const body = {
+        query_text: data.query,
+        original_sql: data.sql,
+        corrected_sql: correctedSql || data.sql,
+        feedback_type: type,
+    };
+
+    try {
+        const res = await fetch('/api/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const result = await res.json();
+        if (result.success) {
+            // Update UI
+            const fbBar = document.getElementById(msgId + '_fbBar');
+            if (fbBar) {
+                if (type === 'correct') {
+                    fbBar.innerHTML = `<span class="fb-done-msg"><i class="fas fa-check-circle"></i> 학습 데이터에 반영되었습니다. 감사합니다!</span>`;
+                } else {
+                    fbBar.innerHTML = `<span class="fb-done-msg"><i class="fas fa-check-circle"></i> 수정된 SQL이 학습에 반영되었습니다!</span>`;
+                }
+            }
+        } else {
+            alert('피드백 저장 실패: ' + (result.error || ''));
+        }
+    } catch(e) {
+        alert('피드백 전송 오류: ' + e.message);
+    }
+}
+
+function openSqlEditor(msgId) {
+    const editor = document.getElementById(msgId + '_editor');
+    const ta = document.getElementById(msgId + '_editorTa');
+    const correctBtn = document.getElementById(msgId + '_fbCorrect');
+    const editBtn = document.getElementById(msgId + '_fbEdit');
+    if (!editor) return;
+
+    editor.classList.add('active');
+    editBtn.classList.add('selected');
+    if (correctBtn) correctBtn.style.display = 'none';
+    editBtn.innerHTML = '<i class="fas fa-pen"></i> 수정 중...';
+    editBtn.onclick = null; // disable re-click
+
+    // Focus editor
+    setTimeout(() => ta.focus(), 100);
+}
+
+function cancelSqlEdit(msgId) {
+    const editor = document.getElementById(msgId + '_editor');
+    const correctBtn = document.getElementById(msgId + '_fbCorrect');
+    const editBtn = document.getElementById(msgId + '_fbEdit');
+    if (!editor) return;
+
+    editor.classList.remove('active');
+    if (correctBtn) correctBtn.style.display = '';
+    editBtn.classList.remove('selected');
+    editBtn.innerHTML = '<i class="fas fa-pen"></i> SQL 수정하기';
+    editBtn.onclick = () => openSqlEditor(msgId);
+
+    // Reset editor status
+    const status = document.getElementById(msgId + '_editorStatus');
+    if (status) status.textContent = '';
+}
+
+async function executeEditedSql(msgId) {
+    const ta = document.getElementById(msgId + '_editorTa');
+    const status = document.getElementById(msgId + '_editorStatus');
+    if (!ta) return;
+
+    const sql = ta.value.trim();
+    if (!sql) return alert('SQL을 입력하세요.');
+
+    status.textContent = '실행 중...';
+    status.style.color = '#fbbf24';
+
+    try {
+        const res = await fetch('/api/execute-sql', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sql }),
+        });
+        const result = await res.json();
+
+        if (!res.ok || result.error) {
+            status.textContent = '❌ 오류: ' + (result.error || '');
+            status.style.color = '#fca5a5';
+            return;
+        }
+
+        status.textContent = `✅ ${result.rowCount}행, ${result.executionTimeMs}ms`;
+        status.style.color = '#86efac';
+
+        // Update the original data to reflect edited SQL results
+        const data = getMsgData(msgId);
+        const oldQuery = data ? data.query : '';
+
+        // Add result to chat as new bot message
+        msgCounter++;
+        const newId = 'msg' + msgCounter;
+        const newData = {
+            query: oldQuery,
+            sql: sql,
+            explanation: `사용자가 수정한 SQL 실행 결과 (${result.rowCount}행, ${result.executionTimeMs}ms)`,
+            chartType: (data && data.chartType) || 'table',
+            chartConfig: (data && data.chartConfig) || {},
+            data: result.data || [],
+            rowCount: result.rowCount,
+            executionTimeMs: result.executionTimeMs,
+        };
+        appendBotMessage(newData);
+        scrollToBottom();
+
+        // Auto-submit corrected feedback
+        await submitFeedback(msgId, 'corrected', sql);
+
+        // Close editor
+        const editor = document.getElementById(msgId + '_editor');
+        if (editor) editor.classList.remove('active');
+
+    } catch(e) {
+        status.textContent = '❌ 연결 오류: ' + e.message;
+        status.style.color = '#fca5a5';
+    }
+}
 
 // ============================================================
 // History (이력 관리)
