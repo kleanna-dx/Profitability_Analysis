@@ -176,7 +176,7 @@
     <div class="content-area" id="contentArea">
 
         <!-- Stats -->
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5" id="statsArea">
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5" id="statsArea">
             <div class="stat-card">
                 <div class="stat-icon" style="background:#eef2ff;color:#4f46e5;"><i class="fas fa-columns"></i></div>
                 <div><div class="stat-value" id="statOntology">-</div><div class="stat-label">Ontology 컬럼</div></div>
@@ -197,6 +197,10 @@
                 <div class="stat-icon" style="background:#fef2f2;color:#ef4444;"><i class="fas fa-link"></i></div>
                 <div><div class="stat-value" id="statJoin">-</div><div class="stat-label">JOIN 조건</div></div>
             </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#ecfdf5;color:#059669;"><i class="fas fa-exchange-alt"></i></div>
+                <div><div class="stat-value" id="statCodeMapping">-</div><div class="stat-label">코드 매핑</div></div>
+            </div>
         </div>
 
         <!-- Tabs -->
@@ -209,6 +213,9 @@
             </button>
             <button class="tab-btn" data-tab="join" onclick="switchMainTab('join',this)">
                 <i class="fas fa-link mr-1"></i>JOIN
+            </button>
+            <button class="tab-btn" data-tab="codemapping" onclick="switchMainTab('codemapping',this)">
+                <i class="fas fa-exchange-alt mr-1"></i>코드값 매핑
             </button>
         </div>
 
@@ -320,6 +327,50 @@
             </div>
         </div>
     </div>
+
+        <!-- Code Mapping Panel -->
+        <div id="panel_codemapping" class="panel-content" style="display:none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="flex items-center gap-3">
+                        <h2 class="text-sm font-bold text-gray-800">코드값 매핑 관리</h2>
+                        <span class="badge badge-green" id="codeMappingCount">0개</span>
+                    </div>
+                    <div class="flex gap-2 flex-wrap">
+                        <select id="cmFilterCol" onchange="filterCodeMapping()" class="text-xs border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-indigo-400" style="min-width:140px;">
+                            <option value="">전체 컬럼</option>
+                        </select>
+                        <button class="btn btn-outline btn-sm" onclick="applyCodeMappingToDb()" title="매핑을 실제 DB 명칭컬럼에 반영합니다">
+                            <i class="fas fa-database"></i> DB 일괄 적용
+                        </button>
+                        <button class="btn btn-primary" onclick="openAddCodeMappingModal()">
+                            <i class="fas fa-plus"></i> 매핑 추가
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="table-scroll">
+                        <table class="dtable" id="codeMappingTable">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;">#</th>
+                                    <th>코드 컬럼</th>
+                                    <th>명칭 컬럼</th>
+                                    <th>코드값</th>
+                                    <th>표시명칭</th>
+                                    <th>테이블</th>
+                                    <th>설명</th>
+                                    <th style="width:60px;">활성</th>
+                                    <th style="width:80px;">작업</th>
+                                </tr>
+                            </thead>
+                            <tbody id="codeMappingBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- MODAL: Add/Edit Ontology -->
@@ -421,6 +472,41 @@
     </div>
 </div>
 
+<!-- MODAL: Add/Edit Code Mapping -->
+<div id="codeMappingModal" class="modal-overlay">
+    <div class="modal">
+        <h3 id="cmModalTitle">매핑 추가</h3>
+        <input type="hidden" id="cmEditId">
+        <div class="grid grid-cols-2 gap-3">
+            <div>
+                <label>코드 컬럼명 *</label>
+                <input type="text" id="cmColName" placeholder="예: PROFIT_CTR" list="cmColSuggestions">
+                <datalist id="cmColSuggestions"></datalist>
+            </div>
+            <div>
+                <label>명칭 컬럼명 (_NM)</label>
+                <input type="text" id="cmColNameNm" placeholder="예: PROFIT_CTR_NM">
+            </div>
+            <div>
+                <label>코드값 *</label>
+                <input type="text" id="cmCodeValue" placeholder="예: 2000">
+            </div>
+            <div>
+                <label>표시명칭 *</label>
+                <input type="text" id="cmDisplayName" placeholder="예: 제지사업부">
+            </div>
+        </div>
+        <label>테이블명</label>
+        <input type="text" id="cmTableName" value="bw_profitability_data">
+        <label>설명</label>
+        <input type="text" id="cmDesc" placeholder="예: 손익센터 코드 매핑">
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('codeMappingModal')">취소</button>
+            <button class="btn btn-primary" onclick="saveCodeMapping()">저장</button>
+        </div>
+    </div>
+</div>
+
 <script>
 // ============================================================
 // State
@@ -428,6 +514,8 @@
 let ontologyData = [];
 let metricData = [];
 let joinData = [];
+let codeMappingData = [];
+let cmFilterColumn = '';
 
 // ============================================================
 // Init
@@ -437,6 +525,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     await loadOntology();
     await loadMetric();
     await loadJoin();
+    await loadCodeMapping();
     // Status
     try {
         const res = await fetch('/api/status');
@@ -459,6 +548,7 @@ async function loadStats() {
         document.getElementById('statMetric').textContent = d.metrics;
         document.getElementById('statMetSyn').textContent = d.metricSynonyms;
         document.getElementById('statJoin').textContent = d.joins;
+        if (d.codeMappings != null) document.getElementById('statCodeMapping').textContent = d.codeMappings;
     } catch(e) {}
 }
 
@@ -780,6 +870,141 @@ async function delJoin(id) {
     await fetch('/api/join/' + id, { method: 'DELETE' });
     await loadJoin();
     await loadStats();
+}
+
+// ============================================================
+// CODE MAPPING
+// ============================================================
+async function loadCodeMapping() {
+    const res = await fetch('/api/code-mapping');
+    codeMappingData = await res.json();
+    populateCmFilter();
+    renderCodeMapping();
+}
+function populateCmFilter() {
+    const sel = document.getElementById('cmFilterCol');
+    const cols = [...new Set(codeMappingData.map(r => r.column_name))].sort();
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">전체 컬럼</option>' + cols.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    sel.value = prev || '';
+    // datalist for modal
+    const dl = document.getElementById('cmColSuggestions');
+    if (dl) dl.innerHTML = cols.map(c => `<option value="${esc(c)}">`).join('');
+}
+function filterCodeMapping() {
+    cmFilterColumn = document.getElementById('cmFilterCol').value;
+    renderCodeMapping();
+}
+function renderCodeMapping() {
+    const tbody = document.getElementById('codeMappingBody');
+    const filtered = cmFilterColumn ? codeMappingData.filter(r => r.column_name === cmFilterColumn) : codeMappingData;
+    document.getElementById('codeMappingCount').textContent = filtered.length + '개' + (cmFilterColumn ? ' (필터)' : '');
+    if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-400 py-8">등록된 코드값 매핑이 없습니다.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = filtered.map((r, i) => `
+        <tr>
+            <td class="text-gray-400">${i+1}</td>
+            <td class="mono font-semibold">${esc(r.column_name)}</td>
+            <td class="mono text-xs text-gray-500">${esc(r.column_name_nm || '-')}</td>
+            <td><span class="badge badge-blue">${esc(r.code_value)}</span></td>
+            <td class="font-semibold">${esc(r.display_name)}</td>
+            <td class="text-xs text-gray-500">${esc(r.table_name || '')}</td>
+            <td class="text-xs">${esc(r.description || '')}</td>
+            <td class="text-center">
+                <button class="btn btn-sm ${r.is_active ? 'btn-outline' : 'btn-danger'}" onclick="toggleCmActive(${r.id}, ${r.is_active ? 0 : 1})" title="${r.is_active ? '비활성화' : '활성화'}">
+                    <i class="fas ${r.is_active ? 'fa-check-circle text-green-500' : 'fa-times-circle'}"></i>
+                </button>
+            </td>
+            <td>
+                <div class="flex gap-1">
+                    <button class="btn btn-outline btn-sm" onclick="editCodeMapping(${r.id})" title="수정"><i class="fas fa-pen"></i></button>
+                    <button class="btn btn-danger btn-sm" onclick="delCodeMapping(${r.id})" title="삭제"><i class="fas fa-trash"></i></button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function openAddCodeMappingModal() {
+    document.getElementById('cmModalTitle').textContent = '매핑 추가';
+    document.getElementById('cmEditId').value = '';
+    document.getElementById('cmColName').value = '';
+    document.getElementById('cmColNameNm').value = '';
+    document.getElementById('cmCodeValue').value = '';
+    document.getElementById('cmDisplayName').value = '';
+    document.getElementById('cmTableName').value = 'bw_profitability_data';
+    document.getElementById('cmDesc').value = '';
+    openModal('codeMappingModal');
+}
+function editCodeMapping(id) {
+    const r = codeMappingData.find(x => x.id === id);
+    if (!r) return;
+    document.getElementById('cmModalTitle').textContent = '매핑 수정';
+    document.getElementById('cmEditId').value = id;
+    document.getElementById('cmColName').value = r.column_name;
+    document.getElementById('cmColNameNm').value = r.column_name_nm || '';
+    document.getElementById('cmCodeValue').value = r.code_value;
+    document.getElementById('cmDisplayName').value = r.display_name;
+    document.getElementById('cmTableName').value = r.table_name || 'bw_profitability_data';
+    document.getElementById('cmDesc').value = r.description || '';
+    openModal('codeMappingModal');
+}
+async function saveCodeMapping() {
+    const editId = document.getElementById('cmEditId').value;
+    const body = {
+        column_name: document.getElementById('cmColName').value.trim(),
+        column_name_nm: document.getElementById('cmColNameNm').value.trim() || null,
+        code_value: document.getElementById('cmCodeValue').value.trim(),
+        display_name: document.getElementById('cmDisplayName').value.trim(),
+        table_name: document.getElementById('cmTableName').value.trim(),
+        description: document.getElementById('cmDesc').value.trim(),
+    };
+    if (!body.column_name || !body.code_value || !body.display_name)
+        return alert('코드 컬럼명, 코드값, 표시명칭은 필수입니다.');
+    try {
+        let resp;
+        if (editId) {
+            resp = await fetch('/api/code-mapping/' + editId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        } else {
+            resp = await fetch('/api/code-mapping', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        }
+        const result = await resp.json();
+        if (!resp.ok) return alert(result.error || '저장 실패');
+        closeModal('codeMappingModal');
+        await loadCodeMapping();
+        await loadStats();
+    } catch(e) { alert('저장 실패: ' + e.message); }
+}
+async function delCodeMapping(id) {
+    if (!confirm('이 코드값 매핑을 삭제하시겠습니까?')) return;
+    await fetch('/api/code-mapping/' + id, { method: 'DELETE' });
+    await loadCodeMapping();
+    await loadStats();
+}
+async function toggleCmActive(id, newVal) {
+    const r = codeMappingData.find(x => x.id === id);
+    if (!r) return;
+    await fetch('/api/code-mapping/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ ...r, is_active: newVal })
+    });
+    await loadCodeMapping();
+    await loadStats();
+}
+async function applyCodeMappingToDb() {
+    if (!confirm('활성 매핑을 실제 DB의 명칭 컬럼(_NM)에 일괄 적용합니다.\n계속하시겠습니까?')) return;
+    try {
+        const res = await fetch('/api/code-mapping/apply', { method: 'POST' });
+        const d = await res.json();
+        if (d.success) {
+            alert('DB 적용 완료! 업데이트된 행: ' + d.totalUpdated + '건');
+        } else {
+            alert('적용 실패: ' + (d.error || '알 수 없는 오류'));
+        }
+    } catch(e) { alert('적용 실패: ' + e.message); }
 }
 
 // ============================================================
