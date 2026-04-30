@@ -789,7 +789,7 @@ function appendBotMessage(data) {
                     </div>
                     <pre class="sql-display" id="${id}_sqlPre">${formatAndHighlightSql(data.sql || '')}</pre>
                     <div class="sql-editor-area" id="${id}_editor">
-                        <textarea class="sql-editor-textarea" id="${id}_editorTa">${esc(data.sql || '')}</textarea>
+                        <textarea class="sql-editor-textarea" id="${id}_editorTa">${formatSqlText(data.sql || '')}</textarea>
                         <div class="sql-editor-actions">
                             <button class="btn-run" onclick="executeEditedSql('${id}')">
                                 <i class="fas fa-play"></i> 실행하기
@@ -964,20 +964,17 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 // ============================================================
 // SQL Formatter + Syntax Highlighter
 // ============================================================
-function formatAndHighlightSql(rawSql) {
+// 순수 텍스트 포맷팅 (textarea용)
+function formatSqlText(rawSql) {
     if (!rawSql) return '';
     let sql = rawSql.trim().replace(/;+\s*$/, '');
 
-    // ── Step 1: 포맷팅 (줄바꿈 + 들여쓰기) ──
     // 문자열 리터럴을 임시 치환하여 내부 키워드 매칭 방지
     const strings = [];
     sql = sql.replace(/'([^']*)'/g, (m) => {
         strings.push(m);
         return `__STR${strings.length - 1}__`;
     });
-
-    // 세미콜론 제거
-    sql = sql.replace(/;\s*$/, '');
 
     // 주요 키워드 앞에서 줄바꿈 (최상위 키워드)
     const topKw = ['SELECT','FROM','WHERE','GROUP\\s+BY','ORDER\\s+BY','HAVING','LIMIT','LEFT\\s+JOIN','RIGHT\\s+JOIN','INNER\\s+JOIN','FULL\\s+JOIN','JOIN','ON','UNION\\s+ALL','UNION','INSERT','UPDATE','DELETE','SET','VALUES','INTO'];
@@ -995,10 +992,8 @@ function formatAndHighlightSql(rawSql) {
         const upper = line.toUpperCase();
 
         if (upper.startsWith('SELECT')) {
-            // SELECT 키워드와 컬럼 분리
             const selectPart = line.substring(0, line.toUpperCase().indexOf('SELECT') + 6);
             let rest = line.substring(selectPart.length).trim();
-            // 괄호 깊이 추적하며 콤마 분리
             const cols = splitByCommaOutsideParens(rest);
             formatted.push(selectPart);
             cols.forEach((col, i) => {
@@ -1030,10 +1025,13 @@ function formatAndHighlightSql(rawSql) {
     result = result.replace(/\s+(END)\s+/gi, '\n    END ');
     result = result.replace(/\s+(END)\s*$/gim, '\n    END');
 
-    // ── Step 2: 구문 하이라이팅 (HTML) ──
-    result = highlightSql(result);
-
     return result;
+}
+
+// 포맷팅 + HTML 하이라이팅 (pre 표시용)
+function formatAndHighlightSql(rawSql) {
+    const formatted = formatSqlText(rawSql);
+    return highlightSql(formatted);
 }
 
 function splitByCommaOutsideParens(str) {
