@@ -218,13 +218,17 @@ async function buildSystemPrompt() {
         grouped[r.column_name].items.push({ code: r.code_value, name: r.display_name });
       }
       codeMappingText = '\n\n코드값-명칭 매핑 사전 (Code Mapping Dictionary):\n';
-      codeMappingText += '아래 매핑이 등록된 컬럼은, 코드 컬럼 대신 명칭 컬럼(_NM)을 사용하거나 CASE WHEN으로 명칭을 표시하세요.\n';
-      codeMappingText += '사용자가 명칭(예: "제지사업부")으로 질문하면 해당 코드값(예: 2000)으로 필터링하세요.\n\n';
+      codeMappingText += '**중요 규칙**:\n';
+      codeMappingText += '1. GROUP BY/SELECT에는 반드시 코드 컬럼(예: PROFIT_CTR)을 기준으로 사용하세요.\n';
+      codeMappingText += '2. 명칭 표시는 CASE WHEN으로 변환하세요. 예:\n';
+      codeMappingText += '   CASE PROFIT_CTR WHEN \'2000\' THEN \'제지사업부\' WHEN \'1000\' THEN \'생활용품사업부\' ELSE PROFIT_CTR END AS 손익센터\n';
+      codeMappingText += '3. _NM 컬럼은 NULL일 수 있으므로 GROUP BY에 절대 단독 사용하지 마세요.\n';
+      codeMappingText += '4. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR=\'2000\')으로 WHERE 필터링하세요.\n\n';
       for (const [col, info] of Object.entries(grouped)) {
         const nmCol = info.nm ? ` (명칭컬럼: ${info.nm})` : '';
         codeMappingText += `[${col}]${nmCol}:\n`;
         for (const item of info.items) {
-          codeMappingText += `  ${item.code} = ${item.name}\n`;
+          codeMappingText += `  '${item.code}' = ${item.name}\n`;
         }
       }
     }
@@ -245,8 +249,8 @@ async function buildSystemPrompt() {
 7. 컬럼 alias는 한글로 작성 (예: AS 총매출, AS 플랜트별)
 8. 정렬은 의미 있는 순서로 (금액은 DESC, 코드는 ASC)
 9. NULL 방지를 위해 COALESCE 또는 IFNULL 사용
-10. 코드값 매핑이 등록된 컬럼은, 코드 대신 명칭을 표시하세요 (CASE WHEN 또는 _NM 컬럼 활용)
-11. 사용자가 명칭으로 질문하면 코드값으로 WHERE 조건을 작성하세요
+10. 코드값 매핑이 등록된 컬럼은 GROUP BY에 코드 컬럼을 사용하고, SELECT에서 CASE WHEN으로 명칭을 표시하세요 (_NM 컬럼은 NULL일 수 있으므로 GROUP BY에 단독 사용 금지)
+11. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR='2000')으로 WHERE 조건을 작성하세요
 
 응답 형식 (반드시 JSON으로):
 {
