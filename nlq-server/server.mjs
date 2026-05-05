@@ -38,142 +38,125 @@ const pool = mysql.createPool({
 // ============================================================
 const TABLE_SCHEMA = `
 테이블명: bw_profitability_data
-설명: BW 수익성분석 데이터 (SAP BW 원천, 약 20만행)
+설명: BW 수익성분석 데이터 (SAP BW 원천, 약 22.7만행)
+주의: 이 테이블에는 _NM(명칭) 컬럼이 없습니다. 코드값의 명칭 표시는 반드시 CASE WHEN 구문을 사용하세요.
 
 컬럼 목록 (컬럼명 | 데이터타입 | 설명):
+-- PK --
+SEQ          | BIGINT (PK, AUTO_INCREMENT) | 일련번호
+
 -- 기간 --
-CALMONTH     | VARCHAR(10)   | 달력연도/월 (YYYYMM, 예: 202505)
-CALDAY       | VARCHAR(10)   | 달력일 (YYYYMMDD, 예: 20250501)
+CALMONTH     | VARCHAR(10)   | 달력연도/월 (YYYYMM, 예: 202405)
+CALDAY       | VARCHAR(10)   | 달력일 (YYYYMMDD, 예: 20240501)
 
 -- 조직 --
-CO_AREA      | VARCHAR(20)   | 관리회계 영역 (예: A100)
-CO_AREA_NM   | VARCHAR(100)  | 관리회계 영역명
-PROFIT_CTR   | VARCHAR(20)   | 손익 센터 (예: 2000)
-PROFIT_CTR_NM| VARCHAR(100)  | 손익센터명
-DIVISION     | VARCHAR(20)   | 제품군 코드 (예: 20)
-DIVISION_NM  | VARCHAR(100)  | 제품군명 (예: HL)
-PLANT        | VARCHAR(10)   | 플랜트 코드 (예: P300, P400, P200)
-PLANT_NM     | VARCHAR(100)  | 플랜트명
-DISTR_CHAN   | VARCHAR(10)   | 유통 경로 코드
-DISTR_CHAN_NM| VARCHAR(100)  | 유통경로명 (예: 내수)
-ZDISTCHAN    | VARCHAR(10)   | 내수/수출구분자
-ZDISTCHAN_NM | VARCHAR(100)  | 내수/수출구분자명
-ZORG_TEAM    | VARCHAR(20)   | 영업팀(사업장그룹) 코드
-SALES_OFF    | VARCHAR(20)   | 사업장 코드
-SALES_OFF_NM | VARCHAR(100)  | 사업장명 (예: 리테일3팀(대형마트), 리테일2팀(대리점))
+CO_AREA      | VARCHAR(10)   | 관리회계 영역 (예: A100)
+PROFIT_CTR   | VARCHAR(20)   | 손익 센터 (10자리, 선행0 포함. 예: 0000002000=제지사업부, 0000001000=생활용품사업부)
+DIVISION     | VARCHAR(5)    | 제품군 코드 (예: 10=PS, 20=HL)
+PLANT        | VARCHAR(10)   | 플랜트 코드 (예: P100, P200, P300, P400, P500)
+DISTR_CHAN   | VARCHAR(5)    | 유통 경로 코드 (예: 10=내수, 20=로컬, 30=수출)
+ZDISTCHAN    | VARCHAR(5)    | 내수/수출구분자(사업장)
+ZORG_TEAM    | VARCHAR(10)   | 영업팀(사업장그룹) 코드
+SALES_OFF    | VARCHAR(10)   | 사업장 코드
 
 -- 자재/제품 --
 MATL_TYPE    | VARCHAR(10)   | 자재유형 코드 (예: FERT, HAWA)
-MATL_TYPE_NM | VARCHAR(100)  | 자재유형명
-PRODH1       | VARCHAR(10)   | 제품계층 구조레벨1 코드 (예: 350, 310, 330)
-PRODH1_NM    | VARCHAR(100)  | 제품계층 구조레벨1명 (예: 생리대, 미용티슈, 물티슈)
-PRODH2       | VARCHAR(20)   | 제품계층 구조레벨2 코드
-PRODH2_NM    | VARCHAR(100)  | 제품계층 구조레벨2명 (예: PAD NB, 미용티슈NB)
-PRODH3       | VARCHAR(20)   | 제품계층 구조레벨3 코드
-PRODH3_NM    | VARCHAR(200)  | 제품계층 구조레벨3명 (예: 디어스킨 에어엠보, 순수소프티)
+MATL_GROUP   | VARCHAR(10)   | 자재 그룹 코드
+PRODH1       | VARCHAR(10)   | 제품계층 구조레벨1 코드 (예: 350=생리대, 310=미용티슈, 330=물티슈, 300=두루마리)
+PRODH2       | VARCHAR(15)   | 제품계층 구조레벨2 코드
+PRODH3       | VARCHAR(15)   | 제품계층 구조레벨3 코드
 PRODH4       | VARCHAR(20)   | 제품계층 구조레벨4 코드
-PRODH4_NM    | VARCHAR(200)  | 제품계층 구조레벨4명 (예: 중형, 280매, 100매)
 ZJPCODE      | VARCHAR(10)   | 지종/제품구분 코드 (예: SN, FT, WT)
-ZJPCODE_NM   | VARCHAR(100)  | 지종/제품구분명
-ZBRAND       | VARCHAR(20)   | 브랜드1 코드 (예: BRH006, BRH002)
-ZBRAND_NM    | VARCHAR(100)  | 브랜드1명
-ZSBRAND      | VARCHAR(20)   | 브랜드2 코드
-ZSBRAND_NM   | VARCHAR(100)  | 브랜드2명
+ZBRAND1      | VARCHAR(10)   | 브랜드1 코드 (예: BRH006, BRH002)
+ZBRAND2      | VARCHAR(10)   | 브랜드2 코드
 
 -- 거래처 --
 BILL_TYPE    | VARCHAR(10)   | 대금청구유형 코드
-BILL_TYPE_NM | VARCHAR(100)  | 대금청구유형명
-INCOTERMS    | VARCHAR(10)   | 인도 조건 코드
-INCOTERMS_NM | VARCHAR(100)  | 인도 조건명
-CUST_GROUP   | VARCHAR(10)   | 고객 그룹 코드
-CUST_GROUP_NM| VARCHAR(100)  | 고객그룹명
-CUST_GRP1    | VARCHAR(10)   | 고객 그룹1 코드
-CUST_GRP1_NM | VARCHAR(100)  | 고객그룹1명
-COUNTRY      | VARCHAR(10)   | 국가 코드 (예: KR)
-COUNTRY_NM   | VARCHAR(100)  | 국가명
+INCOTERMS    | VARCHAR(5)    | 인도 조건 코드
+CUST_GROUP   | VARCHAR(5)    | 고객 그룹 코드
+CUST_GRP1    | VARCHAR(5)    | 고객 그룹1 코드
+COUNTRY      | VARCHAR(5)    | 국가 코드 (예: KR)
 ZKUNN2       | VARCHAR(20)   | 영업사원 코드
-ZKUNN2_NM    | VARCHAR(100)  | 영업사원명
 CUSTOMER     | VARCHAR(20)   | 고객 코드
-CUSTOMER_NM  | VARCHAR(200)  | 고객명
-MATERIAL     | VARCHAR(40)   | 자재 코드 (예: FSN-DSA0004A)
-MATERIAL_NM  | VARCHAR(200)  | 자재명 (예: 디어스킨 에어엠보 중 36P)
+MATERIAL     | VARCHAR(30)   | 자재 코드 (예: SWT-AAD0027A)
+MATERIAL_DESC| VARCHAR(100)  | 자재명 (예: 깨끗한나라 물티슈 페퍼민트 블루 캡형 60매 24입)
 
 -- 수량 단위 --
-ZBOXUNIT     | VARCHAR(10)   | 수량단위(BOX)
-ZBAGUNIT     | VARCHAR(10)   | 수량단위(BAG)
-ZUNIT        | VARCHAR(10)   | 수량단위(KG/EA)
+ZUNITBOX     | VARCHAR(5)    | 수량단위(BOX)
+ZUNITBAG     | VARCHAR(5)    | 수량단위(BAG)
+ZUNITKGEA    | VARCHAR(5)    | 수량단위(KG/EA)
 CURRENCY     | VARCHAR(5)    | 통화 (예: KRW)
 
 -- 수량 --
-ZQTY_BOX     | DECIMAL(18,3) | 수량(BOX)
-ZQTY_BAG     | DECIMAL(18,3) | 수량(BAG)
-ZQTY_KE      | DECIMAL(18,3) | 수량(KG/EA)
+ZQTYBOX      | DECIMAL(18,3) | 수량(BOX)
+ZQTYBAG      | BIGINT        | 수량(BAG)
+ZQTYKGEA     | DECIMAL(18,3) | 수량(KG/EA)
 
--- 금액 (ZAMT001 ~ ZAMT064) --
-ZAMT001 | DECIMAL(18,2) | 총매출
-ZAMT002 | DECIMAL(18,2) | 판매장려금
-ZAMT003 | DECIMAL(18,2) | 순매출
-ZAMT004 | DECIMAL(18,2) | 기타매출
-ZAMT005 | DECIMAL(18,2) | 매출원가(제품)
-ZAMT006 | DECIMAL(18,2) | 재료비-펄프
-ZAMT007 | DECIMAL(18,2) | 재료비-고지
-ZAMT008 | DECIMAL(18,2) | 재료비-패드
-ZAMT009 | DECIMAL(18,2) | 부재료비-약품
-ZAMT010 | DECIMAL(18,2) | 부재료비-포장재
-ZAMT011 | DECIMAL(18,2) | 재료비-기타
-ZAMT012 | DECIMAL(18,2) | 인건비
-ZAMT013 | DECIMAL(18,2) | 인건비_경비
-ZAMT014 | DECIMAL(18,2) | 인건비_기타
-ZAMT015 | DECIMAL(18,2) | 도급비
-ZAMT016 | DECIMAL(18,2) | 에너지비
-ZAMT017 | DECIMAL(18,2) | 전력비
-ZAMT018 | DECIMAL(18,2) | 감가상각비
-ZAMT019 | DECIMAL(18,2) | 수선/소모품비
-ZAMT020 | DECIMAL(18,2) | 기타경비
-ZAMT021 | DECIMAL(18,2) | 기타경비_폐기물
-ZAMT022 | DECIMAL(18,2) | 기타경비_세금과공과
-ZAMT023 | DECIMAL(18,2) | 기타경비_지급수수료
-ZAMT024 | DECIMAL(18,2) | 외주가공비
-ZAMT025 | DECIMAL(18,2) | 매출원가(상품)
-ZAMT026 | DECIMAL(18,2) | 매출원가(기타)
-ZAMT027 | DECIMAL(18,2) | 기타원가
-ZAMT028 | DECIMAL(18,2) | 단수차이
-ZAMT029 | DECIMAL(18,2) | 차이잔액
-ZAMT030 | DECIMAL(18,2) | 제조파지정산
-ZAMT031 | DECIMAL(18,2) | 기타매출원가+감모손+평가손
-ZAMT032 | DECIMAL(18,2) | 원재료 투입차이
-ZAMT033 | DECIMAL(18,2) | 기타매출원가 배부조정
-ZAMT034 | DECIMAL(18,2) | 매출원가 계
-ZAMT035 | DECIMAL(18,2) | 매출총이익
-ZAMT036 | DECIMAL(18,2) | 판매관리비
-ZAMT037 | DECIMAL(18,2) | 급여(변동)
-ZAMT038 | DECIMAL(18,2) | 국내운반비(변동)
-ZAMT039 | DECIMAL(18,2) | 수출운반비(변동)
-ZAMT040 | DECIMAL(18,2) | 지급수수료(변동)
-ZAMT041 | DECIMAL(18,2) | 기타판관비(변동)
-ZAMT042 | DECIMAL(18,2) | 개발비(변동)
-ZAMT043 | DECIMAL(18,2) | 급여(고정)
-ZAMT044 | DECIMAL(18,2) | 지급수수료(고정)
-ZAMT045 | DECIMAL(18,2) | 기타판관비(고정)
-ZAMT046 | DECIMAL(18,2) | 개발비(고정)
-ZAMT047 | DECIMAL(18,2) | 마케팅비
-ZAMT048 | DECIMAL(18,2) | 광고비
-ZAMT049 | DECIMAL(18,2) | 소모품비
-ZAMT050 | DECIMAL(18,2) | 지급수수료-마케팅(변동)
-ZAMT051 | DECIMAL(18,2) | 지급수수료-마케팅(고정)
-ZAMT052 | DECIMAL(18,2) | 마케팅비_장려금(변동)
-ZAMT053 | DECIMAL(18,2) | 판촉비
-ZAMT054 | DECIMAL(18,2) | 마케팅비 배부조정
-ZAMT055 | DECIMAL(18,2) | 영업이익
-ZAMT056 | DECIMAL(18,2) | 영업외수익
-ZAMT057 | DECIMAL(18,2) | 이자수익
-ZAMT058 | DECIMAL(18,2) | 외환이익
-ZAMT059 | DECIMAL(18,2) | 기타영업외수익
-ZAMT060 | DECIMAL(18,2) | 영업외비용
-ZAMT061 | DECIMAL(18,2) | 이자비용
-ZAMT062 | DECIMAL(18,2) | 외환손실
-ZAMT063 | DECIMAL(18,2) | 기타영업외비용
-ZAMT064 | DECIMAL(18,2) | 경상이익
+-- 금액 (ZAMT001 ~ ZAMT064, 모두 BIGINT 타입) --
+ZAMT001 | BIGINT | 총매출
+ZAMT002 | BIGINT | 판매장려금
+ZAMT003 | BIGINT | 순매출
+ZAMT004 | BIGINT | 기타매출
+ZAMT005 | BIGINT | 매출원가(제품)
+ZAMT006 | BIGINT | 재료비-펄프
+ZAMT007 | BIGINT | 재료비-고지
+ZAMT008 | BIGINT | 재료비-패드
+ZAMT009 | BIGINT | 부재료비-약품
+ZAMT010 | BIGINT | 부재료비-포장재
+ZAMT011 | BIGINT | 재료비-기타
+ZAMT012 | BIGINT | 인건비
+ZAMT013 | BIGINT | 인건비_경비
+ZAMT014 | BIGINT | 인건비_기타
+ZAMT015 | BIGINT | 도급비
+ZAMT016 | BIGINT | 에너지비
+ZAMT017 | BIGINT | 전력비
+ZAMT018 | BIGINT | 감가상각비
+ZAMT019 | BIGINT | 수선/소모품비
+ZAMT020 | BIGINT | 기타경비
+ZAMT021 | BIGINT | 기타경비_폐기물
+ZAMT022 | BIGINT | 기타경비_세금과공과
+ZAMT023 | BIGINT | 기타경비_지급수수료
+ZAMT024 | BIGINT | 외주가공비
+ZAMT025 | BIGINT | 매출원가(상품)
+ZAMT026 | BIGINT | 매출원가(기타)
+ZAMT027 | BIGINT | 기타원가
+ZAMT028 | BIGINT | 단수차이
+ZAMT029 | BIGINT | 차이잔액
+ZAMT030 | BIGINT | 제조파지정산
+ZAMT031 | BIGINT | 기타매출원가+감모손+평가손
+ZAMT032 | BIGINT | 원재료 투입차이
+ZAMT033 | BIGINT | 기타매출원가 배부조정
+ZAMT034 | BIGINT | 매출원가 계
+ZAMT035 | BIGINT | 매출총이익
+ZAMT036 | BIGINT | 판매관리비
+ZAMT037 | BIGINT | 급여(변동)
+ZAMT038 | BIGINT | 국내운반비(변동)
+ZAMT039 | BIGINT | 수출운반비(변동)
+ZAMT040 | BIGINT | 지급수수료(변동)
+ZAMT041 | BIGINT | 기타판관비(변동)
+ZAMT042 | BIGINT | 개발비(변동)
+ZAMT043 | BIGINT | 급여(고정)
+ZAMT044 | BIGINT | 지급수수료(고정)
+ZAMT045 | BIGINT | 기타판관비(고정)
+ZAMT046 | BIGINT | 개발비(고정)
+ZAMT047 | BIGINT | 마케팅비
+ZAMT048 | BIGINT | 광고비
+ZAMT049 | BIGINT | 소모품비
+ZAMT050 | BIGINT | 지급수수료-마케팅(변동)
+ZAMT051 | BIGINT | 지급수수료-마케팅(고정)
+ZAMT052 | BIGINT | 마케팅비_장려금(변동)
+ZAMT053 | BIGINT | 판촉비
+ZAMT054 | BIGINT | 마케팅비 배부조정
+ZAMT055 | BIGINT | 영업이익
+ZAMT056 | BIGINT | 영업외수익
+ZAMT057 | BIGINT | 이자수익
+ZAMT058 | BIGINT | 외환이익
+ZAMT059 | BIGINT | 기타영업외수익
+ZAMT060 | BIGINT | 영업외비용
+ZAMT061 | BIGINT | 이자비용
+ZAMT062 | BIGINT | 외환손실
+ZAMT063 | BIGINT | 기타영업외비용
+ZAMT064 | BIGINT | 경상이익
 `;
 
 // ============================================================
@@ -191,10 +174,10 @@ const METRIC_DICTIONARY = `
 - 영업이익 = SUM(ZAMT055)
 - 영업이익률 = SUM(ZAMT055) / NULLIF(SUM(ZAMT003),0) * 100
 - 경상이익 = SUM(ZAMT064)
-- BOX수량 = SUM(ZQTY_BOX)
-- BAG수량 = SUM(ZQTY_BAG)
-- EA수량 = SUM(ZQTY_KE)
-- 평균단가(BOX) = SUM(ZAMT001) / NULLIF(SUM(ZQTY_BOX),0)
+- BOX수량 = SUM(ZQTYBOX)
+- BAG수량 = SUM(ZQTYBAG)
+- EA수량 = SUM(ZQTYKGEA)
+- 평균단가(BOX) = SUM(ZAMT001) / NULLIF(SUM(ZQTYBOX),0)
 - 재료비합계 = SUM(ZAMT006)+SUM(ZAMT007)+SUM(ZAMT008)+SUM(ZAMT009)+SUM(ZAMT010)+SUM(ZAMT011)
 - 인건비합계 = SUM(ZAMT012)+SUM(ZAMT013)+SUM(ZAMT014)
 - 마케팅비합계 = SUM(ZAMT047)+SUM(ZAMT048)+SUM(ZAMT049)+SUM(ZAMT050)+SUM(ZAMT051)+SUM(ZAMT052)+SUM(ZAMT053)+SUM(ZAMT054)
@@ -219,14 +202,15 @@ async function buildSystemPrompt() {
       }
       codeMappingText = '\n\n코드값-명칭 매핑 사전 (Code Mapping Dictionary):\n';
       codeMappingText += '**중요 규칙**:\n';
-      codeMappingText += '1. GROUP BY/SELECT에는 반드시 코드 컬럼(예: PROFIT_CTR)을 기준으로 사용하세요.\n';
-      codeMappingText += '2. 명칭 표시는 CASE WHEN으로 변환하세요. 예:\n';
-      codeMappingText += '   CASE PROFIT_CTR WHEN \'2000\' THEN \'제지사업부\' WHEN \'1000\' THEN \'생활용품사업부\' ELSE PROFIT_CTR END AS 손익센터\n';
-      codeMappingText += '3. _NM 컬럼은 NULL일 수 있으므로 GROUP BY에 절대 단독 사용하지 마세요.\n';
-      codeMappingText += '4. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR=\'2000\')으로 WHERE 필터링하세요.\n\n';
+      codeMappingText += '1. 이 테이블에는 _NM(명칭) 컬럼이 전혀 없습니다. 절대로 _NM 컬럼을 참조하지 마세요.\n';
+      codeMappingText += '2. GROUP BY/SELECT에는 반드시 코드 컬럼(예: PROFIT_CTR)을 기준으로 사용하세요.\n';
+      codeMappingText += '3. 명칭 표시는 반드시 CASE WHEN으로 변환하세요. 예:\n';
+      codeMappingText += '   CASE PROFIT_CTR WHEN \'0000002000\' THEN \'제지사업부\' WHEN \'0000001000\' THEN \'생활용품사업부\' ELSE PROFIT_CTR END AS 손익센터\n';
+      codeMappingText += '4. PROFIT_CTR은 10자리 선행0 포함 형태입니다 (예: 0000002000, 0000001000). WHERE/CASE에서 반드시 이 형태로 비교하세요.\n';
+      codeMappingText += '5. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR=\'0000002000\')으로 WHERE 필터링하세요.\n';
+      codeMappingText += '6. MATERIAL_DESC 컬럼에 자재명이 있으므로 자재명 조회 시 이 컬럼을 사용하세요.\n\n';
       for (const [col, info] of Object.entries(grouped)) {
-        const nmCol = info.nm ? ` (명칭컬럼: ${info.nm})` : '';
-        codeMappingText += `[${col}]${nmCol}:\n`;
+        codeMappingText += `[${col}]:\n`;
         for (const item of info.items) {
           codeMappingText += `  '${item.code}' = ${item.name}\n`;
         }
@@ -265,8 +249,14 @@ async function buildSystemPrompt() {
 7. 컬럼 alias는 한글로 작성 (예: AS 총매출, AS 플랜트별)
 8. 정렬은 의미 있는 순서로 (금액은 DESC, 코드는 ASC)
 9. NULL 방지를 위해 COALESCE 또는 IFNULL 사용
-10. 코드값 매핑이 등록된 컬럼은 GROUP BY에 코드 컬럼을 사용하고, SELECT에서 CASE WHEN으로 명칭을 표시하세요 (_NM 컬럼은 NULL일 수 있으므로 GROUP BY에 단독 사용 금지)
-11. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR='2000')으로 WHERE 조건을 작성하세요
+10. 이 테이블에는 _NM(명칭) 컬럼이 없습니다. 절대로 PROFIT_CTR_NM, DIVISION_NM 등 _NM 컬럼을 사용하지 마세요
+11. 코드값 매핑이 등록된 컬럼은 GROUP BY에 코드 컬럼을 사용하고, SELECT에서 CASE WHEN으로 명칭을 표시하세요
+12. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR='0000002000')으로 WHERE 조건을 작성하세요
+13. PROFIT_CTR은 10자리 선행0 포함 형태입니다 (예: '0000002000', '0000001000'). 반드시 이 형태로 비교하세요
+14. 자재명은 MATERIAL_DESC 컬럼을 사용하세요 (MATERIAL_NM 컬럼은 없습니다)
+15. 브랜드 컬럼은 ZBRAND1(브랜드1), ZBRAND2(브랜드2)입니다 (ZBRAND, ZSBRAND 컬럼은 없습니다)
+16. 수량 컬럼은 ZQTYBOX(BOX), ZQTYBAG(BAG), ZQTYKGEA(KG/EA)입니다 (ZQTY_BOX, ZQTY_BAG, ZQTY_KE 컬럼은 없습니다)
+17. 수량단위 컬럼은 ZUNITBOX, ZUNITBAG, ZUNITKGEA입니다 (ZBOXUNIT, ZBAGUNIT, ZUNIT 컬럼은 없습니다)
 
 응답 형식 (반드시 JSON으로):
 {
@@ -722,27 +712,20 @@ app.delete('/api/code-mapping/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// DB 실데이터에 매핑 적용 (명칭 컬럼 UPDATE)
+// DB 실데이터에 매핑 적용 (현재 스키마에는 _NM 컬럼이 없으므로 AI 프롬프트에만 반영)
 app.post('/api/code-mapping/apply', async (req, res) => {
   try {
+    // 현재 스키마에는 _NM 컬럼이 없으므로 DB UPDATE 대신 매핑 건수만 확인
     const [mappings] = await pool.query(
-      'SELECT DISTINCT column_name, column_name_nm FROM code_mapping WHERE is_active=1 AND column_name_nm IS NOT NULL'
+      'SELECT column_name, COUNT(*) AS cnt FROM code_mapping WHERE is_active=1 GROUP BY column_name'
     );
-    let totalUpdated = 0;
-    for (const m of mappings) {
-      const [items] = await pool.query(
-        'SELECT code_value, display_name FROM code_mapping WHERE column_name=? AND is_active=1',
-        [m.column_name]
-      );
-      for (const item of items) {
-        const [r] = await pool.query(
-          `UPDATE bw_profitability_data SET ${m.column_name_nm}=? WHERE ${m.column_name}=? AND (${m.column_name_nm} IS NULL OR ${m.column_name_nm}='' OR ${m.column_name_nm}!=?)`,
-          [item.display_name, item.code_value, item.display_name]
-        );
-        totalUpdated += r.affectedRows;
-      }
-    }
-    res.json({ success: true, totalUpdated });
+    const totalMappings = mappings.reduce((sum, m) => sum + m.cnt, 0);
+    res.json({
+      success: true,
+      totalMappings,
+      message: '코드값 매핑이 AI 프롬프트에 반영됩니다. (현재 스키마에는 _NM 컬럼이 없어 DB UPDATE는 수행하지 않습니다)',
+      columns: mappings.map(m => ({ column: m.column_name, count: m.cnt }))
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
