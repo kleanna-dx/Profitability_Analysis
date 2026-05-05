@@ -169,9 +169,12 @@ async function buildRagIndex(pool) {
     '이 테이블에는 _NM(명칭) 컬럼이 없음. 코드값 명칭은 CASE WHEN으로 표시해야 함.',
     'PROFIT_CTR은 10자리 선행0 포함 형태. 예: 0000002000=제지사업부, 0000001000=생활용품사업부.',
     '금액은 FORMAT(SUM(...), 0)으로 천단위 콤마 표시. 비율은 ROUND(..., 1) 소수점 1자리.',
-    '브랜드 컬럼은 ZBRAND1(브랜드1), ZBRAND2(브랜드2). 수량 컬럼은 ZQTYBOX(BOX), ZQTYBAG(BAG), ZQTYKGEA(KG/EA).',
+    '브랜드 컬럼은 ZBRAND1(브랜드1), ZBRAND2(브랜드2).',
     '자재명은 MATERIAL_DESC 컬럼 사용. MATERIAL_NM은 없음.',
     '수량단위 컬럼은 ZUNITBOX, ZUNITBAG, ZUNITKGEA. ZBOXUNIT/ZBAGUNIT/ZUNIT은 없음.',
+    '수량 컬럼 사용 규칙: "판매수량", "수량"이라고만 하면 BOX 기준(ZQTYBOX)만 사용. BAG수량(ZQTYBAG), EA수량(ZQTYKGEA)은 사용자가 "BAG수량", "EA수량", "모든 수량"처럼 명시적으로 요청할 때만 포함. 절대로 질문에 없는 수량 단위를 추가하지 않는다.',
+    '컬럼 최소화 원칙: 사용자가 질문에서 언급한 항목만 SELECT에 포함한다. 관련 있어 보여도 질문에 없는 컬럼은 추가 금지. 예: "브랜드별 판매수량 합계"이면 브랜드와 BOX수량 합계만 출력.',
+    '컬럼 별칭(alias) 작성 규칙: 별칭에 단위를 괄호로 명시한다. 예: 판매수량 합계(BOX), 총매출 합계(원), 영업이익률(%), 평균단가(원/BOX). 집계 함수 사용 시 "합계", "평균", "최대" 등을 별칭에 포함.',
   ];
   for (let i = 0; i < rules.length; i++) {
     chunks.push({

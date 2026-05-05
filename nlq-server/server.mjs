@@ -206,12 +206,12 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 [핵심 규칙]
 1. SELECT 문만 생성 (INSERT/UPDATE/DELETE/DROP 절대 금지)
 2. 테이블은 bw_profitability_data 하나만 사용
-3. 계산 지표는 반드시 아래 제공된 Metric Dictionary만 사용 (새로운 수식 창작 금지)
+3. 계산 지표는 반드시 아래 제공된 메트릭/컬럼 정보만 사용 (새로운 수식 창작 금지)
 4. 결과 행은 최대 1000행 (LIMIT 1000)
 5. **금액 표시**: FORMAT(SUM(ZAMT***), 0) AS 별칭. **ORDER BY에는 FORMAT 별칭 사용 금지!** → ORDER BY SUM(ZAMT***) DESC 사용
 6. 비율: ROUND(..., 1), 소수점 1자리
 7. GROUP BY 시 반드시 집계 함수 사용
-8. 컬럼 alias는 한글
+8. 컬럼 alias는 한글, 사용자가 이해하기 쉬운 의미 있는 이름 사용
 9. 정렬: 금액 DESC, 코드 ASC
 10. NULL 방지: COALESCE 또는 IFNULL
 11. _NM 컬럼 없음 → CASE WHEN으로 명칭 표시
@@ -220,9 +220,19 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 14. PROFIT_CTR: 10자리 선행0 (예: '0000002000')
 15. 자재명: MATERIAL_DESC (MATERIAL_NM 없음)
 16. 브랜드: ZBRAND1, ZBRAND2
-17. 수량: ZQTYBOX(BOX), ZQTYBAG(BAG), ZQTYKGEA(KG/EA)
-18. 수량단위: ZUNITBOX, ZUNITBAG, ZUNITKGEA
-19. **학습 데이터 우선**: 아래 RAG 컨텍스트에 유사 질문의 검증된 SQL이 있으면 우선 사용
+17. **학습 데이터 우선**: 아래 RAG 컨텍스트에 유사 질문의 검증된 SQL이 있으면 그 패턴을 최우선 참고
+
+[컬럼 최소화 원칙 - 매우 중요!]
+- **질문에서 요청한 항목만 SELECT 하세요. 관련 있어 보이더라도 질문에 없는 항목은 절대 추가하지 마세요.**
+- 예: "판매수량 합계"라고 하면 → BOX 수량(ZQTYBOX) 하나만 사용. BAG수량, EA수량은 질문에 없으므로 포함 금지.
+- 예: "총매출 합계"라고 하면 → SUM(ZAMT001) 하나만 사용. 순매출, 영업이익 등은 추가하지 마세요.
+- 사용자가 "수량" 이라고만 하면 기본 단위는 BOX(ZQTYBOX). BAG/EA는 사용자가 명시적으로 요청할 때만 포함.
+- 사용자가 "모든 수량" 또는 "BOX, BAG, EA 수량"처럼 여러 단위를 명시한 경우에만 복수 수량 컬럼 사용.
+
+[컬럼 별칭(alias) 작성 규칙]
+- 별칭에는 단위를 괄호로 명시: 예) '판매수량 합계(BOX)', '총매출(원)', '영업이익률(%)'
+- 집계 함수를 사용한 경우 "합계", "평균", "최대" 등을 별칭에 포함
+- 예시: FORMAT(SUM(ZQTYBOX), 0) AS '판매수량 합계(BOX)',  FORMAT(SUM(ZAMT001), 0) AS '총매출 합계(원)'
 
 응답 형식 (반드시 JSON):
 {
@@ -274,9 +284,18 @@ async function buildRAGSystemPrompt(query) {
     contextText = await buildFallbackContext();
   }
 
-  // 기본 스키마 정보는 항상 포함 (RAG가 충분한 스키마를 못 찾을 수 있으므로)
-  const prompt = BASE_SYSTEM_PROMPT + '\n' + TABLE_SCHEMA + '\n' + METRIC_DICTIONARY
-    + '\n\n--- RAG 검색 컨텍스트 (질문 관련 메타데이터) ---\n' + contextText;
+  // RAG 모드에서는 검색된 메타데이터만 사용 (전체 스키마/메트릭 덤프 제거)
+  // → GPT가 질문과 무관한 컬럼을 보고 불필요한 컬럼을 추가하는 문제 방지
+  let prompt;
+  if (ragReady && ragContext) {
+    // RAG 활성: 기본 규칙 + RAG 검색 컨텍스트만 (전체 스키마/메트릭 제외)
+    prompt = BASE_SYSTEM_PROMPT
+      + '\n\n--- RAG 검색 컨텍스트 (이 질문과 관련된 메타데이터만 포함됨) ---\n' + contextText;
+  } else {
+    // 폴백: 기존 방식 (전체 스키마 + 메트릭 + 폴백 컨텍스트)
+    prompt = BASE_SYSTEM_PROMPT + '\n' + TABLE_SCHEMA + '\n' + METRIC_DICTIONARY
+      + '\n\n--- 컨텍스트 ---\n' + contextText;
+  }
 
   return { prompt, ragContext };
 }
