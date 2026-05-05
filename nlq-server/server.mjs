@@ -227,9 +227,10 @@ async function buildSystemPrompt() {
       `SELECT query_text, corrected_sql FROM sql_feedback WHERE is_active = 1 ORDER BY created_at DESC LIMIT 30`
     );
     if (fbRows.length > 0) {
-      feedbackText = '\n\n사용자 검증 완료 SQL 예시 (이 패턴을 우선 참고하세요):\n';
+      feedbackText = '\n\n사용자 검증 완료 SQL 예시 (동일/유사 질문 시 이 SQL을 그대로 사용하세요):\n';
       for (const fb of fbRows) {
-        feedbackText += `질문: "${fb.query_text}"\nSQL: ${fb.corrected_sql}\n\n`;
+        const typeLabel = fb.feedback_type === 'corrected' ? '[사용자 수정 - 최우선]' : '[검증 완료]';
+        feedbackText += `${typeLabel} 질문: "${fb.query_text}"\nSQL: ${fb.corrected_sql}\n\n`;
       }
     }
   } catch (e) {
@@ -244,19 +245,21 @@ async function buildSystemPrompt() {
 2. 테이블은 bw_profitability_data 하나만 사용
 3. 계산 지표는 반드시 아래 Metric Dictionary만 사용 (새로운 수식을 만들지 마세요)
 4. 결과 행은 최대 1000행으로 제한 (LIMIT 1000)
-5. 숫자는 ROUND() 사용, 금액은 소수점 0자리, 비율은 소수점 1자리
-6. GROUP BY 사용 시 반드시 집계 함수(SUM, COUNT, AVG 등) 사용
-7. 컬럼 alias는 한글로 작성 (예: AS 총매출, AS 플랜트별)
-8. 정렬은 의미 있는 순서로 (금액은 DESC, 코드는 ASC)
-9. NULL 방지를 위해 COALESCE 또는 IFNULL 사용
-10. 이 테이블에는 _NM(명칭) 컬럼이 없습니다. 절대로 PROFIT_CTR_NM, DIVISION_NM 등 _NM 컬럼을 사용하지 마세요
-11. 코드값 매핑이 등록된 컬럼은 GROUP BY에 코드 컬럼을 사용하고, SELECT에서 CASE WHEN으로 명칭을 표시하세요
-12. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR='0000002000')으로 WHERE 조건을 작성하세요
-13. PROFIT_CTR은 10자리 선행0 포함 형태입니다 (예: '0000002000', '0000001000'). 반드시 이 형태로 비교하세요
-14. 자재명은 MATERIAL_DESC 컬럼을 사용하세요 (MATERIAL_NM 컬럼은 없습니다)
-15. 브랜드 컬럼은 ZBRAND1(브랜드1), ZBRAND2(브랜드2)입니다 (ZBRAND, ZSBRAND 컬럼은 없습니다)
-16. 수량 컬럼은 ZQTYBOX(BOX), ZQTYBAG(BAG), ZQTYKGEA(KG/EA)입니다 (ZQTY_BOX, ZQTY_BAG, ZQTY_KE 컬럼은 없습니다)
-17. 수량단위 컬럼은 ZUNITBOX, ZUNITBAG, ZUNITKGEA입니다 (ZBOXUNIT, ZBAGUNIT, ZUNIT 컬럼은 없습니다)
+5. 금액 표시: FORMAT(SUM(ZAMT***), 0) 사용하여 천 단위 콤마 포함. 정렬이 필요하면 SUM(ZAMT***)으로 ORDER BY하고, SELECT에는 FORMAT() 적용 컬럼만 표시
+6. 비율 표시: ROUND(..., 1) 사용, 소수점 1자리
+7. GROUP BY 사용 시 반드시 집계 함수(SUM, COUNT, AVG 등) 사용
+8. 컬럼 alias는 한글로 작성 (예: AS 총매출, AS 플랜트별)
+9. 정렬은 의미 있는 순서로 (금액은 DESC, 코드는 ASC)
+10. NULL 방지를 위해 COALESCE 또는 IFNULL 사용
+11. 이 테이블에는 _NM(명칭) 컬럼이 없습니다. 절대로 PROFIT_CTR_NM, DIVISION_NM 등 _NM 컬럼을 사용하지 마세요
+12. 코드값 매핑이 등록된 컬럼은 GROUP BY에 코드 컬럼을 사용하고, SELECT에서 CASE WHEN으로 명칭을 표시하세요
+13. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR='0000002000')으로 WHERE 조건을 작성하세요
+14. PROFIT_CTR은 10자리 선행0 포함 형태입니다 (예: '0000002000', '0000001000'). 반드시 이 형태로 비교하세요
+15. 자재명은 MATERIAL_DESC 컬럼을 사용하세요 (MATERIAL_NM 컬럼은 없습니다)
+16. 브랜드 컬럼은 ZBRAND1(브랜드1), ZBRAND2(브랜드2)입니다 (ZBRAND, ZSBRAND 컬럼은 없습니다)
+17. 수량 컬럼은 ZQTYBOX(BOX), ZQTYBAG(BAG), ZQTYKGEA(KG/EA)입니다 (ZQTY_BOX, ZQTY_BAG, ZQTY_KE 컬럼은 없습니다)
+18. 수량단위 컬럼은 ZUNITBOX, ZUNITBAG, ZUNITKGEA입니다 (ZBOXUNIT, ZBAGUNIT, ZUNIT 컬럼은 없습니다)
+19. **중요 - 학습 데이터 우선 사용**: 아래 "사용자 검증 완료 SQL 예시"에 동일하거나 유사한 질문이 있으면, 해당 SQL을 최대한 그대로 사용하세요. 특히 corrected 타입의 SQL은 사용자가 직접 수정한 것이므로 반드시 우선 적용하세요.
 
 응답 형식 (반드시 JSON으로):
 {
@@ -293,30 +296,79 @@ app.post('/api/nlq', async (req, res) => {
   }
 
   try {
-    // 1. ChatGPT로 SQL 생성 (코드값 매핑 포함 동적 프롬프트)
     console.log(`[NLQ] 질의: ${query}`);
-    const systemPrompt = await buildSystemPrompt();
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-5-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: query },
-      ],
-      temperature: 0.1,
-      response_format: { type: 'json_object' },
-    });
 
-    const raw = completion.choices[0].message.content;
-    console.log(`[NLQ] GPT 응답: ${raw}`);
-
-    let parsed;
+    // 0. 학습 데이터에서 정확 매칭 검색 (corrected 우선, 가장 최근 것 사용)
+    let matchedSql = null;
     try {
-      parsed = JSON.parse(raw);
+      const [fbMatch] = await pool.query(
+        `SELECT corrected_sql, feedback_type FROM sql_feedback
+         WHERE query_text = ? AND is_active = 1
+         ORDER BY FIELD(feedback_type, 'corrected', 'correct') ASC, created_at DESC
+         LIMIT 1`,
+        [query.trim()]
+      );
+      if (fbMatch.length > 0) {
+        matchedSql = fbMatch[0].corrected_sql;
+        console.log(`[NLQ] 학습 데이터 매칭됨 (${fbMatch[0].feedback_type}): ${matchedSql.substring(0, 80)}...`);
+      }
     } catch (e) {
-      return res.status(500).json({ error: 'AI 응답 파싱 실패', raw });
+      console.error('[NLQ] 학습 데이터 조회 실패:', e.message);
     }
 
-    const { sql, explanation, chartType, chartConfig } = parsed;
+    let sql, explanation, chartType, chartConfig;
+
+    if (matchedSql) {
+      // 학습 데이터 매칭 → AI 호출 없이 직접 사용
+      sql = matchedSql;
+      explanation = '학습된 SQL을 사용합니다 (사용자 검증 완료).';
+      // 차트 타입은 AI에게 간단히 판별 요청 (비용 절약을 위해 짧은 프롬프트)
+      try {
+        const chartCompletion = await openai.chat.completions.create({
+          model: 'gpt-5-mini',
+          messages: [
+            { role: 'system', content: '주어진 SQL의 결과에 가장 적합한 차트 유형을 판단하세요. 응답은 반드시 JSON: {"chartType":"bar|line|pie|table","chartConfig":{"labelColumn":"라벨컬럼alias","dataColumns":["데이터컬럼alias"],"title":"차트 제목"}}' },
+            { role: 'user', content: `질문: ${query}\nSQL: ${sql}` },
+          ],
+          temperature: 0,
+          response_format: { type: 'json_object' },
+        });
+        const chartParsed = JSON.parse(chartCompletion.choices[0].message.content);
+        chartType = chartParsed.chartType || 'table';
+        chartConfig = chartParsed.chartConfig || {};
+      } catch (e) {
+        console.error('[NLQ] 차트 판별 실패, table로 기본:', e.message);
+        chartType = 'table';
+        chartConfig = {};
+      }
+    } else {
+      // 1. ChatGPT로 SQL 생성 (코드값 매핑 포함 동적 프롬프트)
+      const systemPrompt = await buildSystemPrompt();
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-5-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: query },
+        ],
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+      });
+
+      const raw = completion.choices[0].message.content;
+      console.log(`[NLQ] GPT 응답: ${raw}`);
+
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        return res.status(500).json({ error: 'AI 응답 파싱 실패', raw });
+      }
+
+      sql = parsed.sql;
+      explanation = parsed.explanation;
+      chartType = parsed.chartType;
+      chartConfig = parsed.chartConfig;
+    }
 
     // 2. SQL 검증
     const sqlUpper = sql.toUpperCase().trim();
@@ -341,7 +393,7 @@ app.post('/api/nlq', async (req, res) => {
       success: true,
       query,
       sql,
-      explanation,
+      explanation: explanation + (matchedSql ? ' 📚' : ''),
       chartType: chartType || 'table',
       chartConfig: chartConfig || {},
       data: rows,

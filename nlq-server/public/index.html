@@ -729,11 +729,11 @@ function appendBotMessage(data) {
 
     let tabsHtml = `
         <div class="res-tabs">
-            <div class="res-tab ${hasChart ? 'active' : ''}" data-panel="${id}_chart" onclick="switchTab(this,'${id}')" ${!hasChart ? 'style="display:none"' : ''}>
-                <i class="fas fa-chart-bar mr-1"></i>차트
-            </div>
-            <div class="res-tab ${!hasChart ? 'active' : ''}" data-panel="${id}_table" onclick="switchTab(this,'${id}')">
+            <div class="res-tab active" data-panel="${id}_table" onclick="switchTab(this,'${id}')">
                 <i class="fas fa-table mr-1"></i>표
+            </div>
+            <div class="res-tab" data-panel="${id}_chart" onclick="switchTab(this,'${id}')" ${!hasChart ? 'style="display:none"' : ''}>
+                <i class="fas fa-chart-bar mr-1"></i>차트
             </div>
             <div class="res-tab" data-panel="${id}_sql" onclick="switchTab(this,'${id}')">
                 <i class="fas fa-code mr-1"></i>SQL
@@ -775,11 +775,11 @@ function appendBotMessage(data) {
                 </div>
             </div>
             ${tabsHtml}
-            <div id="${id}_chart" class="res-panel ${hasChart ? 'active' : ''}" style="${!hasChart ? 'display:none' : ''}">
-                <div class="chart-container"><canvas id="${chartId}" height="300"></canvas></div>
-            </div>
-            <div id="${id}_table" class="res-panel ${!hasChart ? 'active' : ''}">
+            <div id="${id}_table" class="res-panel active">
                 ${tableHtml}
+            </div>
+            <div id="${id}_chart" class="res-panel" style="${!hasChart ? 'display:none' : ''}">
+                <div class="chart-container"><canvas id="${chartId}" height="300"></canvas></div>
             </div>
             <div id="${id}_sql" class="res-panel">
                 <div class="sql-display-wrap">
