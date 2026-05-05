@@ -286,18 +286,18 @@
         /* Suggestion chips bar (always visible above input) */
         .chips-bar{
             flex-shrink:0;background:#fff;border-top:1px solid #f1f5f9;
-            padding:8px 20px 0;
+            padding:10px 20px 8px;
             overflow-x:auto;
             -webkit-overflow-scrolling:touch;
         }
         .chips-bar::-webkit-scrollbar{height:0;display:none;}
         .chips-row{
             max-width:900px;margin:0 auto;
-            display:flex;gap:8px;flex-wrap:wrap;justify-content:center;
+            display:flex;gap:10px 10px;flex-wrap:wrap;justify-content:center;
         }
         .chip-sm{
             display:inline-block;border:1px solid #c7d2fe;color:#4f46e5;
-            background:#eef2ff;font-size:12px;padding:5px 14px;border-radius:16px;
+            background:#eef2ff;font-size:12px;padding:6px 16px;border-radius:16px;
             cursor:pointer;transition:all .2s;white-space:nowrap;flex-shrink:0;
         }
         .chip-sm:hover{background:#4f46e5;color:#fff;border-color:#4f46e5;}
@@ -578,12 +578,14 @@ let msgCounter = 0;
 let historyCache = []; // 이력 캐시
 
 const SUGGESTIONS = [
-    '플랜트별 총매출 현황을 알려줘',
-    '제품계층1(PRODH1)별 매출 비중을 보여줘',
-    '일자별 총매출 추이를 보여줘',
-    '사업장별 총매출 TOP 10',
-    '브랜드별 총매출과 BOX수량을 비교해줘',
-    '유통경로별 총매출 구성비를 보여줘',
+    '손익센터별 총매출 합계',
+    '플랜트별 매출 상위 10개',
+    '제품별 매출 TOP 5',
+    '내수 vs 수출 매출 비교',
+    '일별 총매출 추이',
+    '브랜드별 판매수량 합계',
+    '고객그룹별 매출총이익',
+    '영업팀별 영업이익 순위',
 ];
 
 const SCHEMA_COLUMNS = [
