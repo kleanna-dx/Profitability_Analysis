@@ -5,6 +5,14 @@ import mysql from 'mysql2/promise';
 import OpenAI from 'openai';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  buildRagIndex,
+  searchRelevantMeta,
+  ragResultToPromptContext,
+  addToIndex,
+  removeFromIndex,
+  getRagStats,
+} from './rag.mjs';
 
 const app = express();
 app.use(cors());
@@ -184,112 +192,130 @@ const METRIC_DICTIONARY = `
 `;
 
 // ============================================================
-// System Prompt (동적 생성 - 코드값 매핑 포함)
+// RAG 상태 관리
 // ============================================================
-async function buildSystemPrompt() {
-  let codeMappingText = '';
+let ragReady = false;  // RAG 인덱스 빌드 완료 여부
+
+// ============================================================
+// System Prompt (RAG 기반 동적 생성)
+// ============================================================
+// 핵심 규칙만 포함한 경량 기본 프롬프트 (RAG 컨텍스트가 동적으로 추가됨)
+const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문가입니다.
+사용자의 자연어 질문을 MariaDB SQL로 변환합니다.
+
+[핵심 규칙]
+1. SELECT 문만 생성 (INSERT/UPDATE/DELETE/DROP 절대 금지)
+2. 테이블은 bw_profitability_data 하나만 사용
+3. 계산 지표는 반드시 아래 제공된 Metric Dictionary만 사용 (새로운 수식 창작 금지)
+4. 결과 행은 최대 1000행 (LIMIT 1000)
+5. **금액 표시**: FORMAT(SUM(ZAMT***), 0) AS 별칭. **ORDER BY에는 FORMAT 별칭 사용 금지!** → ORDER BY SUM(ZAMT***) DESC 사용
+6. 비율: ROUND(..., 1), 소수점 1자리
+7. GROUP BY 시 반드시 집계 함수 사용
+8. 컬럼 alias는 한글
+9. 정렬: 금액 DESC, 코드 ASC
+10. NULL 방지: COALESCE 또는 IFNULL
+11. _NM 컬럼 없음 → CASE WHEN으로 명칭 표시
+12. 코드매핑 컬럼은 GROUP BY 코드컬럼 + CASE WHEN 명칭
+13. 명칭으로 질문 시 코드값으로 WHERE
+14. PROFIT_CTR: 10자리 선행0 (예: '0000002000')
+15. 자재명: MATERIAL_DESC (MATERIAL_NM 없음)
+16. 브랜드: ZBRAND1, ZBRAND2
+17. 수량: ZQTYBOX(BOX), ZQTYBAG(BAG), ZQTYKGEA(KG/EA)
+18. 수량단위: ZUNITBOX, ZUNITBAG, ZUNITKGEA
+19. **학습 데이터 우선**: 아래 RAG 컨텍스트에 유사 질문의 검증된 SQL이 있으면 우선 사용
+
+응답 형식 (반드시 JSON):
+{
+  "sql": "SELECT ...",
+  "explanation": "이 쿼리는 ... 을 조회합니다",
+  "chartType": "bar|line|pie|table",
+  "chartConfig": {
+    "labelColumn": "라벨컬럼alias",
+    "dataColumns": ["데이터컬럼alias"],
+    "title": "차트 제목"
+  }
+}
+
+chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(상세 데이터)
+`;
+
+/**
+ * RAG 기반 시스템 프롬프트 생성
+ * - 질문과 관련된 메타데이터만 검색하여 프롬프트에 주입
+ * - 전체 덤프(프롬프트 스터핑) 대신 필요한 컨텍스트만 포함
+ * @param {string} query - 사용자 질문
+ * @returns {Promise<{prompt: string, ragContext: Object}>}
+ */
+async function buildRAGSystemPrompt(query) {
+  let ragContext = null;
+  let contextText = '';
+
+  if (ragReady) {
+    try {
+      // RAG 검색: 질문 관련 메타데이터 청크 검색
+      ragContext = await searchRelevantMeta(pool, query, {
+        topK: 25,
+        minScore: 0.20,
+        schemaTopK: 12,
+        metricTopK: 5,
+        feedbackTopK: 5,
+        codeMappingTopK: 5,
+        ruleTopK: 5,
+      });
+      contextText = ragResultToPromptContext(ragContext);
+      console.log(`[RAG] 프롬프트 컨텍스트 길이: ${contextText.length}자`);
+    } catch (e) {
+      console.error('[RAG] 검색 실패, 폴백 프롬프트 사용:', e.message);
+      contextText = await buildFallbackContext();
+    }
+  } else {
+    // RAG 미준비 시 폴백 (기존 방식과 동일하게 전체 로드)
+    console.warn('[RAG] 인덱스 미준비, 폴백 프롬프트 사용');
+    contextText = await buildFallbackContext();
+  }
+
+  // 기본 스키마 정보는 항상 포함 (RAG가 충분한 스키마를 못 찾을 수 있으므로)
+  const prompt = BASE_SYSTEM_PROMPT + '\n' + TABLE_SCHEMA + '\n' + METRIC_DICTIONARY
+    + '\n\n--- RAG 검색 컨텍스트 (질문 관련 메타데이터) ---\n' + contextText;
+
+  return { prompt, ragContext };
+}
+
+/**
+ * RAG 미준비 시 폴백: 기존 프롬프트 스터핑 방식
+ */
+async function buildFallbackContext() {
+  let ctx = '';
   try {
     const [rows] = await pool.query(
       `SELECT column_name, column_name_nm, code_value, display_name
        FROM code_mapping WHERE is_active = 1 ORDER BY column_name, code_value`
     );
     if (rows.length > 0) {
-      // 컬럼별로 그룹핑
       const grouped = {};
       for (const r of rows) {
-        if (!grouped[r.column_name]) grouped[r.column_name] = { nm: r.column_name_nm, items: [] };
-        grouped[r.column_name].items.push({ code: r.code_value, name: r.display_name });
+        if (!grouped[r.column_name]) grouped[r.column_name] = [];
+        grouped[r.column_name].push({ code: r.code_value, name: r.display_name });
       }
-      codeMappingText = '\n\n코드값-명칭 매핑 사전 (Code Mapping Dictionary):\n';
-      codeMappingText += '**중요 규칙**:\n';
-      codeMappingText += '1. 이 테이블에는 _NM(명칭) 컬럼이 전혀 없습니다. 절대로 _NM 컬럼을 참조하지 마세요.\n';
-      codeMappingText += '2. GROUP BY/SELECT에는 반드시 코드 컬럼(예: PROFIT_CTR)을 기준으로 사용하세요.\n';
-      codeMappingText += '3. 명칭 표시는 반드시 CASE WHEN으로 변환하세요. 예:\n';
-      codeMappingText += '   CASE PROFIT_CTR WHEN \'0000002000\' THEN \'제지사업부\' WHEN \'0000001000\' THEN \'생활용품사업부\' ELSE PROFIT_CTR END AS 손익센터\n';
-      codeMappingText += '4. PROFIT_CTR은 10자리 선행0 포함 형태입니다 (예: 0000002000, 0000001000). WHERE/CASE에서 반드시 이 형태로 비교하세요.\n';
-      codeMappingText += '5. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR=\'0000002000\')으로 WHERE 필터링하세요.\n';
-      codeMappingText += '6. MATERIAL_DESC 컬럼에 자재명이 있으므로 자재명 조회 시 이 컬럼을 사용하세요.\n\n';
-      for (const [col, info] of Object.entries(grouped)) {
-        codeMappingText += `[${col}]:\n`;
-        for (const item of info.items) {
-          codeMappingText += `  '${item.code}' = ${item.name}\n`;
-        }
+      ctx += '\n[코드값 매핑]\n';
+      for (const [col, items] of Object.entries(grouped)) {
+        ctx += `${col}: ${items.map(i => `${i.code}=${i.name}`).join(', ')}\n`;
       }
     }
-  } catch (e) {
-    console.error('[CodeMapping] 프롬프트 빌드 실패:', e.message);
-  }
-
-  // 피드백 학습 데이터 로드
-  let feedbackText = '';
+  } catch (e) { /* 무시 */ }
   try {
     const [fbRows] = await pool.query(
-      `SELECT query_text, corrected_sql FROM sql_feedback WHERE is_active = 1 ORDER BY created_at DESC LIMIT 30`
+      `SELECT query_text, corrected_sql, feedback_type FROM sql_feedback WHERE is_active = 1 ORDER BY created_at DESC LIMIT 20`
     );
     if (fbRows.length > 0) {
-      feedbackText = '\n\n사용자 검증 완료 SQL 예시 (동일/유사 질문 시 이 SQL을 그대로 사용하세요):\n';
+      ctx += '\n[검증된 SQL 예시]\n';
       for (const fb of fbRows) {
-        const typeLabel = fb.feedback_type === 'corrected' ? '[사용자 수정 - 최우선]' : '[검증 완료]';
-        feedbackText += `${typeLabel} 질문: "${fb.query_text}"\nSQL: ${fb.corrected_sql}\n\n`;
+        const label = fb.feedback_type === 'corrected' ? '[수정]' : '[검증]';
+        ctx += `${label} "${fb.query_text}" → ${fb.corrected_sql}\n`;
       }
     }
-  } catch (e) {
-    console.error('[Feedback] 학습 데이터 로드 실패:', e.message);
-  }
-
-  return `당신은 수익성 분석 데이터베이스 전문가입니다.
-사용자의 자연어 질문을 MariaDB SQL로 변환합니다.
-
-규칙:
-1. SELECT 문만 생성 (INSERT/UPDATE/DELETE/DROP 절대 금지)
-2. 테이블은 bw_profitability_data 하나만 사용
-3. 계산 지표는 반드시 아래 Metric Dictionary만 사용 (새로운 수식을 만들지 마세요)
-4. 결과 행은 최대 1000행으로 제한 (LIMIT 1000)
-5. **금액 표시 (매우 중요)**:
-   - SELECT에서 FORMAT(SUM(ZAMT***), 0) AS 별칭 으로 천 단위 콤마 포함 표시
-   - **ORDER BY에서는 절대로 FORMAT() 별칭을 사용하지 마세요!** FORMAT()은 문자열을 반환하므로 문자열 정렬(사전순)이 됩니다
-   - ORDER BY에는 반드시 원본 집계식을 사용하세요. 예: ORDER BY SUM(ZAMT001) DESC
-   - 올바른 예: SELECT FORMAT(SUM(ZAMT001), 0) AS 총매출 ... ORDER BY SUM(ZAMT001) DESC
-   - 잘못된 예: SELECT FORMAT(SUM(ZAMT001), 0) AS 총매출 ... ORDER BY 총매출 DESC  ← 문자열 정렬됨!
-   - 수량도 동일: FORMAT(SUM(ZQTYBOX), 0) AS BOX수량 ... ORDER BY SUM(ZQTYBOX) DESC
-6. 비율 표시: ROUND(..., 1) 사용, 소수점 1자리
-7. GROUP BY 사용 시 반드시 집계 함수(SUM, COUNT, AVG 등) 사용
-8. 컬럼 alias는 한글로 작성 (예: AS 총매출, AS 플랜트별)
-9. 정렬은 의미 있는 순서로 (금액은 DESC, 코드는 ASC)
-10. NULL 방지를 위해 COALESCE 또는 IFNULL 사용
-11. 이 테이블에는 _NM(명칭) 컬럼이 없습니다. 절대로 PROFIT_CTR_NM, DIVISION_NM 등 _NM 컬럼을 사용하지 마세요
-12. 코드값 매핑이 등록된 컬럼은 GROUP BY에 코드 컬럼을 사용하고, SELECT에서 CASE WHEN으로 명칭을 표시하세요
-13. 사용자가 명칭(예: "제지사업부")으로 질문하면 코드값(예: PROFIT_CTR='0000002000')으로 WHERE 조건을 작성하세요
-14. PROFIT_CTR은 10자리 선행0 포함 형태입니다 (예: '0000002000', '0000001000'). 반드시 이 형태로 비교하세요
-15. 자재명은 MATERIAL_DESC 컬럼을 사용하세요 (MATERIAL_NM 컬럼은 없습니다)
-16. 브랜드 컬럼은 ZBRAND1(브랜드1), ZBRAND2(브랜드2)입니다 (ZBRAND, ZSBRAND 컬럼은 없습니다)
-17. 수량 컬럼은 ZQTYBOX(BOX), ZQTYBAG(BAG), ZQTYKGEA(KG/EA)입니다 (ZQTY_BOX, ZQTY_BAG, ZQTY_KE 컬럼은 없습니다)
-18. 수량단위 컬럼은 ZUNITBOX, ZUNITBAG, ZUNITKGEA입니다 (ZBOXUNIT, ZBAGUNIT, ZUNIT 컬럼은 없습니다)
-19. **중요 - 학습 데이터 우선 사용**: 아래 "사용자 검증 완료 SQL 예시"에 동일하거나 유사한 질문이 있으면, 해당 SQL을 최대한 그대로 사용하세요. 특히 corrected 타입의 SQL은 사용자가 직접 수정한 것이므로 반드시 우선 적용하세요.
-
-응답 형식 (반드시 JSON으로):
-{
-  "sql": "SELECT ...",
-  "explanation": "이 쿼리는 ... 을 조회합니다",
-  "chartType": "bar|line|pie|table",
-  "chartConfig": {
-    "labelColumn": "라벨이 될 컬럼명(alias)",
-    "dataColumns": ["데이터 컬럼명(alias) 배열"],
-    "title": "차트 제목"
-  }
-}
-
-chartType 선택 기준:
-- bar: 카테고리별 비교 (예: 플랜트별, 브랜드별)
-- line: 시계열 추이 (예: 월별, 일별)
-- pie: 비율/구성비 (예: 제품군별 매출 비중)
-- table: 상세 데이터, 다수 컬럼
-
-${TABLE_SCHEMA}
-
-${METRIC_DICTIONARY}
-${codeMappingText}
-${feedbackText}`;
+  } catch (e) { /* 무시 */ }
+  return ctx;
 }
 
 // ============================================================
@@ -348,8 +374,10 @@ app.post('/api/nlq', async (req, res) => {
         chartConfig = {};
       }
     } else {
-      // 1. ChatGPT로 SQL 생성 (코드값 매핑 포함 동적 프롬프트)
-      const systemPrompt = await buildSystemPrompt();
+      // 1. RAG 기반 SQL 생성 (질문 관련 메타데이터만 검색하여 프롬프트에 주입)
+      const { prompt: systemPrompt, ragContext } = await buildRAGSystemPrompt(query);
+      console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady})`);
+
       const completion = await openai.chat.completions.create({
         model: 'gpt-5-mini',
         messages: [
@@ -399,12 +427,13 @@ app.post('/api/nlq', async (req, res) => {
       success: true,
       query,
       sql,
-      explanation: explanation + (matchedSql ? ' 📚' : ''),
+      explanation: explanation + (matchedSql ? ' 📚' : (ragReady ? ' 🔍 RAG' : '')),
       chartType: chartType || 'table',
       chartConfig: chartConfig || {},
       data: rows,
       rowCount: rows.length,
       executionTimeMs: execTime,
+      ragEnabled: ragReady,
     };
 
     // 4. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
@@ -493,11 +522,20 @@ app.delete('/api/history', async (req, res) => {
 app.get('/api/status', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT COUNT(*) AS cnt FROM bw_profitability_data');
+    let ragStats = null;
+    try {
+      ragStats = await getRagStats(pool);
+    } catch (e) { /* 무시 */ }
     res.json({
       db: 'connected',
       table: 'bw_profitability_data',
       totalRows: rows[0].cnt,
       ai: 'gpt-5-mini',
+      rag: {
+        enabled: ragReady,
+        totalChunks: ragStats?.total || 0,
+        byType: ragStats?.byType || {},
+      },
     });
   } catch (err) {
     res.status(500).json({ db: 'error', error: err.message });
@@ -743,6 +781,24 @@ app.post('/api/code-mapping', async (req, res) => {
       'INSERT INTO code_mapping (column_name, column_name_nm, code_value, display_name, table_name, description) VALUES (?,?,?,?,?,?)',
       [column_name, column_name_nm || null, code_value, display_name, table_name || 'bw_profitability_data', description || '']
     );
+
+    // RAG 인덱스 갱신: 해당 컬럼의 매핑 전체를 재인덱싱 (비동기)
+    if (ragReady) {
+      (async () => {
+        try {
+          await removeFromIndex(pool, 'code_mapping', null); // 기존 코드매핑 청크 제거
+          const [cmRows] = await pool.query(
+            `SELECT column_name, GROUP_CONCAT(CONCAT(code_value, '=', display_name) ORDER BY code_value SEPARATOR ', ') AS mappings
+             FROM code_mapping WHERE is_active = 1 GROUP BY column_name`
+          );
+          for (const cm of cmRows) {
+            const text = `코드매핑: ${cm.column_name} 값 목록 - ${cm.mappings}`;
+            await addToIndex(pool, 'code_mapping', null, text, { column_name: cm.column_name, mappings: cm.mappings });
+          }
+        } catch (e) { console.error('[RAG] 코드매핑 재인덱싱 실패:', e.message); }
+      })();
+    }
+
     res.json({ id: r.insertId, column_name, column_name_nm, code_value, display_name });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: '이미 등록된 코드값입니다.' });
@@ -813,6 +869,15 @@ app.post('/api/feedback', async (req, res) => {
       'INSERT INTO sql_feedback (query_text, original_sql, corrected_sql, feedback_type) VALUES (?,?,?,?)',
       [query_text, original_sql, finalSql, feedback_type]
     );
+
+    // RAG 인덱스에 자동 추가 (비동기)
+    if (ragReady) {
+      const chunkText = `검증된 SQL 예시 [${feedback_type}]: 질문="${query_text}" → SQL: ${finalSql}`;
+      addToIndex(pool, 'feedback', r.insertId, chunkText, {
+        query_text, corrected_sql: finalSql, feedback_type
+      }).catch(e => console.error('[RAG] 피드백 인덱싱 실패:', e.message));
+    }
+
     res.json({ id: r.insertId, success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -870,6 +935,8 @@ app.get('/api/learning/stats', async (req, res) => {
     const [ms] = await pool.query('SELECT COUNT(*) AS cnt FROM metric_synonym');
     const [j] = await pool.query('SELECT COUNT(*) AS cnt FROM join_condition');
     const [cm] = await pool.query('SELECT COUNT(*) AS cnt FROM code_mapping WHERE is_active=1');
+    let ragStats = null;
+    try { ragStats = await getRagStats(pool); } catch (e) { /* 무시 */ }
     res.json({
       ontologyColumns: o[0].cnt,
       ontologySynonyms: os[0].cnt,
@@ -877,7 +944,54 @@ app.get('/api/learning/stats', async (req, res) => {
       metricSynonyms: ms[0].cnt,
       joins: j[0].cnt,
       codeMappings: cm[0].cnt,
+      rag: {
+        enabled: ragReady,
+        totalChunks: ragStats?.total || 0,
+        byType: ragStats?.byType || {},
+      },
     });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
+// RAG 관리 API
+// ============================================================
+
+// RAG 인덱스 빌드 (전체 리빌드)
+app.post('/api/rag/build', async (req, res) => {
+  try {
+    console.log('[RAG API] 인덱스 빌드 요청');
+    const count = await buildRagIndex(pool);
+    ragReady = true;
+    res.json({ success: true, totalChunks: count, message: `RAG 인덱스 빌드 완료: ${count}개 청크` });
+  } catch (err) {
+    console.error('[RAG API] 빌드 실패:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// RAG 상태 조회
+app.get('/api/rag/stats', async (req, res) => {
+  try {
+    const stats = await getRagStats(pool);
+    res.json({ ragReady, ...stats });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// RAG 검색 테스트 (디버깅용)
+app.post('/api/rag/search', async (req, res) => {
+  const { query, topK } = req.body;
+  if (!query) return res.status(400).json({ error: 'query 필수' });
+  try {
+    if (!ragReady) return res.status(400).json({ error: 'RAG 인덱스가 빌드되지 않았습니다. POST /api/rag/build를 먼저 실행하세요.' });
+    const result = await searchRelevantMeta(pool, query, { topK: topK || 15 });
+    const context = ragResultToPromptContext(result);
+    // 점수 정보 포함하여 반환
+    const summary = {};
+    for (const [cat, items] of Object.entries(result)) {
+      summary[cat] = items.map(i => ({ text: i.text.substring(0, 120), score: Math.round(i.score * 1000) / 1000 }));
+    }
+    res.json({ summary, contextLength: context.length, contextPreview: context.substring(0, 500) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -889,9 +1003,52 @@ app.get('/{*splat}', (req, res) => {
 });
 
 // ============================================================
-// Start
+// Start + RAG 자동 초기화
 // ============================================================
 const PORT = 3000;
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 NLQ Server running on http://0.0.0.0:${PORT}`);
+
+  // 서버 시작 시 RAG 인덱스 자동 빌드 (비동기, 서버 응답에 영향 없음)
+  try {
+    // rag_embeddings 테이블 존재 확인
+    const [tables] = await pool.query(
+      `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.TABLES 
+       WHERE TABLE_SCHEMA = 'company_board' AND TABLE_NAME = 'rag_embeddings'`
+    );
+    if (tables[0].cnt === 0) {
+      console.log('[RAG] rag_embeddings 테이블이 없습니다. 생성합니다...');
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS rag_embeddings (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          chunk_type ENUM('schema','ontology','metric','code_mapping','feedback','join_condition','rule') NOT NULL,
+          source_id INT NULL,
+          chunk_text TEXT NOT NULL,
+          embedding LONGTEXT CHARACTER SET utf8mb4 NOT NULL CHECK (JSON_VALID(embedding)),
+          metadata LONGTEXT CHARACTER SET utf8mb4 CHECK (JSON_VALID(metadata)),
+          is_active TINYINT DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_rag_type (chunk_type),
+          INDEX idx_rag_source (chunk_type, source_id),
+          INDEX idx_rag_active (is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RAG 메타데이터 벡터 인덱스'
+      `);
+    }
+
+    // 기존 인덱스 확인
+    const [existing] = await pool.query('SELECT COUNT(*) AS cnt FROM rag_embeddings WHERE is_active = 1');
+    if (existing[0].cnt > 0) {
+      ragReady = true;
+      console.log(`[RAG] ✅ 기존 인덱스 로드됨: ${existing[0].cnt}개 청크`);
+    } else {
+      console.log('[RAG] 인덱스 비어있음, 자동 빌드 시작...');
+      const count = await buildRagIndex(pool);
+      ragReady = true;
+      console.log(`[RAG] ✅ 자동 빌드 완료: ${count}개 청크`);
+    }
+  } catch (e) {
+    console.error('[RAG] 초기화 실패 (폴백 모드로 계속):', e.message);
+    ragReady = false;
+  }
 });
