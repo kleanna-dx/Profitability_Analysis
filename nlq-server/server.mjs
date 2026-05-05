@@ -349,11 +349,13 @@ app.post('/api/nlq', async (req, res) => {
     }
 
     let sql, explanation, chartType, chartConfig;
+    let ragInfo = null;  // RAG 검색 상세 정보
 
     if (matchedSql) {
       // 학습 데이터 매칭 → AI 호출 없이 직접 사용
       sql = matchedSql;
       explanation = '학습된 SQL을 사용합니다 (사용자 검증 완료).';
+      ragInfo = { mode: 'learned', chunksUsed: 0, promptLength: 0, details: {} };
       // 차트 타입은 AI에게 간단히 판별 요청 (비용 절약을 위해 짧은 프롬프트)
       try {
         const chartCompletion = await openai.chat.completions.create({
@@ -377,6 +379,24 @@ app.post('/api/nlq', async (req, res) => {
       // 1. RAG 기반 SQL 생성 (질문 관련 메타데이터만 검색하여 프롬프트에 주입)
       const { prompt: systemPrompt, ragContext } = await buildRAGSystemPrompt(query);
       console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady})`);
+
+      // RAG 검색 상세 정보 수집
+      if (ragContext) {
+        ragInfo = {
+          mode: 'rag',
+          chunksUsed: Object.values(ragContext).reduce((s, arr) => s + arr.length, 0),
+          promptLength: systemPrompt.length,
+          details: {},
+        };
+        for (const [cat, items] of Object.entries(ragContext)) {
+          if (items.length > 0) {
+            ragInfo.details[cat] = items.map(i => ({
+              text: i.text.substring(0, 80),
+              score: Math.round(i.score * 1000) / 1000,
+            }));
+          }
+        }
+      }
 
       const completion = await openai.chat.completions.create({
         model: 'gpt-5-mini',
@@ -434,6 +454,7 @@ app.post('/api/nlq', async (req, res) => {
       rowCount: rows.length,
       executionTimeMs: execTime,
       ragEnabled: ragReady,
+      ragInfo: ragInfo,
     };
 
     // 4. 이력 저장 (비동기, 실패해도 응답에 영향 없음)

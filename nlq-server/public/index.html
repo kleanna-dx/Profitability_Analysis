@@ -120,6 +120,61 @@
         }
         .meta-badge.rows{background:#dbeafe;color:#2563eb;}
         .meta-badge.time{background:#f1f5f9;color:#64748b;}
+        .meta-badge.rag{background:#ecfdf5;color:#059669;border:1px solid #a7f3d0;}
+        .meta-badge.learned{background:#fef3c7;color:#d97706;border:1px solid #fde68a;}
+        .meta-badge.fallback{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}
+
+        /* RAG 검색 상세 패널 */
+        .rag-detail-panel{
+            margin:8px 16px 4px;padding:10px 14px;border-radius:8px;
+            background:linear-gradient(135deg,#f0fdf4,#ecfdf5);border:1px solid #bbf7d0;
+            font-size:12px;color:#064e3b;cursor:pointer;transition:all .2s;
+        }
+        .rag-detail-panel:hover{border-color:#6ee7b7;}
+        .rag-detail-panel .rag-header{
+            display:flex;align-items:center;gap:8px;font-weight:600;
+        }
+        .rag-detail-panel .rag-header i{color:#10b981;}
+        .rag-detail-panel .rag-chunks{
+            display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;
+        }
+        .rag-detail-panel .rag-chunk-tag{
+            font-size:10px;padding:2px 7px;border-radius:6px;
+            background:#d1fae5;color:#065f46;font-weight:500;
+        }
+        .rag-detail-panel .rag-chunk-tag.feedback{background:#dbeafe;color:#1e40af;}
+        .rag-detail-panel .rag-chunk-tag.metric{background:#ede9fe;color:#5b21b6;}
+        .rag-detail-panel .rag-chunk-tag.code_mapping{background:#fef3c7;color:#92400e;}
+        .rag-detail-panel .rag-chunk-tag.rule{background:#fce7f3;color:#9d174d;}
+        .rag-detail-panel .rag-items{
+            margin-top:8px;font-size:11px;color:#047857;max-height:0;
+            overflow:hidden;transition:max-height .3s ease;
+        }
+        .rag-detail-panel .rag-items.open{max-height:500px;}
+        .rag-detail-panel .rag-item{
+            display:flex;align-items:flex-start;gap:6px;padding:3px 0;
+            border-bottom:1px solid rgba(167,243,208,0.4);
+        }
+        .rag-detail-panel .rag-item:last-child{border-bottom:none;}
+        .rag-detail-panel .rag-score{
+            font-size:10px;font-weight:700;color:#059669;min-width:38px;
+            text-align:right;font-family:monospace;
+        }
+        .rag-detail-panel .rag-item-text{flex:1;word-break:break-all;}
+
+        /* 학습 데이터 매칭 패널 */
+        .learned-detail-panel{
+            margin:8px 16px 4px;padding:10px 14px;border-radius:8px;
+            background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1px solid #fde68a;
+            font-size:12px;color:#78350f;
+        }
+        .learned-detail-panel .learned-header{
+            display:flex;align-items:center;gap:8px;font-weight:600;
+        }
+        .learned-detail-panel .learned-header i{color:#d97706;}
+
+        /* 상단바 RAG pill */
+        .status-pill .dot.purple{background:#8b5cf6;box-shadow:0 0 5px rgba(139,92,246,0.4);}
 
         /* Result tabs inside bot message */
         .res-tabs{
@@ -408,6 +463,10 @@
                 <i class="fas fa-database text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
                 <span id="sideDataLabel">데이터: -</span>
             </div>
+            <div class="flex items-center gap-2" id="sideRagRow" style="display:none;">
+                <i class="fas fa-brain text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
+                <span id="sideRagLabel">RAG: -</span>
+            </div>
         </div>
     </div>
 
@@ -460,6 +519,10 @@
         </div>
         <div class="status-pill hidden sm:flex">
             <span id="topDataLabel">데이터: -</span>
+        </div>
+        <div class="status-pill" id="topRagPill" style="display:none;">
+            <span id="topRagDot" class="dot"></span>
+            <span id="topRagLabel">RAG</span>
         </div>
     </div>
 
@@ -556,6 +619,37 @@ window.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('sideAiLabel').textContent = 'ChatGPT API 연결됨';
         document.getElementById('sideModelLabel').textContent = 'Model: ' + d.ai;
         document.getElementById('sideDataLabel').textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
+        // RAG 상태 표시
+        if (d.rag) {
+            const ragPill = document.getElementById('topRagPill');
+            const ragDot = document.getElementById('topRagDot');
+            const ragLabel = document.getElementById('topRagLabel');
+            ragPill.style.display = 'flex';
+            if (d.rag.enabled) {
+                ragDot.classList.add('purple');
+                ragLabel.textContent = 'RAG ' + d.rag.totalChunks + '청크';
+            } else {
+                ragLabel.textContent = 'RAG 대기';
+            }
+            // 사이드바
+            const sideRagRow = document.getElementById('sideRagRow');
+            const sideRagLabel = document.getElementById('sideRagLabel');
+            sideRagRow.style.display = 'flex';
+            if (d.rag.enabled) {
+                const types = d.rag.byType;
+                const parts = [];
+                if (types.schema) parts.push('스키마 ' + types.schema);
+                if (types.ontology) parts.push('온톨로지 ' + types.ontology);
+                if (types.metric) parts.push('메트릭 ' + types.metric);
+                if (types.feedback) parts.push('피드백 ' + types.feedback);
+                if (types.code_mapping) parts.push('코드매핑 ' + types.code_mapping);
+                if (types.rule) parts.push('규칙 ' + types.rule);
+                sideRagLabel.textContent = 'RAG 활성 (' + d.rag.totalChunks + '청크)';
+                sideRagLabel.title = parts.join(', ');
+            } else {
+                sideRagLabel.textContent = 'RAG 비활성 (폴백 모드)';
+            }
+        }
     } catch(e) {
         document.getElementById('topDbLabel').textContent = 'DB 오류';
     }
@@ -713,6 +807,80 @@ async function sendQuery(query) {
 }
 
 // ============================================================
+// RAG 상태 표시 헬퍼
+// ============================================================
+function buildRagBadge(data) {
+    if (!data.ragInfo) return '';
+    if (data.ragInfo.mode === 'learned') {
+        return '<span class="meta-badge learned"><i class="fas fa-graduation-cap mr-1"></i>학습 SQL</span>';
+    }
+    if (data.ragInfo.mode === 'rag') {
+        return `<span class="meta-badge rag"><i class="fas fa-brain mr-1"></i>RAG ${data.ragInfo.chunksUsed}청크</span>`;
+    }
+    return '<span class="meta-badge fallback"><i class="fas fa-exclamation-triangle mr-1"></i>폴백</span>';
+}
+
+function buildRagDetailPanel(msgId, data) {
+    if (!data.ragInfo) return '';
+
+    if (data.ragInfo.mode === 'learned') {
+        return `<div class="learned-detail-panel">
+            <div class="learned-header">
+                <i class="fas fa-graduation-cap"></i>
+                <span>학습 데이터 정확 매칭</span>
+            </div>
+            <div style="margin-top:6px;font-size:11px;color:#92400e;">
+                사용자가 검증한 SQL을 직접 사용했습니다. AI 호출 없이 즉시 실행됩니다.
+            </div>
+        </div>`;
+    }
+
+    if (data.ragInfo.mode === 'rag' && data.ragInfo.details) {
+        const details = data.ragInfo.details;
+        const catNames = {
+            schema: '스키마', ontology: '온톨로지', metric: '메트릭',
+            code_mapping: '코드매핑', feedback: '피드백 SQL', join_condition: '조인', rule: '규칙'
+        };
+        const catIcons = {
+            schema: 'fa-columns', ontology: 'fa-project-diagram', metric: 'fa-calculator',
+            code_mapping: 'fa-exchange-alt', feedback: 'fa-check-double', join_condition: 'fa-link', rule: 'fa-gavel'
+        };
+
+        let chunkTags = '';
+        let itemsHtml = '';
+        let totalChunks = 0;
+        for (const [cat, items] of Object.entries(details)) {
+            totalChunks += items.length;
+            chunkTags += `<span class="rag-chunk-tag ${cat}"><i class="fas ${catIcons[cat] || 'fa-tag'} mr-1" style="font-size:9px;"></i>${catNames[cat] || cat} ${items.length}</span>`;
+            for (const item of items) {
+                itemsHtml += `<div class="rag-item">
+                    <span class="rag-score">${item.score.toFixed(3)}</span>
+                    <span class="rag-chunk-tag ${cat}" style="flex-shrink:0;">${catNames[cat] || cat}</span>
+                    <span class="rag-item-text">${esc(item.text)}</span>
+                </div>`;
+            }
+        }
+
+        return `<div class="rag-detail-panel" onclick="toggleRagItems('${msgId}')">
+            <div class="rag-header">
+                <i class="fas fa-brain"></i>
+                <span>RAG 메타데이터 검색 — ${totalChunks}개 청크 사용</span>
+                <span style="margin-left:auto;font-size:10px;color:#6ee7b7;">▼ 클릭하여 상세</span>
+            </div>
+            <div class="rag-chunks">${chunkTags}</div>
+            <div class="rag-items" id="${msgId}_ragItems">${itemsHtml}</div>
+        </div>`;
+    }
+
+    return '';
+}
+
+function toggleRagItems(msgId) {
+    const el = document.getElementById(msgId + '_ragItems');
+    if (el) el.classList.toggle('open');
+}
+
+// ============================================================
 // Append Bot Message (Result)
 // ============================================================
 function appendBotMessage(data) {
@@ -772,9 +940,11 @@ function appendBotMessage(data) {
                     <div class="msg-bot-meta">
                         <span class="meta-badge rows"><i class="fas fa-table mr-1"></i>${data.rowCount || 0}행</span>
                         <span class="meta-badge time"><i class="fas fa-clock mr-1"></i>${data.executionTimeMs || 0}ms</span>
+                        ${buildRagBadge(data)}
                     </div>
                 </div>
             </div>
+            ${buildRagDetailPanel(id, data)}
             ${tabsHtml}
             <div id="${id}_table" class="res-panel active">
                 ${tableHtml}
