@@ -751,9 +751,10 @@ function appendBotMessage(data) {
             t += `<tr><td class="text-gray-400">${i+1}</td>`;
             cols.forEach(c => {
                 let v = row[c];
+                const isNum = typeof v === 'number' || (typeof v === 'string' && isNumericValue(v));
                 if (v === null || v === undefined) v = '-';
                 else if (typeof v === 'number') v = v.toLocaleString('ko-KR');
-                const align = typeof row[c] === 'number' ? 'text-right font-mono' : '';
+                const align = isNum ? 'text-right font-mono' : '';
                 t += `<td class="${align}">${esc(String(v))}</td>`;
             });
             t += '</tr>';
@@ -850,6 +851,19 @@ function appendErrorMessage(msg) {
 // ============================================================
 // Render Chart in Message
 // ============================================================
+// 콤마 포함 문자열("23,315,156,162")을 숫자로 파싱하는 헬퍼
+function parseNumeric(v) {
+    if (v === null || v === undefined || v === '') return NaN;
+    if (typeof v === 'number') return v;
+    // 콤마 제거 후 숫자 변환 (FORMAT() 결과 대응)
+    const stripped = String(v).replace(/,/g, '');
+    return Number(stripped);
+}
+// 숫자 또는 콤마 포함 숫자 문자열인지 판별
+function isNumericValue(v) {
+    return !isNaN(parseNumeric(v));
+}
+
 function renderMsgChart(canvasId, data) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
@@ -865,11 +879,12 @@ function renderMsgChart(canvasId, data) {
     const columns = Object.keys(rows[0]);
     const labelCol = config.labelColumn || columns[0];
     let dataCols = config.dataColumns || columns.filter(c => c !== labelCol);
+    // FORMAT() 결과(콤마 포함 문자열)도 숫자로 인식
     dataCols = dataCols.filter(c => {
         const v = rows[0][c];
-        return typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)));
+        return isNumericValue(v);
     });
-    if (dataCols.length === 0) dataCols = columns.filter(c => c !== labelCol && typeof rows[0][c] === 'number');
+    if (dataCols.length === 0) dataCols = columns.filter(c => c !== labelCol && isNumericValue(rows[0][c]));
     if (dataCols.length === 0) return;
 
     const labels = rows.map(r => r[labelCol] != null ? String(r[labelCol]) : '');
@@ -884,14 +899,14 @@ function renderMsgChart(canvasId, data) {
     let datasets;
     if (chartType === 'pie' || chartType === 'doughnut') {
         datasets = [{
-            data: rows.map(r => Number(r[dataCols[0]]) || 0),
+            data: rows.map(r => parseNumeric(r[dataCols[0]]) || 0),
             backgroundColor: colors.slice(0, rows.length),
             borderWidth: 2, borderColor: '#fff',
         }];
     } else {
         datasets = dataCols.map((c, i) => ({
             label: c,
-            data: rows.map(r => Number(r[c]) || 0),
+            data: rows.map(r => parseNumeric(r[c]) || 0),
             backgroundColor: colors[i % colors.length],
             borderColor: borders[i % borders.length],
             borderWidth: chartType === 'line' ? 2.5 : 1,
