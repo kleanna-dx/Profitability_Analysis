@@ -245,7 +245,13 @@ async function buildSystemPrompt() {
 2. 테이블은 bw_profitability_data 하나만 사용
 3. 계산 지표는 반드시 아래 Metric Dictionary만 사용 (새로운 수식을 만들지 마세요)
 4. 결과 행은 최대 1000행으로 제한 (LIMIT 1000)
-5. 금액 표시: FORMAT(SUM(ZAMT***), 0) 사용하여 천 단위 콤마 포함. 정렬이 필요하면 SUM(ZAMT***)으로 ORDER BY하고, SELECT에는 FORMAT() 적용 컬럼만 표시
+5. **금액 표시 (매우 중요)**:
+   - SELECT에서 FORMAT(SUM(ZAMT***), 0) AS 별칭 으로 천 단위 콤마 포함 표시
+   - **ORDER BY에서는 절대로 FORMAT() 별칭을 사용하지 마세요!** FORMAT()은 문자열을 반환하므로 문자열 정렬(사전순)이 됩니다
+   - ORDER BY에는 반드시 원본 집계식을 사용하세요. 예: ORDER BY SUM(ZAMT001) DESC
+   - 올바른 예: SELECT FORMAT(SUM(ZAMT001), 0) AS 총매출 ... ORDER BY SUM(ZAMT001) DESC
+   - 잘못된 예: SELECT FORMAT(SUM(ZAMT001), 0) AS 총매출 ... ORDER BY 총매출 DESC  ← 문자열 정렬됨!
+   - 수량도 동일: FORMAT(SUM(ZQTYBOX), 0) AS BOX수량 ... ORDER BY SUM(ZQTYBOX) DESC
 6. 비율 표시: ROUND(..., 1) 사용, 소수점 1자리
 7. GROUP BY 사용 시 반드시 집계 함수(SUM, COUNT, AVG 등) 사용
 8. 컬럼 alias는 한글로 작성 (예: AS 총매출, AS 플랜트별)
