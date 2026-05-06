@@ -9,7 +9,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import multer from 'multer';
-import XLSX from 'xlsx';
+import XLSX from 'xlsx-js-style';
 import {
   buildRagIndex,
   searchRelevantMeta,
@@ -858,8 +858,10 @@ app.post('/api/ontology/upload-excel/preview', upload.single('file'), async (req
       const synonymsRaw = headerMap.synonyms ? String(raw[headerMap.synonyms] || '').trim() : '';
       const synonyms = synonymsRaw ? synonymsRaw.split(',').map(s => s.trim()).filter(s => s.length > 0) : [];
 
+      // 모든 필드가 비어있는 행은 조용히 건너뜀
+      const allEmpty = !columnName && !description && !dataType && !synonymsRaw;
       if (!columnName) {
-        errors.push({ row: rowNum, message: 'Column 값이 비어있습니다.' });
+        if (!allEmpty) errors.push({ row: rowNum, message: 'Column 값이 비어있습니다.' });
         continue;
       }
 
@@ -970,20 +972,189 @@ app.post('/api/ontology/upload-excel/apply', express.json({ limit: '10mb' }), as
   }
 });
 
-// 엑셀 템플릿 다운로드
+// 엑셀 템플릿 다운로드 (가이드형 디자인)
 app.get('/api/ontology/upload-excel/template', (req, res) => {
   const wb = XLSX.utils.book_new();
+
+  // ── 스타일 정의 ──
+  const FONT_DEFAULT = { name: 'Malgun Gothic', sz: 10 };
+  const FONT_HEADER = { name: 'Malgun Gothic', sz: 10, bold: true, color: { rgb: '1E1B4B' } };
+  const FONT_TITLE = { name: 'Malgun Gothic', sz: 12, bold: true, color: { rgb: '1E1B4B' } };
+  const FONT_NOTICE_TITLE = { name: 'Malgun Gothic', sz: 11, bold: true, color: { rgb: 'DC2626' } };
+  const FONT_NOTICE = { name: 'Malgun Gothic', sz: 9, color: { rgb: '374151' } };
+  const FONT_NOTICE_BOLD = { name: 'Malgun Gothic', sz: 9, bold: true, color: { rgb: '374151' } };
+  const FONT_NOTICE_RED = { name: 'Malgun Gothic', sz: 9, bold: true, color: { rgb: 'DC2626' } };
+  const FONT_EXAMPLE = { name: 'Malgun Gothic', sz: 9, color: { rgb: '6B7280' }, italic: true };
+  const FONT_SAMPLE = { name: 'Consolas', sz: 10, color: { rgb: '4F46E5' } };
+
+  const FILL_HEADER = { fgColor: { rgb: 'E2E8F0' } };
+  const FILL_TITLE = { fgColor: { rgb: 'EEF2FF' } };
+  const FILL_SAMPLE = { fgColor: { rgb: 'FFFBEB' } };
+  const FILL_NOTICE_TITLE = { fgColor: { rgb: 'FEF2F2' } };
+  const FILL_NOTICE = { fgColor: { rgb: 'FAFBFF' } };
+
+  const BORDER_THIN = {
+    top: { style: 'thin', color: { rgb: 'CBD5E1' } },
+    bottom: { style: 'thin', color: { rgb: 'CBD5E1' } },
+    left: { style: 'thin', color: { rgb: 'CBD5E1' } },
+    right: { style: 'thin', color: { rgb: 'CBD5E1' } },
+  };
+  const BORDER_HEADER = {
+    top: { style: 'medium', color: { rgb: '4F46E5' } },
+    bottom: { style: 'medium', color: { rgb: '4F46E5' } },
+    left: { style: 'thin', color: { rgb: 'A5B4FC' } },
+    right: { style: 'thin', color: { rgb: 'A5B4FC' } },
+  };
+  const BORDER_NOTICE = {
+    top: { style: 'thin', color: { rgb: 'E5E7EB' } },
+    bottom: { style: 'thin', color: { rgb: 'E5E7EB' } },
+    left: { style: 'thin', color: { rgb: 'E5E7EB' } },
+    right: { style: 'thin', color: { rgb: 'E5E7EB' } },
+  };
+  const ALIGN_CENTER = { horizontal: 'center', vertical: 'center' };
+  const ALIGN_LEFT = { horizontal: 'left', vertical: 'center', wrapText: true };
+
+  // ── 시트 데이터 구성 ──
+  // A열=No, B=Column, C=Table, D=설명, E=데이터타입, F=동의어,  H~J=주의사항 영역
   const wsData = [
-    ['Column', 'Table', '설명', '데이터타입', '동의어(Synonyms)'],
-    ['CALMONTH', 'bw_profitability_data', '달력연도/월', 'VARCHAR(6)', '월,연월'],
-    ['MATERIAL_DESC', 'bw_profitability_data', '자재명(설명)', 'VARCHAR(40)', '제품명,테스트명'],
-    ['ZAMT001', 'bw_profitability_data', '총매출', 'BIGINT', '매출,매출액'],
+    // Row 1: 헤더
+    ['No.', 'Column', 'Table', '설명', '데이터타입', '동의어(Synonyms)', '', '주의사항'],
+    // Row 2: 예시1
+    [1, 'CALMONTH', 'bw_profitability_data', '달력연도/월', 'VARCHAR(6)', '월,연월', '', ''],
+    // Row 3: 예시2
+    [2, 'MATERIAL_DESC', 'bw_profitability_data', '자재명(설명)', 'VARCHAR(40)', '제품명,테스트명,상품명', '', ''],
+    // Row 4~: 빈 입력 영역
+    [3, '', '', '', '', '', '', ''],
+    [4, '', '', '', '', '', '', ''],
+    [5, '', '', '', '', '', '', ''],
+    [6, '', '', '', '', '', '', ''],
+    [7, '', '', '', '', '', '', ''],
+    [8, '', '', '', '', '', '', ''],
+    [9, '', '', '', '', '', '', ''],
+    [10, '', '', '', '', '', '', ''],
   ];
+
   const ws = XLSX.utils.aoa_to_sheet(wsData);
-  // 컬럼 폭 설정
+
+  // ── 컬럼 폭 설정 ──
   ws['!cols'] = [
-    { wch: 20 }, { wch: 28 }, { wch: 20 }, { wch: 15 }, { wch: 30 }
+    { wch: 6 },   // A: No.
+    { wch: 22 },  // B: Column
+    { wch: 30 },  // C: Table
+    { wch: 22 },  // D: 설명
+    { wch: 16 },  // E: 데이터타입
+    { wch: 35 },  // F: 동의어
+    { wch: 3 },   // G: 구분 공백
+    { wch: 52 },  // H: 주의사항
   ];
+
+  // ── 행 높이 ──
+  ws['!rows'] = [
+    { hpt: 32 },  // Row 1: 헤더
+    { hpt: 24 },  // Row 2: 예시1
+    { hpt: 24 },  // Row 3: 예시2
+    { hpt: 22 },  // Row 4~
+    { hpt: 22 },
+    { hpt: 22 },
+    { hpt: 22 },
+    { hpt: 22 },
+    { hpt: 22 },
+    { hpt: 22 },
+    { hpt: 22 },
+  ];
+
+  // ── 헤더 스타일 (Row 1: A1~F1) ──
+  const headers = ['A1','B1','C1','D1','E1','F1'];
+  headers.forEach(ref => {
+    if (ws[ref]) {
+      ws[ref].s = {
+        font: FONT_HEADER,
+        fill: FILL_HEADER,
+        border: BORDER_HEADER,
+        alignment: ALIGN_CENTER,
+      };
+    }
+  });
+
+  // ── 예시 데이터 스타일 (Row 2~3) ──
+  for (let r = 2; r <= 3; r++) {
+    ['A','B','C','D','E','F'].forEach(col => {
+      const ref = col + r;
+      if (ws[ref]) {
+        ws[ref].s = {
+          font: col === 'A' ? { ...FONT_DEFAULT, color: { rgb: '6B7280' } } : (col === 'B' ? FONT_SAMPLE : FONT_DEFAULT),
+          fill: FILL_SAMPLE,
+          border: BORDER_THIN,
+          alignment: col === 'A' ? ALIGN_CENTER : ALIGN_LEFT,
+        };
+      }
+    });
+  }
+
+  // ── 빈 입력 영역 스타일 (Row 4~11) ──
+  for (let r = 4; r <= 11; r++) {
+    ['A','B','C','D','E','F'].forEach(col => {
+      const ref = col + r;
+      if (!ws[ref]) ws[ref] = { v: '', t: 's' };
+      ws[ref].s = {
+        font: FONT_DEFAULT,
+        border: BORDER_THIN,
+        alignment: col === 'A' ? ALIGN_CENTER : ALIGN_LEFT,
+      };
+    });
+  }
+
+  // ── 주의사항 영역 (H열, 우측) ──
+  // H1: 주의사항 타이틀
+  ws['H1'] = {
+    v: '⚠ 주의사항',
+    t: 's',
+    s: {
+      font: FONT_NOTICE_TITLE,
+      fill: FILL_NOTICE_TITLE,
+      border: BORDER_NOTICE,
+      alignment: { horizontal: 'left', vertical: 'center' },
+    }
+  };
+
+  // 주의사항 내용들
+  const notices = [
+    { text: '○ 모든 양식은 변경하지 말고 그대로 입력해주세요.', font: FONT_NOTICE_BOLD },
+    { text: '   (A2번 항목부터 값을 읽습니다. 헤더 행은 수정하지 마세요.)', font: FONT_NOTICE },
+    { text: '', font: FONT_NOTICE },
+    { text: '○ 동의어(Synonyms)는 여러 개 입력 가능하며,', font: FONT_NOTICE_BOLD },
+    { text: '   반드시 쉼표(,) 기준으로 구분하여 작성해주세요.', font: FONT_NOTICE_RED },
+    { text: '   예: 제품명, 자재명, 테스트명', font: FONT_EXAMPLE },
+    { text: '', font: FONT_NOTICE },
+    { text: '○ Column 값은 필수 입력 항목입니다.', font: FONT_NOTICE_BOLD },
+    { text: '○ Table은 비워두면 기본값 bw_profitability_data가 적용됩니다.', font: FONT_NOTICE },
+  ];
+
+  notices.forEach((n, i) => {
+    const ref = 'H' + (i + 2);
+    ws[ref] = {
+      v: n.text,
+      t: 's',
+      s: {
+        font: n.font,
+        fill: FILL_NOTICE,
+        border: BORDER_NOTICE,
+        alignment: { horizontal: 'left', vertical: 'center', wrapText: true },
+      }
+    };
+  });
+
+  // ── 셀 병합: 주의사항은 단독 열이므로 병합 불필요, G열은 구분 공백 ──
+  // G 열 전체 비움 처리 (구분 공간)
+  for (let r = 1; r <= 11; r++) {
+    const ref = 'G' + r;
+    if (!ws[ref]) ws[ref] = { v: '', t: 's' };
+    ws[ref].s = { font: FONT_DEFAULT };
+  }
+
+  // ── 시트 범위 갱신 ──
+  ws['!ref'] = 'A1:H11';
+
   XLSX.utils.book_append_sheet(wb, ws, 'Ontology');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
   res.setHeader('Content-Disposition', 'attachment; filename=ontology_template.xlsx');
