@@ -1008,7 +1008,7 @@ def _get_gpt_slide_plan(calmonth: str, prompt: str, report_data: dict,
 {attach_info}"""
 
     try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
         response = client.chat.completions.create(
             model="gpt-5-mini",
             messages=[

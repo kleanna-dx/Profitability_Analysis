@@ -13,7 +13,24 @@ import decimal
 import os
 
 # 현재 디렉토리를 모듈 경로에 추가
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, script_dir)
+
+# .env 파일에서 환경변수 로드 (dotenv 없이 직접 파싱)
+def _load_env():
+    env_path = os.path.join(script_dir, '.env')
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, _, val = line.partition('=')
+                key, val = key.strip(), val.strip()
+                if not os.environ.get(key):  # 기존 환경변수가 없을 때만 설정
+                    os.environ[key] = val
+
+_load_env()
 
 from report_generator import (
     fetch_report_data, get_available_months,
