@@ -9,6 +9,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import multer from 'multer';
+import XLSX from 'xlsx';
 import {
   buildRagIndex,
   searchRelevantMeta,
@@ -22,6 +23,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(import.meta.dirname, 'public')));
+
+// ============================================================
+// File Upload (multer) - 엑셀/PPT 등 공용
+// ============================================================
+const UPLOAD_DIR = path.join(import.meta.dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const upload = multer({
+  dest: UPLOAD_DIR,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = /xlsx|xls|csv|png|jpg|jpeg|gif|bmp|pdf/;
+    const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
+    cb(null, allowed.test(ext));
+  }
+});
 
 // ============================================================
 // OpenAI Client 초기화
@@ -264,15 +281,105 @@ chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(
 `;
 
 /**
+ * 동의어 직접 매칭 (DB 조회 기반)
+ * - RAG 임베딩 유사도 검색의 한계 보완
+ * - 사용자 질문에 포함된 동의어를 DB에서 직접 찾아 컬럼 매핑 정보 반환
+ * @param {string} query - 사용자 질문
+ * @returns {Promise<Array<{synonym: string, column_name: string, description: string, data_type: string, source: string}>>}
+ */
+async function matchSynonymsDirectly(query) {
+  const matched = [];
+  try {
+    // 1. Ontology 동의어 매칭
+    const [ontSyns] = await pool.query(
+      `SELECT s.synonym_text, c.column_name, c.description, c.data_type
+       FROM ontology_synonym s
+       JOIN ontology_column c ON s.column_id = c.id`
+    );
+    for (const row of ontSyns) {
+      if (query.includes(row.synonym_text)) {
+        matched.push({
+          synonym: row.synonym_text,
+          column_name: row.column_name,
+          description: row.description || '',
+          data_type: row.data_type || '',
+          source: 'ontology',
+        });
+      }
+    }
+
+    // 2. Metric 동의어 매칭
+    const [metSyns] = await pool.query(
+      `SELECT s.synonym_text, m.metric_code, m.aggregation, m.formula, m.description
+       FROM metric_synonym s
+       JOIN metric m ON s.metric_id = m.id`
+    );
+    for (const row of metSyns) {
+      if (query.includes(row.synonym_text)) {
+        matched.push({
+          synonym: row.synonym_text,
+          column_name: `${row.aggregation}(${row.formula})`,
+          description: row.description || row.metric_code,
+          data_type: 'metric',
+          source: 'metric',
+        });
+      }
+    }
+
+    // 3. Ontology 컬럼 설명(description) 자체도 매칭 (설명이 질문에 포함된 경우)
+    const [ontCols] = await pool.query(
+      `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != ''`
+    );
+    for (const row of ontCols) {
+      if (row.description.length >= 2 && query.includes(row.description)) {
+        // 이미 synonym으로 매칭된 컬럼은 중복 방지
+        if (!matched.some(m => m.column_name === row.column_name)) {
+          matched.push({
+            synonym: row.description,
+            column_name: row.column_name,
+            description: row.description,
+            data_type: row.data_type || '',
+            source: 'ontology_desc',
+          });
+        }
+      }
+    }
+
+    if (matched.length > 0) {
+      console.log(`[Synonym] 직접 매칭 ${matched.length}건: ${matched.map(m => `"${m.synonym}"→${m.column_name}`).join(', ')}`);
+    }
+  } catch (e) {
+    console.error('[Synonym] 직접 매칭 실패:', e.message);
+  }
+  return matched;
+}
+
+/**
  * RAG 기반 시스템 프롬프트 생성
  * - 질문과 관련된 메타데이터만 검색하여 프롬프트에 주입
  * - 전체 덤프(프롬프트 스터핑) 대신 필요한 컨텍스트만 포함
+ * - 동의어 직접 매칭 결과를 최우선으로 주입
  * @param {string} query - 사용자 질문
  * @returns {Promise<{prompt: string, ragContext: Object}>}
  */
 async function buildRAGSystemPrompt(query) {
   let ragContext = null;
   let contextText = '';
+
+  // ★ 동의어 직접 매칭 (RAG 보완 - 최우선 적용)
+  const synonymMatches = await matchSynonymsDirectly(query);
+  let synonymContext = '';
+  if (synonymMatches.length > 0) {
+    synonymContext = '\n[★ 동의어 매칭 결과 - 최우선 적용! 아래 매핑을 반드시 SQL에 사용하세요]\n';
+    for (const m of synonymMatches) {
+      if (m.source === 'metric') {
+        synonymContext += `- 사용자가 말한 "${m.synonym}" → ${m.description} = ${m.column_name}\n`;
+      } else {
+        synonymContext += `- 사용자가 말한 "${m.synonym}" → 컬럼: ${m.column_name} (${m.data_type}) - ${m.description}\n`;
+      }
+    }
+    synonymContext += '위 매핑된 컬럼을 SQL의 SELECT, WHERE, GROUP BY 등에 반드시 사용하세요. 다른 컬럼으로 대체하지 마세요.\n';
+  }
 
   if (ragReady) {
     try {
@@ -302,12 +409,13 @@ async function buildRAGSystemPrompt(query) {
   // → GPT가 질문과 무관한 컬럼을 보고 불필요한 컬럼을 추가하는 문제 방지
   let prompt;
   if (ragReady && ragContext) {
-    // RAG 활성: 기본 규칙 + RAG 검색 컨텍스트만 (전체 스키마/메트릭 제외)
+    // RAG 활성: 기본 규칙 + 동의어 매칭 + RAG 검색 컨텍스트
     prompt = BASE_SYSTEM_PROMPT
+      + synonymContext
       + '\n\n--- RAG 검색 컨텍스트 (이 질문과 관련된 메타데이터만 포함됨) ---\n' + contextText;
   } else {
     // 폴백: 기존 방식 (전체 스키마 + 메트릭 + 폴백 컨텍스트)
-    prompt = BASE_SYSTEM_PROMPT + '\n' + TABLE_SCHEMA + '\n' + METRIC_DICTIONARY
+    prompt = BASE_SYSTEM_PROMPT + synonymContext + '\n' + TABLE_SCHEMA + '\n' + METRIC_DICTIONARY
       + '\n\n--- 컨텍스트 ---\n' + contextText;
   }
 
@@ -692,6 +800,198 @@ app.delete('/api/ontology/synonym/:synId', async (req, res) => {
 });
 
 // ============================================================
+// 학습관리 API: Ontology 엑셀 업로드
+// ============================================================
+
+// 엑셀 미리보기 (파싱만 수행, DB 반영 안함)
+app.post('/api/ontology/upload-excel/preview', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+
+    const workbook = XLSX.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+    if (rawRows.length === 0) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: '엑셀 파일에 데이터가 없습니다.' });
+    }
+
+    // 헤더 매핑 (유연하게 처리)
+    const headerMap = {};
+    const firstRow = rawRows[0];
+    const keys = Object.keys(firstRow);
+    for (const k of keys) {
+      const lk = k.trim().toLowerCase().replace(/\s+/g, '');
+      if (['column', 'column_name', 'columnname', '컬럼', '컬럼명'].includes(lk)) headerMap.column_name = k;
+      else if (['table', 'table_name', 'tablename', '테이블', '테이블명'].includes(lk)) headerMap.table_name = k;
+      else if (['설명', 'description', 'desc', '설명(description)'].includes(lk)) headerMap.description = k;
+      else if (['데이터타입', 'datatype', 'data_type', 'type', '타입', '데이터유형'].includes(lk)) headerMap.data_type = k;
+      else if (['동의어', 'synonyms', 'synonym', '동의어(synonyms)', '동의어(synonym)'].includes(lk)) headerMap.synonyms = k;
+    }
+
+    if (!headerMap.column_name) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: "'Column' 헤더를 찾을 수 없습니다. 첫 번째 행에 Column, Table, 설명, 데이터타입, 동의어(Synonyms) 헤더가 필요합니다." });
+    }
+
+    // 기존 Ontology 데이터 조회 (중복 체크용)
+    const [existingCols] = await pool.query(
+      'SELECT id, column_name, table_name, description, data_type FROM ontology_column'
+    );
+    const existingMap = {};
+    for (const c of existingCols) {
+      existingMap[c.column_name.toUpperCase()] = c;
+    }
+
+    // 파싱 + 검증
+    const rows = [];
+    const errors = [];
+    for (let i = 0; i < rawRows.length; i++) {
+      const raw = rawRows[i];
+      const rowNum = i + 2; // 엑셀 행 번호 (헤더=1행)
+      const columnName = String(raw[headerMap.column_name] || '').trim();
+      const tableName = String(raw[headerMap.table_name] || 'bw_profitability_data').trim();
+      const description = headerMap.description ? String(raw[headerMap.description] || '').trim() : '';
+      const dataType = headerMap.data_type ? String(raw[headerMap.data_type] || '').trim() : '';
+      const synonymsRaw = headerMap.synonyms ? String(raw[headerMap.synonyms] || '').trim() : '';
+      const synonyms = synonymsRaw ? synonymsRaw.split(',').map(s => s.trim()).filter(s => s.length > 0) : [];
+
+      if (!columnName) {
+        errors.push({ row: rowNum, message: 'Column 값이 비어있습니다.' });
+        continue;
+      }
+
+      const existing = existingMap[columnName.toUpperCase()];
+      rows.push({
+        row: rowNum,
+        column_name: columnName,
+        table_name: tableName || 'bw_profitability_data',
+        description,
+        data_type: dataType,
+        synonyms,
+        status: existing ? 'update' : 'new',
+        existing_id: existing ? existing.id : null,
+      });
+    }
+
+    // 임시 파일 경로를 응답에 포함 (실제 업로드 시 사용)
+    res.json({
+      fileName: req.file.originalname,
+      filePath: req.file.filename, // multer가 생성한 임시 파일명
+      totalRows: rawRows.length,
+      validRows: rows.length,
+      newCount: rows.filter(r => r.status === 'new').length,
+      updateCount: rows.filter(r => r.status === 'update').length,
+      errors,
+      preview: rows.slice(0, 200), // 최대 200개까지 미리보기
+    });
+  } catch (err) {
+    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    res.status(500).json({ error: '엑셀 파싱 실패: ' + err.message });
+  }
+});
+
+// 엑셀 실제 적용 (미리보기 후 확정)
+app.post('/api/ontology/upload-excel/apply', express.json({ limit: '10mb' }), async (req, res) => {
+  const { rows, filePath } = req.body;
+  if (!rows || !Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: '적용할 데이터가 없습니다.' });
+  }
+
+  const results = { inserted: 0, updated: 0, synonymsAdded: 0, errors: [] };
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    for (const row of rows) {
+      try {
+        let columnId;
+
+        if (row.status === 'update' && row.existing_id) {
+          // 기존 컬럼 업데이트
+          await conn.query(
+            'UPDATE ontology_column SET table_name=?, description=?, data_type=? WHERE id=?',
+            [row.table_name, row.description, row.data_type, row.existing_id]
+          );
+          columnId = row.existing_id;
+          results.updated++;
+        } else {
+          // 신규 컬럼 추가
+          const [r] = await conn.query(
+            'INSERT INTO ontology_column (column_name, table_name, description, data_type) VALUES (?,?,?,?)',
+            [row.column_name, row.table_name || 'bw_profitability_data', row.description || '', row.data_type || '']
+          );
+          columnId = r.insertId;
+          results.inserted++;
+        }
+
+        // 동의어 처리
+        if (row.synonyms && row.synonyms.length > 0) {
+          // 기존 동의어 조회
+          const [existingSyns] = await conn.query(
+            'SELECT synonym_text FROM ontology_synonym WHERE column_id=?',
+            [columnId]
+          );
+          const existingSynSet = new Set(existingSyns.map(s => s.synonym_text.toLowerCase()));
+
+          for (const syn of row.synonyms) {
+            if (!existingSynSet.has(syn.toLowerCase())) {
+              await conn.query(
+                'INSERT INTO ontology_synonym (column_id, synonym_text) VALUES (?,?)',
+                [columnId, syn]
+              );
+              results.synonymsAdded++;
+            }
+          }
+        }
+      } catch (rowErr) {
+        results.errors.push({ column_name: row.column_name, message: rowErr.message });
+      }
+    }
+
+    await conn.commit();
+
+    // 임시 파일 삭제
+    if (filePath) {
+      const fullPath = path.join(UPLOAD_DIR, filePath);
+      if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+    }
+
+    console.log(`[Excel Upload] Ontology 일괄 등록 완료: 신규 ${results.inserted}, 업데이트 ${results.updated}, 동의어 ${results.synonymsAdded}건`);
+    res.json(results);
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ error: '일괄 등록 실패: ' + err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// 엑셀 템플릿 다운로드
+app.get('/api/ontology/upload-excel/template', (req, res) => {
+  const wb = XLSX.utils.book_new();
+  const wsData = [
+    ['Column', 'Table', '설명', '데이터타입', '동의어(Synonyms)'],
+    ['CALMONTH', 'bw_profitability_data', '달력연도/월', 'VARCHAR(6)', '월,연월'],
+    ['MATERIAL_DESC', 'bw_profitability_data', '자재명(설명)', 'VARCHAR(40)', '제품명,테스트명'],
+    ['ZAMT001', 'bw_profitability_data', '총매출', 'BIGINT', '매출,매출액'],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  // 컬럼 폭 설정
+  ws['!cols'] = [
+    { wch: 20 }, { wch: 28 }, { wch: 20 }, { wch: 15 }, { wch: 30 }
+  ];
+  XLSX.utils.book_append_sheet(wb, ws, 'Ontology');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Disposition', 'attachment; filename=ontology_template.xlsx');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(Buffer.from(buf));
+});
+
+// ============================================================
 // 학습관리 API: Metric (계산 지표)
 // ============================================================
 app.get('/api/metric', async (req, res) => {
@@ -1056,18 +1356,6 @@ app.post('/api/rag/search', async (req, res) => {
 // ============================================================
 const execFileAsync = promisify(execFile);
 const REPORT_CLI = path.join(import.meta.dirname, 'report_cli.py');
-const UPLOAD_DIR = path.join(import.meta.dirname, 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-const upload = multer({
-  dest: UPLOAD_DIR,
-  limits: { fileSize: 50 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowed = /xlsx|xls|csv|png|jpg|jpeg|gif|bmp|pdf/;
-    const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
-    cb(null, allowed.test(ext));
-  }
-});
 
 // GET /api/report/months - 사용 가능한 월 목록
 app.get('/api/report/months', async (req, res) => {
