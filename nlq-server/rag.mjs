@@ -405,10 +405,18 @@ async function addToIndex(pool, chunkType, sourceId, text, metadata) {
 
 // 특정 소스 삭제 (업데이트 시 기존 제거 후 재추가)
 async function removeFromIndex(pool, chunkType, sourceId) {
-  await pool.query(
-    `DELETE FROM rag_embeddings WHERE chunk_type = ? AND source_id = ?`,
-    [chunkType, sourceId]
-  );
+  if (sourceId === null || sourceId === undefined) {
+    // sourceId가 null인 경우 해당 타입 전체 삭제 (schema, code_mapping 등)
+    await pool.query(
+      `DELETE FROM rag_embeddings WHERE chunk_type = ? AND source_id IS NULL`,
+      [chunkType]
+    );
+  } else {
+    await pool.query(
+      `DELETE FROM rag_embeddings WHERE chunk_type = ? AND source_id = ?`,
+      [chunkType, sourceId]
+    );
+  }
 }
 
 // ============================================================

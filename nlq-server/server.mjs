@@ -5,6 +5,10 @@ import mysql from 'mysql2/promise';
 import OpenAI from 'openai';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import fs from 'fs';
+import multer from 'multer';
 import {
   buildRagIndex,
   searchRelevantMeta,
@@ -1038,7 +1042,139 @@ app.post('/api/rag/search', async (req, res) => {
 // ============================================================
 // SPA fallback
 // ============================================================
+// PPT Report API (Python child_process 호출)
+// ============================================================
+const execFileAsync = promisify(execFile);
+const REPORT_CLI = path.join(import.meta.dirname, 'report_cli.py');
+const UPLOAD_DIR = path.join(import.meta.dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const upload = multer({
+  dest: UPLOAD_DIR,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = /xlsx|xls|csv|png|jpg|jpeg|gif|bmp|pdf/;
+    const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
+    cb(null, allowed.test(ext));
+  }
+});
+
+// GET /api/report/months - 사용 가능한 월 목록
+app.get('/api/report/months', async (req, res) => {
+  try {
+    const { stdout } = await execFileAsync('python3', [REPORT_CLI, 'months'], {
+      cwd: import.meta.dirname,
+      timeout: 30000,
+    });
+    res.json(JSON.parse(stdout));
+  } catch (e) {
+    console.error('[Report] months error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/report/preview - 미리보기 데이터
+app.post('/api/report/preview', async (req, res) => {
+  try {
+    const { calmonth } = req.body;
+    if (!calmonth) return res.status(400).json({ error: '월을 선택해주세요.' });
+    const { stdout } = await execFileAsync('python3', [REPORT_CLI, 'preview', calmonth], {
+      cwd: import.meta.dirname,
+      timeout: 30000,
+    });
+    res.json(JSON.parse(stdout));
+  } catch (e) {
+    console.error('[Report] preview error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/report/ppt - PPT 생성 및 다운로드
+app.post('/api/report/ppt', upload.single('attachment'), async (req, res) => {
+  let attachmentPath = null;
+  try {
+    const calmonth = req.body.calmonth || '';
+    const prompt = req.body.prompt || '';
+    if (!calmonth || calmonth.length !== 6) {
+      return res.status(400).json({ error: '올바른 월을 선택해주세요 (예: 202405)' });
+    }
+
+    const args = [REPORT_CLI, 'generate', calmonth];
+    if (prompt) args.push(prompt);
+    else args.push('');
+
+    if (req.file) {
+      attachmentPath = req.file.path;
+      args.push(attachmentPath);
+    }
+
+    const { stdout } = await execFileAsync('python3', args, {
+      cwd: import.meta.dirname,
+      timeout: 120000,
+      maxBuffer: 50 * 1024 * 1024,
+      encoding: 'buffer',
+    });
+
+    const year = calmonth.slice(0, 4);
+    const month = parseInt(calmonth.slice(4));
+    const filename = encodeURIComponent(`수익성분석_보고서_${year}년_${month}월.pptx`);
+
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'Content-Disposition': `attachment; filename*=UTF-8''${filename}`,
+      'Content-Length': stdout.length,
+    });
+    res.send(stdout);
+  } catch (e) {
+    console.error('[Report] PPT generation error:', e.message);
+    res.status(500).json({ error: `보고서 생성 오류: ${e.message}` });
+  } finally {
+    if (attachmentPath && fs.existsSync(attachmentPath)) {
+      try { fs.unlinkSync(attachmentPath); } catch {}
+    }
+  }
+});
+
+// POST /api/report/upload-preview - 첨부파일 미리보기
+app.post('/api/report/upload-preview', upload.single('file'), async (req, res) => {
+  let filePath = null;
+  try {
+    if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+    filePath = req.file.path;
+
+    // 원래 확장자로 파일명 복원 (Python에서 확장자 기반 분기)
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    const newPath = filePath + ext;
+    fs.renameSync(filePath, newPath);
+    filePath = newPath;
+
+    const { stdout } = await execFileAsync('python3', [REPORT_CLI, 'upload-preview', filePath], {
+      cwd: import.meta.dirname,
+      timeout: 30000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    res.json(JSON.parse(stdout));
+  } catch (e) {
+    console.error('[Report] upload-preview error:', e.message);
+    res.status(500).json({ error: e.message });
+  } finally {
+    if (filePath && fs.existsSync(filePath)) {
+      try { fs.unlinkSync(filePath); } catch {}
+    }
+  }
+});
+
+// report.html 페이지 서빙
+app.get('/report', (req, res) => {
+  res.sendFile(path.join(import.meta.dirname, 'public', 'report.html'));
+});
+
+// ============================================================
 app.get('/{*splat}', (req, res) => {
+  // API 경로는 SPA fallback에서 제외 (404 반환)
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'API endpoint not found', path: req.path });
+  }
   res.sendFile(path.join(import.meta.dirname, 'public', 'index.html'));
 });
 
