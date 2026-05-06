@@ -226,6 +226,16 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 16. 브랜드: ZBRAND1, ZBRAND2
 17. **학습 데이터 우선**: 아래 RAG 컨텍스트에 유사 질문의 검증된 SQL이 있으면 그 패턴을 최우선 참고
 
+[날짜/기간 필터링 규칙 - 매우 중요!]
+- **ZYEAR, ZMONTH, FISC_YEAR, FISC_PERIOD, YEAR, MONTH 등의 컬럼은 존재하지 않습니다! 절대 사용 금지!**
+- 연도/월 필터: CALMONTH 컬럼 사용 (VARCHAR, YYYYMM 형식). 예: "2024년 5월" → WHERE CALMONTH = '202405'
+- 연도만 필터: CALMONTH LIKE '2024%' 또는 LEFT(CALMONTH,4) = '2024'
+- 일자 필터: CALDAY 컬럼 사용 (VARCHAR, YYYYMMDD 형식). 예: "2024년 5월 1일" → WHERE CALDAY = '20240501'
+- 월 범위 필터: CALMONTH BETWEEN '202401' AND '202412'
+- 일별 추이: GROUP BY CALDAY, ORDER BY CALDAY ASC
+- 월별 추이: GROUP BY CALMONTH, ORDER BY CALMONTH ASC
+- 현재 데이터는 CALMONTH='202405' (2024년 5월) 한 달치만 존재
+
 [컬럼 최소화 원칙 - 매우 중요!]
 - **질문에서 요청한 항목만 SELECT 하세요. 관련 있어 보이더라도 질문에 없는 항목은 절대 추가하지 마세요.**
 - 예: "판매수량 합계"라고 하면 → BOX 수량(ZQTYBOX) 하나만 사용. BAG수량, EA수량은 질문에 없으므로 포함 금지.

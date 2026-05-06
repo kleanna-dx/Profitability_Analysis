@@ -175,6 +175,7 @@ async function buildRagIndex(pool) {
     '수량 컬럼 사용 규칙: "판매수량", "수량"이라고만 하면 BOX 기준(ZQTYBOX)만 사용. BAG수량(ZQTYBAG), EA수량(ZQTYKGEA)은 사용자가 "BAG수량", "EA수량", "모든 수량"처럼 명시적으로 요청할 때만 포함. 절대로 질문에 없는 수량 단위를 추가하지 않는다.',
     '컬럼 최소화 원칙: 사용자가 질문에서 언급한 항목만 SELECT에 포함한다. 관련 있어 보여도 질문에 없는 컬럼은 추가 금지. 예: "브랜드별 판매수량 합계"이면 브랜드와 BOX수량 합계만 출력.',
     '컬럼 별칭(alias) 작성 규칙: 별칭에 단위를 괄호로 명시한다. 예: 판매수량 합계(BOX), 총매출 합계(원), 영업이익률(%), 평균단가(원/BOX). 집계 함수 사용 시 "합계", "평균", "최대" 등을 별칭에 포함.',
+    '날짜/기간 필터링: ZYEAR, ZMONTH, FISC_YEAR, FISC_PERIOD, YEAR, MONTH 컬럼은 존재하지 않는다! 절대 사용 금지! 연도/월 필터는 CALMONTH(VARCHAR, YYYYMM 형식) 사용. 예: "2024년 5월" → WHERE CALMONTH = \'202405\'. 연도만 필터: LEFT(CALMONTH,4) = \'2024\'. 일자 필터는 CALDAY(VARCHAR, YYYYMMDD 형식) 사용. 현재 데이터는 CALMONTH=\'202405\' (2024년 5월) 한 달치만 존재.',
   ];
   for (let i = 0; i < rules.length; i++) {
     chunks.push({
