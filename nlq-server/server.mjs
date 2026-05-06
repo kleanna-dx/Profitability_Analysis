@@ -977,19 +977,15 @@ app.get('/api/ontology/upload-excel/template', (req, res) => {
   const wb = XLSX.utils.book_new();
 
   // ── 스타일 정의 ──
-  const FONT_DEFAULT = { name: 'Malgun Gothic', sz: 10 };
-  const FONT_HEADER = { name: 'Malgun Gothic', sz: 10, bold: true, color: { rgb: '1E1B4B' } };
-  const FONT_TITLE = { name: 'Malgun Gothic', sz: 12, bold: true, color: { rgb: '1E1B4B' } };
+  const FONT_DEFAULT = { name: 'Malgun Gothic', sz: 11 };
+  const FONT_HEADER = { name: 'Malgun Gothic', sz: 11, bold: true, color: { rgb: '1E1B4B' } };
   const FONT_NOTICE_TITLE = { name: 'Malgun Gothic', sz: 11, bold: true, color: { rgb: 'DC2626' } };
-  const FONT_NOTICE = { name: 'Malgun Gothic', sz: 9, color: { rgb: '374151' } };
-  const FONT_NOTICE_BOLD = { name: 'Malgun Gothic', sz: 9, bold: true, color: { rgb: '374151' } };
-  const FONT_NOTICE_RED = { name: 'Malgun Gothic', sz: 9, bold: true, color: { rgb: 'DC2626' } };
-  const FONT_EXAMPLE = { name: 'Malgun Gothic', sz: 9, color: { rgb: '6B7280' }, italic: true };
-  const FONT_SAMPLE = { name: 'Consolas', sz: 10, color: { rgb: '4F46E5' } };
+  const FONT_NOTICE = { name: 'Malgun Gothic', sz: 10, color: { rgb: '374151' } };
+  const FONT_NOTICE_BOLD = { name: 'Malgun Gothic', sz: 10, bold: true, color: { rgb: '374151' } };
+  const FONT_NOTICE_RED = { name: 'Malgun Gothic', sz: 10, bold: true, color: { rgb: 'DC2626' } };
+  const FONT_EXAMPLE = { name: 'Malgun Gothic', sz: 10, color: { rgb: '6B7280' }, italic: true };
 
   const FILL_HEADER = { fgColor: { rgb: 'E2E8F0' } };
-  const FILL_TITLE = { fgColor: { rgb: 'EEF2FF' } };
-  const FILL_SAMPLE = { fgColor: { rgb: 'FFFBEB' } };
   const FILL_NOTICE_TITLE = { fgColor: { rgb: 'FEF2F2' } };
   const FILL_NOTICE = { fgColor: { rgb: 'FAFBFF' } };
 
@@ -1022,7 +1018,7 @@ app.get('/api/ontology/upload-excel/template', (req, res) => {
     // Row 2: 예시1
     [1, 'CALMONTH', 'bw_profitability_data', '달력연도/월', 'VARCHAR(6)', '월,연월', '', ''],
     // Row 3: 예시2
-    [2, 'MATERIAL_DESC', 'bw_profitability_data', '자재명(설명)', 'VARCHAR(40)', '제품명,테스트명,상품명', '', ''],
+    [2, 'MATERIAL_DESC', 'bw_profitability_data', '자재명(설명)', 'VARCHAR(40)', '제품명,상품명', '', ''],
     // Row 4~: 빈 입력 영역
     [3, '', '', '', '', '', '', ''],
     [4, '', '', '', '', '', '', ''],
@@ -1076,14 +1072,13 @@ app.get('/api/ontology/upload-excel/template', (req, res) => {
     }
   });
 
-  // ── 예시 데이터 스타일 (Row 2~3) ──
+  // ── 예시 데이터 스타일 (Row 2~3) — 배경 없이 흰색 ──
   for (let r = 2; r <= 3; r++) {
     ['A','B','C','D','E','F'].forEach(col => {
       const ref = col + r;
       if (ws[ref]) {
         ws[ref].s = {
-          font: col === 'A' ? { ...FONT_DEFAULT, color: { rgb: '6B7280' } } : (col === 'B' ? FONT_SAMPLE : FONT_DEFAULT),
-          fill: FILL_SAMPLE,
+          font: col === 'A' ? { ...FONT_DEFAULT, color: { rgb: '6B7280' } } : FONT_DEFAULT,
           border: BORDER_THIN,
           alignment: col === 'A' ? ALIGN_CENTER : ALIGN_LEFT,
         };
@@ -1124,9 +1119,9 @@ app.get('/api/ontology/upload-excel/template', (req, res) => {
     { text: '', font: FONT_NOTICE },
     { text: '○ 동의어(Synonyms)는 여러 개 입력 가능하며,', font: FONT_NOTICE_BOLD },
     { text: '   반드시 쉼표(,) 기준으로 구분하여 작성해주세요.', font: FONT_NOTICE_RED },
-    { text: '   예: 제품명, 자재명, 테스트명', font: FONT_EXAMPLE },
+    { text: '   예: 제품명, 자재명, 상품명', font: FONT_EXAMPLE },
     { text: '', font: FONT_NOTICE },
-    { text: '○ Column 값은 필수 입력 항목입니다.', font: FONT_NOTICE_BOLD },
+    { text: '○ Column, 설명, 데이터타입, 동의어(Synonyms) 값은 필수 입력 항목입니다.', font: FONT_NOTICE_BOLD },
     { text: '○ Table은 비워두면 기본값 bw_profitability_data가 적용됩니다.', font: FONT_NOTICE },
   ];
 
