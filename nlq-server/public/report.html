@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PPT 분석 장표 생성 - 수익성분석</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -22,29 +23,49 @@
             --purple: #7c3aed;
         }
         * { margin:0; padding:0; box-sizing:border-box; font-family:'Noto Sans KR',sans-serif; }
-        body { background: var(--bg); color: var(--text); min-height: 100vh; }
+        html,body { height:100%; overflow:hidden; }
+        body { background: var(--bg); color: var(--text); }
 
-        /* Header */
-        .header {
-            background: linear-gradient(135deg, #4f46e5, #7c3aed);
-            color: white; padding: 20px 0; text-align: center;
-            box-shadow: 0 4px 16px rgba(79,70,229,0.25);
+        /* Sidebar */
+        .sidebar{
+            position:fixed;left:0;top:0;bottom:0;width:280px;
+            background:#1e1b4b;color:#fff;z-index:100;
+            transform:translateX(-100%);transition:transform .3s ease;
         }
-        .header h1 { font-size: 1.4rem; font-weight: 800; }
-        .header p { font-size: 0.82rem; opacity: 0.85; margin-top: 6px; }
-        .header .nav-links {
-            margin-top: 12px; display: flex; justify-content: center; gap: 12px;
+        .sidebar.open{transform:translateX(0);}
+        .sidebar-overlay{
+            position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:99;
+            opacity:0;pointer-events:none;transition:opacity .3s;
         }
-        .header .nav-links a {
-            color: white; text-decoration: none; font-size: 0.8rem;
-            padding: 6px 16px; border-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.3); transition: all 0.2s;
-            display: flex; align-items: center; gap: 6px;
+        .sidebar-overlay.active{opacity:1;pointer-events:auto;}
+        .sidebar-menu-item{
+            display:flex;align-items:center;gap:12px;padding:12px 20px;
+            font-size:14px;color:#c7d2fe;cursor:pointer;transition:all .15s;
+            border-radius:8px;margin:2px 10px;
         }
-        .header .nav-links a:hover { background: rgba(255,255,255,0.15); }
-        .header .nav-links a.active { background: rgba(255,255,255,0.2); font-weight: 600; }
+        .sidebar-menu-item:hover{background:rgba(255,255,255,0.1);color:#fff;}
+        .sidebar-menu-item.active{background:rgba(99,102,241,0.3);color:#fff;font-weight:600;}
+        .sidebar-menu-item i{width:20px;text-align:center;font-size:15px;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,0.1);margin:12px 16px;}
 
-        .container { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+        /* Main layout */
+        .main-wrapper{display:flex;flex-direction:column;height:100vh;}
+
+        /* Top bar */
+        .top-bar{
+            background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;
+            display:flex;align-items:center;gap:12px;flex-shrink:0;
+        }
+        .hamburger-btn{
+            width:38px;height:38px;display:flex;align-items:center;justify-content:center;
+            border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;
+            transition:all .15s;color:#475569;font-size:16px;
+        }
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+
+        /* Content area */
+        .content-area{flex:1;overflow-y:auto;padding:24px;}
+        .container { max-width: 1200px; margin: 0 auto; }
 
         /* Slide Description */
         .slide-desc {
@@ -331,6 +352,10 @@
         }
         .error-msg.active { display: block; }
 
+        /* Scrollbar */
+        .content-area::-webkit-scrollbar{width:6px;}
+        .content-area::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+
         @media (max-width: 768px) {
             .slide-desc .slides-info { grid-template-columns: repeat(2, 1fr); }
             .slide-preview { grid-template-columns: 1fr; }
@@ -341,15 +366,69 @@
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1><i class="fas fa-file-powerpoint" style="margin-right:8px;"></i>PPT 분석 장표 자동 생성</h1>
-        <p>년월을 선택하고, 프롬프트로 원하는 내용을 지시하면 수익성 분석 PPT 보고서를 자동으로 생성합니다</p>
-        <div class="nav-links">
-            <a href="/"><i class="fas fa-comments"></i> NLQ 자연어 조회</a>
-            <a href="/report" class="active"><i class="fas fa-file-powerpoint"></i> PPT 장표 생성</a>
+
+<!-- ========== SIDEBAR ========== -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+
+    <!-- Menu Items -->
+    <nav class="py-2">
+        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-comments"></i><span>자연어 질의</span>
+        </a>
+        <div class="sidebar-menu-item" onclick="alert('비주얼 쿼리 빌더 - 준비중');closeSidebar();">
+            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
+            <span style="margin-left:auto;font-size:10px;background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;">준비중</span>
+        </div>
+        <a href="/report" class="sidebar-menu-item active" style="text-decoration:none;">
+            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
+        </a>
+        <a href="/learning.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
+        </a>
+    </nav>
+
+    <div class="sidebar-divider"></div>
+
+    <!-- System Info -->
+    <div class="px-5 py-3">
+        <p class="text-xs text-indigo-300 font-semibold mb-2 uppercase tracking-wider">시스템 정보</p>
+        <div class="space-y-2 text-xs text-indigo-200">
+            <div class="flex items-center gap-2">
+                <span id="sideDbDot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>
+                <span id="sideDbLabel">DB 연결 확인중</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <i class="fas fa-database text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
+                <span id="sideDataLabel">데이터: -</span>
+            </div>
         </div>
     </div>
+</aside>
 
+<!-- ========== MAIN ========== -->
+<div class="main-wrapper">
+
+    <!-- Top Bar -->
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴">
+            <i class="fas fa-bars"></i>
+        </button>
+        <h1 class="text-sm font-bold text-gray-800 mr-auto">
+            <i class="fas fa-file-powerpoint" style="margin-right:6px;color:var(--primary);"></i>PPT 분석 장표 생성
+        </h1>
+    </div>
+
+    <!-- Content Area -->
+    <div class="content-area">
     <div class="container">
         <!-- Slide Description -->
         <div class="slide-desc">
@@ -473,6 +552,39 @@
             <div class="slide-preview" id="slidePreview"></div>
         </div>
     </div>
+    </div><!-- /content-area -->
+</div><!-- /main-wrapper -->
+
+<script>
+    /* ===== Sidebar ===== */
+    function openSidebar(){
+        document.getElementById('sidebar').classList.add('open');
+        document.getElementById('sidebarOverlay').classList.add('active');
+    }
+    function closeSidebar(){
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebarOverlay').classList.remove('active');
+    }
+
+    /* ===== Sidebar system info ===== */
+    async function loadSidebarStatus(){
+        try {
+            const res = await fetch('/api/status');
+            const d = await res.json();
+            if(d.db_connected){
+                document.getElementById('sideDbDot').style.background='#22c55e';
+                document.getElementById('sideDbLabel').textContent='DB 연결됨';
+            } else {
+                document.getElementById('sideDbDot').style.background='#ef4444';
+                document.getElementById('sideDbLabel').textContent='DB 연결 실패';
+            }
+            if(d.total_rows){
+                document.getElementById('sideDataLabel').textContent='데이터: '+Number(d.total_rows).toLocaleString()+'행';
+            }
+        } catch(e){ console.error('Status load error', e); }
+    }
+    loadSidebarStatus();
+</script>
 
 <script>
     let chartInstances = {};
