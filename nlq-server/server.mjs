@@ -1041,7 +1041,7 @@ app.get('/api/ontology/upload-excel/template', (req, res) => {
     { wch: 16 },  // E: 데이터타입
     { wch: 35 },  // F: 동의어
     { wch: 3 },   // G: 구분 공백
-    { wch: 52 },  // H: 주의사항
+    { wch: 100 },  // H: 주의사항 (한글 문구 잘림 방지)
   ];
 
   // ── 행 높이 ──
