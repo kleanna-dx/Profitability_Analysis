@@ -1837,11 +1837,11 @@ app.post('/api/builder/query', async (req, res) => {
     // 추가 프롬프트가 있으면 GPT로 SQL 보완
     if (prompt && prompt.trim()) {
       try {
-        const gptPrompt = `기본 SQL: ${sql}\n\n추가 요청: ${prompt}\n\n위 SQL을 기반으로 추가 요청을 반영한 완성된 SELECT 문을 작성해주세요. 테이블명은 bw_profitability_data입니다. SELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
+        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${sql}\n\n[추가 요청]\n${prompt}\n\n위 기본 SQL을 기반으로 추가 요청을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요. 존재하지 않는 컬럼(예: SALES, REVENUE 등)을 절대 만들지 마세요.\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         const completion = await openai.chat.completions.create({
           model: 'gpt-5-mini',
           messages: [
-            { role: 'system', content: '당신은 SQL 전문가입니다. 주어진 기본 SQL을 기반으로 추가 요청을 반영한 SELECT 문만 작성하세요. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.' },
+            { role: 'system', content: '당신은 SQL 전문가입니다. 주어진 기본 SQL을 기반으로 추가 요청을 반영한 SELECT 문만 작성하세요.\n중요 규칙:\n1. 반드시 제공된 테이블 스키마에 존재하는 컬럼명만 사용하세요.\n2. "매출"은 ZAMT001(총매출), "순매출"은 ZAMT003 등 스키마의 한국어 설명을 참고하여 올바른 컬럼을 매핑하세요.\n3. 존재하지 않는 컬럼명을 임의로 생성하지 마세요.\n4. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.' },
             { role: 'user', content: gptPrompt },
           ],
           temperature: 0.1,
