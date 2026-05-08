@@ -686,7 +686,7 @@ function renderSelectedFields() {
         const col = allColumns.find(c => c.name === f.column);
         const isNum = f.type === 'number';
         html += `<div class="selected-field" onmousedown="sfMouseDown(event, ${i})">
-            <span class="drag-handle"><i class="fas fa-grip-vertical"></i></span>`;
+            <span class="drag-handle"><i class="fas fa-grip-vertical"></i></span>
             <span style="color:${isNum ? '#7c3aed' : '#4f46e5'};font-weight:700;">${isNum ? '#' : 'T'}</span>
             <span>${col ? col.label : f.column}</span>`;
         if (isNum) {
