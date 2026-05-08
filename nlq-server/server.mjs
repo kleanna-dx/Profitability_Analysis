@@ -1837,7 +1837,16 @@ app.post('/api/builder/query', async (req, res) => {
     // 추가 프롬프트가 있으면 GPT로 SQL 보완
     if (prompt && prompt.trim()) {
       try {
-        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${sql}\n\n[추가 요청]\n${prompt}\n\n위 기본 SQL을 기반으로 추가 요청을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요. 존재하지 않는 컬럼(예: SALES, REVENUE 등)을 절대 만들지 마세요.\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
+        // GPT에게는 ? 바인딩을 실제 값으로 치환한 SQL을 전달
+        let resolvedSql = sql;
+        let paramIdx = 0;
+        resolvedSql = resolvedSql.replace(/\?/g, () => {
+          const v = params[paramIdx++];
+          if (v === null || v === undefined) return 'NULL';
+          if (typeof v === 'number') return String(v);
+          return `'${String(v).replace(/'/g, "''")}'`;
+        });
+        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}\n\n[추가 요청]\n${prompt}\n\n위 기본 SQL을 기반으로 추가 요청을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요. 존재하지 않는 컬럼(예: SALES, REVENUE 등)을 절대 만들지 마세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         const completion = await openai.chat.completions.create({
           model: 'gpt-5-mini',
           messages: [
