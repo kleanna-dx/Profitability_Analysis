@@ -109,9 +109,19 @@
         .selected-field {
             display:inline-flex; align-items:center; gap:6px;
             padding:6px 12px; background:#eef2ff; border:1px solid #c7d2fe;
-            border-radius:10px; font-size:0.82rem; cursor:move; transition:all 0.15s;
+            border-radius:10px; font-size:0.82rem; cursor:move; transition:all 0.2s;
+            user-select:none; position:relative;
         }
         .selected-field:hover { background:#ddd6fe; }
+        .selected-field.sf-dragging { opacity:0.4; transform:scale(0.95); }
+        .selected-field.sf-dragover-left { border-left:3px solid var(--indigo); margin-left:-2px; }
+        .selected-field.sf-dragover-right { border-right:3px solid var(--indigo); margin-right:-2px; }
+        .selected-field .drag-handle {
+            cursor:grab; color:#a5b4fc; font-size:0.75rem; margin-right:2px;
+            transition:color 0.15s;
+        }
+        .selected-field:hover .drag-handle { color:var(--indigo); }
+        .selected-field .drag-handle:active { cursor:grabbing; }
         .selected-field .agg-select {
             padding:2px 6px; border:1px solid #c7d2fe; border-radius:6px;
             font-size:0.72rem; background:white; cursor:pointer; outline:none;
@@ -383,7 +393,7 @@
             <div class="section-card">
                 <div class="section-body">
                     <div class="execute-area">
-                        <button class="exec-btn" id="execBtn" onclick="executeQuery()">&#9654; 조회 실행</button>
+                        <button class="exec-btn" id="execBtn" onclick="executeQuery()">&#9654; 피벗 생성</button>
                         <div class="order-controls">
                             <label style="font-size:0.82rem;color:var(--text-light);">정렬:</label>
                             <select id="orderBySelect"><option value="">선택안함</option></select>
@@ -574,6 +584,63 @@ function setAggregate(idx, agg) {
     updateOrderByOptions();
 }
 
+// ─── Selected Field Drag & Drop Reorder ─────
+let sfDragIdx = null;
+
+function sfDragStart(e, idx) {
+    sfDragIdx = idx;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', 'sf-' + idx);
+    requestAnimationFrame(() => e.target.closest('.selected-field').classList.add('sf-dragging'));
+}
+
+function sfDragEnd(e) {
+    sfDragIdx = null;
+    document.querySelectorAll('.selected-field').forEach(el => {
+        el.classList.remove('sf-dragging', 'sf-dragover-left', 'sf-dragover-right');
+    });
+}
+
+function sfDragOver(e, idx) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (sfDragIdx === null || sfDragIdx === idx) return;
+    e.dataTransfer.dropEffect = 'move';
+    const el = e.currentTarget;
+    const rect = el.getBoundingClientRect();
+    const midX = rect.left + rect.width / 2;
+    el.classList.remove('sf-dragover-left', 'sf-dragover-right');
+    if (e.clientX < midX) {
+        el.classList.add('sf-dragover-left');
+    } else {
+        el.classList.add('sf-dragover-right');
+    }
+}
+
+function sfDragLeave(e) {
+    e.currentTarget.classList.remove('sf-dragover-left', 'sf-dragover-right');
+}
+
+function sfDrop(e, targetIdx) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (sfDragIdx === null || sfDragIdx === targetIdx) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const midX = rect.left + rect.width / 2;
+    const insertBefore = e.clientX < midX;
+
+    const [moved] = selectedFields.splice(sfDragIdx, 1);
+    let newIdx = targetIdx;
+    if (sfDragIdx < targetIdx) newIdx--;
+    if (!insertBefore) newIdx++;
+    selectedFields.splice(newIdx, 0, moved);
+
+    sfDragIdx = null;
+    renderSelectedFields();
+    updateOrderByOptions();
+}
+
 function renderSelectedFields() {
     const zone = document.getElementById('fieldDropZone');
     if (selectedFields.length === 0) {
@@ -585,11 +652,17 @@ function renderSelectedFields() {
     selectedFields.forEach((f, i) => {
         const col = allColumns.find(c => c.name === f.column);
         const isNum = f.type === 'number';
-        html += `<div class="selected-field">
+        html += `<div class="selected-field" draggable="true"
+            ondragstart="sfDragStart(event, ${i})"
+            ondragend="sfDragEnd(event)"
+            ondragover="sfDragOver(event, ${i})"
+            ondragleave="sfDragLeave(event)"
+            ondrop="sfDrop(event, ${i})">
+            <span class="drag-handle"><i class="fas fa-grip-vertical"></i></span>
             <span style="color:${isNum ? '#7c3aed' : '#4f46e5'};font-weight:700;">${isNum ? '#' : 'T'}</span>
             <span>${col ? col.label : f.column}</span>`;
         if (isNum) {
-            html += `<select class="agg-select" onchange="setAggregate(${i}, this.value)">
+            html += `<select class="agg-select" onchange="setAggregate(${i}, this.value)" onclick="event.stopPropagation()">
                 <option value="" ${f.aggregate===''?'selected':''}>원본</option>
                 <option value="SUM" ${f.aggregate==='SUM'?'selected':''}>SUM</option>
                 <option value="AVG" ${f.aggregate==='AVG'?'selected':''}>AVG</option>
