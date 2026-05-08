@@ -1121,7 +1121,7 @@ app.get('/api/ontology/upload-excel/template', (req, res) => {
     { text: '   반드시 쉼표(,) 기준으로 구분하여 작성해주세요.', font: FONT_NOTICE_RED },
     { text: '   예: 제품명, 자재명, 상품명', font: FONT_EXAMPLE },
     { text: '', font: FONT_NOTICE },
-    { text: '○ Column, 설명, 데이터타입, 동의어(Synonyms) 값은 필수 입력 항목입니다.', font: FONT_NOTICE_BOLD },
+    { text: '○ Column, 설명, 데이터타입 값은 필수 입력 항목입니다.', font: FONT_NOTICE_BOLD },
     { text: '○ Table은 비워두면 기본값 bw_profitability_data가 적용됩니다.', font: FONT_NOTICE },
   ];
 
@@ -1627,6 +1627,273 @@ app.post('/api/report/upload-preview', upload.single('file'), async (req, res) =
     }
   }
 });
+
+// ============================================================
+// 비주얼 쿼리 빌더 API
+// ============================================================
+
+// GET /api/builder/columns - 쿼리 빌더용 컬럼 목록 (Ontology 기반 + DB 실제 컬럼)
+app.get('/api/builder/columns', async (req, res) => {
+  try {
+    // 1. DB 실제 컬럼 정보 조회
+    const [dbCols] = await pool.query(`
+      SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data'
+      ORDER BY ORDINAL_POSITION
+    `);
+
+    // 2. Ontology 컬럼 정보 조회 (설명 보강)
+    const [ontoCols] = await pool.query(`SELECT column_name, description, data_type FROM ontology_column`);
+    const ontoMap = {};
+    for (const o of ontoCols) {
+      ontoMap[o.column_name.toUpperCase()] = o;
+    }
+
+    // 카테고리 분류
+    const catMap = {
+      'SEQ': 'system',
+      'CALMONTH': 'period', 'CALDAY': 'period',
+      'CO_AREA': 'org', 'PROFIT_CTR': 'org', 'DIVISION': 'org', 'PLANT': 'org',
+      'DISTR_CHAN': 'org', 'ZDISTCHAN': 'org', 'ZORG_TEAM': 'org', 'SALES_OFF': 'org',
+      'MATL_TYPE': 'product', 'MATL_GROUP': 'product',
+      'PRODH1': 'product', 'PRODH2': 'product', 'PRODH3': 'product', 'PRODH4': 'product',
+      'ZJPCODE': 'product', 'ZBRAND1': 'product', 'ZBRAND2': 'product',
+      'MATERIAL': 'product', 'MATERIAL_DESC': 'product',
+      'BILL_TYPE': 'trade', 'INCOTERMS': 'trade', 'CUST_GROUP': 'trade',
+      'CUST_GRP1': 'trade', 'COUNTRY': 'trade', 'ZKUNN2': 'trade', 'CUSTOMER': 'trade',
+      'ZUNITBOX': 'unit', 'ZUNITBAG': 'unit', 'ZUNITKGEA': 'unit', 'CURRENCY': 'unit',
+    };
+
+    const columns = [];
+    for (const r of dbCols) {
+      const name = r.COLUMN_NAME;
+      const ctype = r.COLUMN_TYPE;
+      const onto = ontoMap[name.toUpperCase()];
+
+      // 타입 분류
+      const dataType = /bigint|decimal|int|double|float/i.test(ctype) ? 'number' : 'text';
+
+      // 라벨: Ontology 설명 > DB COMMENT > 컬럼명
+      const label = (onto && onto.description) ? onto.description : (r.COLUMN_COMMENT || name);
+
+      // 카테고리
+      let category = catMap[name] || 'other';
+      if (!catMap[name]) {
+        if (name.startsWith('ZQTY')) category = 'quantity';
+        else if (name.startsWith('ZAMT')) category = 'amount';
+      }
+
+      columns.push({ name, label, type: dataType, db_type: ctype, category });
+    }
+
+    res.json({ columns });
+  } catch (err) {
+    console.error('[Builder] columns error:', err.message);
+    res.status(500).json({ error: '컬럼 목록 조회 실패: ' + err.message });
+  }
+});
+
+// GET /api/builder/values/:columnName - 특정 컬럼의 고유값 목록 (필터 조건 자동완성용)
+app.get('/api/builder/values/:columnName', async (req, res) => {
+  const { columnName } = req.params;
+  try {
+    // 화이트리스트 검증
+    const [check] = await pool.query(`
+      SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data' AND COLUMN_NAME = ?
+    `, [columnName]);
+    if (check.length === 0) {
+      return res.status(404).json({ error: `존재하지 않는 컬럼: ${columnName}` });
+    }
+
+    const [rows] = await pool.query(`
+      SELECT DISTINCT \`${columnName}\` AS val, COUNT(*) AS cnt
+      FROM bw_profitability_data
+      WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` != ''
+      GROUP BY \`${columnName}\`
+      ORDER BY cnt DESC
+      LIMIT 200
+    `);
+
+    const values = rows.map(r => ({
+      value: typeof r.val === 'bigint' ? Number(r.val) : r.val,
+      count: Number(r.cnt),
+    }));
+
+    res.json({ column: columnName, values, total: values.length });
+  } catch (err) {
+    console.error('[Builder] values error:', err.message);
+    res.status(500).json({ error: '값 조회 실패: ' + err.message });
+  }
+});
+
+// POST /api/builder/query - 쿼리 빌더 실행
+app.post('/api/builder/query', async (req, res) => {
+  const { fields, conditions, group_by, order_by, order_dir, limit: limitStr, prompt } = req.body;
+
+  if (!fields || fields.length === 0) {
+    return res.status(400).json({ error: '조회할 필드를 하나 이상 선택해주세요.' });
+  }
+
+  const safeLimit = Math.min(parseInt(limitStr) || 1000, 5000);
+
+  try {
+    // 화이트리스트: DB 실제 컬럼명 검증
+    const [validColRows] = await pool.query(`
+      SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data'
+    `);
+    const validCols = new Set(validColRows.map(r => r.COLUMN_NAME));
+
+    // SELECT 절
+    const selectParts = [];
+    for (const f of fields) {
+      const col = f.column;
+      if (!validCols.has(col)) return res.status(400).json({ error: `유효하지 않은 컬럼: ${col}` });
+      const agg = f.aggregate;
+      const alias = f.alias || col;
+      if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
+        selectParts.push(`${agg.toUpperCase()}(\`${col}\`) AS \`${alias}\``);
+      } else {
+        selectParts.push(`\`${col}\` AS \`${alias}\``);
+      }
+    }
+
+    // WHERE 절
+    const whereParts = [];
+    const params = [];
+    if (conditions && conditions.length > 0) {
+      for (let i = 0; i < conditions.length; i++) {
+        const cond = conditions[i];
+        const col = cond.column;
+        if (!col || !validCols.has(col)) continue;
+
+        const op = cond.operator || '=';
+        const val = cond.value || '';
+        const logic = (cond.logic || 'AND').toUpperCase();
+
+        let clause;
+        if (op === '=' || op === '!=' || op === '>' || op === '>=' || op === '<' || op === '<=') {
+          clause = `\`${col}\` ${op} ?`;
+          params.push(val);
+        } else if (op === 'LIKE') {
+          clause = `\`${col}\` LIKE ?`;
+          params.push(`%${val}%`);
+        } else if (op === 'NOT LIKE') {
+          clause = `\`${col}\` NOT LIKE ?`;
+          params.push(`%${val}%`);
+        } else if (op === 'IN') {
+          const inVals = String(val).split(',').map(v => v.trim()).filter(v => v);
+          if (inVals.length === 0) continue;
+          clause = `\`${col}\` IN (${inVals.map(() => '?').join(',')})`;
+          params.push(...inVals);
+        } else if (op === 'IS NULL') {
+          clause = `\`${col}\` IS NULL`;
+        } else if (op === 'IS NOT NULL') {
+          clause = `\`${col}\` IS NOT NULL`;
+        } else if (op === 'BETWEEN') {
+          const bVals = String(val).split(',').map(v => v.trim());
+          if (bVals.length !== 2) continue;
+          clause = `\`${col}\` BETWEEN ? AND ?`;
+          params.push(bVals[0], bVals[1]);
+        } else {
+          clause = `\`${col}\` = ?`;
+          params.push(val);
+        }
+
+        if (i === 0) {
+          whereParts.push(clause);
+        } else {
+          whereParts.push(`${logic === 'OR' ? 'OR' : 'AND'} ${clause}`);
+        }
+      }
+    }
+
+    // GROUP BY 절
+    const groupParts = [];
+    if (group_by && group_by.length > 0) {
+      for (const g of group_by) {
+        if (validCols.has(g)) groupParts.push(`\`${g}\``);
+      }
+    }
+
+    // ORDER BY 절
+    let orderClause = '';
+    if (order_by) {
+      const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+      orderClause = `ORDER BY \`${order_by}\` ${dir}`;
+    }
+
+    // SQL 조합
+    let sql = `SELECT ${selectParts.join(', ')} FROM bw_profitability_data`;
+    if (whereParts.length > 0) sql += ` WHERE ${whereParts.join(' ')}`;
+    if (groupParts.length > 0) sql += ` GROUP BY ${groupParts.join(', ')}`;
+    if (orderClause) sql += ` ${orderClause}`;
+    sql += ` LIMIT ${safeLimit}`;
+
+    let finalParams = params;
+
+    // 추가 프롬프트가 있으면 GPT로 SQL 보완
+    if (prompt && prompt.trim()) {
+      try {
+        const gptPrompt = `기본 SQL: ${sql}\n\n추가 요청: ${prompt}\n\n위 SQL을 기반으로 추가 요청을 반영한 완성된 SELECT 문을 작성해주세요. 테이블명은 bw_profitability_data입니다. SELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-5-mini',
+          messages: [
+            { role: 'system', content: '당신은 SQL 전문가입니다. 주어진 기본 SQL을 기반으로 추가 요청을 반영한 SELECT 문만 작성하세요. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.' },
+            { role: 'user', content: gptPrompt },
+          ],
+          temperature: 0.1,
+        });
+        let gptSql = completion.choices[0].message.content.trim();
+        // 코드 블록 제거
+        gptSql = gptSql.replace(/```sql\s*/gi, '').replace(/```\s*/g, '').trim();
+        // 안전성 검증
+        const forbidden = ['INSERT','UPDATE','DELETE','DROP','ALTER','TRUNCATE','CREATE'];
+        const isSafe = !forbidden.some(w => new RegExp('\\b' + w + '\\b', 'i').test(gptSql));
+        if (isSafe && /^SELECT/i.test(gptSql)) {
+          sql = gptSql;
+          finalParams = []; // GPT SQL은 파라미터 바인딩 없이 실행
+        }
+      } catch (gptErr) {
+        console.error('[Builder] GPT prompt enhancement failed:', gptErr.message);
+      }
+    }
+
+    // SQL 실행
+    const [rows] = finalParams.length > 0
+      ? await pool.query(sql, finalParams)
+      : await pool.query(sql);
+
+    const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
+    const clean = rows.map(row => {
+      const r = {};
+      for (const [k, v] of Object.entries(row)) {
+        r[k] = typeof v === 'bigint' ? Number(v) : v;
+      }
+      return r;
+    });
+
+    // 차트 자동 판별
+    const chart = builderSuggestChart(cols, clean.length);
+
+    res.json({ success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart });
+  } catch (err) {
+    console.error('[Builder] query error:', err.message);
+    res.status(500).json({ error: `DB 오류: ${err.message}`, sql: '' });
+  }
+});
+
+// 차트 자동 판별 헬퍼
+function builderSuggestChart(cols, rowCount) {
+  if (rowCount === 0 || cols.length < 2) return { chart_type: 'table_only' };
+  const labelCol = cols[0];
+  const dataCols = cols.slice(1);
+  if (rowCount <= 6 && dataCols.length === 1) return { chart_type: 'pie', label_column: labelCol, data_columns: dataCols };
+  if (rowCount <= 30) return { chart_type: 'bar', label_column: labelCol, data_columns: dataCols };
+  return { chart_type: 'table_only' };
+}
 
 // report.html 페이지 서빙
 app.get('/report', (req, res) => {

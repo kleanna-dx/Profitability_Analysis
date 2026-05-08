@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>비주얼 쿼리 빌더 - 수익성분석 AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb; --primary-dark: #1d4ed8;
+            --bg: #f1f5f9; --card: #ffffff; --border: #e2e8f0;
+            --text: #1e293b; --text-light: #64748b;
+            --success: #10b981; --error: #ef4444; --warning: #f59e0b;
+            --purple: #7c3aed; --teal: #0d9488;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Noto Sans KR','Pretendard','Segoe UI',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+
+        /* ===== Sidebar (프로젝트 공통) ===== */
+        .sidebar{position:fixed;left:0;top:0;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b 0%,#312e81 100%);color:#e0e7ff;z-index:1000;transform:translateX(-100%);transition:transform 0.3s ease;overflow-y:auto;box-shadow:4px 0 24px rgba(0,0,0,0.15);}
+        .sidebar.open{transform:translateX(0);}
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:999;opacity:0;pointer-events:none;transition:opacity 0.3s;}
+        .sidebar-overlay.active{opacity:1;pointer-events:auto;}
+        .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:12px 24px;color:#c7d2fe;font-size:14px;cursor:pointer;transition:all 0.15s;text-decoration:none;}
+        .sidebar-menu-item:hover{background:rgba(255,255,255,0.1);color:#fff;}
+        .sidebar-menu-item.active{background:rgba(99,102,241,0.3);color:#fff;font-weight:600;}
+        .sidebar-menu-item i{width:20px;text-align:center;font-size:15px;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,0.1);margin:12px 16px;}
+
+        /* ===== Top Bar ===== */
+        .top-bar{background:white;border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:50;}
+        .hamburger-btn{background:none;border:1px solid var(--border);border-radius:10px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#64748b;transition:all 0.2s;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+
+        /* ===== Main Layout ===== */
+        .container { max-width:1440px; margin:0 auto; padding:20px 16px; }
+        .builder-layout { display:grid; grid-template-columns:280px 1fr; gap:20px; margin-bottom:20px; }
+
+        /* ===== Left Panel: Field List ===== */
+        .field-panel {
+            background:var(--card); border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,0.06);
+            overflow:hidden; max-height:calc(100vh - 120px); display:flex; flex-direction:column;
+            position:sticky; top:80px;
+        }
+        .field-panel-header {
+            padding:16px 18px; background:linear-gradient(135deg, var(--teal), #065f46);
+            color:white; font-size:0.9rem; font-weight:700;
+        }
+        .field-panel-header small { display:block; font-size:0.72rem; opacity:0.8; margin-top:2px; font-weight:400; }
+        .field-search { padding:10px 14px; border-bottom:1px solid var(--border); }
+        .field-search input {
+            width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px;
+            font-size:0.82rem; outline:none; transition:border-color 0.2s;
+        }
+        .field-search input:focus { border-color:var(--primary); }
+        .field-categories { flex:1; overflow-y:auto; padding:6px 0; }
+        .field-cat-label {
+            padding:6px 16px; font-size:0.72rem; font-weight:700; color:var(--text-light);
+            text-transform:uppercase; letter-spacing:0.5px; background:#f8fafc;
+            border-top:1px solid var(--border); border-bottom:1px solid var(--border);
+            margin-top:4px; position:sticky; top:0; z-index:1;
+        }
+        .field-item {
+            display:flex; align-items:center; gap:8px;
+            padding:7px 16px; cursor:grab; font-size:0.82rem;
+            transition:background 0.15s; user-select:none; border-bottom:1px solid #f8fafc;
+        }
+        .field-item:hover { background:#eff6ff; }
+        .field-item.dragging { opacity:0.4; }
+        .field-item .icon {
+            width:22px; height:22px; border-radius:6px; display:flex; align-items:center;
+            justify-content:center; font-size:0.65rem; font-weight:700; color:white; flex-shrink:0;
+        }
+        .field-item .icon.text { background:#6366f1; }
+        .field-item .icon.number { background:#10b981; }
+        .field-item .fname { flex:1; }
+        .field-item .fcode { font-size:0.68rem; color:#94a3b8; font-family:'Fira Code',monospace; }
+
+        /* ===== Right Panel: Builder Area ===== */
+        .builder-area { display:flex; flex-direction:column; gap:16px; }
+
+        .section-card {
+            background:var(--card); border-radius:14px; box-shadow:0 2px 10px rgba(0,0,0,0.06);
+            overflow:hidden;
+        }
+        .section-header {
+            padding:12px 18px; font-size:0.88rem; font-weight:700;
+            border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px;
+        }
+        .section-header .badge {
+            font-size:0.68rem; padding:2px 8px; border-radius:8px; font-weight:700;
+        }
+        .section-body { padding:14px 18px; }
+
+        /* Drop zone */
+        .drop-zone {
+            min-height:60px; border:2px dashed var(--border); border-radius:12px;
+            padding:12px; display:flex; flex-wrap:wrap; gap:8px;
+            transition:all 0.2s; position:relative;
+        }
+        .drop-zone.dragover { border-color:var(--teal); background:rgba(13,148,136,0.05); }
+        .drop-zone-placeholder {
+            width:100%; text-align:center; padding:12px; color:#94a3b8; font-size:0.82rem;
+            pointer-events:none;
+        }
+        .selected-field {
+            display:inline-flex; align-items:center; gap:6px;
+            padding:6px 12px; background:#ecfdf5; border:1px solid #a7f3d0;
+            border-radius:10px; font-size:0.82rem; cursor:move; transition:all 0.15s;
+        }
+        .selected-field:hover { background:#d1fae5; }
+        .selected-field .agg-select {
+            padding:2px 6px; border:1px solid #a7f3d0; border-radius:6px;
+            font-size:0.72rem; background:white; cursor:pointer; outline:none;
+        }
+        .selected-field .remove {
+            cursor:pointer; color:var(--error); font-weight:700; font-size:0.9rem;
+            padding:0 2px; line-height:1;
+        }
+
+        /* Condition Builder */
+        .condition-row {
+            display:flex; align-items:center; gap:8px; margin-bottom:8px;
+            padding:8px 12px; background:#fafbfc; border-radius:10px;
+            border:1px solid var(--border); flex-wrap:wrap;
+        }
+        .condition-row select, .condition-row input {
+            padding:6px 10px; border:1px solid var(--border); border-radius:8px;
+            font-size:0.82rem; outline:none;
+        }
+        .condition-row select:focus, .condition-row input:focus { border-color:var(--primary); }
+        .condition-row .logic-toggle {
+            padding:4px 10px; border-radius:8px; font-size:0.72rem; font-weight:700;
+            cursor:pointer; border:1px solid; transition:all 0.2s; min-width:40px; text-align:center;
+        }
+        .logic-toggle.and { background:#dbeafe; color:#2563eb; border-color:#93c5fd; }
+        .logic-toggle.or { background:#fef3c7; color:#d97706; border-color:#fcd34d; }
+        .condition-row .remove-cond {
+            cursor:pointer; color:var(--error); font-weight:700; font-size:1rem;
+            padding:2px 6px; border-radius:6px; transition:background 0.15s;
+        }
+        .condition-row .remove-cond:hover { background:#fef2f2; }
+        .val-suggestions {
+            position:absolute; top:100%; left:0; z-index:50;
+            background:white; border:1px solid var(--border); border-radius:10px;
+            box-shadow:0 8px 24px rgba(0,0,0,0.12); max-height:200px; overflow-y:auto;
+            width:240px; display:none;
+        }
+        .val-suggestions.active { display:block; }
+        .val-suggestions .item {
+            padding:6px 12px; cursor:pointer; font-size:0.8rem;
+            display:flex; justify-content:space-between; border-bottom:1px solid #f8fafc;
+        }
+        .val-suggestions .item:hover { background:#eff6ff; }
+        .val-suggestions .item .cnt { color:#94a3b8; font-size:0.72rem; }
+
+        .add-condition-btn {
+            display:inline-flex; align-items:center; gap:4px; padding:8px 16px;
+            background:#f0fdfa; color:var(--teal); border:1px dashed #99f6e4;
+            border-radius:10px; font-size:0.82rem; cursor:pointer; font-weight:600;
+            transition:all 0.2s; border-style:dashed;
+        }
+        .add-condition-btn:hover { background:#ccfbf1; border-color:var(--teal); }
+
+        /* Prompt area */
+        .prompt-area textarea {
+            width:100%; padding:12px 16px; border:2px solid var(--border); border-radius:12px;
+            font-size:0.9rem; resize:vertical; min-height:60px; outline:none;
+            font-family:inherit; transition:border-color 0.2s;
+        }
+        .prompt-area textarea:focus { border-color:var(--primary); }
+        .prompt-hint { font-size:0.75rem; color:#94a3b8; margin-top:6px; }
+
+        /* Execute area */
+        .execute-area { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+        .exec-btn {
+            padding:12px 32px; background:linear-gradient(135deg, var(--teal), #065f46);
+            color:white; font-size:1rem; font-weight:700; border:none; border-radius:12px;
+            cursor:pointer; transition:all 0.2s; box-shadow:0 4px 12px rgba(13,148,136,0.3);
+        }
+        .exec-btn:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(13,148,136,0.4); }
+        .exec-btn:disabled { background:#94a3b8; cursor:not-allowed; transform:none; box-shadow:none; }
+        .limit-select, .order-controls select {
+            padding:6px 10px; border:1px solid var(--border); border-radius:8px;
+            font-size:0.82rem; outline:none;
+        }
+        .order-controls { display:flex; gap:6px; align-items:center; }
+
+        /* SQL Preview */
+        .sql-preview {
+            background:#0f172a; border-radius:12px; padding:16px 20px; margin-top:12px;
+            display:none; position:relative;
+        }
+        .sql-preview.active { display:block; }
+        .sql-preview pre {
+            color:#e2e8f0; font-family:'Fira Code',monospace; font-size:0.82rem;
+            white-space:pre-wrap; word-break:break-all; line-height:1.6;
+        }
+        .sql-preview pre .kw { color:#7dd3fc; font-weight:bold; }
+        .sql-preview .label {
+            position:absolute; top:8px; right:12px; background:#1e293b;
+            color:#7dd3fc; font-size:0.68rem; padding:3px 10px; border-radius:6px; font-weight:600;
+        }
+
+        /* Results */
+        .results-section { display:none; }
+        .results-section.active { display:block; }
+        .result-meta {
+            display:flex; justify-content:space-between; align-items:center;
+            margin-bottom:12px; font-size:0.85rem; color:var(--text-light);
+        }
+        .result-meta .count {
+            background:var(--success); color:white; padding:4px 14px;
+            border-radius:16px; font-weight:700; font-size:0.82rem;
+        }
+        .tabs { display:flex; gap:0; margin-bottom:0; }
+        .tab-btn {
+            padding:10px 24px; background:#e2e8f0; border:none; cursor:pointer;
+            font-size:0.88rem; font-weight:500; color:var(--text-light); transition:all 0.2s;
+        }
+        .tab-btn:first-child { border-radius:10px 0 0 0; }
+        .tab-btn:last-child { border-radius:0 10px 0 0; }
+        .tab-btn.active { background:var(--card); color:var(--primary); font-weight:700; }
+        .tab-content { background:var(--card); border-radius:0 10px 10px 10px; box-shadow:0 2px 10px rgba(0,0,0,0.06); }
+        .table-wrap {
+            overflow-x:auto; padding:4px; display:none; max-height:500px; overflow-y:auto;
+        }
+        .table-wrap.active { display:block; }
+        table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+        thead th {
+            background:#f8fafc; padding:10px 14px; text-align:left; font-weight:700;
+            border-bottom:2px solid var(--border); white-space:nowrap; position:sticky; top:0; z-index:1;
+        }
+        tbody td { padding:8px 14px; border-bottom:1px solid var(--border); white-space:nowrap; }
+        tbody tr:hover { background:#eff6ff; }
+        td.num { text-align:right; font-variant-numeric:tabular-nums; font-family:'Fira Code',monospace; font-size:0.78rem; }
+        .chart-wrap { padding:24px; display:none; min-height:380px; }
+        .chart-wrap.active { display:block; }
+        .chart-container { position:relative; max-width:900px; margin:0 auto; }
+
+        /* Loading */
+        .loading-overlay {
+            display:none; text-align:center; padding:40px; background:var(--card);
+            border-radius:14px; margin-bottom:16px;
+        }
+        .loading-overlay.active { display:block; }
+        .spinner { width:40px; height:40px; border:4px solid var(--border); border-top-color:var(--teal); border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto 16px; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+
+        /* Error */
+        .error-box {
+            background:#fef2f2; border:1px solid #fecaca; color:#991b1b;
+            border-radius:12px; padding:16px 20px; display:none; font-size:0.88rem; margin-bottom:16px;
+        }
+        .error-box.active { display:block; }
+        .error-box code { display:block; margin-top:8px; padding:10px; background:#1e293b; color:#fca5a5; border-radius:8px; font-size:0.78rem; white-space:pre-wrap; }
+
+        @media (max-width:900px) {
+            .builder-layout { grid-template-columns:1fr; }
+            .field-panel { max-height:300px; position:static; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ========== SIDEBAR ========== -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav class="py-2">
+        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-comments"></i><span>자연어 질의</span>
+        </a>
+        <a href="/builder.html" class="sidebar-menu-item active" style="text-decoration:none;">
+            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
+        </a>
+        <a href="/report" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
+        </a>
+        <a href="/learning.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
+        </a>
+    </nav>
+    <div class="sidebar-divider"></div>
+    <div class="px-5 py-3">
+        <p class="text-xs text-indigo-300 font-semibold mb-2 uppercase tracking-wider">시스템 정보</p>
+        <div class="space-y-2 text-xs text-indigo-200">
+            <div class="flex items-center gap-2">
+                <span id="sideDbDot" style="width:7px;height:7px;border-radius:50%;background:#10b981;display:inline-block;"></span>
+                <span>DB 연결됨</span>
+            </div>
+        </div>
+    </div>
+</aside>
+
+<!-- ========== TOP BAR ========== -->
+<div class="top-bar">
+    <button class="hamburger-btn" onclick="openSidebar()">
+        <i class="fas fa-bars"></i>
+    </button>
+    <div style="display:flex;align-items:center;gap:10px;">
+        <i class="fas fa-th-large" style="color:var(--teal);font-size:1.1rem;"></i>
+        <span style="font-weight:700;font-size:1.05rem;">비주얼 쿼리 빌더</span>
+        <span style="font-size:0.75rem;color:#94a3b8;">필드 선택 → 조건 설정 → 데이터 조회</span>
+    </div>
+</div>
+
+<!-- ========== MAIN CONTENT ========== -->
+<div class="container">
+    <div class="builder-layout">
+        <!-- Left: Field List -->
+        <div class="field-panel">
+            <div class="field-panel-header">
+                필드 목록
+                <small>드래그하여 조회 영역 또는 조건 영역에 추가</small>
+            </div>
+            <div class="field-search">
+                <input type="text" id="fieldSearch" placeholder="필드 검색..." oninput="filterFields()">
+            </div>
+            <div class="field-categories" id="fieldList">
+                <div style="padding:20px;text-align:center;color:#94a3b8;">로딩 중...</div>
+            </div>
+        </div>
+
+        <!-- Right: Builder -->
+        <div class="builder-area">
+            <!-- 1. Selected Fields -->
+            <div class="section-card">
+                <div class="section-header">
+                    <span style="color:var(--teal);">&#9634;</span> 조회 필드
+                    <span class="badge" style="background:#ecfdf5;color:var(--teal);" id="fieldCountBadge">0개</span>
+                    <span style="flex:1"></span>
+                    <button onclick="clearFields()" style="background:none;border:none;color:#94a3b8;font-size:0.75rem;cursor:pointer;">전체 삭제</button>
+                </div>
+                <div class="section-body">
+                    <div class="drop-zone" id="fieldDropZone"
+                         ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleFieldDrop(event)">
+                        <div class="drop-zone-placeholder" id="fieldPlaceholder">왼쪽 필드를 여기에 드래그하세요 (더블클릭으로도 추가 가능)</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. Conditions -->
+            <div class="section-card">
+                <div class="section-header">
+                    <span style="color:var(--warning);">&#9881;</span> 필터 조건
+                    <span class="badge" style="background:#fef3c7;color:#d97706;" id="condCountBadge">0개</span>
+                </div>
+                <div class="section-body">
+                    <div id="conditionList"></div>
+                    <div style="display:flex;gap:8px;margin-top:8px;">
+                        <button class="add-condition-btn" onclick="addConditionRow()">+ 조건 추가</button>
+                        <div class="drop-zone" id="condDropZone" style="flex:1;min-height:40px;"
+                             ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleCondDrop(event)">
+                            <div class="drop-zone-placeholder" style="padding:6px;font-size:0.78rem;">또는 필드를 여기에 드래그</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3. Prompt -->
+            <div class="section-card">
+                <div class="section-header">
+                    <span style="color:var(--purple);">&#9998;</span> 추가 프롬프트 (선택)
+                </div>
+                <div class="section-body prompt-area">
+                    <textarea id="promptInput" placeholder="예: 매출 상위 10개만 보여줘 / 전월 대비 증가율도 추가해줘 / 결과를 사업부별로 소계 포함해서..."></textarea>
+                    <div class="prompt-hint">GPT가 위에 구성한 쿼리를 프롬프트 내용에 맞게 보완합니다. 비워두면 빌더 조건만으로 조회합니다.</div>
+                </div>
+            </div>
+
+            <!-- 4. Execute -->
+            <div class="section-card">
+                <div class="section-body">
+                    <div class="execute-area">
+                        <button class="exec-btn" id="execBtn" onclick="executeQuery()">&#9654; 조회 실행</button>
+                        <div class="order-controls">
+                            <label style="font-size:0.82rem;color:var(--text-light);">정렬:</label>
+                            <select id="orderBySelect"><option value="">선택안함</option></select>
+                            <select id="orderDirSelect">
+                                <option value="DESC">내림차순</option>
+                                <option value="ASC">오름차순</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:0.82rem;color:var(--text-light);">최대:</label>
+                            <select class="limit-select" id="limitSelect">
+                                <option value="100">100건</option>
+                                <option value="500">500건</option>
+                                <option value="1000" selected>1,000건</option>
+                                <option value="5000">5,000건</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="sql-preview" id="sqlPreview">
+                        <span class="label">생성된 SQL</span>
+                        <pre id="sqlPreviewText"></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Loading -->
+            <div class="loading-overlay" id="loading">
+                <div class="spinner"></div>
+                <p style="color:var(--text-light);font-size:0.9rem;">데이터 조회 중...</p>
+            </div>
+
+            <!-- Error -->
+            <div class="error-box" id="errorBox"></div>
+
+            <!-- Results -->
+            <div class="results-section" id="resultsSection">
+                <div class="result-meta">
+                    <span id="resultInfo"></span>
+                    <span class="count" id="rowCount"></span>
+                </div>
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="switchTab('table')">표 (Table)</button>
+                    <button class="tab-btn" onclick="switchTab('chart')">그래프 (Chart)</button>
+                </div>
+                <div class="tab-content">
+                    <div class="table-wrap active" id="tableWrap"></div>
+                    <div class="chart-wrap" id="chartWrap">
+                        <div class="chart-container"><canvas id="resultChart"></canvas></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ─── Sidebar ─────────────────────────────────
+function openSidebar() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebarOverlay').classList.add('active');
+}
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('active');
+}
+
+// ─── State ───────────────────────────────────
+let allColumns = [];
+let selectedFields = [];
+let conditions = [];
+let chartInstance = null;
+let valuesCache = {};
+
+const CATEGORY_NAMES = {
+    period: '기간', org: '조직/사업부', product: '자재/제품',
+    trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액', other: '기타', system: '시스템'
+};
+const CATEGORY_ORDER = ['period','org','product','trade','quantity','amount','unit','other'];
+
+// ─── Init ────────────────────────────────────
+window.addEventListener('DOMContentLoaded', loadColumns);
+
+async function loadColumns() {
+    try {
+        const res = await fetch('/api/builder/columns');
+        const data = await res.json();
+        allColumns = data.columns.filter(c => c.category !== 'system');
+        renderFieldList(allColumns);
+    } catch(e) {
+        document.getElementById('fieldList').innerHTML = '<p style="color:var(--error);padding:16px;">필드 로딩 실패</p>';
+    }
+}
+
+function renderFieldList(cols) {
+    const grouped = {};
+    cols.forEach(c => {
+        if (!grouped[c.category]) grouped[c.category] = [];
+        grouped[c.category].push(c);
+    });
+
+    let html = '';
+    CATEGORY_ORDER.forEach(cat => {
+        if (!grouped[cat] || grouped[cat].length === 0) return;
+        html += `<div class="field-cat-label">${CATEGORY_NAMES[cat] || cat} (${grouped[cat].length})</div>`;
+        grouped[cat].forEach(c => {
+            html += `<div class="field-item" draggable="true"
+                ondragstart="dragStart(event, '${c.name}')"
+                ondblclick="addFieldByClick('${c.name}')"
+                data-name="${c.name}" data-label="${c.label}" data-type="${c.type}">
+                <span class="icon ${c.type}">${c.type === 'number' ? '#' : 'T'}</span>
+                <span class="fname">${c.label}</span>
+                <span class="fcode">${c.name}</span>
+            </div>`;
+        });
+    });
+    document.getElementById('fieldList').innerHTML = html;
+}
+
+function filterFields() {
+    const q = document.getElementById('fieldSearch').value.toLowerCase();
+    const filtered = allColumns.filter(c =>
+        c.label.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)
+    );
+    renderFieldList(filtered);
+}
+
+// ─── Drag & Drop ─────────────────────────────
+let dragColumn = null;
+
+function dragStart(e, colName) {
+    dragColumn = colName;
+    e.dataTransfer.effectAllowed = 'copy';
+    e.target.classList.add('dragging');
+    setTimeout(() => e.target.classList.remove('dragging'), 200);
+}
+
+function handleDragOver(e) {
+    e.preventDefault();
+    e.currentTarget.classList.add('dragover');
+}
+
+function handleDragLeave(e) {
+    e.currentTarget.classList.remove('dragover');
+}
+
+function handleFieldDrop(e) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('dragover');
+    if (dragColumn) addField(dragColumn);
+    dragColumn = null;
+}
+
+function handleCondDrop(e) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('dragover');
+    if (dragColumn) addConditionRow(dragColumn);
+    dragColumn = null;
+}
+
+// ─── Field Management ────────────────────────
+function addFieldByClick(colName) { addField(colName); }
+
+function addField(colName) {
+    if (selectedFields.find(f => f.column === colName && !f.aggregate)) return;
+    const col = allColumns.find(c => c.name === colName);
+    if (!col) return;
+    selectedFields.push({ column: colName, alias: col.label, aggregate: '', type: col.type });
+    renderSelectedFields();
+    updateOrderByOptions();
+}
+
+function removeField(idx) {
+    selectedFields.splice(idx, 1);
+    renderSelectedFields();
+    updateOrderByOptions();
+}
+
+function clearFields() {
+    selectedFields = [];
+    renderSelectedFields();
+    updateOrderByOptions();
+}
+
+function setAggregate(idx, agg) {
+    selectedFields[idx].aggregate = agg;
+    const col = allColumns.find(c => c.name === selectedFields[idx].column);
+    selectedFields[idx].alias = agg ? `${agg}_${col ? col.label : selectedFields[idx].column}` : (col ? col.label : selectedFields[idx].column);
+    updateOrderByOptions();
+}
+
+function renderSelectedFields() {
+    const zone = document.getElementById('fieldDropZone');
+    if (selectedFields.length === 0) {
+        zone.innerHTML = '<div class="drop-zone-placeholder" id="fieldPlaceholder">왼쪽 필드를 여기에 드래그하세요 (더블클릭으로도 추가 가능)</div>';
+        document.getElementById('fieldCountBadge').textContent = '0개';
+        return;
+    }
+    let html = '';
+    selectedFields.forEach((f, i) => {
+        const col = allColumns.find(c => c.name === f.column);
+        const isNum = f.type === 'number';
+        html += `<div class="selected-field">
+            <span style="color:${isNum ? 'var(--success)' : '#6366f1'};font-weight:700;">${isNum ? '#' : 'T'}</span>
+            <span>${col ? col.label : f.column}</span>`;
+        if (isNum) {
+            html += `<select class="agg-select" onchange="setAggregate(${i}, this.value)">
+                <option value="" ${f.aggregate===''?'selected':''}>원본</option>
+                <option value="SUM" ${f.aggregate==='SUM'?'selected':''}>SUM</option>
+                <option value="AVG" ${f.aggregate==='AVG'?'selected':''}>AVG</option>
+                <option value="MAX" ${f.aggregate==='MAX'?'selected':''}>MAX</option>
+                <option value="MIN" ${f.aggregate==='MIN'?'selected':''}>MIN</option>
+                <option value="COUNT" ${f.aggregate==='COUNT'?'selected':''}>COUNT</option>
+            </select>`;
+        }
+        html += `<span class="remove" onclick="removeField(${i})">&times;</span></div>`;
+    });
+    zone.innerHTML = html;
+    document.getElementById('fieldCountBadge').textContent = selectedFields.length + '개';
+}
+
+function updateOrderByOptions() {
+    const sel = document.getElementById('orderBySelect');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">선택안함</option>';
+    selectedFields.forEach(f => {
+        const alias = f.alias || f.column;
+        const opt = document.createElement('option');
+        opt.value = alias;
+        opt.textContent = alias;
+        sel.appendChild(opt);
+    });
+    sel.value = prev;
+}
+
+// ─── Condition Management ────────────────────
+function addConditionRow(presetCol) {
+    const idx = conditions.length;
+    conditions.push({ column: presetCol || '', operator: '=', value: '', logic: 'AND' });
+    renderConditions();
+    if (presetCol) loadColumnValues(presetCol, idx);
+}
+
+function removeCondition(idx) {
+    conditions.splice(idx, 1);
+    renderConditions();
+}
+
+function toggleLogic(idx) {
+    conditions[idx].logic = conditions[idx].logic === 'AND' ? 'OR' : 'AND';
+    renderConditions();
+}
+
+function setCondColumn(idx, colName) {
+    conditions[idx].column = colName;
+    conditions[idx].value = '';
+    renderConditions();
+    if (colName) loadColumnValues(colName, idx);
+}
+
+function setCondOp(idx, op) { conditions[idx].operator = op; }
+function setCondValue(idx, val) { conditions[idx].value = val; }
+
+function renderConditions() {
+    const list = document.getElementById('conditionList');
+    if (conditions.length === 0) {
+        list.innerHTML = '';
+        document.getElementById('condCountBadge').textContent = '0개';
+        return;
+    }
+    let html = '';
+    conditions.forEach((cond, i) => {
+        const col = allColumns.find(c => c.name === cond.column);
+        const isNum = col && col.type === 'number';
+        html += `<div class="condition-row">`;
+        if (i > 0) {
+            html += `<span class="logic-toggle ${cond.logic.toLowerCase()}" onclick="toggleLogic(${i})">${cond.logic}</span>`;
+        } else {
+            html += `<span style="width:40px;"></span>`;
+        }
+        html += `<select onchange="setCondColumn(${i}, this.value)" style="min-width:140px;">
+            <option value="">필드 선택</option>`;
+        CATEGORY_ORDER.forEach(cat => {
+            const cols = allColumns.filter(c => c.category === cat);
+            if (cols.length === 0) return;
+            html += `<optgroup label="${CATEGORY_NAMES[cat]}">`;
+            cols.forEach(c => {
+                html += `<option value="${c.name}" ${c.name === cond.column ? 'selected' : ''}>${c.label}</option>`;
+            });
+            html += `</optgroup>`;
+        });
+        html += `</select>`;
+        html += `<select onchange="setCondOp(${i}, this.value)" style="min-width:90px;">`;
+        const ops = isNum
+            ? [['=','='],['!=','!='],['>','>'],['>=','>='],['<','<'],['<=','<='],['BETWEEN','사이'],['IS NULL','없음'],['IS NOT NULL','있음']]
+            : [['=','='],['!=','!='],['LIKE','포함'],['NOT LIKE','미포함'],['IN','목록'],['IS NULL','없음'],['IS NOT NULL','있음']];
+        ops.forEach(([val, label]) => {
+            html += `<option value="${val}" ${val === cond.operator ? 'selected' : ''}>${label}</option>`;
+        });
+        html += `</select>`;
+        const needsValue = !['IS NULL', 'IS NOT NULL'].includes(cond.operator);
+        if (needsValue) {
+            html += `<div style="position:relative;flex:1;">
+                <input type="text" value="${escHtml(cond.value)}"
+                    oninput="setCondValue(${i}, this.value); showSuggestions(${i}, this)"
+                    onfocus="showSuggestions(${i}, this)"
+                    onblur="setTimeout(()=>hideSuggestions(${i}), 200)"
+                    placeholder="${cond.operator === 'BETWEEN' ? '시작,끝' : cond.operator === 'IN' ? '값1,값2,값3' : '값 입력...'}"
+                    style="width:100%;">
+                <div class="val-suggestions" id="suggestions_${i}"></div>
+            </div>`;
+        }
+        html += `<span class="remove-cond" onclick="removeCondition(${i})">&times;</span></div>`;
+    });
+    list.innerHTML = html;
+    document.getElementById('condCountBadge').textContent = conditions.length + '개';
+}
+
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── Value Suggestions ───────────────────────
+async function loadColumnValues(colName, condIdx) {
+    if (valuesCache[colName]) return;
+    try {
+        const res = await fetch(`/api/builder/values/${colName}`);
+        const data = await res.json();
+        valuesCache[colName] = data.values || [];
+    } catch(e) {
+        valuesCache[colName] = [];
+    }
+}
+
+function showSuggestions(idx, inputEl) {
+    const col = conditions[idx].column;
+    const vals = valuesCache[col];
+    if (!vals || vals.length === 0) return;
+    const q = inputEl.value.toLowerCase();
+    const filtered = vals.filter(v => String(v.value).toLowerCase().includes(q)).slice(0, 30);
+    if (filtered.length === 0) { hideSuggestions(idx); return; }
+    const div = document.getElementById(`suggestions_${idx}`);
+    div.innerHTML = filtered.map(v =>
+        `<div class="item" onmousedown="pickSuggestion(${idx}, '${escHtml(String(v.value))}')">
+            <span>${v.value}</span>
+            <span class="cnt">${v.count.toLocaleString()}건</span>
+        </div>`
+    ).join('');
+    div.classList.add('active');
+}
+
+function hideSuggestions(idx) {
+    const div = document.getElementById(`suggestions_${idx}`);
+    if (div) div.classList.remove('active');
+}
+
+function pickSuggestion(idx, val) {
+    conditions[idx].value = val;
+    renderConditions();
+}
+
+// ─── Execute Query ───────────────────────────
+async function executeQuery() {
+    if (selectedFields.length === 0) {
+        alert('조회할 필드를 하나 이상 선택해주세요.');
+        return;
+    }
+    const btn = document.getElementById('execBtn');
+    btn.disabled = true;
+    document.getElementById('loading').classList.add('active');
+    document.getElementById('errorBox').classList.remove('active');
+    document.getElementById('resultsSection').classList.remove('active');
+
+    const hasAgg = selectedFields.some(f => f.aggregate);
+    const groupBy = hasAgg ? selectedFields.filter(f => !f.aggregate).map(f => f.column) : [];
+
+    const payload = {
+        fields: selectedFields.map(f => ({ column: f.column, aggregate: f.aggregate || '', alias: f.alias || '' })),
+        conditions: conditions.filter(c => c.column).map(c => ({ column: c.column, operator: c.operator, value: c.value, logic: c.logic })),
+        group_by: groupBy,
+        order_by: document.getElementById('orderBySelect').value,
+        order_dir: document.getElementById('orderDirSelect').value,
+        limit: document.getElementById('limitSelect').value,
+        prompt: document.getElementById('promptInput').value.trim(),
+    };
+
+    try {
+        const res = await fetch('/api/builder/query', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        document.getElementById('loading').classList.remove('active');
+
+        if (data.error) { showError(data.error, data.sql); return; }
+
+        if (data.sql) {
+            document.getElementById('sqlPreviewText').innerHTML = highlightSQL(data.sql);
+            document.getElementById('sqlPreview').classList.add('active');
+        }
+        displayResults(data);
+    } catch(e) {
+        document.getElementById('loading').classList.remove('active');
+        showError('네트워크 오류: ' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function showError(msg, sql) {
+    let html = `<b>오류:</b> ${msg}`;
+    if (sql) html += `<code>${sql}</code>`;
+    document.getElementById('errorBox').innerHTML = html;
+    document.getElementById('errorBox').classList.add('active');
+}
+
+function highlightSQL(sql) {
+    const kws = ['SELECT','FROM','WHERE','GROUP BY','ORDER BY','HAVING','LIMIT',
+        'JOIN','LEFT JOIN','ON','AS','AND','OR','NOT','IN','BETWEEN','LIKE',
+        'IS NULL','IS NOT NULL','CASE','WHEN','THEN','ELSE','END',
+        'SUM','COUNT','AVG','MAX','MIN','DISTINCT','DESC','ASC'];
+    let h = sql.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    kws.forEach(kw => {
+        const re = new RegExp('\\b(' + kw.replace(/ /g,'\\s+') + ')\\b', 'gi');
+        h = h.replace(re, '<span class="kw">$1</span>');
+    });
+    return h;
+}
+
+function displayResults(data) {
+    if (!data.rows || data.rows.length === 0) { showError('조건에 맞는 데이터가 없습니다.'); return; }
+    document.getElementById('resultInfo').textContent = '조회 완료';
+    document.getElementById('rowCount').textContent = `${data.row_count.toLocaleString()}건`;
+    renderTable(data.columns, data.rows);
+    renderChart(data.chart, data.columns, data.rows);
+    document.getElementById('resultsSection').classList.add('active');
+    switchTab('table');
+}
+
+function renderTable(columns, rows) {
+    const numCols = new Set();
+    if (rows.length > 0) {
+        columns.forEach(col => { if (typeof rows[0][col] === 'number') numCols.add(col); });
+    }
+    let html = '<table><thead><tr><th>#</th>';
+    columns.forEach(col => html += `<th>${col}</th>`);
+    html += '</tr></thead><tbody>';
+    rows.forEach((row, idx) => {
+        html += `<tr><td style="color:#94a3b8;font-size:0.72rem">${idx+1}</td>`;
+        columns.forEach(col => {
+            const val = row[col];
+            if (numCols.has(col) && val !== null && val !== undefined) {
+                html += `<td class="num">${Number(val).toLocaleString()}</td>`;
+            } else {
+                html += `<td>${val ?? ''}</td>`;
+            }
+        });
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    document.getElementById('tableWrap').innerHTML = html;
+}
+
+function renderChart(chartInfo, columns, rows) {
+    if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+    if (!chartInfo || chartInfo.chart_type === 'table_only') {
+        document.querySelectorAll('.tab-btn')[1].style.display = 'none';
+        return;
+    }
+    document.querySelectorAll('.tab-btn')[1].style.display = '';
+    const labels = rows.map(r => {
+        const v = r[chartInfo.label_column];
+        return v !== null && v !== undefined ? String(v) : '';
+    });
+    const colors = ['#0d9488','#2563eb','#7c3aed','#f59e0b','#ef4444','#06b6d4','#ec4899','#8b5cf6','#14b8a6','#f97316'];
+    const bgColors = colors.map(c => c + 'b3');
+    const datasets = (chartInfo.data_columns || []).map((dc, i) => ({
+        label: dc,
+        data: rows.map(r => Number(r[dc]) || 0),
+        backgroundColor: ['pie','doughnut'].includes(chartInfo.chart_type) ? bgColors.slice(0, rows.length) : bgColors[i % bgColors.length],
+        borderColor: ['pie','doughnut'].includes(chartInfo.chart_type) ? '#fff' : colors[i % colors.length],
+        borderWidth: 2, borderRadius: 6, tension: 0.35,
+    }));
+    let chartType = chartInfo.chart_type;
+    let indexAxis = 'x';
+    if (chartType === 'horizontalBar') { chartType = 'bar'; indexAxis = 'y'; }
+    const ctx = document.getElementById('resultChart').getContext('2d');
+    chartInstance = new Chart(ctx, {
+        type: chartType, data: { labels, datasets },
+        options: {
+            responsive:true, maintainAspectRatio:true, indexAxis,
+            plugins: {
+                title: { display:true, text: '조회 결과', font:{size:15,weight:'bold'}, color:'#1e293b' },
+                legend: { display:datasets.length > 1 || ['pie','doughnut'].includes(chartType) },
+                tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${Number(ctx.raw).toLocaleString()}` } }
+            },
+            scales: ['pie','doughnut'].includes(chartType) ? {} : {
+                x: { grid:{display:false}, ticks:{font:{size:10}, maxRotation:45} },
+                y: { beginAtZero:true, grid:{color:'#f1f5f9'}, ticks:{font:{size:10}, callback: v => Number(v).toLocaleString()} }
+            }
+        }
+    });
+}
+
+function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+        b.classList.toggle('active', (tab === 'table' && i === 0) || (tab === 'chart' && i === 1));
+    });
+    document.getElementById('tableWrap').classList.toggle('active', tab === 'table');
+    document.getElementById('chartWrap').classList.toggle('active', tab === 'chart');
+    if (tab === 'chart' && chartInstance) setTimeout(() => chartInstance.resize(), 100);
+}
+</script>
+</body>
+</html>
