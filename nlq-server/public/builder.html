@@ -8,6 +8,7 @@
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
     <style>
         :root {
             --primary: #2563eb; --primary-dark: #1d4ed8;
@@ -225,9 +226,45 @@
         /* Results */
         .results-section { display:none; }
         .results-section.active { display:block; }
+        .result-toolbar {
+            display:flex; align-items:center; justify-content:space-between;
+            padding:12px 18px; background:var(--card); border-radius:14px;
+            box-shadow:0 2px 10px rgba(0,0,0,0.06); margin-bottom:12px;
+        }
+        .result-toolbar-left {
+            display:flex; align-items:center; gap:12px; font-size:0.85rem; color:var(--text-light);
+        }
+        .result-toolbar-left .info-chip {
+            background:#f1f5f9; border:1px solid var(--border); border-radius:8px;
+            padding:6px 14px; font-size:0.82rem; color:var(--text);
+        }
+        .result-toolbar-right {
+            display:flex; align-items:center; gap:8px;
+        }
+        .dl-btn {
+            display:inline-flex; align-items:center; gap:6px;
+            padding:8px 18px; border:none; border-radius:8px;
+            font-size:0.82rem; font-weight:600; cursor:pointer;
+            transition:all 0.2s;
+        }
+        .dl-btn:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,0.12); }
+        .dl-btn.csv {
+            background:white; color:#1e293b; border:1px solid var(--border);
+        }
+        .dl-btn.csv:hover { background:#f8fafc; border-color:#94a3b8; }
+        .dl-btn.excel {
+            background:#10b981; color:white;
+        }
+        .dl-btn.excel:hover { background:#059669; }
+        .dl-btn i { font-size:0.9rem; }
+        .reset-btn {
+            display:inline-flex; align-items:center; gap:4px;
+            padding:8px 14px; background:none; border:none;
+            color:#94a3b8; font-size:0.82rem; cursor:pointer; transition:color 0.2s;
+        }
+        .reset-btn:hover { color:var(--error); }
         .result-meta {
-            display:flex; justify-content:space-between; align-items:center;
-            margin-bottom:12px; font-size:0.85rem; color:var(--text-light);
+            display:none;
         }
         .result-meta .count {
             background:var(--success); color:white; padding:4px 14px;
@@ -437,6 +474,22 @@
 
             <!-- Results -->
             <div class="results-section" id="resultsSection">
+                <div class="result-toolbar">
+                    <div class="result-toolbar-left">
+                        <span class="info-chip" id="resultInfoChip"></span>
+                    </div>
+                    <div class="result-toolbar-right">
+                        <button class="dl-btn csv" onclick="downloadCSV()">
+                            <i class="fas fa-file-csv"></i> CSV
+                        </button>
+                        <button class="dl-btn excel" onclick="downloadExcel()">
+                            <i class="fas fa-file-excel"></i> 엑셀 다운로드
+                        </button>
+                        <button class="reset-btn" onclick="resetResults()">
+                            <i class="fas fa-redo-alt"></i> 초기화
+                        </button>
+                    </div>
+                </div>
                 <div class="result-meta">
                     <span id="resultInfo"></span>
                     <span class="count" id="rowCount"></span>
@@ -473,6 +526,8 @@ let selectedFields = [];
 let conditions = [];
 let chartInstance = null;
 let valuesCache = {};
+let lastResultColumns = [];
+let lastResultRows = [];
 
 const CATEGORY_NAMES = {
     period: '기간', org: '조직/사업부', product: '자재/제품',
@@ -916,12 +971,102 @@ function highlightSQL(sql) {
 
 function displayResults(data) {
     if (!data.rows || data.rows.length === 0) { showError('조건에 맞는 데이터가 없습니다.'); return; }
+    lastResultColumns = data.columns;
+    lastResultRows = data.rows;
+    document.getElementById('resultInfoChip').textContent = `${data.row_count.toLocaleString()}행 × ${data.columns.length}컬럼 로드 완료`;
     document.getElementById('resultInfo').textContent = '조회 완료';
     document.getElementById('rowCount').textContent = `${data.row_count.toLocaleString()}건`;
     renderTable(data.columns, data.rows);
     renderChart(data.chart, data.columns, data.rows);
     document.getElementById('resultsSection').classList.add('active');
     switchTab('table');
+}
+
+function resetResults() {
+    lastResultColumns = []; lastResultRows = [];
+    document.getElementById('resultsSection').classList.remove('active');
+    document.getElementById('sqlPreview').classList.remove('active');
+    document.getElementById('errorBox').classList.remove('active');
+}
+
+// ─── CSV Download ───────────────────────
+function downloadCSV() {
+    if (lastResultColumns.length === 0 || lastResultRows.length === 0) return;
+    const BOM = '\uFEFF';
+    const escCSV = v => {
+        const s = (v === null || v === undefined) ? '' : String(v);
+        return s.includes(',') || s.includes('"') || s.includes('\n') ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    let csv = BOM + lastResultColumns.map(escCSV).join(',') + '\n';
+    lastResultRows.forEach(row => {
+        csv += lastResultColumns.map(col => escCSV(row[col])).join(',') + '\n';
+    });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `피벗결과_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+// ─── Excel Download (xlsx-js-style CDN) ─────
+function downloadExcel() {
+    if (lastResultColumns.length === 0 || lastResultRows.length === 0) return;
+    if (typeof XLSX === 'undefined') {
+        alert('XLSX 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.');
+        return;
+    }
+    const wb = XLSX.utils.book_new();
+    const wsData = [lastResultColumns];
+    lastResultRows.forEach(row => {
+        wsData.push(lastResultColumns.map(col => {
+            const v = row[col];
+            return (v === null || v === undefined) ? '' : v;
+        }));
+    });
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    // 헤더 스타일
+    const headerStyle = {
+        font: { bold: true, color: { rgb: 'FFFFFF' }, sz: 11 },
+        fill: { fgColor: { rgb: '4F46E5' } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+        border: {
+            top: { style: 'thin', color: { rgb: '312E81' } },
+            bottom: { style: 'thin', color: { rgb: '312E81' } },
+            left: { style: 'thin', color: { rgb: '312E81' } },
+            right: { style: 'thin', color: { rgb: '312E81' } }
+        }
+    };
+    lastResultColumns.forEach((col, i) => {
+        const cell = ws[XLSX.utils.encode_cell({ r: 0, c: i })];
+        if (cell) cell.s = headerStyle;
+    });
+
+    // 컬럼 너비 자동 조정
+    ws['!cols'] = lastResultColumns.map((col, i) => {
+        let maxLen = col.length;
+        lastResultRows.slice(0, 100).forEach(row => {
+            const v = row[col];
+            const len = v !== null && v !== undefined ? String(v).length : 0;
+            if (len > maxLen) maxLen = len;
+        });
+        return { wch: Math.min(Math.max(maxLen + 4, 10), 50) };
+    });
+
+    // 숫자 셀 서식 (쉼표)
+    lastResultRows.forEach((row, ri) => {
+        lastResultColumns.forEach((col, ci) => {
+            const cell = ws[XLSX.utils.encode_cell({ r: ri + 1, c: ci })];
+            if (cell && typeof cell.v === 'number') {
+                cell.z = '#,##0';
+            }
+        });
+    });
+
+    XLSX.utils.book_append_sheet(wb, ws, '피벗결과');
+    XLSX.writeFile(wb, `피벗결과_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 function renderTable(columns, rows) {
