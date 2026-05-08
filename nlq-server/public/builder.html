@@ -109,19 +109,26 @@
         .selected-field {
             display:inline-flex; align-items:center; gap:6px;
             padding:6px 12px; background:#eef2ff; border:1px solid #c7d2fe;
-            border-radius:10px; font-size:0.82rem; cursor:move; transition:all 0.2s;
+            border-radius:10px; font-size:0.82rem; cursor:grab; transition:background 0.15s, border-color 0.15s;
             user-select:none; position:relative;
         }
         .selected-field:hover { background:#ddd6fe; }
-        .selected-field.sf-dragging { opacity:0.4; transform:scale(0.95); }
-        .selected-field.sf-dragover-left { border-left:3px solid var(--indigo); margin-left:-2px; }
-        .selected-field.sf-dragover-right { border-right:3px solid var(--indigo); margin-right:-2px; }
+        .selected-field:active { cursor:grabbing; }
+        .selected-field.sf-dragging { opacity:0.35; transform:scale(0.95); }
+        .selected-field.sf-insert-left { border-left:3px solid var(--indigo); }
+        .selected-field.sf-insert-right { border-right:3px solid var(--indigo); }
         .selected-field .drag-handle {
             cursor:grab; color:#a5b4fc; font-size:0.75rem; margin-right:2px;
             transition:color 0.15s;
         }
         .selected-field:hover .drag-handle { color:var(--indigo); }
         .selected-field .drag-handle:active { cursor:grabbing; }
+        .sf-ghost {
+            position:fixed; pointer-events:none; z-index:9999;
+            padding:6px 14px; background:#eef2ff; border:2px solid var(--indigo);
+            border-radius:10px; font-size:0.82rem; box-shadow:0 8px 24px rgba(79,70,229,0.25);
+            opacity:0.92; white-space:nowrap;
+        }
         .selected-field .agg-select {
             padding:2px 6px; border:1px solid #c7d2fe; border-radius:6px;
             font-size:0.72rem; background:white; cursor:pointer; outline:none;
@@ -584,59 +591,85 @@ function setAggregate(idx, agg) {
     updateOrderByOptions();
 }
 
-// ─── Selected Field Drag & Drop Reorder ─────
-let sfDragIdx = null;
+// ─── Selected Field Mouse-based Drag & Drop Reorder ─────
+let sfDrag = { active:false, idx:-1, ghost:null, startX:0, startY:0 };
 
-function sfDragStart(e, idx) {
-    sfDragIdx = idx;
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', 'sf-' + idx);
-    requestAnimationFrame(() => e.target.closest('.selected-field').classList.add('sf-dragging'));
-}
-
-function sfDragEnd(e) {
-    sfDragIdx = null;
-    document.querySelectorAll('.selected-field').forEach(el => {
-        el.classList.remove('sf-dragging', 'sf-dragover-left', 'sf-dragover-right');
-    });
-}
-
-function sfDragOver(e, idx) {
+function sfMouseDown(e, idx) {
+    // select, button 클릭은 무시
+    if (e.target.closest('select') || e.target.closest('.remove')) return;
     e.preventDefault();
-    e.stopPropagation();
-    if (sfDragIdx === null || sfDragIdx === idx) return;
-    e.dataTransfer.dropEffect = 'move';
-    const el = e.currentTarget;
-    const rect = el.getBoundingClientRect();
-    const midX = rect.left + rect.width / 2;
-    el.classList.remove('sf-dragover-left', 'sf-dragover-right');
-    if (e.clientX < midX) {
-        el.classList.add('sf-dragover-left');
-    } else {
-        el.classList.add('sf-dragover-right');
+    sfDrag.idx = idx;
+    sfDrag.startX = e.clientX;
+    sfDrag.startY = e.clientY;
+    sfDrag.active = false;
+    document.addEventListener('mousemove', sfMouseMove);
+    document.addEventListener('mouseup', sfMouseUp);
+}
+
+// 마우스 좌표에서 가장 가까운 필드와 삽입 위치를 계산
+function sfFindNearest(mx, my) {
+    const els = document.querySelectorAll('#fieldDropZone .selected-field');
+    let best = { idx:-1, dist:Infinity, before:true };
+    els.forEach((el, i) => {
+        if (i === sfDrag.idx) return;
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const d = Math.hypot(mx - cx, my - cy);
+        if (d < best.dist) {
+            best = { idx:i, dist:d, before: mx < cx };
+        }
+    });
+    return best;
+}
+
+function sfMouseMove(e) {
+    const dx = e.clientX - sfDrag.startX;
+    const dy = e.clientY - sfDrag.startY;
+    // 5px 이상 이동해야 드래그 시작 (클릭과 구분)
+    if (!sfDrag.active && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
+        sfDrag.active = true;
+        // 고스트 생성
+        const col = allColumns.find(c => c.name === selectedFields[sfDrag.idx].column);
+        const f = selectedFields[sfDrag.idx];
+        const label = f.aggregate ? `${f.aggregate}(${col ? col.label : f.column})` : (col ? col.label : f.column);
+        sfDrag.ghost = document.createElement('div');
+        sfDrag.ghost.className = 'sf-ghost';
+        sfDrag.ghost.innerHTML = `<i class="fas fa-grip-vertical" style="color:#a5b4fc;margin-right:4px;"></i> ${label}`;
+        document.body.appendChild(sfDrag.ghost);
+        // 원본 반투명
+        const els = document.querySelectorAll('#fieldDropZone .selected-field');
+        if (els[sfDrag.idx]) els[sfDrag.idx].classList.add('sf-dragging');
+    }
+    if (!sfDrag.active) return;
+    // 고스트 위치
+    sfDrag.ghost.style.left = (e.clientX + 12) + 'px';
+    sfDrag.ghost.style.top = (e.clientY - 16) + 'px';
+    // 가장 가까운 필드에 삽입 위치 표시
+    const els = document.querySelectorAll('#fieldDropZone .selected-field');
+    els.forEach(el => el.classList.remove('sf-insert-left', 'sf-insert-right'));
+    const near = sfFindNearest(e.clientX, e.clientY);
+    if (near.idx >= 0) {
+        els[near.idx].classList.add(near.before ? 'sf-insert-left' : 'sf-insert-right');
     }
 }
 
-function sfDragLeave(e) {
-    e.currentTarget.classList.remove('sf-dragover-left', 'sf-dragover-right');
-}
-
-function sfDrop(e, targetIdx) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (sfDragIdx === null || sfDragIdx === targetIdx) return;
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const midX = rect.left + rect.width / 2;
-    const insertBefore = e.clientX < midX;
-
-    const [moved] = selectedFields.splice(sfDragIdx, 1);
-    let newIdx = targetIdx;
-    if (sfDragIdx < targetIdx) newIdx--;
-    if (!insertBefore) newIdx++;
-    selectedFields.splice(newIdx, 0, moved);
-
-    sfDragIdx = null;
+function sfMouseUp(e) {
+    document.removeEventListener('mousemove', sfMouseMove);
+    document.removeEventListener('mouseup', sfMouseUp);
+    if (!sfDrag.active) { sfDrag.idx = -1; return; }
+    // 고스트 제거
+    if (sfDrag.ghost) { sfDrag.ghost.remove(); sfDrag.ghost = null; }
+    // 가장 가까운 필드에 드롭
+    const near = sfFindNearest(e.clientX, e.clientY);
+    if (near.idx >= 0 && near.idx !== sfDrag.idx) {
+        const [moved] = selectedFields.splice(sfDrag.idx, 1);
+        let newIdx = near.idx;
+        if (sfDrag.idx < near.idx) newIdx--;
+        if (!near.before) newIdx++;
+        selectedFields.splice(newIdx, 0, moved);
+    }
+    sfDrag.active = false;
+    sfDrag.idx = -1;
     renderSelectedFields();
     updateOrderByOptions();
 }
@@ -652,13 +685,8 @@ function renderSelectedFields() {
     selectedFields.forEach((f, i) => {
         const col = allColumns.find(c => c.name === f.column);
         const isNum = f.type === 'number';
-        html += `<div class="selected-field" draggable="true"
-            ondragstart="sfDragStart(event, ${i})"
-            ondragend="sfDragEnd(event)"
-            ondragover="sfDragOver(event, ${i})"
-            ondragleave="sfDragLeave(event)"
-            ondrop="sfDrop(event, ${i})">
-            <span class="drag-handle"><i class="fas fa-grip-vertical"></i></span>
+        html += `<div class="selected-field" onmousedown="sfMouseDown(event, ${i})">
+            <span class="drag-handle"><i class="fas fa-grip-vertical"></i></span>`;
             <span style="color:${isNum ? '#7c3aed' : '#4f46e5'};font-weight:700;">${isNum ? '#' : 'T'}</span>
             <span>${col ? col.label : f.column}</span>`;
         if (isNum) {
