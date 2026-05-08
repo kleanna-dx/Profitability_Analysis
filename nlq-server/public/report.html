@@ -570,15 +570,15 @@
         try {
             const res = await fetch('/api/status');
             const d = await res.json();
-            if(d.db_connected){
+            if(d.db === 'connected'){
                 document.getElementById('sideDbDot').style.background='#22c55e';
                 document.getElementById('sideDbLabel').textContent='DB 연결됨';
             } else {
                 document.getElementById('sideDbDot').style.background='#ef4444';
                 document.getElementById('sideDbLabel').textContent='DB 연결 실패';
             }
-            if(d.total_rows){
-                document.getElementById('sideDataLabel').textContent='데이터: '+Number(d.total_rows).toLocaleString()+'행';
+            if(d.totalRows){
+                document.getElementById('sideDataLabel').textContent='데이터: '+Number(d.totalRows).toLocaleString()+'행';
             }
         } catch(e){ console.error('Status load error', e); }
     }
