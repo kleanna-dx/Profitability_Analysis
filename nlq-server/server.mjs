@@ -1945,36 +1945,37 @@ app.post('/api/data-upload/preview', upload.single('file'), async (req, res) => 
       const wb = XLSX.readFile(filePath, { type: 'file' });
       sheetName = wb.SheetNames[0];
       const ws = wb.Sheets[sheetName];
-      // !ref에서 전체 행수 추출
-      const ref = ws['!ref'] || 'A1';
-      const rangeMatch = ref.match(/:.*?(\d+)$/);
-      const lastRow = rangeMatch ? parseInt(rangeMatch[1]) : 0;
-      totalDataRows = Math.max(0, lastRow - 2);
-      // 처음 8행만 JSON 변환 (메모리 절약 — range 제한)
-      const range = XLSX.utils.decode_range(ref);
-      range.e.r = Math.min(range.e.r, 7); // 0~7행 = 8행만
-      const partialData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, range });
-      korHeaders = partialData[0] || [];
-      engHeaders = partialData[1] || [];
-      sampleDataRows = partialData.slice(2);
+      // 전체 데이터를 JSON으로 변환하여 실제 비어있지 않은 행만 카운트
+      const allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+      korHeaders = allData[0] || [];
+      engHeaders = allData[1] || [];
+      const allDataRows = allData.slice(2);
+      // 빈 행 필터링: 하나라도 실제 값이 있는 행만 카운트
+      const isRowNonEmpty = (row) => {
+        if (!Array.isArray(row)) return false;
+        return row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
+      };
+      totalDataRows = allDataRows.filter(isRowNonEmpty).length;
+      sampleDataRows = allDataRows.filter(isRowNonEmpty).slice(0, 5);
+      console.log(`[Data Upload] xlsb 빈 행 필터링: sheet_to_json ${allDataRows.length}행 → 실제 데이터 ${totalDataRows}행`);
     } else {
-      // xlsx/xls/csv → sheetRows 최적화 적용 가능 (빠름)
+      // xlsx/xls/csv → 전체 로드하여 빈 행 필터링 적용
       const wbMeta = XLSX.readFile(filePath, { type: 'file', bookSheets: true });
       sheetName = wbMeta.SheetNames[0];
-      // 헤더 + 미리보기 8행만 읽기
-      const wbPartial = XLSX.readFile(filePath, { type: 'file', sheetRows: 8 });
-      const wsPartial = wbPartial.Sheets[sheetName];
-      const partialData = XLSX.utils.sheet_to_json(wsPartial, { header: 1, defval: null });
-      korHeaders = partialData[0] || [];
-      engHeaders = partialData[1] || [];
-      sampleDataRows = partialData.slice(2);
-      // 전체 행수: 별도 읽기 (range만)
-      const wbRange = XLSX.readFile(filePath, { type: 'file', sheetRows: 0 });
-      const wsRange = wbRange.Sheets[sheetName];
-      const ref = wsRange['!ref'] || 'A1';
-      const rangeMatch = ref.match(/:.*?(\d+)$/);
-      const lastRow = rangeMatch ? parseInt(rangeMatch[1]) : partialData.length;
-      totalDataRows = Math.max(0, lastRow - 2);
+      const wbFull = XLSX.readFile(filePath, { type: 'file' });
+      const wsFull = wbFull.Sheets[sheetName];
+      const allData = XLSX.utils.sheet_to_json(wsFull, { header: 1, defval: null });
+      korHeaders = allData[0] || [];
+      engHeaders = allData[1] || [];
+      const allDataRows = allData.slice(2);
+      // 빈 행 필터링: 하나라도 실제 값이 있는 행만 카운트
+      const isRowNonEmpty = (row) => {
+        if (!Array.isArray(row)) return false;
+        return row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
+      };
+      totalDataRows = allDataRows.filter(isRowNonEmpty).length;
+      sampleDataRows = allDataRows.filter(isRowNonEmpty).slice(0, 5);
+      console.log(`[Data Upload] 빈 행 필터링: sheet_to_json ${allDataRows.length}행 → 실제 데이터 ${totalDataRows}행`);
     }
 
     console.timeEnd('[Data Upload] preview-readFile');
@@ -2052,7 +2053,16 @@ app.post('/api/data-upload/apply', async (req, res) => {
     const ws = wb.Sheets[wb.SheetNames[0]];
     const allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
     console.timeEnd('[Data Upload] apply-readFile');
-    const dataRows = allData.slice(2);
+    // 빈 행 필터링: 매핑된 컬럼 중 하나라도 실제 값이 있는 행만 INSERT 대상
+    const rawDataRows = allData.slice(2);
+    const dataRows = rawDataRows.filter(row => {
+      if (!Array.isArray(row)) return false;
+      return mappedCols.some(m => {
+        const v = row[m.index];
+        return v !== null && v !== undefined && String(v).trim() !== '';
+      });
+    });
+    console.log(`[Data Upload] Apply 빈 행 필터링: ${rawDataRows.length}행 → 실제 데이터 ${dataRows.length}행`);
 
     const dbColumns = mappedCols.map(m => m.dbColumn);
     const colList = dbColumns.map(c => '`' + c + '`').join(', ');
