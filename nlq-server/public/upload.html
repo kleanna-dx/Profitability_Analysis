@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>데이터 업로드 - 수익성분석 AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #4f46e5; --primary-dark: #4338ca;
+            --bg: #f1f5f9; --card: #ffffff; --border: #e2e8f0;
+            --text: #1e293b; --text-light: #64748b;
+            --success: #10b981; --error: #ef4444; --warning: #f59e0b;
+            --purple: #7c3aed; --indigo: #4f46e5;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Noto Sans KR','Pretendard','Segoe UI',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+
+        /* ===== Sidebar (프로젝트 공통) ===== */
+        .sidebar{position:fixed;left:0;top:0;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b 0%,#312e81 100%);color:#e0e7ff;z-index:1000;transform:translateX(-100%);transition:transform 0.3s ease;overflow-y:auto;box-shadow:4px 0 24px rgba(0,0,0,0.15);}
+        .sidebar.open{transform:translateX(0);}
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:999;opacity:0;pointer-events:none;transition:opacity 0.3s;}
+        .sidebar-overlay.active{opacity:1;pointer-events:auto;}
+        .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:12px 24px;color:#c7d2fe;font-size:14px;cursor:pointer;transition:all 0.15s;text-decoration:none;}
+        .sidebar-menu-item:hover{background:rgba(255,255,255,0.1);color:#fff;}
+        .sidebar-menu-item.active{background:rgba(99,102,241,0.3);color:#fff;font-weight:600;}
+        .sidebar-menu-item i{width:20px;text-align:center;font-size:15px;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,0.1);margin:12px 16px;}
+
+        /* ===== Top Bar ===== */
+        .top-bar{background:white;border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:50;}
+        .hamburger-btn{background:none;border:1px solid var(--border);border-radius:10px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#64748b;transition:all 0.2s;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+
+        /* ===== Upload Zone ===== */
+        .upload-zone {
+            border: 2px dashed #c7d2fe;
+            border-radius: 16px;
+            padding: 48px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: var(--indigo);
+            background: linear-gradient(135deg, #e0e7ff 0%, #ede9fe 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79,70,229,0.12);
+        }
+        .upload-zone .icon {
+            width: 72px; height: 72px;
+            background: linear-gradient(135deg, var(--indigo), var(--purple));
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            margin: 0 auto 16px;
+            font-size: 28px; color: white;
+        }
+
+        /* ===== Cards ===== */
+        .card {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+
+        /* ===== Progress ===== */
+        .progress-bar-track { background: #e2e8f0; border-radius: 999px; height: 8px; overflow: hidden; }
+        .progress-bar-fill { height: 100%; border-radius: 999px; transition: width 0.4s ease; background: linear-gradient(90deg, var(--indigo), var(--purple)); }
+
+        /* ===== Mapping Table ===== */
+        .mapping-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .mapping-table th { background: #f8fafc; color: var(--text-light); font-weight: 600; padding: 10px 12px; text-align: left; border-bottom: 2px solid var(--border); white-space: nowrap; }
+        .mapping-table td { padding: 8px 12px; border-bottom: 1px solid #f1f5f9; }
+        .mapping-table tr:hover { background: #fafbfe; }
+
+        .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+        .badge-success { background: #ecfdf5; color: #059669; }
+        .badge-error { background: #fef2f2; color: #dc2626; }
+        .badge-warning { background: #fffbeb; color: #d97706; }
+        .badge-info { background: #eef2ff; color: #4f46e5; }
+
+        /* ===== Steps Indicator ===== */
+        .step-indicator { display: flex; align-items: center; gap: 0; }
+        .step { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 13px; font-weight: 500; color: var(--text-light); position: relative; }
+        .step .step-num { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background: #e2e8f0; color: #94a3b8; transition: all 0.3s; }
+        .step.active .step-num { background: linear-gradient(135deg, var(--indigo), var(--purple)); color: white; }
+        .step.active { color: var(--indigo); font-weight: 600; }
+        .step.done .step-num { background: var(--success); color: white; }
+        .step.done { color: var(--success); }
+        .step-line { width: 40px; height: 2px; background: #e2e8f0; }
+        .step-line.done { background: var(--success); }
+
+        /* ===== Result Stats ===== */
+        .stat-card {
+            background: white; border-radius: 12px; padding: 20px; border: 1px solid var(--border);
+            display: flex; align-items: center; gap: 16px;
+        }
+        .stat-icon {
+            width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
+        /* Animation */
+        @keyframes fadeInUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+        .animate-in { animation: fadeInUp 0.4s ease forwards; }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { animation: spin 1s linear infinite; }
+    </style>
+</head>
+<body>
+
+<!-- Sidebar Overlay -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav class="py-2">
+        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-comments"></i><span>자연어 질의</span>
+        </a>
+        <a href="/builder.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
+        </a>
+        <a href="/report" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
+        </a>
+        <a href="/learning.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
+        </a>
+        <a href="/upload.html" class="sidebar-menu-item active" style="text-decoration:none;">
+            <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
+        </a>
+    </nav>
+    <div class="sidebar-divider"></div>
+    <div class="px-5 py-3">
+        <p class="text-xs text-indigo-300 font-semibold mb-2 uppercase tracking-wider">시스템 정보</p>
+        <div class="space-y-2 text-xs text-indigo-200">
+            <div class="flex items-center gap-2">
+                <i class="fas fa-database text-indigo-400" style="width:14px;text-align:center;font-size:10px;"></i>
+                <span id="sidebarDbStatus">DB 연결 확인 중...</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <i class="fas fa-robot text-indigo-400" style="width:14px;text-align:center;font-size:10px;"></i>
+                <span id="sidebarApiStatus">API 연결 확인 중...</span>
+            </div>
+        </div>
+    </div>
+</aside>
+
+<!-- Top Bar -->
+<div class="top-bar">
+    <button class="hamburger-btn" onclick="openSidebar()">
+        <i class="fas fa-bars"></i>
+    </button>
+    <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+            <i class="fas fa-cloud-upload-alt text-white text-sm"></i>
+        </div>
+        <div>
+            <h1 class="text-base font-bold text-gray-800 leading-tight">데이터 업로드</h1>
+            <p class="text-xs text-gray-400">엑셀 파일을 업로드하여 DB에 데이터를 적재합니다</p>
+        </div>
+    </div>
+</div>
+
+<!-- Main Content -->
+<div class="max-w-5xl mx-auto px-4 py-6">
+
+    <!-- Step Indicator -->
+    <div class="flex justify-center mb-8">
+        <div class="step-indicator">
+            <div class="step active" id="step1">
+                <div class="step-num">1</div>
+                <span>파일 업로드</span>
+            </div>
+            <div class="step-line" id="stepLine1"></div>
+            <div class="step" id="step2">
+                <div class="step-num">2</div>
+                <span>컬럼 매핑 확인</span>
+            </div>
+            <div class="step-line" id="stepLine2"></div>
+            <div class="step" id="step3">
+                <div class="step-num">3</div>
+                <span>적재 완료</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Phase 1: Upload -->
+    <div id="phaseUpload" class="animate-in">
+        <div class="card p-6">
+            <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+                <div class="icon">
+                    <i class="fas fa-file-excel"></i>
+                </div>
+                <p class="text-lg font-semibold text-gray-700 mb-2">엑셀 파일을 드래그하거나 클릭하여 선택</p>
+                <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx, .xls, .xlsb, .csv (최대 50MB)</p>
+                <div class="inline-flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 px-4 py-2 rounded-lg text-sm font-medium">
+                    <i class="fas fa-folder-open"></i> 파일 선택
+                </div>
+            </div>
+            <input type="file" id="fileInput" accept=".xlsx,.xls,.xlsb,.csv" style="display:none" onchange="handleFileSelect(event)">
+
+            <!-- File Format Guide -->
+            <div class="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-12" style="border-radius:12px;">
+                <div class="flex items-start gap-3">
+                    <i class="fas fa-info-circle text-amber-500 mt-0.5"></i>
+                    <div class="text-sm">
+                        <p class="font-semibold text-amber-800 mb-1">엑셀 파일 형식 안내</p>
+                        <ul class="text-amber-700 space-y-1 list-disc list-inside">
+                            <li><strong>1행</strong>: 한국어 헤더 (설명용, 적재에 사용되지 않음)</li>
+                            <li><strong>2행</strong>: 영문 컬럼명 (SAP BW 컬럼명, DB 매핑 기준)</li>
+                            <li><strong>3행~</strong>: 실제 데이터</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Phase 2: Preview & Confirm -->
+    <div id="phasePreview" style="display:none;" class="animate-in">
+        <!-- File Summary -->
+        <div class="card p-5 mb-5">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center">
+                        <i class="fas fa-file-excel text-indigo-600 text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-gray-800" id="previewFileName">-</h3>
+                        <p class="text-xs text-gray-400" id="previewFileInfo">-</p>
+                    </div>
+                </div>
+                <button onclick="resetUpload()" class="text-sm text-gray-400 hover:text-red-500 flex items-center gap-1">
+                    <i class="fas fa-times"></i> 다시 선택
+                </button>
+            </div>
+
+            <!-- Stats Row -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div class="bg-slate-50 rounded-lg p-3 text-center">
+                    <p class="text-xl font-bold text-gray-800" id="statTotalRows">-</p>
+                    <p class="text-xs text-gray-400">전체 데이터 행</p>
+                </div>
+                <div class="bg-green-50 rounded-lg p-3 text-center">
+                    <p class="text-xl font-bold text-green-600" id="statMappedCols">-</p>
+                    <p class="text-xs text-gray-400">매핑된 컬럼</p>
+                </div>
+                <div class="bg-red-50 rounded-lg p-3 text-center">
+                    <p class="text-xl font-bold text-red-500" id="statExcludedCols">-</p>
+                    <p class="text-xs text-gray-400">제외된 컬럼</p>
+                </div>
+                <div class="bg-indigo-50 rounded-lg p-3 text-center">
+                    <p class="text-xl font-bold text-indigo-600" id="statTotalCols">-</p>
+                    <p class="text-xs text-gray-400">전체 엑셀 컬럼</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mapped Columns Table -->
+        <div class="card mb-5">
+            <div class="p-4 border-b border-gray-100 flex items-center justify-between">
+                <h3 class="font-bold text-gray-800 flex items-center gap-2">
+                    <i class="fas fa-check-circle text-green-500"></i> 매핑된 컬럼 (<span id="mappedCountLabel">0</span>개)
+                </h3>
+                <button onclick="toggleSection('mappedBody')" class="text-xs text-gray-400 hover:text-indigo-500">
+                    <i class="fas fa-chevron-down"></i> 접기/펼치기
+                </button>
+            </div>
+            <div id="mappedBody" class="overflow-x-auto" style="max-height:300px; overflow-y:auto;">
+                <table class="mapping-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>한국어명</th>
+                            <th>엑셀 컬럼명</th>
+                            <th><i class="fas fa-arrow-right text-indigo-400 mx-1"></i> DB 컬럼명</th>
+                            <th>상태</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mappedTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Excluded Columns Table -->
+        <div class="card mb-5">
+            <div class="p-4 border-b border-gray-100 flex items-center justify-between">
+                <h3 class="font-bold text-gray-800 flex items-center gap-2">
+                    <i class="fas fa-times-circle text-red-400"></i> 제외된 컬럼 (<span id="excludedCountLabel">0</span>개)
+                </h3>
+                <button onclick="toggleSection('excludedBody')" class="text-xs text-gray-400 hover:text-indigo-500">
+                    <i class="fas fa-chevron-down"></i> 접기/펼치기
+                </button>
+            </div>
+            <div id="excludedBody" class="overflow-x-auto" style="max-height:250px; overflow-y:auto;">
+                <table class="mapping-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>한국어명</th>
+                            <th>엑셀 컬럼명</th>
+                            <th>제외 사유</th>
+                        </tr>
+                    </thead>
+                    <tbody id="excludedTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Preview Data -->
+        <div class="card mb-5">
+            <div class="p-4 border-b border-gray-100">
+                <h3 class="font-bold text-gray-800 flex items-center gap-2">
+                    <i class="fas fa-table text-indigo-400"></i> 데이터 미리보기 (처음 5행)
+                </h3>
+            </div>
+            <div class="overflow-x-auto" style="max-height:300px; overflow-y:auto;">
+                <table class="mapping-table" id="previewDataTable">
+                    <thead id="previewDataHead"></thead>
+                    <tbody id="previewDataBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex items-center justify-between">
+            <button onclick="resetUpload()" class="px-5 py-3 border border-gray-300 text-gray-600 rounded-xl font-medium hover:bg-gray-50 transition flex items-center gap-2">
+                <i class="fas fa-arrow-left"></i> 파일 다시 선택
+            </button>
+            <button onclick="applyUpload()" id="btnApply" class="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-bold hover:from-indigo-700 hover:to-purple-700 transition shadow-lg shadow-indigo-200 flex items-center gap-2">
+                <i class="fas fa-database"></i> DB에 적재 실행
+            </button>
+        </div>
+    </div>
+
+    <!-- Phase 2.5: Loading -->
+    <div id="phaseLoading" style="display:none;" class="animate-in">
+        <div class="card p-10 text-center">
+            <div class="w-16 h-16 rounded-full bg-indigo-100 flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-cog text-indigo-600 text-2xl spinner"></i>
+            </div>
+            <h3 class="text-lg font-bold text-gray-800 mb-2">DB에 데이터를 적재하고 있습니다...</h3>
+            <p class="text-sm text-gray-400 mb-6" id="loadingMsg">잠시만 기다려주세요. 대용량 데이터의 경우 시간이 소요될 수 있습니다.</p>
+            <div class="max-w-md mx-auto">
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill" id="loadingBar" style="width:0%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Phase 3: Result -->
+    <div id="phaseResult" style="display:none;" class="animate-in">
+        <!-- Result Header -->
+        <div class="card p-6 mb-5" id="resultHeader">
+            <!-- filled dynamically -->
+        </div>
+
+        <!-- Result Stats Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5" id="resultStats">
+            <!-- filled dynamically -->
+        </div>
+
+        <!-- Mapped Columns List -->
+        <div class="card mb-5" id="resultMappedCard" style="display:none;">
+            <div class="p-4 border-b border-gray-100">
+                <h3 class="font-bold text-gray-800 flex items-center gap-2">
+                    <i class="fas fa-check-circle text-green-500"></i> 적재된 컬럼 목록
+                </h3>
+            </div>
+            <div class="p-4">
+                <div class="flex flex-wrap gap-2" id="resultMappedList"></div>
+            </div>
+        </div>
+
+        <!-- Error List -->
+        <div class="card mb-5" id="resultErrorCard" style="display:none;">
+            <div class="p-4 border-b border-gray-100">
+                <h3 class="font-bold text-gray-800 flex items-center gap-2">
+                    <i class="fas fa-exclamation-triangle text-red-500"></i> 실패 상세 (<span id="resultErrorCount">0</span>건)
+                </h3>
+            </div>
+            <div class="overflow-x-auto" style="max-height:250px; overflow-y:auto;">
+                <table class="mapping-table">
+                    <thead>
+                        <tr><th>엑셀 행번호</th><th>에러 메시지</th></tr>
+                    </thead>
+                    <tbody id="resultErrorBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex items-center justify-center gap-4">
+            <button onclick="resetUpload()" class="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-bold hover:from-indigo-700 hover:to-purple-700 transition shadow-lg shadow-indigo-200 flex items-center gap-2">
+                <i class="fas fa-plus"></i> 추가 업로드
+            </button>
+            <a href="/" class="px-5 py-3 border border-gray-300 text-gray-600 rounded-xl font-medium hover:bg-gray-50 transition flex items-center gap-2" style="text-decoration:none;">
+                <i class="fas fa-comments"></i> 자연어 질의로 이동
+            </a>
+        </div>
+    </div>
+</div>
+
+<script>
+// ===== State =====
+let previewData = null; // API preview 응답 저장
+
+// ===== Sidebar =====
+function openSidebar() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebarOverlay').classList.add('active');
+}
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('active');
+}
+
+// ===== Toggle Section =====
+function toggleSection(id) {
+    const el = document.getElementById(id);
+    el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+// ===== Step Indicator =====
+function setStep(n) {
+    for (let i = 1; i <= 3; i++) {
+        const step = document.getElementById('step' + i);
+        step.classList.remove('active', 'done');
+        if (i < n) step.classList.add('done');
+        if (i === n) step.classList.add('active');
+    }
+    for (let i = 1; i <= 2; i++) {
+        const line = document.getElementById('stepLine' + i);
+        line.classList.toggle('done', i < n);
+    }
+}
+
+// ===== Phase Management =====
+function showPhase(phase) {
+    ['phaseUpload', 'phasePreview', 'phaseLoading', 'phaseResult'].forEach(id => {
+        document.getElementById(id).style.display = 'none';
+    });
+    document.getElementById(phase).style.display = '';
+    // re-trigger animation
+    document.getElementById(phase).classList.remove('animate-in');
+    void document.getElementById(phase).offsetWidth;
+    document.getElementById(phase).classList.add('animate-in');
+}
+
+// ===== Reset =====
+function resetUpload() {
+    previewData = null;
+    document.getElementById('fileInput').value = '';
+    showPhase('phaseUpload');
+    setStep(1);
+}
+
+// ===== File Select / Drop =====
+const uploadZone = document.getElementById('uploadZone');
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadZone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file) uploadFile(file);
+});
+
+function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (file) uploadFile(file);
+}
+
+// ===== Upload & Preview =====
+async function uploadFile(file) {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['xlsx', 'xls', 'xlsb', 'csv'].includes(ext)) {
+        alert('지원하지 않는 파일 형식입니다. (xlsx, xls, xlsb, csv만 지원)');
+        return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+        alert('파일 크기가 50MB를 초과합니다.');
+        return;
+    }
+
+    // show loading in upload zone
+    uploadZone.innerHTML = `
+        <div class="icon"><i class="fas fa-cog spinner"></i></div>
+        <p class="text-lg font-semibold text-gray-700 mb-2">파일 분석 중...</p>
+        <p class="text-sm text-gray-400">${file.name} (${(file.size/1024/1024).toFixed(1)}MB)</p>
+    `;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch('/api/data-upload/preview', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '파일 분석 실패');
+
+        previewData = data;
+        renderPreview(data);
+        setStep(2);
+        showPhase('phasePreview');
+    } catch (err) {
+        alert('오류: ' + err.message);
+        resetUploadZone();
+    }
+}
+
+function resetUploadZone() {
+    uploadZone.innerHTML = `
+        <div class="icon"><i class="fas fa-file-excel"></i></div>
+        <p class="text-lg font-semibold text-gray-700 mb-2">엑셀 파일을 드래그하거나 클릭하여 선택</p>
+        <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx, .xls, .xlsb, .csv (최대 50MB)</p>
+        <div class="inline-flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 px-4 py-2 rounded-lg text-sm font-medium">
+            <i class="fas fa-folder-open"></i> 파일 선택
+        </div>
+    `;
+}
+
+// ===== Render Preview =====
+function renderPreview(d) {
+    document.getElementById('previewFileName').textContent = d.fileName;
+    document.getElementById('previewFileInfo').textContent = `시트: ${d.sheetName} | 전체 ${d.totalExcelCols}개 컬럼`;
+
+    document.getElementById('statTotalRows').textContent = d.totalRows.toLocaleString();
+    document.getElementById('statMappedCols').textContent = d.mappedCount;
+    document.getElementById('statExcludedCols').textContent = d.excludedCount;
+    document.getElementById('statTotalCols').textContent = d.totalExcelCols;
+
+    // Mapped table
+    document.getElementById('mappedCountLabel').textContent = d.mappedCount;
+    const mappedBody = document.getElementById('mappedTableBody');
+    mappedBody.innerHTML = d.mappedCols.map((m, i) => `
+        <tr>
+            <td class="text-gray-400">${i + 1}</td>
+            <td>${escHtml(m.korName)}</td>
+            <td><code class="bg-slate-100 px-2 py-0.5 rounded text-xs">${escHtml(m.engName)}</code></td>
+            <td><code class="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded text-xs font-bold">${escHtml(m.dbColumn)}</code></td>
+            <td><span class="badge badge-success"><i class="fas fa-check text-[10px]"></i> 매핑</span></td>
+        </tr>
+    `).join('');
+
+    // Excluded table
+    document.getElementById('excludedCountLabel').textContent = d.excludedCount;
+    const excludedBody = document.getElementById('excludedTableBody');
+    if (d.excludedCols.length === 0) {
+        excludedBody.innerHTML = '<tr><td colspan="4" class="text-center text-gray-400 py-6">제외된 컬럼이 없습니다</td></tr>';
+    } else {
+        excludedBody.innerHTML = d.excludedCols.map((m, i) => `
+            <tr>
+                <td class="text-gray-400">${i + 1}</td>
+                <td>${escHtml(m.korName)}</td>
+                <td><code class="bg-slate-100 px-2 py-0.5 rounded text-xs">${escHtml(m.engName)}</code></td>
+                <td><span class="badge ${m.reason.includes('PK') ? 'badge-info' : 'badge-warning'}">${escHtml(m.reason)}</span></td>
+            </tr>
+        `).join('');
+    }
+
+    // Preview data table
+    const headEl = document.getElementById('previewDataHead');
+    const bodyEl = document.getElementById('previewDataBody');
+    if (d.previewRows.length > 0 && d.previewColumns.length > 0) {
+        headEl.innerHTML = '<tr>' + d.previewColumns.map(c => `<th>${escHtml(c)}</th>`).join('') + '</tr>';
+        bodyEl.innerHTML = d.previewRows.map(row =>
+            '<tr>' + d.previewColumns.map(c => `<td>${row[c] != null ? escHtml(String(row[c])) : '<span class="text-gray-300">NULL</span>'}</td>`).join('') + '</tr>'
+        ).join('');
+    } else {
+        headEl.innerHTML = '';
+        bodyEl.innerHTML = '<tr><td class="text-center text-gray-400 py-6">미리보기 데이터가 없습니다</td></tr>';
+    }
+}
+
+// ===== Apply Upload =====
+async function applyUpload() {
+    if (!previewData) return;
+
+    if (!confirm(`총 ${previewData.totalRows.toLocaleString()}행을 DB에 적재합니다.\n매핑 컬럼: ${previewData.mappedCount}개\n\n계속하시겠습니까?`)) return;
+
+    showPhase('phaseLoading');
+    // Animate progress bar
+    let pct = 0;
+    const bar = document.getElementById('loadingBar');
+    const interval = setInterval(() => {
+        pct = Math.min(pct + Math.random() * 8, 90);
+        bar.style.width = pct + '%';
+    }, 400);
+
+    try {
+        const res = await fetch('/api/data-upload/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filePath: previewData.filePath,
+                mappedCols: previewData.mappedCols,
+            }),
+        });
+        const data = await res.json();
+        clearInterval(interval);
+        bar.style.width = '100%';
+
+        if (!res.ok) throw new Error(data.error || 'DB 적재 실패');
+
+        setTimeout(() => {
+            setStep(3);
+            renderResult(data);
+            showPhase('phaseResult');
+        }, 500);
+
+    } catch (err) {
+        clearInterval(interval);
+        alert('오류: ' + err.message);
+        showPhase('phasePreview');
+        setStep(2);
+    }
+}
+
+// ===== Render Result =====
+function renderResult(d) {
+    const isAllSuccess = d.failedRows === 0;
+    const headerEl = document.getElementById('resultHeader');
+    headerEl.innerHTML = `
+        <div class="text-center">
+            <div class="w-16 h-16 rounded-full ${isAllSuccess ? 'bg-green-100' : 'bg-amber-100'} flex items-center justify-center mx-auto mb-3">
+                <i class="fas ${isAllSuccess ? 'fa-check-circle text-green-500' : 'fa-exclamation-circle text-amber-500'} text-3xl"></i>
+            </div>
+            <h2 class="text-xl font-bold text-gray-800 mb-1">${isAllSuccess ? '데이터 적재 완료!' : '데이터 적재 완료 (일부 실패)'}</h2>
+            <p class="text-sm text-gray-400">DB 테이블: bw_profitability_data</p>
+        </div>
+    `;
+
+    const statsEl = document.getElementById('resultStats');
+    statsEl.innerHTML = `
+        <div class="stat-card">
+            <div class="stat-icon bg-indigo-100 text-indigo-600"><i class="fas fa-file-alt"></i></div>
+            <div>
+                <p class="text-2xl font-bold text-gray-800">${d.totalExcelRows.toLocaleString()}</p>
+                <p class="text-xs text-gray-400">전체 업로드 행</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon bg-green-100 text-green-600"><i class="fas fa-check"></i></div>
+            <div>
+                <p class="text-2xl font-bold text-green-600">${d.insertedRows.toLocaleString()}</p>
+                <p class="text-xs text-gray-400">DB 반영 행</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon bg-purple-100 text-purple-600"><i class="fas fa-database"></i></div>
+            <div>
+                <p class="text-2xl font-bold text-purple-600">${d.totalDbRows.toLocaleString()}</p>
+                <p class="text-xs text-gray-400">현재 DB 총 행</p>
+            </div>
+        </div>
+    `;
+
+    // Mapped columns list
+    const mappedCard = document.getElementById('resultMappedCard');
+    const mappedList = document.getElementById('resultMappedList');
+    if (d.mappedColumns && d.mappedColumns.length > 0) {
+        mappedCard.style.display = '';
+        mappedList.innerHTML = d.mappedColumns.map(c =>
+            `<span class="badge badge-success" style="padding:4px 12px; font-size:12px;">${escHtml(c)}</span>`
+        ).join('');
+    }
+
+    // Excluded columns (from preview)
+    // (already shown in preview phase, reuse previewData if available)
+
+    // Error list
+    const errorCard = document.getElementById('resultErrorCard');
+    if (d.errors && d.errors.length > 0) {
+        errorCard.style.display = '';
+        document.getElementById('resultErrorCount').textContent = d.errors.length;
+        document.getElementById('resultErrorBody').innerHTML = d.errors.map(e =>
+            `<tr><td class="font-mono">${e.row}</td><td class="text-red-600 text-xs">${escHtml(e.error)}</td></tr>`
+        ).join('');
+    } else {
+        errorCard.style.display = 'none';
+    }
+}
+
+// ===== Sidebar Status =====
+async function loadSidebarStatus() {
+    try {
+        const res = await fetch('/api/status');
+        const d = await res.json();
+        document.getElementById('sidebarDbStatus').innerHTML = d.db
+            ? '<span class="text-green-400">● DB 연결됨</span>'
+            : '<span class="text-red-400">● DB 연결 실패</span>';
+        document.getElementById('sidebarApiStatus').innerHTML = d.openai
+            ? '<span class="text-green-400">● ChatGPT API 연결됨</span>'
+            : '<span class="text-red-400">● API 연결 실패</span>';
+    } catch (e) {
+        document.getElementById('sidebarDbStatus').innerHTML = '<span class="text-red-400">● 연결 실패</span>';
+        document.getElementById('sidebarApiStatus').innerHTML = '<span class="text-red-400">● 연결 실패</span>';
+    }
+}
+
+// ===== Utils =====
+function escHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// ===== Init =====
+loadSidebarStatus();
+</script>
+</body>
+</html>

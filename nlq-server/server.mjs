@@ -34,7 +34,7 @@ const upload = multer({
   dest: UPLOAD_DIR,
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = /xlsx|xls|csv|png|jpg|jpeg|gif|bmp|pdf/;
+    const allowed = /xlsx|xls|xlsb|csv|png|jpg|jpeg|gif|bmp|pdf/;
     const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
     cb(null, allowed.test(ext));
   }
@@ -1903,6 +1903,175 @@ function builderSuggestChart(cols, rowCount) {
   if (rowCount <= 30) return { chart_type: 'bar', label_column: labelCol, data_columns: dataCols };
   return { chart_type: 'table_only' };
 }
+
+// ============================================================
+// 데이터 업로드 API
+// ============================================================
+
+// 엑셀 컬럼명 → DB 컬럼명 매핑 (SAP BW 원천 엑셀의 특수 컬럼명 처리)
+const EXCEL_TO_DB_COL_MAP = {
+  '/BIC/ZDISTCHAN': 'ZDISTCHAN',
+  '/BIC/ZORG_TEAM': 'ZORG_TEAM',
+  '/BIC/ZJPCODE': 'ZJPCODE',
+  '/BIC/ZBRAND': 'ZBRAND1',
+  '/BIC/ZSBRAND': 'ZBRAND2',
+  '/BIC/ZKUNN2': 'ZKUNN2',
+  '/BIC/ZBOXUNIT': 'ZUNITBOX',
+  '/BIC/ZBAGUNIT': 'ZUNITBAG',
+  '/BIC/ZUNIT': 'ZUNITKGEA',
+  '/BIC/ZQTY_BOX': 'ZQTYBOX',
+  '/BIC/ZQTY_BAG': 'ZQTYBAG',
+  '/BIC/ZQTY_KE': 'ZQTYKGEA',
+  'MATERIAL_NM': 'MATERIAL_DESC',
+};
+
+// POST /api/data-upload/preview - 엑셀 파일 업로드 후 프리뷰 (컬럼 매핑 분석)
+app.post('/api/data-upload/preview', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+  const filePath = path.join(UPLOAD_DIR, req.file.filename);
+  try {
+    const XLSX = (await import('xlsx')).default;
+    const wb = XLSX.readFile(filePath, { type: 'file' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+
+    if (allData.length < 3) {
+      return res.status(400).json({ error: '데이터가 부족합니다. (1행: 한국어 헤더, 2행: 영문 컬럼명, 3행~: 데이터)' });
+    }
+
+    const korHeaders = allData[0];   // 1행: 한국어 헤더
+    const engHeaders = allData[1];   // 2행: 영문 컬럼명
+    const dataRows = allData.slice(2); // 3행~: 실제 데이터
+
+    // DB 실제 컬럼 목록 조회
+    const [dbColsRaw] = await pool.query(`
+      SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data'
+      ORDER BY ORDINAL_POSITION
+    `);
+    const dbColSet = new Set(dbColsRaw.map(r => r.COLUMN_NAME.toUpperCase()));
+
+    // 컬럼 매핑 분석
+    const mapped = [];    // DB에 매핑된 컬럼
+    const excluded = [];  // 제외된 컬럼
+
+    for (let i = 0; i < engHeaders.length; i++) {
+      const rawCol = engHeaders[i];
+      if (!rawCol) { excluded.push({ index: i, korName: korHeaders[i] || `(열${i+1})`, engName: '(빈 컬럼명)', reason: '영문 컬럼명 없음' }); continue; }
+      const rawUpper = String(rawCol).trim().toUpperCase();
+      // 매핑 테이블 확인
+      const mappedName = EXCEL_TO_DB_COL_MAP[rawCol] || EXCEL_TO_DB_COL_MAP[rawUpper] || rawUpper;
+      if (dbColSet.has(mappedName.toUpperCase()) && mappedName.toUpperCase() !== 'SEQ') {
+        mapped.push({ index: i, korName: korHeaders[i] || '', engName: rawCol, dbColumn: mappedName });
+      } else {
+        excluded.push({ index: i, korName: korHeaders[i] || '', engName: rawCol, reason: dbColSet.has('SEQ') && mappedName.toUpperCase() === 'SEQ' ? 'PK 자동생성 컬럼' : 'DB 테이블에 존재하지 않는 컬럼' });
+      }
+    }
+
+    // 프리뷰 데이터 (처음 5행)
+    const previewRows = dataRows.slice(0, 5).map(row => {
+      const obj = {};
+      mapped.forEach(m => {
+        obj[m.dbColumn] = row[m.index] ?? null;
+      });
+      return obj;
+    });
+
+    res.json({
+      fileName: req.file.originalname,
+      filePath: req.file.filename,
+      sheetName: wb.SheetNames[0],
+      totalRows: dataRows.length,
+      totalExcelCols: engHeaders.length,
+      mappedCols: mapped,
+      excludedCols: excluded,
+      mappedCount: mapped.length,
+      excludedCount: excluded.length,
+      previewRows,
+      previewColumns: mapped.map(m => m.dbColumn),
+    });
+  } catch (err) {
+    console.error('[Data Upload] Preview error:', err.message);
+    res.status(500).json({ error: '파일 분석 실패: ' + err.message });
+  }
+});
+
+// POST /api/data-upload/apply - 실제 DB 적재
+app.post('/api/data-upload/apply', async (req, res) => {
+  const { filePath, mappedCols } = req.body;
+  if (!filePath || !mappedCols || mappedCols.length === 0) {
+    return res.status(400).json({ error: '필수 파라미터가 누락되었습니다.' });
+  }
+  const fullPath = path.join(UPLOAD_DIR, filePath);
+  if (!fs.existsSync(fullPath)) {
+    return res.status(400).json({ error: '업로드된 파일을 찾을 수 없습니다. 다시 업로드해주세요.' });
+  }
+
+  try {
+    const XLSX = (await import('xlsx')).default;
+    const wb = XLSX.readFile(fullPath, { type: 'file' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+    const dataRows = allData.slice(2);
+
+    const dbColumns = mappedCols.map(m => m.dbColumn);
+    const placeholders = dbColumns.map(() => '?').join(', ');
+    const insertSQL = `INSERT INTO bw_profitability_data (${dbColumns.map(c => '`'+c+'`').join(', ')}) VALUES (${placeholders})`;
+
+    const conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    let inserted = 0;
+    const errors = [];
+    const BATCH_SIZE = 500;
+
+    for (let i = 0; i < dataRows.length; i += BATCH_SIZE) {
+      const batch = dataRows.slice(i, i + BATCH_SIZE);
+      for (let j = 0; j < batch.length; j++) {
+        const row = batch[j];
+        const rowIdx = i + j + 3; // 엑셀 기준 행번호 (1행 한국어, 2행 영문, 3행부터 데이터)
+        try {
+          const values = mappedCols.map(m => {
+            let v = row[m.index];
+            if (v === null || v === undefined || v === '') return null;
+            return v;
+          });
+          await conn.query(insertSQL, values);
+          inserted++;
+        } catch (rowErr) {
+          if (errors.length < 20) { // 최대 20개까지만 에러 기록
+            errors.push({ row: rowIdx, error: rowErr.message.substring(0, 200) });
+          }
+        }
+      }
+    }
+
+    await conn.commit();
+    conn.release();
+
+    // 적재 후 총 행 수 조회
+    const [countResult] = await pool.query('SELECT COUNT(*) AS cnt FROM bw_profitability_data');
+    const totalDbRows = countResult[0].cnt;
+
+    // 임시 파일 삭제
+    try { fs.unlinkSync(fullPath); } catch(e) {}
+
+    console.log(`[Data Upload] 적재 완료: ${inserted}/${dataRows.length}행, 에러 ${errors.length}건`);
+
+    res.json({
+      success: true,
+      totalExcelRows: dataRows.length,
+      insertedRows: inserted,
+      failedRows: dataRows.length - inserted,
+      errors,
+      totalDbRows: Number(totalDbRows),
+      mappedColumns: dbColumns,
+    });
+  } catch (err) {
+    console.error('[Data Upload] Apply error:', err.message);
+    res.status(500).json({ error: 'DB 적재 실패: ' + err.message });
+  }
+});
 
 // report.html 페이지 서빙
 app.get('/report', (req, res) => {
