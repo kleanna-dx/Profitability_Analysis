@@ -576,6 +576,9 @@ let charts = {}; // chartId -> Chart instance
 let inputMode = 'nlq'; // 'nlq' or 'sql'
 let isLoading = false;
 let msgCounter = 0;
+// 대화 컨텍스트: 이전 질문+SQL 쌍을 GPT에 전달하여 후속 질문 이해력 향상
+// 최근 5턴만 유지 (토큰 절약)
+let conversationContext = [];
 let historyCache = []; // 이력 캐시
 
 const SUGGESTIONS = [
@@ -791,7 +794,7 @@ async function sendQuery(query) {
         const res = await fetch('/api/nlq', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query }),
+            body: JSON.stringify({ query, conversationContext }),
             signal: controller.signal,
         });
         clearTimeout(timeoutId);
@@ -825,6 +828,10 @@ async function sendQuery(query) {
             appendErrorMessage(data.error || '서버 오류가 발생했습니다.');
         } else {
             appendBotMessage(data);
+            // 대화 컨텍스트에 추가 (후속 질문 시 GPT가 이전 SQL을 참조할 수 있도록)
+            conversationContext.push({ query, sql: data.sql });
+            // 최근 5턴만 유지 (토큰 절약)
+            if (conversationContext.length > 5) conversationContext.shift();
         }
         // 이력 새로고침 (비동기)
         loadHistory().catch(() => {});

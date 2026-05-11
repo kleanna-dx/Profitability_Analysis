@@ -463,7 +463,7 @@ async function buildFallbackContext() {
 // API: 자연어 질의 실행
 // ============================================================
 app.post('/api/nlq', async (req, res) => {
-  const { query } = req.body;
+  const { query, conversationContext } = req.body;
   if (!query || !query.trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.' });
   }
@@ -539,12 +539,22 @@ app.post('/api/nlq', async (req, res) => {
         }
       }
 
+      // 대화 히스토리를 GPT messages에 주입 (후속 질문에서 이전 SQL 맥락 유지)
+      const messages = [{ role: 'system', content: systemPrompt }];
+      if (Array.isArray(conversationContext) && conversationContext.length > 0) {
+        // 최근 5턴만 사용 (토큰 절약)
+        const recentCtx = conversationContext.slice(-5);
+        for (const turn of recentCtx) {
+          messages.push({ role: 'user', content: turn.query });
+          messages.push({ role: 'assistant', content: JSON.stringify({ sql: turn.sql }) });
+        }
+        console.log(`[NLQ] 대화 컨텍스트 ${recentCtx.length}턴 포함`);
+      }
+      messages.push({ role: 'user', content: query });
+
       const completion = await openai.chat.completions.create({
         model: 'gpt-5-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: query },
-        ],
+        messages,
         temperature: 0.1,
         response_format: { type: 'json_object' },
       });
