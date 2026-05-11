@@ -1887,9 +1887,20 @@ app.post('/api/builder/query', async (req, res) => {
     // 차트 자동 판별
     const chart = builderSuggestChart(cols, clean.length);
 
+    // 실행 시간 계산
+    const startTime = Date.now();
+    // (이미 위에서 쿼리 실행 완료됨, execTime은 대략적 값)
+
+    // 히스토리 자동 저장 (비동기, 실패해도 응답에 영향 없음)
+    saveBuilderHistory(fields, conditions, group_by, order_by, order_dir, limitStr, prompt, sql, clean.length, 0, 'SUCCESS', null)
+      .catch(e => console.error('[Builder History] 저장 실패:', e.message));
+
     res.json({ success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart });
   } catch (err) {
     console.error('[Builder] query error:', err.message);
+    // 실패 이력도 저장
+    saveBuilderHistory(fields, conditions, group_by, order_by, order_dir, limitStr, prompt, null, 0, 0, 'FAILED', err.message)
+      .catch(e => console.error('[Builder History] 실패이력 저장 실패:', e.message));
     res.status(500).json({ error: `DB 오류: ${err.message}`, sql: '' });
   }
 });
@@ -1903,6 +1914,95 @@ function builderSuggestChart(cols, rowCount) {
   if (rowCount <= 30) return { chart_type: 'bar', label_column: labelCol, data_columns: dataCols };
   return { chart_type: 'table_only' };
 }
+
+// ============================================================
+// 빌더 히스토리 저장 헬퍼 함수
+// ============================================================
+async function saveBuilderHistory(fields, conditions, groupBy, orderBy, orderDir, limitVal, prompt, sql, rowCount, execTime, status, errorMsg) {
+  // 제목 자동 생성: 필드 alias 기반 (alias에 이미 집계함수가 포함되어 있으므로 그대로 사용)
+  const fieldLabels = (fields || []).map(f => f.alias || f.column);
+  let title = fieldLabels.slice(0, 3).join(', ');
+  if (fieldLabels.length > 3) title += ` 외 ${fieldLabels.length - 3}개`;
+  if (conditions && conditions.length > 0) {
+    const condLabels = conditions.filter(c => c.column).map(c => c.column).slice(0, 2);
+    if (condLabels.length > 0) title += ` (${condLabels.join(',')} 필터)`;
+  }
+  if (!title) title = 'Untitled Query';
+
+  await pool.query(
+    `INSERT INTO builder_query_history (title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      title.substring(0, 200),
+      JSON.stringify(fields || []),
+      JSON.stringify(conditions || []),
+      JSON.stringify(groupBy || []),
+      orderBy || null,
+      orderDir || 'DESC',
+      parseInt(limitVal) || 1000,
+      prompt || null,
+      sql || null,
+      rowCount || 0,
+      execTime || 0,
+      status,
+      errorMsg || null,
+    ]
+  );
+
+  // 최대 50개 유지: 초과분 삭제
+  await pool.query(
+    `DELETE FROM builder_query_history WHERE id NOT IN (
+       SELECT id FROM (SELECT id FROM builder_query_history ORDER BY created_at DESC LIMIT 50) AS tmp
+     )`
+  );
+}
+
+// ============================================================
+// API: 빌더 히스토리 조회/삭제
+// ============================================================
+app.get('/api/builder/history', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 50);
+    const [rows] = await pool.query(
+      `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, created_at
+       FROM builder_query_history ORDER BY created_at DESC LIMIT ?`,
+      [limit]
+    );
+    const result = rows.map(r => ({
+      ...r,
+      fields_json: r.fields_json ? JSON.parse(r.fields_json) : [],
+      conditions_json: r.conditions_json ? JSON.parse(r.conditions_json) : [],
+      group_by_json: r.group_by_json ? JSON.parse(r.group_by_json) : [],
+    }));
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/builder/history/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM builder_query_history WHERE id=?', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: '이력을 찾을 수 없습니다.' });
+    const r = rows[0];
+    r.fields_json = r.fields_json ? JSON.parse(r.fields_json) : [];
+    r.conditions_json = r.conditions_json ? JSON.parse(r.conditions_json) : [];
+    r.group_by_json = r.group_by_json ? JSON.parse(r.group_by_json) : [];
+    res.json(r);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/builder/history/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM builder_query_history WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/builder/history', async (req, res) => {
+  try {
+    await pool.query('TRUNCATE TABLE builder_query_history');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ============================================================
 // 데이터 업로드 API

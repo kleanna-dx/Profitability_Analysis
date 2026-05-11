@@ -312,6 +312,51 @@
         .error-box.active { display:block; }
         .error-box code { display:block; margin-top:8px; padding:10px; background:#1e293b; color:#fca5a5; border-radius:8px; font-size:0.78rem; white-space:pre-wrap; }
 
+        /* History panel in sidebar */
+        .history-list{max-height:calc(100vh - 420px);overflow-y:auto;padding:0 12px 8px;}
+        .history-list::-webkit-scrollbar{width:4px;}
+        .history-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.15);border-radius:2px;}
+        .history-item{
+            display:flex;align-items:flex-start;gap:8px;padding:9px 10px;
+            border-radius:8px;cursor:pointer;transition:all .15s;
+            border:1px solid transparent;margin-bottom:4px;
+        }
+        .history-item:hover{background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.08);}
+        .history-item.active{background:rgba(99,102,241,0.25);border-color:rgba(99,102,241,0.3);}
+        .history-item-icon{
+            width:26px;height:26px;border-radius:6px;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;
+            font-size:11px;margin-top:1px;
+        }
+        .history-item-icon.success{background:rgba(34,197,94,0.15);color:#4ade80;}
+        .history-item-icon.failed{background:rgba(239,68,68,0.15);color:#f87171;}
+        .history-item-text{flex:1;min-width:0;}
+        .history-item-query{
+            font-size:12px;color:#e0e7ff;line-height:1.4;
+            overflow:hidden;text-overflow:ellipsis;display:-webkit-box;
+            -webkit-line-clamp:2;-webkit-box-orient:vertical;
+        }
+        .history-item-meta{font-size:10px;color:#818cf8;margin-top:3px;opacity:0.7;}
+        .history-item-del{
+            opacity:0;width:20px;height:20px;border-radius:4px;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;
+            color:#f87171;font-size:10px;cursor:pointer;transition:all .15s;
+            margin-top:2px;
+        }
+        .history-item:hover .history-item-del{opacity:1;}
+        .history-item-del:hover{background:rgba(239,68,68,0.2);}
+        .history-header{
+            display:flex;align-items:center;justify-content:space-between;
+            padding:8px 16px 6px;}
+        .history-clear-btn{
+            font-size:10px;color:#a5b4fc;cursor:pointer;padding:2px 8px;
+            border-radius:4px;transition:all .15s;
+        }
+        .history-clear-btn:hover{background:rgba(255,255,255,0.1);color:#fff;}
+        .history-empty{
+            text-align:center;padding:20px 16px;color:#818cf8;font-size:12px;opacity:0.6;
+        }
+
         @media (max-width:900px) {
             .builder-layout { grid-template-columns:1fr; }
             .field-panel { max-height:300px; position:static; }
@@ -356,6 +401,18 @@
                 <span id="sideDbDot" style="width:7px;height:7px;border-radius:50%;background:#10b981;display:inline-block;"></span>
                 <span>DB 연결됨</span>
             </div>
+        </div>
+    </div>
+    <div class="sidebar-divider"></div>
+
+    <!-- 최근 이력 -->
+    <div>
+        <div class="history-header">
+            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>최근 이력</p>
+            <span class="history-clear-btn" onclick="clearAllBuilderHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
+        </div>
+        <div id="historyList" class="history-list">
+            <div class="history-empty"><i class="fas fa-inbox"></i><br>아직 실행 이력이 없습니다</div>
         </div>
     </div>
 </aside>
@@ -539,7 +596,10 @@ const CATEGORY_NAMES = {
 const CATEGORY_ORDER = ['period','org','product','trade','quantity','amount','unit','other'];
 
 // ─── Init ────────────────────────────────────
-window.addEventListener('DOMContentLoaded', loadColumns);
+window.addEventListener('DOMContentLoaded', () => {
+    loadColumns();
+    loadBuilderHistory();
+});
 
 async function loadColumns() {
     try {
@@ -949,6 +1009,8 @@ async function executeQuery() {
         showError('네트워크 오류: ' + e.message);
     } finally {
         btn.disabled = false;
+        // 히스토리 자동 새로고침 (비동기)
+        loadBuilderHistory().catch(() => {});
     }
 }
 
@@ -1144,6 +1206,159 @@ function switchTab(tab) {
     document.getElementById('tableWrap').classList.toggle('active', tab === 'table');
     document.getElementById('chartWrap').classList.toggle('active', tab === 'chart');
     if (tab === 'chart' && chartInstance) setTimeout(() => chartInstance.resize(), 100);
+}
+
+// ─── Builder History ────────────────────────────
+let builderHistoryCache = [];
+
+async function loadBuilderHistory() {
+    try {
+        const res = await fetch('/api/builder/history?limit=50');
+        const data = await res.json();
+        builderHistoryCache = data;
+        renderBuilderHistory(data);
+    } catch(e) {
+        console.error('빌더 이력 로드 실패:', e);
+    }
+}
+
+function renderBuilderHistory(items) {
+    const container = document.getElementById('historyList');
+    if (!items || items.length === 0) {
+        container.innerHTML = '<div class="history-empty"><i class="fas fa-inbox"></i><br>아직 실행 이력이 없습니다</div>';
+        return;
+    }
+    let html = '';
+    items.forEach(item => {
+        const isSuccess = item.status === 'SUCCESS';
+        const icon = isSuccess ? 'fa-check' : 'fa-times';
+        const iconCls = isSuccess ? 'success' : 'failed';
+        const time = formatHistoryTime(item.created_at);
+        const meta = isSuccess
+            ? `${item.row_count}행 · ${time}`
+            : `실패 · ${time}`;
+        html += `
+            <div class="history-item" data-id="${item.id}" onclick="restoreBuilderHistory(${item.id})">
+                <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
+                <div class="history-item-text">
+                    <div class="history-item-query">${escHistHtml(item.title)}</div>
+                    <div class="history-item-meta">${meta}</div>
+                </div>
+                <div class="history-item-del" onclick="event.stopPropagation();deleteBuilderHistory(${item.id})" title="삭제">
+                    <i class="fas fa-times"></i>
+                </div>
+            </div>`;
+    });
+    container.innerHTML = html;
+}
+
+function formatHistoryTime(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diff = now - d;
+    if (diff < 60000) return '방금 전';
+    if (diff < 3600000) return Math.floor(diff/60000) + '분 전';
+    if (diff < 86400000) return Math.floor(diff/3600000) + '시간 전';
+    if (diff < 604800000) return Math.floor(diff/86400000) + '일 전';
+    return (d.getMonth()+1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+
+function escHistHtml(s) {
+    const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+
+async function restoreBuilderHistory(id) {
+    // 사이드바에서 active 표시
+    document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+    const target = document.querySelector(`.history-item[data-id="${id}"]`);
+    if (target) target.classList.add('active');
+
+    try {
+        const res = await fetch('/api/builder/history/' + id);
+        const item = await res.json();
+        if (item.error) { alert('이력을 불러올 수 없습니다.'); return; }
+
+        // 1. 필드 복원
+        selectedFields = (item.fields_json || []).map(f => ({
+            column: f.column,
+            alias: f.alias || f.column,
+            aggregate: f.aggregate || '',
+            type: (allColumns.find(c => c.name === f.column) || {}).type || 'text',
+        }));
+        renderSelectedFields();
+        updateOrderByOptions();
+
+        // 2. 조건 복원
+        const rawConds = item.conditions_json || [];
+        conditions = rawConds.filter(c => c.column).map(c => ({
+            column: c.column || '',
+            operator: c.operator || '=',
+            value: c.value || '',
+            logic: c.logic || 'AND',
+        }));
+        renderConditions();
+        // 조건 값 컬럼 캐시 로드
+        conditions.forEach((cond, i) => {
+            if (cond.column) loadColumnValues(cond.column, i);
+        });
+
+        // 3. 정렬 복원
+        if (item.order_by) {
+            document.getElementById('orderBySelect').value = item.order_by;
+        } else {
+            document.getElementById('orderBySelect').value = '';
+        }
+        if (item.order_dir) {
+            document.getElementById('orderDirSelect').value = item.order_dir;
+        }
+
+        // 4. LIMIT 복원
+        if (item.limit_val) {
+            const limitSel = document.getElementById('limitSelect');
+            const hasOpt = Array.from(limitSel.options).some(o => o.value == String(item.limit_val));
+            if (hasOpt) limitSel.value = String(item.limit_val);
+        }
+
+        // 5. 프롬프트 복원
+        document.getElementById('promptInput').value = item.prompt || '';
+
+        // 6. SQL 표시
+        if (item.generated_sql) {
+            document.getElementById('sqlPreviewText').innerHTML = highlightSQL(item.generated_sql);
+            document.getElementById('sqlPreview').classList.add('active');
+        } else {
+            document.getElementById('sqlPreview').classList.remove('active');
+        }
+
+        // 7. 결과 초기화 (이전 결과 숨김)
+        document.getElementById('resultsSection').classList.remove('active');
+        document.getElementById('errorBox').classList.remove('active');
+
+        closeSidebar();
+
+        // 상단으로 스크롤
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    } catch(e) {
+        alert('이력 불러오기 오류: ' + e.message);
+    }
+}
+
+async function deleteBuilderHistory(id) {
+    if (!confirm('이 이력을 삭제하시겠습니까?')) return;
+    try {
+        await fetch('/api/builder/history/' + id, { method: 'DELETE' });
+        await loadBuilderHistory();
+    } catch(e) { alert('삭제 실패: ' + e.message); }
+}
+
+async function clearAllBuilderHistory() {
+    if (!confirm('전체 실행 이력을 삭제하시겠습니까?')) return;
+    try {
+        await fetch('/api/builder/history', { method: 'DELETE' });
+        await loadBuilderHistory();
+    } catch(e) { alert('삭제 실패: ' + e.message); }
 }
 </script>
 </body>
