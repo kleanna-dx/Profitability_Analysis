@@ -488,6 +488,21 @@ function handleFileSelect(e) {
     if (file) uploadFile(file);
 }
 
+// ===== Fetch with Timeout =====
+async function fetchWithTimeout(url, options = {}, timeoutMs = 120000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        clearTimeout(timer);
+        return res;
+    } catch (err) {
+        clearTimeout(timer);
+        if (err.name === 'AbortError') throw new Error(`요청 시간이 초과되었습니다 (${Math.round(timeoutMs/1000)}초). 파일이 너무 크거나 서버가 응답하지 않습니다.`);
+        throw err;
+    }
+}
+
 // ===== Upload & Preview =====
 async function uploadFile(file) {
     const ext = file.name.split('.').pop().toLowerCase();
@@ -505,14 +520,17 @@ async function uploadFile(file) {
         <div class="icon"><i class="fas fa-cog spinner"></i></div>
         <p class="text-lg font-semibold text-gray-700 mb-2">파일 분석 중...</p>
         <p class="text-sm text-gray-400">${file.name} (${(file.size/1024/1024).toFixed(1)}MB)</p>
+        <p class="text-xs text-gray-300 mt-2">대용량 파일은 최대 30초 소요될 수 있습니다</p>
     `;
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-        const res = await fetch('/api/data-upload/preview', { method: 'POST', body: formData });
-        const data = await res.json();
+        const res = await fetchWithTimeout('/api/data-upload/preview', { method: 'POST', body: formData }, 120000);
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch(e) { throw new Error('서버 응답 파싱 실패. 서버 로그를 확인해주세요.'); }
         if (!res.ok) throw new Error(data.error || '파일 분석 실패');
 
         previewData = data;
@@ -593,27 +611,35 @@ function renderPreview(d) {
 async function applyUpload() {
     if (!previewData) return;
 
-    if (!confirm(`총 ${previewData.totalRows.toLocaleString()}행을 DB에 적재합니다.\n매핑 컬럼: ${previewData.mappedCount}개\n\n계속하시겠습니까?`)) return;
+    const rowCount = previewData.totalRows;
+    const estSec = Math.max(10, Math.round(rowCount / 800)); // 예상 소요 시간
+    if (!confirm(`총 ${rowCount.toLocaleString()}행을 DB에 적재합니다.\n매핑 컬럼: ${previewData.mappedCount}개\n예상 소요시간: 약 ${estSec}초\n\n계속하시겠습니까?`)) return;
 
     showPhase('phaseLoading');
+    document.getElementById('loadingMsg').textContent = `${rowCount.toLocaleString()}행 적재 중... 예상 소요시간: 약 ${estSec}초`;
+
     // Animate progress bar
     let pct = 0;
     const bar = document.getElementById('loadingBar');
     const interval = setInterval(() => {
-        pct = Math.min(pct + Math.random() * 8, 90);
+        pct = Math.min(pct + Math.random() * 3, 92);
         bar.style.width = pct + '%';
-    }, 400);
+    }, 800);
 
+    // 대용량 적재 시 최대 10분 타임아웃
+    const applyTimeout = Math.max(120000, rowCount * 15); // 행당 15ms + 최소 2분
     try {
-        const res = await fetch('/api/data-upload/apply', {
+        const res = await fetchWithTimeout('/api/data-upload/apply', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 filePath: previewData.filePath,
                 mappedCols: previewData.mappedCols,
             }),
-        });
-        const data = await res.json();
+        }, applyTimeout);
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch(e) { throw new Error('서버 응답 파싱 실패. 서버 로그를 확인해주세요.'); }
         clearInterval(interval);
         bar.style.width = '100%';
 
