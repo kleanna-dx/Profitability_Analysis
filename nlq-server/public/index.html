@@ -784,12 +784,39 @@ async function sendQuery(query) {
     scrollToBottom();
 
     try {
+        // AbortController로 타임아웃 설정 (GPT 호출이 오래 걸릴 수 있으므로 120초)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000);
+
         const res = await fetch('/api/nlq', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query }),
+            signal: controller.signal,
         });
-        const data = await res.json();
+        clearTimeout(timeoutId);
+
+        // 응답이 JSON인지 확인 (서버 오류 시 HTML이 반환될 수 있음)
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+            const text = await res.text();
+            console.error('[NLQ] 비정상 응답 (JSON 아님):', text.substring(0, 200));
+            typingEl.remove();
+            appendErrorMessage('서버 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (서버가 재시작 중일 수 있습니다)');
+            loadHistory().catch(() => {});
+            return;
+        }
+
+        let data;
+        try {
+            data = await res.json();
+        } catch (parseErr) {
+            console.error('[NLQ] JSON 파싱 실패:', parseErr.message);
+            typingEl.remove();
+            appendErrorMessage('서버 응답을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.');
+            loadHistory().catch(() => {});
+            return;
+        }
 
         // Remove typing
         typingEl.remove();
@@ -803,7 +830,11 @@ async function sendQuery(query) {
         loadHistory().catch(() => {});
     } catch(err) {
         typingEl.remove();
-        appendErrorMessage('서버 연결 오류: ' + err.message);
+        if (err.name === 'AbortError') {
+            appendErrorMessage('요청 시간이 초과되었습니다 (2분). AI 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.');
+        } else {
+            appendErrorMessage('서버 연결 오류: ' + err.message + '\n잠시 후 다시 시도해주세요.');
+        }
         loadHistory().catch(() => {});
     } finally {
         isLoading = false;
