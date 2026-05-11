@@ -1582,12 +1582,21 @@ app.post('/api/report/ppt', upload.single('attachment'), async (req, res) => {
       args.push(attachmentPath);
     }
 
-    const { stdout } = await execFileAsync('python3', args, {
+    const startTime = Date.now();
+    console.log(`[Report] PPT 생성 시작: calmonth=${calmonth}, prompt="${prompt ? prompt.substring(0,50) : '(없음)'}"`);
+
+    const { stdout, stderr } = await execFileAsync('python3', args, {
       cwd: import.meta.dirname,
-      timeout: 120000,
+      timeout: 180000,  // 3분 타임아웃 (GPT 슬라이드 플랜 포함)
       maxBuffer: 50 * 1024 * 1024,
       encoding: 'buffer',
     });
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    if (stderr && stderr.length > 0) {
+      console.warn(`[Report] PPT stderr (${elapsed}s):`, stderr.toString('utf8').substring(0, 500));
+    }
+    console.log(`[Report] PPT 생성 완료: ${elapsed}s, ${(stdout.length / 1024).toFixed(0)}KB`);
 
     const year = calmonth.slice(0, 4);
     const month = parseInt(calmonth.slice(4));
@@ -1600,8 +1609,13 @@ app.post('/api/report/ppt', upload.single('attachment'), async (req, res) => {
     });
     res.send(stdout);
   } catch (e) {
+    const stderrMsg = e.stderr ? Buffer.isBuffer(e.stderr) ? e.stderr.toString('utf8').substring(0, 300) : String(e.stderr).substring(0, 300) : '';
     console.error('[Report] PPT generation error:', e.message);
-    res.status(500).json({ error: `보고서 생성 오류: ${e.message}` });
+    if (stderrMsg) console.error('[Report] PPT stderr:', stderrMsg);
+    const userMsg = e.killed ? '보고서 생성 시간이 초과되었습니다 (3분). 프롬프트를 간결하게 수정해주세요.'
+                   : e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? '보고서 파일이 너무 큽니다.'
+                   : `보고서 생성 오류: ${e.message}`;
+    res.status(500).json({ error: userMsg });
   } finally {
     if (attachmentPath && fs.existsSync(attachmentPath)) {
       try { fs.unlinkSync(attachmentPath); } catch {}

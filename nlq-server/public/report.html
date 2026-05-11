@@ -823,23 +823,62 @@
             </div>
         </div>`;
 
-        // Slide 4
-        html += `
-        <div class="slide-card">
-            <div class="slide-card-header"><span class="slide-num s4">4</span><h3>원가 구성 분석</h3></div>
-            <div class="slide-card-body"><div class="chart-container"><canvas id="chartCost"></canvas></div></div>
-        </div>`;
+        // Slide 4 — 원가 구성 분석 (비중 상위 3개 표시 + 도넛 차트)
+        {
+            const costLabels4 = ['펄프','고지','패드','약품','포장재','인건비','에너지','감가상각'];
+            const costKeys4  = ['재료비_펄프','재료비_고지','재료비_패드','부재료비_약품','부재료비_포장재','인건비','에너지비','감가상각비'];
+            const costEntries = costLabels4.map((lbl, i) => ({
+                label: lbl,
+                value: divs.reduce((s,d) => s + (d[costKeys4[i]]||0), 0)
+            })).filter(e => e.value !== 0).sort((a,b) => b.value - a.value);
+            const costTotal4 = costEntries.reduce((s,e) => s + e.value, 0);
+            let costSummaryHtml = '';
+            if (costEntries.length === 0) {
+                costSummaryHtml = '<div style="text-align:center;color:var(--text-light);padding:20px;"><i class="fas fa-info-circle" style="margin-right:6px;"></i>해당 월의 원가 데이터가 없습니다.</div>';
+            } else {
+                const top3 = costEntries.slice(0,3);
+                costSummaryHtml = `<div class="kpi-row" style="margin-bottom:10px;">${top3.map(e => {
+                    const pct = costTotal4 > 0 ? (e.value / costTotal4 * 100).toFixed(1) : '0';
+                    return `<div class="mini-kpi"><div class="label">${e.label}</div><div class="value" style="font-size:1.05rem;">${fmtNum(e.value)}</div><div style="font-size:0.72rem;color:var(--primary);font-weight:600;">${pct}%</div></div>`;
+                }).join('')}</div>`;
+            }
+            html += `
+            <div class="slide-card">
+                <div class="slide-card-header"><span class="slide-num s4">4</span><h3>원가 구성 분석</h3></div>
+                <div class="slide-card-body">
+                    ${costSummaryHtml}
+                    <div class="chart-container"><canvas id="chartCost"></canvas></div>
+                </div>
+            </div>`;
+        }
 
-        // Slide 5
-        html += `
-        <div class="slide-card">
-            <div class="slide-card-header"><span class="slide-num s5">5</span><h3>제품별 분석 & 핵심 인사이트</h3></div>
-            <div class="slide-card-body">
-                <ul class="data-list">
-                    ${products.map((p, i) => `<li><span class="name">${i+1}. ${(p['\uc81c\ud488\uba85']||'').substring(0,25)}</span><span class="val">${fmtNum(p['\ucd1d\ub9e4\ucd9c'])}</span></li>`).join('')}
-                </ul>
-            </div>
-        </div>`;
+        // Slide 5 — 제품별 TOP5 분석 (매출 비중 + 수량 표시)
+        {
+            const totalSales5 = total['총매출'] || 1;
+            let prodHtml = '';
+            if (!products || products.length === 0) {
+                prodHtml = '<div style="text-align:center;color:var(--text-light);padding:20px;"><i class="fas fa-info-circle" style="margin-right:6px;"></i>제품 데이터가 없습니다.</div>';
+            } else {
+                prodHtml = '<ul class="data-list">' + products.map((p, i) => {
+                    const name = (p['제품명']||'').substring(0,30);
+                    const sales = p['총매출'] || 0;
+                    const qty = p['판매수량'] || 0;
+                    const pct = totalSales5 > 0 ? (sales / totalSales5 * 100).toFixed(1) : '0';
+                    const medals = ['🥇','🥈','🥉'];
+                    const medal = i < 3 ? medals[i] : `${i+1}.`;
+                    return `<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f1f5f9;">`
+                        + `<span style="min-width:28px;text-align:center;font-size:0.95rem;">${medal}</span>`
+                        + `<span style="flex:1;font-size:0.82rem;font-weight:500;line-height:1.3;">${name}</span>`
+                        + `<span style="text-align:right;min-width:80px;"><div style="font-weight:700;font-size:0.85rem;color:var(--primary);">${fmtNum(sales)}</div><div style="font-size:0.68rem;color:var(--text-light);">${pct}% · ${fmtNum(qty)}kg</div></span>`
+                        + `</li>`;
+                }).join('') + '</ul>';
+            }
+            html += `
+            <div class="slide-card">
+                <div class="slide-card-header"><span class="slide-num s5">5</span><h3>제품별 TOP5 & 핵심 인사이트</h3></div>
+                <div class="slide-card-body">${prodHtml}</div>
+            </div>`;
+        }
 
         document.getElementById('slidePreview').innerHTML = html;
 
@@ -898,7 +937,7 @@
                             tooltip: { callbacks: { label: ctx => `${ctx.label}: ${fmtNum(ctx.raw)}` } } } }
                 });
             }
-        }, 100);
+        }, 300);
     }
 
     async function generateReport() {
@@ -945,13 +984,33 @@
             formData.append('prompt', prompt);
             if (currentFile) formData.append('attachment', currentFile);
 
-            const res = await fetch('/api/report/ppt', { method: 'POST', body: formData });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 180000); // 3분 타임아웃
+
+            const res = await fetch('/api/report/ppt', {
+                method: 'POST',
+                body: formData,
+                signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
             clearInterval(stepTimer);
 
+            // Content-Type 확인 (HTML 에러 페이지 방지)
+            const ct = res.headers.get('content-type') || '';
             if (!res.ok) {
                 let errMsg = '보고서 생성 실패';
-                try { const errData = await res.json(); errMsg = errData.error || errMsg; } catch {}
+                if (ct.includes('application/json')) {
+                    try { const errData = await res.json(); errMsg = errData.error || errMsg; } catch {}
+                } else {
+                    errMsg = `서버 오류 (HTTP ${res.status})`;
+                }
                 throw new Error(errMsg);
+            }
+
+            // 응답이 JSON이면 에러, PPTX 바이너리여야 정상
+            if (ct.includes('application/json')) {
+                const errData = await res.json();
+                throw new Error(errData.error || '보고서 생성 중 알 수 없는 오류');
             }
 
             const blob = await res.blob();
@@ -980,7 +1039,11 @@
             clearInterval(stepTimer);
             progress.classList.remove('active');
             const errEl = document.getElementById('errorMsg');
-            errEl.innerHTML = '<i class="fas fa-exclamation-triangle" style="margin-right:6px;"></i>오류: ' + e.message;
+            let userMsg = e.message;
+            if (e.name === 'AbortError') {
+                userMsg = '보고서 생성 시간이 초과되었습니다 (3분). 프롬프트를 간결하게 수정하거나 프롬프트 없이 시도해주세요.';
+            }
+            errEl.innerHTML = '<i class="fas fa-exclamation-triangle" style="margin-right:6px;"></i>오류: ' + userMsg;
             errEl.classList.add('active');
         } finally {
             btn.disabled = false;
