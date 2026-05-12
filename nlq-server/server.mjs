@@ -634,16 +634,22 @@ app.post('/api/nlq', async (req, res) => {
 
     console.log(`[NLQ] SQL 실행: ${execTime}ms, ${rows.length}행`);
 
-    // 4. 분석형 질문이면 2단계: 데이터 기반 GPT 텍스트 분석 답변 생성
+    // 4. 분석형 질문이면 2단계: GPT 텍스트 분석 답변 생성 (결과 0행이어도 생성)
     let analysis = null;
-    if (analysisRequired && rows.length > 0) {
+    if (analysisRequired) {
       try {
-        console.log(`[NLQ] 분석형 질문 감지 — GPT 텍스트 분석 답변 생성 시작`);
-        // 데이터를 요약하여 GPT에 전달 (최대 50행, 토큰 절약)
-        const dataForAnalysis = rows.slice(0, 50);
-        const dataText = JSON.stringify(dataForAnalysis, (key, val) =>
-          typeof val === 'bigint' ? Number(val) : val
-        , 2);
+        console.log(`[NLQ] 분석형 질문 감지 — GPT 텍스트 분석 답변 생성 시작 (데이터 ${rows.length}행)`);
+
+        let userContent;
+        if (rows.length > 0) {
+          const dataForAnalysis = rows.slice(0, 50);
+          const dataText = JSON.stringify(dataForAnalysis, (key, val) =>
+            typeof val === 'bigint' ? Number(val) : val
+          , 2);
+          userContent = `[사용자 질문]\n${query}\n\n[실행한 SQL]\n${sql}\n\n[조회된 데이터 (${rows.length}행)]\n${dataText}\n\n위 데이터를 기반으로 질문에 대한 전문적인 분석 답변을 작성해주세요.`;
+        } else {
+          userContent = `[사용자 질문]\n${query}\n\n[실행한 SQL]\n${sql}\n\n[조회 결과]: 0행 (데이터 없음)\n\nSQL 조회 결과가 0행입니다. 가능한 원인과 함께 질문에 대해 알려진 정보를 바탕으로 답변해주세요.`;
+        }
 
         const analysisCompletion = await openai.chat.completions.create({
           model: 'gpt-5-mini',
@@ -651,22 +657,20 @@ app.post('/api/nlq', async (req, res) => {
             {
               role: 'system',
               content: `당신은 기업 수익성 분석 전문 컨설턴트입니다.
-아래 제공된 데이터를 기반으로 사용자의 질문에 대해 전문적인 분석 답변을 작성하세요.
+사용자의 질문에 대해 전문적인 분석 답변을 작성하세요.
 
 [답변 작성 규칙]
 1. 마크다운 형식으로 작성 (제목, 볼드, 리스트 활용)
-2. 핵심 수치를 반드시 인용하며 분석 (예: "총매출 454억원")
+2. 데이터가 있으면 핵심 수치를 반드시 인용하며 분석 (예: "총매출 454억원")
 3. 긍정적/부정적 시사점을 균형 있게 제시
 4. 구체적이고 실행 가능한 제언 포함
 5. 금액은 억/만 단위로 읽기 쉽게 표현 (예: 45,409,440,210원 → 약 454억원)
 6. 한국어로 답변
 7. 데이터에 없는 내용은 추측하지 말고, 있는 데이터만으로 분석
-8. 분석 답변은 충분히 길고 상세하게 작성 (최소 300자 이상)`
+8. 분석 답변은 충분히 길고 상세하게 작성 (최소 300자 이상)
+9. 조회 결과가 0행인 경우: SQL 조건이 너무 좁거나, 해당 데이터가 DB에 없을 가능성을 설명하고, 질문 의도에 맞는 대안 조회 방법을 제안하세요`
             },
-            {
-              role: 'user',
-              content: `[사용자 질문]\n${query}\n\n[조회된 데이터]\n${dataText}\n\n위 데이터를 기반으로 질문에 대한 전문적인 분석 답변을 작성해주세요.`
-            }
+            { role: 'user', content: userContent }
           ],
           temperature: 0.3,
           max_tokens: 2000,
