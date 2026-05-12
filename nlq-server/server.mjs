@@ -1776,182 +1776,220 @@ app.post('/api/builder/query', async (req, res) => {
     `);
     const validCols = new Set(validColRows.map(r => r.COLUMN_NAME));
 
-    // ── 비교 옵션에 따른 날짜 범위 확장 계산 ──
-    // 전월 CALMONTH 계산 헬퍼
+    // ── 헬퍼 함수 ──
     const calcPrevMonth = (ym) => {
       const y = parseInt(ym.slice(0, 4), 10);
       const m = parseInt(ym.slice(4, 6), 10);
       if (m === 1) return `${y - 1}12`;
       return `${y}${String(m - 1).padStart(2, '0')}`;
     };
-    // 전년 동기 CALMONTH 계산 헬퍼
     const calcPrevYear = (ym) => {
       const y = parseInt(ym.slice(0, 4), 10);
-      const mm = ym.slice(4, 6);
-      return `${y - 1}${mm}`;
+      return `${y - 1}${ym.slice(4, 6)}`;
     };
 
-    // 실제 조회할 CALMONTH 목록 계산
-    const calmonthSet = new Set();
-    // 기본: 사용자가 선택한 기간
-    const dsNum = Number(date_start);
-    const deNum = Number(date_end);
-    for (let ym = dsNum; ym <= deNum; ) {
-      calmonthSet.add(String(ym));
-      // 다음 월 계산
-      const yy = Math.floor(ym / 100);
-      const mm = ym % 100;
-      ym = mm === 12 ? (yy + 1) * 100 + 1 : ym + 1;
-    }
-    // 전월대비: 시작월의 전월 추가
-    if (compare_mom) {
-      calmonthSet.add(calcPrevMonth(date_start));
-    }
-    // 전년대비: 전체 기간의 전년 동기 추가
-    if (compare_yoy) {
-      for (let ym = dsNum; ym <= deNum; ) {
-        calmonthSet.add(calcPrevYear(String(ym)));
-        const yy = Math.floor(ym / 100);
-        const mm = ym % 100;
-        ym = mm === 12 ? (yy + 1) * 100 + 1 : ym + 1;
-      }
-    }
-    const calmonthList = [...calmonthSet].sort();
-
-    // SELECT 절
-    const selectParts = [];
     const hasCompare = compare_mom || compare_yoy;
-
-    // 비교 모드일 때 CALMONTH를 SELECT/GROUP BY 맨 앞에 자동 포함
     const userFieldCols = fields.map(f => f.column);
-    if (hasCompare && !userFieldCols.includes('CALMONTH')) {
-      selectParts.push('`CALMONTH` AS `달력연월`');
-    }
 
+    // ── 사용자 필터 조건 WHERE 절 생성 (공통) ──
+    const buildUserConditions = (paramArr) => {
+      const parts = [];
+      if (conditions && conditions.length > 0) {
+        for (let i = 0; i < conditions.length; i++) {
+          const cond = conditions[i];
+          const col = cond.column;
+          if (!col || !validCols.has(col)) continue;
+          const op = cond.operator || '=';
+          const val = cond.value || '';
+          const logic = (cond.logic || 'AND').toUpperCase();
+          let clause;
+          if (['=','!=','>','>=','<','<='].includes(op)) {
+            clause = `\`${col}\` ${op} ?`; paramArr.push(val);
+          } else if (op === 'LIKE') {
+            clause = `\`${col}\` LIKE ?`; paramArr.push(`%${val}%`);
+          } else if (op === 'NOT LIKE') {
+            clause = `\`${col}\` NOT LIKE ?`; paramArr.push(`%${val}%`);
+          } else if (op === 'IN') {
+            const inVals = String(val).split(',').map(v => v.trim()).filter(v => v);
+            if (inVals.length === 0) continue;
+            clause = `\`${col}\` IN (${inVals.map(() => '?').join(',')})`;
+            paramArr.push(...inVals);
+          } else if (op === 'IS NULL') { clause = `\`${col}\` IS NULL`;
+          } else if (op === 'IS NOT NULL') { clause = `\`${col}\` IS NOT NULL`;
+          } else if (op === 'BETWEEN') {
+            const bVals = String(val).split(',').map(v => v.trim());
+            if (bVals.length !== 2) continue;
+            clause = `\`${col}\` BETWEEN ? AND ?`; paramArr.push(bVals[0], bVals[1]);
+          } else { clause = `\`${col}\` = ?`; paramArr.push(val); }
+          parts.push(`${parts.length === 0 ? 'AND' : (logic === 'OR' ? 'OR' : 'AND')} ${clause}`);
+        }
+      }
+      return parts.join(' ');
+    };
+
+    // ── SELECT 절: 기준 필드(dimension) / 수치 필드(measure) 분리 ──
+    const dimFields = [];  // GROUP BY 대상 (텍스트 필드)
+    const measureFields = []; // 집계 대상 (SUM 등)
     for (const f of fields) {
       const col = f.column;
       if (!validCols.has(col)) return res.status(400).json({ error: `유효하지 않은 컬럼: ${col}` });
       const agg = f.aggregate;
       const alias = f.alias || col;
       if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
-        selectParts.push(`${agg.toUpperCase()}(\`${col}\`) AS \`${alias}\``);
+        measureFields.push({ col, agg: agg.toUpperCase(), alias });
       } else {
-        selectParts.push(`\`${col}\` AS \`${alias}\``);
+        dimFields.push({ col, alias });
       }
     }
 
-    // WHERE 절 — 날짜 조건을 맨 앞에 자동 삽입
-    const whereParts = [];
-    const params = [];
+    let sql, finalParams;
 
-    if (calmonthList.length === 1) {
-      // 단일 월
-      whereParts.push('`CALMONTH` = ?');
-      params.push(calmonthList[0]);
-    } else {
-      // 복수 월: IN 절 사용
-      whereParts.push('`CALMONTH` IN (' + calmonthList.map(() => '?').join(',') + ')');
-      params.push(...calmonthList);
-    }
+    // ═══════════════════════════════════════════════
+    // 비교 모드: 피벗 SQL 생성 (당월/전월 or 당기/전년 나란히 + 증감상태)
+    // ═══════════════════════════════════════════════
+    if (hasCompare && measureFields.length > 0) {
+      const curMonth = date_end; // 당월(당기)
+      const prevMonth = compare_mom ? calcPrevMonth(curMonth) : calcPrevYear(curMonth);
+      const curLabel = compare_mom ? '당월' : '당기';
+      const prevLabel = compare_mom ? '전월' : '전년동기';
+      const compareLabel = compare_mom ? '전월대비' : '전년대비';
 
-    // 사용자 필터 조건 (날짜 이후에 AND로 추가)
-    if (conditions && conditions.length > 0) {
-      for (let i = 0; i < conditions.length; i++) {
-        const cond = conditions[i];
-        const col = cond.column;
-        if (!col || !validCols.has(col)) continue;
+      // 기준 필드 SELECT/GROUP BY
+      const dimSelect = dimFields.map(d => `\`${d.col}\` AS \`${d.alias}\``).join(', ');
+      const dimGroupBy = dimFields.map(d => `\`${d.col}\``).join(', ');
 
-        const op = cond.operator || '=';
-        const val = cond.value || '';
-        const logic = (cond.logic || 'AND').toUpperCase();
-
-        let clause;
-        if (op === '=' || op === '!=' || op === '>' || op === '>=' || op === '<' || op === '<=') {
-          clause = `\`${col}\` ${op} ?`;
-          params.push(val);
-        } else if (op === 'LIKE') {
-          clause = `\`${col}\` LIKE ?`;
-          params.push(`%${val}%`);
-        } else if (op === 'NOT LIKE') {
-          clause = `\`${col}\` NOT LIKE ?`;
-          params.push(`%${val}%`);
-        } else if (op === 'IN') {
-          const inVals = String(val).split(',').map(v => v.trim()).filter(v => v);
-          if (inVals.length === 0) continue;
-          clause = `\`${col}\` IN (${inVals.map(() => '?').join(',')})`;
-          params.push(...inVals);
-        } else if (op === 'IS NULL') {
-          clause = `\`${col}\` IS NULL`;
-        } else if (op === 'IS NOT NULL') {
-          clause = `\`${col}\` IS NOT NULL`;
-        } else if (op === 'BETWEEN') {
-          const bVals = String(val).split(',').map(v => v.trim());
-          if (bVals.length !== 2) continue;
-          clause = `\`${col}\` BETWEEN ? AND ?`;
-          params.push(bVals[0], bVals[1]);
-        } else {
-          clause = `\`${col}\` = ?`;
-          params.push(val);
-        }
-
-        // 날짜 조건이 이미 whereParts[0]에 있으므로 사용자 조건은 항상 AND/OR로 연결
-        whereParts.push(`${i === 0 ? 'AND' : (logic === 'OR' ? 'OR' : 'AND')} ${clause}`);
+      // 수치 필드별 당월/전월/증감상태 컬럼 생성
+      const measureSelect = [];
+      for (const m of measureFields) {
+        const curAlias = `${curLabel}${m.alias}`;
+        const prevAlias = `${prevLabel}${m.alias}`;
+        // 수치 필드가 2개 이상이면 증감상태 컬럼명에 필드명 포함
+        const diffAlias = measureFields.length > 1 ? `${compareLabel}(${m.alias})` : compareLabel;
+        measureSelect.push(
+          `SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) AS \`${curAlias}\``,
+          `SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) AS \`${prevAlias}\``,
+          `CASE ` +
+            `WHEN SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) > SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) ` +
+              `THEN CONCAT('▲ ', FORMAT(ABS(SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) - SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END)), 0), ' 상승') ` +
+            `WHEN SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) < SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) ` +
+              `THEN CONCAT('▼ ', FORMAT(ABS(SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) - SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END)), 0), ' 하락') ` +
+            `ELSE '— 변동없음' END AS \`${diffAlias}\``
+        );
       }
-    }
 
-    // GROUP BY 절
-    const groupParts = [];
-    // 비교 모드일 때 CALMONTH를 GROUP BY 맨 앞에 자동 포함
-    if (hasCompare && !userFieldCols.includes('CALMONTH') && group_by && group_by.length > 0) {
-      groupParts.push('`CALMONTH`');
-    }
-    if (group_by && group_by.length > 0) {
-      for (const g of group_by) {
-        if (validCols.has(g)) groupParts.push(`\`${g}\``);
+      // ── 파라미터 구성 ──
+      // SQL ?순서: SELECT절(CASE WHEN ?) → WHERE절(IN ?) 이므로
+      // measure params를 먼저, WHERE params를 뒤에 배치해야 한다.
+
+      // 1) SELECT절 CASE WHEN 파라미터 (수치 필드별 10개씩)
+      const measureParams = [];
+      for (const m of measureFields) {
+        // 당월 SUM(1) + 전월 SUM(1) + CASE > 비교(cur,prev) + 차이(cur,prev) + CASE < 비교(cur,prev) + 차이(cur,prev)
+        measureParams.push(curMonth);   // 당월 SUM CASE WHEN
+        measureParams.push(prevMonth);  // 전월 SUM CASE WHEN
+        measureParams.push(curMonth, prevMonth, curMonth, prevMonth); // > 비교 + FORMAT 차이
+        measureParams.push(curMonth, prevMonth, curMonth, prevMonth); // < 비교 + FORMAT 차이
       }
-    }
 
-    // ORDER BY 절 — 비교 모드일 때 CALMONTH를 첫 번째 정렬 기준에 추가
-    let orderClause = '';
-    if (hasCompare) {
-      // 비교 모드: CALMONTH ASC 우선 정렬 (전월→당월 순서로 표시)
+      // 2) WHERE절 파라미터
+      const whereParams = [];
+      const whereMonth = `\`CALMONTH\` IN (?, ?)`;
+      whereParams.push(prevMonth, curMonth);
+      // 사용자 필터 조건
+      const userWhere = buildUserConditions(whereParams);
+
+      const selectAll = [
+        `'${curMonth}' AS \`달력연월\``,
+        ...(dimFields.length > 0 ? [dimSelect] : []),
+        ...measureSelect
+      ].join(', ');
+
+      sql = `SELECT ${selectAll} FROM bw_profitability_data WHERE ${whereMonth}${userWhere ? ' ' + userWhere : ''}`;
+      if (dimFields.length > 0) sql += ` GROUP BY ${dimGroupBy}`;
+
+      // ORDER BY
       if (order_by) {
         const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-        orderClause = `ORDER BY \`CALMONTH\` ASC, \`${order_by}\` ${dir}`;
-      } else {
-        orderClause = 'ORDER BY `CALMONTH` ASC';
+        sql += ` ORDER BY \`${order_by}\` ${dir}`;
       }
-    } else if (order_by) {
-      const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-      orderClause = `ORDER BY \`${order_by}\` ${dir}`;
+      sql += ` LIMIT ${safeLimit}`;
+
+      // 파라미터 조합: SELECT절(measure) → WHERE절 순서로 결합
+      finalParams = [...measureParams, ...whereParams];
+
+    // ═══════════════════════════════════════════════
+    // 일반 모드 (비교 없음): 기존 로직 + CALMONTH 항상 첫 컬럼
+    // ═══════════════════════════════════════════════
+    } else {
+      const selectParts = [];
+      // CALMONTH 항상 첫 컬럼 자동 포함
+      if (!userFieldCols.includes('CALMONTH')) {
+        selectParts.push('`CALMONTH` AS `달력연월`');
+      }
+      for (const f of fields) {
+        const col = f.column;
+        const agg = f.aggregate;
+        const alias = f.alias || col;
+        if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
+          selectParts.push(`${agg.toUpperCase()}(\`${col}\`) AS \`${alias}\``);
+        } else {
+          selectParts.push(`\`${col}\` AS \`${alias}\``);
+        }
+      }
+
+      const whereParts = [];
+      finalParams = [];
+
+      if (date_start === date_end) {
+        whereParts.push('`CALMONTH` = ?');
+        finalParams.push(date_start);
+      } else {
+        whereParts.push('`CALMONTH` BETWEEN ? AND ?');
+        finalParams.push(date_start, date_end);
+      }
+      const userWhere = buildUserConditions(finalParams);
+      if (userWhere) whereParts.push(userWhere);
+
+      // GROUP BY
+      const groupParts = [];
+      if (!userFieldCols.includes('CALMONTH') && group_by && group_by.length > 0) {
+        groupParts.push('`CALMONTH`');
+      }
+      if (group_by && group_by.length > 0) {
+        for (const g of group_by) {
+          // CALMONTH 중복 방지 (이미 자동 추가된 경우 스킵)
+          if (g === 'CALMONTH' && groupParts.includes('`CALMONTH`')) continue;
+          if (validCols.has(g)) groupParts.push(`\`${g}\``);
+        }
+      }
+
+      let orderClause = '';
+      if (order_by) {
+        const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+        orderClause = `ORDER BY \`${order_by}\` ${dir}`;
+      }
+
+      sql = `SELECT ${selectParts.join(', ')} FROM bw_profitability_data`;
+      if (whereParts.length > 0) sql += ` WHERE ${whereParts.join(' ')}`;
+      if (groupParts.length > 0) sql += ` GROUP BY ${groupParts.join(', ')}`;
+      if (orderClause) sql += ` ${orderClause}`;
+      sql += ` LIMIT ${safeLimit}`;
     }
 
-    // SQL 조합
-    let sql = `SELECT ${selectParts.join(', ')} FROM bw_profitability_data`;
-    if (whereParts.length > 0) sql += ` WHERE ${whereParts.join(' ')}`;
-    if (groupParts.length > 0) sql += ` GROUP BY ${groupParts.join(', ')}`;
-    if (orderClause) sql += ` ${orderClause}`;
-    sql += ` LIMIT ${safeLimit}`;
-
-    let finalParams = params;
-
-    // GPT SQL 보완: 추가 프롬프트가 있을 때만 사용 (비교 옵션은 이미 날짜 확장으로 처리됨)
+    // GPT SQL 보완: 추가 프롬프트가 있을 때만 사용
     const needGpt = prompt && prompt.trim();
     if (needGpt) {
       try {
-        // GPT에게는 ? 바인딩을 실제 값으로 치환한 SQL을 전달
         let resolvedSql = sql;
         let paramIdx = 0;
         resolvedSql = resolvedSql.replace(/\?/g, () => {
-          const v = params[paramIdx++];
+          const v = finalParams[paramIdx++];
           if (v === null || v === undefined) return 'NULL';
           if (typeof v === 'number') return String(v);
           return `'${String(v).replace(/'/g, "''")}'`;
         });
-
         const userPromptText = `\n\n[추가 요청]\n${prompt}`;
-
-        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요. 존재하지 않는 컬럼(예: SALES, REVENUE 등)을 절대 만들지 마세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
+        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         const completion = await openai.chat.completions.create({
           model: 'gpt-5-mini',
           messages: [
@@ -1961,14 +1999,12 @@ app.post('/api/builder/query', async (req, res) => {
           temperature: 0.1,
         });
         let gptSql = completion.choices[0].message.content.trim();
-        // 코드 블록 제거
         gptSql = gptSql.replace(/```sql\s*/gi, '').replace(/```\s*/g, '').trim();
-        // 안전성 검증
         const forbidden = ['INSERT','UPDATE','DELETE','DROP','ALTER','TRUNCATE','CREATE'];
         const isSafe = !forbidden.some(w => new RegExp('\\b' + w + '\\b', 'i').test(gptSql));
         if (isSafe && /^SELECT/i.test(gptSql)) {
           sql = gptSql;
-          finalParams = []; // GPT SQL은 파라미터 바인딩 없이 실행
+          finalParams = [];
         }
       } catch (gptErr) {
         console.error('[Builder] GPT prompt enhancement failed:', gptErr.message);
