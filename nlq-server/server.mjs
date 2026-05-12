@@ -1954,10 +1954,8 @@ app.post('/api/builder/query', async (req, res) => {
 
       const dimColsList = dimFields.map(d => `\`${d.col}\``);
 
-      // CALDAY를 서브쿼리 GROUP BY에 항상 포함 (일자별 구분)
-      const groupByCols = ['`CALDAY`', ...dimColsList];
-
-      // ── cur 서브쿼리 ──
+      // ── cur 서브쿼리 ── (CALDAY 포함: 일자별 구분 + 표시용)
+      const curGroupByCols = ['`CALDAY`', ...dimColsList];
       const curSelectParts = ['`CALDAY`', ...dimColsList];
       measureFields.forEach(m => {
         curSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_cur\``);
@@ -1965,17 +1963,22 @@ app.post('/api/builder/query', async (req, res) => {
       const curParams = [curMonth];
       const curUserWhere = buildUserConditions(curParams);
       let curSql = `SELECT ${curSelectParts.join(', ')} FROM bw_profitability_data WHERE \`CALMONTH\` = ?${curUserWhere ? ' ' + curUserWhere : ''}`;
-      curSql += ` GROUP BY ${groupByCols.join(', ')}`;
+      curSql += ` GROUP BY ${curGroupByCols.join(', ')}`;
 
-      // ── prev 서브쿼리 ──
-      const prevSelectParts = ['`CALDAY`', ...dimColsList];
+      // ── prev 서브쿼리 ── (CALDAY 제외: 월 전체 합산)
+      // 비교모드에서 prev는 전월 전체를 dim 기준으로 합산해야 함
+      // CALDAY가 월마다 다르므로 (20240601 vs 20240501~31) JOIN 불가
+      const prevGroupByCols = [...dimColsList];
+      const prevSelectParts = [...dimColsList];
       measureFields.forEach(m => {
         prevSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_prev\``);
       });
       const prevParams = [prevMonth];
       const prevUserWhere = buildUserConditions(prevParams);
       let prevSql = `SELECT ${prevSelectParts.join(', ')} FROM bw_profitability_data WHERE \`CALMONTH\` = ?${prevUserWhere ? ' ' + prevUserWhere : ''}`;
-      prevSql += ` GROUP BY ${groupByCols.join(', ')}`;
+      if (prevGroupByCols.length > 0) {
+        prevSql += ` GROUP BY ${prevGroupByCols.join(', ')}`;
+      }
 
       // ── 최종 SELECT 컬럼 ──
       const outerSelectParts = [`cur.\`CALDAY\` AS \`달력일\``];
@@ -2004,15 +2007,16 @@ app.post('/api/builder/query', async (req, res) => {
       });
 
       // ── JOIN 구성 ──
-      // CALDAY는 항상 JOIN 조건에 포함 (일자별 매칭 필수)
-      // dim이 있으면: LEFT JOIN ... ON CALDAY + dim 컬럼 매칭
-      // dim이 없으면: LEFT JOIN ... ON CALDAY만 매칭
+      // CALDAY는 JOIN 조건에서 제외 (월마다 일자가 다르므로 매칭 불가)
+      // dim이 있으면: LEFT JOIN ... ON dim 컬럼만 매칭
+      // dim이 없으면: LEFT JOIN ... ON 1=1 (각각 합계 1행끼리 결합)
       let joinClause;
-      const joinConds = ['cur.`CALDAY` = prev.`CALDAY`'];
       if (dimFields.length > 0) {
-        dimFields.forEach(d => joinConds.push(`cur.\`${d.col}\` = prev.\`${d.col}\``));
+        const onCond = dimFields.map(d => `cur.\`${d.col}\` = prev.\`${d.col}\``).join(' AND ');
+        joinClause = `LEFT JOIN (${prevSql}) AS prev ON ${onCond}`;
+      } else {
+        joinClause = `LEFT JOIN (${prevSql}) AS prev ON 1=1`;
       }
-      joinClause = `LEFT JOIN (${prevSql}) AS prev ON ${joinConds.join(' AND ')}`;
 
       sql = `SELECT ${outerSelectParts.join(', ')} FROM (${curSql}) AS cur ${joinClause}`;
 
