@@ -1936,7 +1936,7 @@ app.post('/api/builder/query', async (req, res) => {
     let sql, finalParams;
 
     // ═══════════════════════════════════════════════
-    // 비교 모드: 피벗 SQL 생성 (당월/전월 or 당기/전년 나란히 + 증감상태)
+    // 비교 모드: 당월 기준 LEFT JOIN 방식 (당월에 존재하는 데이터만 표시)
     // ═══════════════════════════════════════════════
     if (hasCompare && measureFields.length > 0) {
       const curMonth = date_end; // 당월(당기)
@@ -1945,58 +1945,77 @@ app.post('/api/builder/query', async (req, res) => {
       const prevLabel = compare_mom ? '전월' : '전년동기';
       const compareLabel = compare_mom ? '전월대비' : '전년대비';
 
-      // 기준 필드 SELECT/GROUP BY
-      const dimSelect = dimFields.map(d => `\`${d.col}\` AS \`${d.alias}\``).join(', ');
-      const dimGroupBy = dimFields.map(d => `\`${d.col}\``).join(', ');
+      console.log(`[Builder] 비교모드: curMonth=${curMonth}, prevMonth=${prevMonth}, dim=${dimFields.length}, measure=${measureFields.length}`);
 
-      // 수치 필드별 당월/전월/증감상태 컬럼 생성
-      const measureSelect = [];
-      for (const m of measureFields) {
+      // ── 전략: cur 서브쿼리 LEFT JOIN prev 서브쿼리 ──
+      // cur = 당월 데이터만 GROUP BY → 기준 행 (당월에 존재하는 조합만)
+      // prev = 전월 데이터만 GROUP BY → LEFT JOIN으로 매칭
+      // → 당월에 존재하는 조합만 결과에 나옴, 전월에만 있는 건 제외
+
+      const dimColsList = dimFields.map(d => `\`${d.col}\``);
+
+      // CALDAY를 서브쿼리 GROUP BY에 항상 포함 (일자별 구분)
+      const groupByCols = ['`CALDAY`', ...dimColsList];
+
+      // ── cur 서브쿼리 ──
+      const curSelectParts = ['`CALDAY`', ...dimColsList];
+      measureFields.forEach(m => {
+        curSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_cur\``);
+      });
+      const curParams = [curMonth];
+      const curUserWhere = buildUserConditions(curParams);
+      let curSql = `SELECT ${curSelectParts.join(', ')} FROM bw_profitability_data WHERE \`CALMONTH\` = ?${curUserWhere ? ' ' + curUserWhere : ''}`;
+      curSql += ` GROUP BY ${groupByCols.join(', ')}`;
+
+      // ── prev 서브쿼리 ──
+      const prevSelectParts = ['`CALDAY`', ...dimColsList];
+      measureFields.forEach(m => {
+        prevSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_prev\``);
+      });
+      const prevParams = [prevMonth];
+      const prevUserWhere = buildUserConditions(prevParams);
+      let prevSql = `SELECT ${prevSelectParts.join(', ')} FROM bw_profitability_data WHERE \`CALMONTH\` = ?${prevUserWhere ? ' ' + prevUserWhere : ''}`;
+      prevSql += ` GROUP BY ${groupByCols.join(', ')}`;
+
+      // ── 최종 SELECT 컬럼 ──
+      const outerSelectParts = [`cur.\`CALDAY\` AS \`달력일\``];
+
+      // dim 컬럼 (cur 기준)
+      dimFields.forEach(d => {
+        outerSelectParts.push(`cur.\`${d.col}\` AS \`${d.alias}\``);
+      });
+
+      // measure 컬럼: 당월값, 전월값, 증감상태
+      measureFields.forEach(m => {
         const curAlias = `${curLabel}${m.alias}`;
         const prevAlias = `${prevLabel}${m.alias}`;
-        // 수치 필드가 2개 이상이면 증감상태 컬럼명에 필드명 포함
         const diffAlias = measureFields.length > 1 ? `${compareLabel}(${m.alias})` : compareLabel;
-        measureSelect.push(
-          `SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) AS \`${curAlias}\``,
-          `SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) AS \`${prevAlias}\``,
+
+        outerSelectParts.push(`COALESCE(cur.\`${m.col}_cur\`, 0) AS \`${curAlias}\``);
+        outerSelectParts.push(`COALESCE(prev.\`${m.col}_prev\`, 0) AS \`${prevAlias}\``);
+        outerSelectParts.push(
           `CASE ` +
-            `WHEN SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) > SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) ` +
-              `THEN CONCAT('▲ ', FORMAT(ABS(SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) - SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END)), 0), ' 상승') ` +
-            `WHEN SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) < SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) ` +
-              `THEN CONCAT('▼ ', FORMAT(ABS(SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END) - SUM(CASE WHEN \`CALMONTH\` = ? THEN \`${m.col}\` ELSE 0 END)), 0), ' 하락') ` +
+            `WHEN COALESCE(cur.\`${m.col}_cur\`, 0) > COALESCE(prev.\`${m.col}_prev\`, 0) ` +
+              `THEN CONCAT('▲ ', FORMAT(ABS(COALESCE(cur.\`${m.col}_cur\`, 0) - COALESCE(prev.\`${m.col}_prev\`, 0)), 0), ' 상승') ` +
+            `WHEN COALESCE(cur.\`${m.col}_cur\`, 0) < COALESCE(prev.\`${m.col}_prev\`, 0) ` +
+              `THEN CONCAT('▼ ', FORMAT(ABS(COALESCE(cur.\`${m.col}_cur\`, 0) - COALESCE(prev.\`${m.col}_prev\`, 0)), 0), ' 하락') ` +
             `ELSE '— 변동없음' END AS \`${diffAlias}\``
         );
+      });
+
+      // ── JOIN 구성 ──
+      // dim이 있으면: LEFT JOIN ... ON dim 컬럼 매칭
+      // dim이 없으면: CROSS JOIN (전체 합계 1행끼리 결합, ON 절 불필요)
+      let joinClause;
+      if (dimFields.length > 0) {
+        const onCond = dimFields.map(d => `cur.\`${d.col}\` = prev.\`${d.col}\``).join(' AND ');
+        joinClause = `LEFT JOIN (${prevSql}) AS prev ON ${onCond}`;
+      } else {
+        // dim 없으면 각각 1행 → CROSS JOIN (또는 LEFT JOIN ... ON 1=1)
+        joinClause = `LEFT JOIN (${prevSql}) AS prev ON 1=1`;
       }
 
-      // ── 파라미터 구성 ──
-      // SQL ?순서: SELECT절(CASE WHEN ?) → WHERE절(IN ?) 이므로
-      // measure params를 먼저, WHERE params를 뒤에 배치해야 한다.
-
-      // 1) SELECT절 CASE WHEN 파라미터 (수치 필드별 10개씩)
-      const measureParams = [];
-      for (const m of measureFields) {
-        // 당월 SUM(1) + 전월 SUM(1) + CASE > 비교(cur,prev) + 차이(cur,prev) + CASE < 비교(cur,prev) + 차이(cur,prev)
-        measureParams.push(curMonth);   // 당월 SUM CASE WHEN
-        measureParams.push(prevMonth);  // 전월 SUM CASE WHEN
-        measureParams.push(curMonth, prevMonth, curMonth, prevMonth); // > 비교 + FORMAT 차이
-        measureParams.push(curMonth, prevMonth, curMonth, prevMonth); // < 비교 + FORMAT 차이
-      }
-
-      // 2) WHERE절 파라미터
-      const whereParams = [];
-      const whereMonth = `\`CALMONTH\` IN (?, ?)`;
-      whereParams.push(prevMonth, curMonth);
-      // 사용자 필터 조건
-      const userWhere = buildUserConditions(whereParams);
-
-      const selectAll = [
-        `'${curMonth}' AS \`달력연월\``,
-        ...(dimFields.length > 0 ? [dimSelect] : []),
-        ...measureSelect
-      ].join(', ');
-
-      sql = `SELECT ${selectAll} FROM bw_profitability_data WHERE ${whereMonth}${userWhere ? ' ' + userWhere : ''}`;
-      if (dimFields.length > 0) sql += ` GROUP BY ${dimGroupBy}`;
+      sql = `SELECT ${outerSelectParts.join(', ')} FROM (${curSql}) AS cur ${joinClause}`;
 
       // ORDER BY
       if (order_by) {
@@ -2005,8 +2024,11 @@ app.post('/api/builder/query', async (req, res) => {
       }
       sql += ` LIMIT ${safeLimit}`;
 
-      // 파라미터 조합: SELECT절(measure) → WHERE절 순서로 결합
-      finalParams = [...measureParams, ...whereParams];
+      // 파라미터 조합: cur서브쿼리 params + prev서브쿼리 params
+      finalParams = [...curParams, ...prevParams];
+
+      console.log(`[Builder] 비교모드 SQL: ${sql.substring(0, 200)}...`);
+      console.log(`[Builder] 비교모드 params: [${finalParams.join(', ')}]`);
 
     // ═══════════════════════════════════════════════
     // 일반 모드 (비교 없음): 기존 로직 + CALMONTH 항상 첫 컬럼
