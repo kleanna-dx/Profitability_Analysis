@@ -219,8 +219,8 @@ const METRIC_DICTIONARY = `
 - 판매장려금 = SUM(ZAMT002)
 - 순매출 = SUM(ZAMT003)  [또는 SUM(ZAMT001) - SUM(ZAMT002) - SUM(ZAMT004)]
 - 매출원가 = SUM(ZAMT034)
-- 매출총이익 = SUM(ZAMT035)
-- 매출총이익률 = SUM(ZAMT035) / NULLIF(SUM(ZAMT003),0) * 100
+- 매출총이익 = SUM(ZAMT003) - SUM(ZAMT034)  ★ [Metric 산식: 순매출 - 매출원가 계] (ZAMT035 단순 컬럼 대신 이 산식 사용!)
+- 매출총이익률 = (SUM(ZAMT003) - SUM(ZAMT034)) / NULLIF(SUM(ZAMT003),0) * 100
 - 판매관리비 = SUM(ZAMT036)
 - 영업이익 = SUM(ZAMT055)
 - 영업이익률 = SUM(ZAMT055) / NULLIF(SUM(ZAMT003),0) * 100
@@ -269,8 +269,13 @@ ZAMT049, ZAMT050, ZAMT051, ZAMT052, ZAMT053, ZAMT054, ZAMT055, ZAMT056,
 ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 
 ■ 컬럼명 선택 우선순위:
-1순위: 동의어 매칭 결과가 있으면 해당 컬럼을 최우선 사용
-2순위: 동의어 매칭이 없으면 위 허용 목록 + TABLE_SCHEMA 설명을 보고 가장 적합한 컬럼을 판단하여 사용
+1순위: 동의어 매칭 결과 중 [Metric 산식] 태그가 있으면 해당 산식을 최우선 사용 (단순 컬럼보다 항상 우선!)
+2순위: 동의어 매칭 결과 중 일반 컬럼 매핑이 있으면 사용
+3순위: 동의어 매칭이 없으면 위 허용 목록 + TABLE_SCHEMA 설명을 보고 가장 적합한 컬럼을 판단하여 사용
+
+★ Metric 산식 우선 규칙: 학습관리의 Metric에 계산 산식(formula)이 정의된 지표는 반드시 해당 산식을 사용하세요.
+  예) 매출총이익 → SUM(ZAMT035) ✗ → SUM(ZAMT003)-SUM(ZAMT034) ✓ (Metric 산식)
+  예) 매출총이익률 → (SUM(ZAMT003)-SUM(ZAMT034))/NULLIF(SUM(ZAMT003),0)*100 ✓
 
 ■ 절대 금지 — 컬럼명 창작/조합:
 - 위 허용 목록에 없는 컬럼명을 절대 만들지 마세요
@@ -389,6 +394,7 @@ chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(
  */
 async function matchSynonymsDirectly(query) {
   const matched = [];
+  let filtered = [];  // try 블록 밖에서도 접근 가능하도록 선언
   try {
     // 1. Ontology 동의어 매칭
     const [ontSyns] = await pool.query(
@@ -445,13 +451,25 @@ async function matchSynonymsDirectly(query) {
       }
     }
 
-    if (matched.length > 0) {
-      console.log(`[Synonym] 직접 매칭 ${matched.length}건: ${matched.map(m => `"${m.synonym}"→${m.column_name}`).join(', ')}`);
+    // 4. Metric 산식이 있는 항목은 같은 synonym의 ontology 단순 컬럼을 제거 (Metric 우선)
+    const metricSynonyms = new Set(matched.filter(m => m.source === 'metric').map(m => m.synonym));
+    filtered = matched.filter(m => {
+      if (m.source !== 'metric' && metricSynonyms.has(m.synonym)) {
+        console.log(`[Synonym] Metric 우선: "${m.synonym}" ontology(${m.column_name}) 제거 → Metric 산식 사용`);
+        return false;
+      }
+      return true;
+    });
+    // Metric을 앞쪽에 배치 (우선순위 높음)
+    filtered.sort((a, b) => (a.source === 'metric' ? -1 : 1) - (b.source === 'metric' ? -1 : 1));
+
+    if (filtered.length > 0) {
+      console.log(`[Synonym] 직접 매칭 ${filtered.length}건: ${filtered.map(m => `"${m.synonym}"→${m.column_name} [${m.source}]`).join(', ')}`);
     }
   } catch (e) {
     console.error('[Synonym] 직접 매칭 실패:', e.message);
   }
-  return matched;
+  return filtered;
 }
 
 /**
@@ -470,15 +488,54 @@ async function buildRAGSystemPrompt(query) {
   const synonymMatches = await matchSynonymsDirectly(query);
   let synonymContext = '';
   if (synonymMatches.length > 0) {
+    // Metric 산식 매칭과 일반 컬럼 매칭 분리
+    const metricMatches = synonymMatches.filter(m => m.source === 'metric');
+    const columnMatches = synonymMatches.filter(m => m.source !== 'metric');
+    
     synonymContext = '\n[★ 동의어 매칭 결과 - 최우선 적용! 아래 매핑을 반드시 SQL에 사용하세요]\n';
-    for (const m of synonymMatches) {
-      if (m.source === 'metric') {
-        synonymContext += `- 사용자가 말한 "${m.synonym}" → ${m.description} = ${m.column_name}\n`;
-      } else {
+    
+    if (metricMatches.length > 0) {
+      synonymContext += '\n🚨🚨🚨 [Metric 산식 — 반드시 아래 산식을 SQL에 그대로 사용! 다른 컬럼 대체 절대 금지!] 🚨🚨🚨\n';
+      for (const m of metricMatches) {
+        // Metric 산식에서 관련 단순 컬럼명 추출 (예: SUM(ZAMT003-ZAMT034) → ZAMT035 금지 안내)
+        const formulaMatch = m.column_name.match(/^(\w+)\((.+)\)$/);
+        synonymContext += `- "${m.synonym}" → SQL에 반드시 사용할 산식: ${m.column_name}\n`;
+        // TOTAL_XXX 패턴에서 단순 컬럼 금지 안내 추출
+        if (m.description) {
+          synonymContext += `  ⚠️ 주의: SUM(ZAMT035) 같은 단순 컬럼 사용 금지! 반드시 위 산식을 사용하세요.\n`;
+        }
+      }
+      synonymContext += '\n예시) 매출총이익 조회 시:\n';
+      synonymContext += '  ✗ 틀린 SQL: SELECT SUM(ZAMT035) AS 매출총이익  ← 사용 금지!\n';
+      synonymContext += '  ✓ 올바른 SQL: SELECT SUM(ZAMT003-ZAMT034) AS 매출총이익  ← 이것을 사용!\n';
+      synonymContext += '  ✓ 또는: SELECT SUM(ZAMT003)-SUM(ZAMT034) AS 매출총이익  ← 이것도 가능\n';
+    }
+    if (columnMatches.length > 0) {
+      synonymContext += '\n🔷 [컬럼 매핑]\n';
+      for (const m of columnMatches) {
         synonymContext += `- 사용자가 말한 "${m.synonym}" → 컬럼: ${m.column_name} (${m.data_type}) - ${m.description}\n`;
       }
     }
-    synonymContext += '위 매핑된 컬럼을 SQL의 SELECT, WHERE, GROUP BY 등에 반드시 사용하세요. 다른 컬럼으로 대체하지 마세요.\n';
+    synonymContext += '\n위 매핑된 컬럼/산식을 SQL의 SELECT, WHERE, GROUP BY 등에 반드시 사용하세요.\n';
+    synonymContext += '🚨 Metric 산식이 있는 항목은 해당 산식을 SQL에 그대로 포함하세요. 단순 컬럼(예: ZAMT035)으로 대체하면 0원 결과가 나옵니다!\n';
+  }
+
+  // ★ Metric 산식이 매칭된 컬럼 목록 수집 (RAG 컨텍스트에서 해당 단순 컬럼 제거용)
+  const metricReplacedColumns = new Set();
+  for (const m of synonymMatches.filter(x => x.source === 'metric')) {
+    // SUM(ZAMT003-ZAMT034) 에서 metric_code가 TOTAL_ZAMT035 → ZAMT035를 필터링 대상으로
+    try {
+      const [metRows] = await pool.query(
+        `SELECT metric_code FROM metric WHERE CONCAT(aggregation, '(', formula, ')') = ?`, [m.column_name]
+      );
+      for (const mr of metRows) {
+        const match = mr.metric_code.match(/^TOTAL_(\w+)$/);
+        if (match) metricReplacedColumns.add(match[1]); // e.g., ZAMT035
+      }
+    } catch(e) {}
+  }
+  if (metricReplacedColumns.size > 0) {
+    console.log(`[RAG] Metric 산식 대체 컬럼 (RAG에서 제외): ${[...metricReplacedColumns].join(', ')}`);
   }
 
   if (ragReady) {
@@ -493,6 +550,24 @@ async function buildRAGSystemPrompt(query) {
         codeMappingTopK: 5,
         ruleTopK: 5,
       });
+      // ★ Metric 산식이 있는 컬럼은 RAG 스키마에서 제거 (GPT가 단순 컬럼 선택하는 것 방지)
+      if (metricReplacedColumns.size > 0 && ragContext.schema) {
+        const before = ragContext.schema.length;
+        ragContext.schema = ragContext.schema.filter(s => {
+          const col = s.metadata?.column_name;
+          return !col || !metricReplacedColumns.has(col);
+        });
+        if (ragContext.ontology) {
+          ragContext.ontology = ragContext.ontology.filter(s => {
+            const col = s.metadata?.column_name;
+            return !col || !metricReplacedColumns.has(col);
+          });
+        }
+        const after = ragContext.schema.length;
+        if (before !== after) {
+          console.log(`[RAG] Metric 대체 컬럼 필터링: schema ${before} → ${after}개`);
+        }
+      }
       contextText = ragResultToPromptContext(ragContext);
       console.log(`[RAG] 프롬프트 컨텍스트 길이: ${contextText.length}자`);
     } catch (e) {
@@ -560,6 +635,41 @@ async function buildFallbackContext() {
 }
 
 // ============================================================
+// Helper: Metric 산식 자동 치환 (SUM(단순컬럼) → Metric 산식)
+// 학습 데이터 경로 + GPT 생성 경로 양쪽에서 재사용
+// ============================================================
+async function applyMetricFormulaReplacement(inputSql) {
+  if (!inputSql) return inputSql;
+  try {
+    const [metricRows] = await pool.query(
+      `SELECT metric_code, aggregation, formula FROM metric WHERE aggregation = 'SUM' AND (formula LIKE '%-%' OR formula LIKE '%+%')`
+    );
+    let result = inputSql;
+    for (const m of metricRows) {
+      const codeMatch = m.metric_code.match(/^TOTAL_(\w+)$/);
+      if (codeMatch) {
+        const rawCol = codeMatch[1]; // e.g., ZAMT035
+        const detectPattern = new RegExp(`SUM\\(${rawCol}\\)`, 'gi');
+        if (detectPattern.test(result)) {
+          // SUM(ZAMT035) → (SUM(ZAMT003)-SUM(ZAMT034))
+          const replacement = `(SUM(${m.formula.replace(/-/g, ')-SUM(').replace(/\+/g, ')+SUM(')}))`;
+          const replacePattern = new RegExp(`SUM\\(${rawCol}\\)`, 'gi');
+          const before = result;
+          result = result.replace(replacePattern, replacement);
+          if (before !== result) {
+            console.log(`[NLQ] Metric 자동 치환: SUM(${rawCol}) → ${replacement}`);
+          }
+        }
+      }
+    }
+    return result;
+  } catch (e) {
+    console.error('[NLQ] Metric 자동 치환 실패 (무시):', e.message);
+    return inputSql;
+  }
+}
+
+// ============================================================
 // API: 자연어 질의 실행
 // ============================================================
 app.post('/api/nlq', async (req, res) => {
@@ -594,6 +704,8 @@ app.post('/api/nlq', async (req, res) => {
 
     if (matchedSql) {
       // 학습 데이터 매칭 → AI 호출 없이 직접 사용
+      // ★ Metric 산식 자동 치환 (헬퍼 함수 사용)
+      matchedSql = await applyMetricFormulaReplacement(matchedSql);
       sql = matchedSql;
       explanation = '학습된 SQL을 사용합니다 (사용자 검증 완료).';
       ragInfo = { mode: 'learned', chunksUsed: 0, promptLength: 0, details: {} };
@@ -670,6 +782,8 @@ app.post('/api/nlq', async (req, res) => {
       }
 
       sql = parsed.sql;
+      // ★ GPT 생성 SQL에도 Metric 산식 자동 치환 적용 (GPT가 프롬프트를 무시하고 단순 컬럼 사용 시 안전장치)
+      sql = await applyMetricFormulaReplacement(sql);
       // answer는 1단계에서 무시 — SQL 실행 후 결과 기반으로 4-A에서 생성
       explanation = parsed.explanation;
       chartType = parsed.chartType;
