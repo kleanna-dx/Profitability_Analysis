@@ -189,7 +189,7 @@
         <h1 class="text-sm font-bold text-gray-800">
             <i class="fas fa-graduation-cap text-indigo-500 mr-1"></i>학습 관리
         </h1>
-        <span class="text-xs text-gray-400 ml-2">데이터 사전 (Ontology / Metric / JOIN)</span>
+        <span class="text-xs text-gray-400 ml-2">데이터 사전 (컬럼 / 계산지표 / 테이블 조인)</span>
         <div class="ml-auto flex items-center gap-2">
             <a href="/" class="btn btn-outline btn-sm" style="text-decoration:none;">
                 <i class="fas fa-comments"></i> 질의 화면
@@ -204,23 +204,23 @@
         <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5" id="statsArea">
             <div class="stat-card">
                 <div class="stat-icon" style="background:#eef2ff;color:#4f46e5;"><i class="fas fa-columns"></i></div>
-                <div><div class="stat-value" id="statOntology">-</div><div class="stat-label">Ontology 컬럼</div></div>
+                <div><div class="stat-value" id="statOntology">-</div><div class="stat-label">등록 컬럼</div></div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon" style="background:#f0fdf4;color:#16a34a;"><i class="fas fa-tags"></i></div>
-                <div><div class="stat-value" id="statOntSyn">-</div><div class="stat-label">Ontology 동의어</div></div>
+                <div><div class="stat-value" id="statOntSyn">-</div><div class="stat-label">컬럼 동의어</div></div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon" style="background:#fdf4ff;color:#a855f7;"><i class="fas fa-calculator"></i></div>
-                <div><div class="stat-value" id="statMetric">-</div><div class="stat-label">Metric 지표</div></div>
+                <div><div class="stat-value" id="statMetric">-</div><div class="stat-label">계산지표</div></div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon" style="background:#fffbeb;color:#f59e0b;"><i class="fas fa-language"></i></div>
-                <div><div class="stat-value" id="statMetSyn">-</div><div class="stat-label">Metric 동의어</div></div>
+                <div><div class="stat-value" id="statMetSyn">-</div><div class="stat-label">지표 동의어</div></div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon" style="background:#fef2f2;color:#ef4444;"><i class="fas fa-link"></i></div>
-                <div><div class="stat-value" id="statJoin">-</div><div class="stat-label">JOIN 조건</div></div>
+                <div><div class="stat-value" id="statJoin">-</div><div class="stat-label">조인 조건</div></div>
             </div>
 
         </div>
@@ -228,23 +228,23 @@
         <!-- Tabs -->
         <div class="tab-bar" id="tabBar">
             <button class="tab-btn active" data-tab="ontology" onclick="switchMainTab('ontology',this)">
-                <i class="fas fa-columns mr-1"></i>Ontology
+                <i class="fas fa-columns mr-1"></i>컬럼 관리
             </button>
             <button class="tab-btn" data-tab="metric" onclick="switchMainTab('metric',this)">
-                <i class="fas fa-calculator mr-1"></i>Metric
+                <i class="fas fa-calculator mr-1"></i>계산지표
             </button>
             <button class="tab-btn" data-tab="join" onclick="switchMainTab('join',this)">
-                <i class="fas fa-link mr-1"></i>JOIN
+                <i class="fas fa-link mr-1"></i>테이블 조인
             </button>
 
         </div>
 
-        <!-- Ontology Panel -->
+        <!-- 컬럼 관리 패널 -->
         <div id="panel_ontology" class="panel-content">
             <div class="card">
                 <div class="card-header">
                     <div class="flex items-center gap-3">
-                        <h2 class="text-sm font-bold text-gray-800">Ontology 컬럼 관리</h2>
+                        <h2 class="text-sm font-bold text-gray-800">컬럼 관리</h2>
                         <span class="badge badge-blue" id="ontologyCount">0개</span>
                     </div>
                     <div class="flex gap-2 flex-wrap">
@@ -265,11 +265,11 @@
                             <thead>
                                 <tr>
                                     <th style="width:40px;">#</th>
-                                    <th>Column</th>
-                                    <th>Table</th>
+                                    <th>컬럼명</th>
+                                    <th>테이블명</th>
                                     <th>설명</th>
                                     <th>데이터타입</th>
-                                    <th style="min-width:250px;">동의어(Synonyms)</th>
+                                    <th style="min-width:250px;">동의어</th>
                                     <th style="width:80px;">작업</th>
                                 </tr>
                             </thead>
@@ -280,12 +280,12 @@
             </div>
         </div>
 
-        <!-- Metric Panel -->
+        <!-- 계산지표 패널 -->
         <div id="panel_metric" class="panel-content" style="display:none;">
             <div class="card">
                 <div class="card-header">
                     <div class="flex items-center gap-3">
-                        <h2 class="text-sm font-bold text-gray-800">Metric 계산지표 관리</h2>
+                        <h2 class="text-sm font-bold text-gray-800">계산지표 관리</h2>
                         <span class="badge badge-purple" id="metricCount">0개</span>
                     </div>
                     <div class="flex gap-2">
@@ -300,12 +300,12 @@
                             <thead>
                                 <tr>
                                     <th style="width:40px;">#</th>
-                                    <th>Metric Code</th>
-                                    <th>Aggregation</th>
-                                    <th>Formula</th>
-                                    <th>Table</th>
+                                    <th>지표코드</th>
+                                    <th>집계방식</th>
+                                    <th>산식</th>
+                                    <th>테이블명</th>
                                     <th>설명</th>
-                                    <th style="min-width:200px;">동의어(Synonyms)</th>
+                                    <th style="min-width:200px;">동의어</th>
                                     <th style="width:80px;">작업</th>
                                 </tr>
                             </thead>
@@ -316,17 +316,17 @@
             </div>
         </div>
 
-        <!-- JOIN Panel -->
+        <!-- 테이블 조인 패널 -->
         <div id="panel_join" class="panel-content" style="display:none;">
             <div class="card">
                 <div class="card-header">
                     <div class="flex items-center gap-3">
-                        <h2 class="text-sm font-bold text-gray-800">JOIN 조건 관리</h2>
+                        <h2 class="text-sm font-bold text-gray-800">테이블 조인 관리</h2>
                         <span class="badge badge-orange" id="joinCount">0개</span>
                     </div>
                     <div class="flex gap-2">
                         <button class="btn btn-primary" onclick="openAddJoinModal()">
-                            <i class="fas fa-plus"></i> JOIN 추가
+                            <i class="fas fa-plus"></i> 조인 추가
                         </button>
                     </div>
                 </div>
@@ -336,12 +336,12 @@
                             <thead>
                                 <tr>
                                     <th style="width:40px;">#</th>
-                                    <th>Left Column</th>
-                                    <th>Left Table</th>
-                                    <th>Right Column</th>
-                                    <th>Right Table</th>
-                                    <th>Type</th>
-                                    <th>Operator</th>
+                                    <th>왼쪽 컬럼</th>
+                                    <th>왼쪽 테이블</th>
+                                    <th>오른쪽 컬럼</th>
+                                    <th>오른쪽 테이블</th>
+                                    <th>조인유형</th>
+                                    <th>연산자</th>
                                     <th>설명</th>
                                     <th style="width:80px;">작업</th>
                                 </tr>
@@ -357,14 +357,14 @@
     </div>
 </div>
 
-<!-- MODAL: Add/Edit Ontology -->
+<!-- 모달: 컬럼 추가/수정 -->
 <div id="ontologyModal" class="modal-overlay">
     <div class="modal">
         <h3 id="ontModalTitle">컬럼 추가</h3>
         <input type="hidden" id="ontEditId">
-        <label>Column Name *</label>
+        <label>컬럼명 *</label>
         <input type="text" id="ontColName" placeholder="예: PLANT">
-        <label>Table Name</label>
+        <label>테이블명</label>
         <input type="text" id="ontTableName" value="bw_profitability_data">
         <label>설명</label>
         <input type="text" id="ontDesc" placeholder="예: 플랜트 코드">
@@ -377,14 +377,14 @@
     </div>
 </div>
 
-<!-- MODAL: Add/Edit Metric -->
+<!-- 모달: 계산지표 추가/수정 -->
 <div id="metricModal" class="modal-overlay">
     <div class="modal">
         <h3 id="metModalTitle">지표 추가</h3>
         <input type="hidden" id="metEditId">
-        <label>Metric Code *</label>
+        <label>지표코드 *</label>
         <input type="text" id="metCode" placeholder="예: TOTAL_SALES">
-        <label>Aggregation</label>
+        <label>집계방식</label>
         <select id="metAgg">
             <option value="SUM">SUM</option>
             <option value="AVG">AVG</option>
@@ -393,9 +393,9 @@
             <option value="MIN">MIN</option>
             <option value="CALC">CALC (계산식)</option>
         </select>
-        <label>Formula *</label>
+        <label>산식 *</label>
         <input type="text" id="metFormula" placeholder="예: ZAMT001 또는 SUM(ZAMT001)/NULLIF(SUM(ZAMT003),0)*100">
-        <label>Table Name</label>
+        <label>테이블명</label>
         <input type="text" id="metTableName" value="bw_profitability_data">
         <label>설명</label>
         <input type="text" id="metDesc" placeholder="예: 총매출">
@@ -406,30 +406,30 @@
     </div>
 </div>
 
-<!-- MODAL: Add/Edit JOIN -->
+<!-- 모달: 테이블 조인 추가/수정 -->
 <div id="joinModal" class="modal-overlay">
     <div class="modal">
-        <h3 id="joinModalTitle">JOIN 추가</h3>
+        <h3 id="joinModalTitle">조인 추가</h3>
         <input type="hidden" id="joinEditId">
         <div class="grid grid-cols-2 gap-3">
             <div>
-                <label>Left Column *</label>
+                <label>왼쪽 컬럼 *</label>
                 <input type="text" id="joinLeftCol" placeholder="예: PLANT">
             </div>
             <div>
-                <label>Left Table *</label>
+                <label>왼쪽 테이블 *</label>
                 <input type="text" id="joinLeftTable" value="bw_profitability_data">
             </div>
             <div>
-                <label>Right Column *</label>
+                <label>오른쪽 컬럼 *</label>
                 <input type="text" id="joinRightCol" placeholder="예: PLANT">
             </div>
             <div>
-                <label>Right Table *</label>
+                <label>오른쪽 테이블 *</label>
                 <input type="text" id="joinRightTable" placeholder="예: plant_master">
             </div>
             <div>
-                <label>Join Type</label>
+                <label>조인 유형</label>
                 <select id="joinType">
                     <option value="INNER">INNER</option>
                     <option value="LEFT" selected>LEFT</option>
@@ -438,7 +438,7 @@
                 </select>
             </div>
             <div>
-                <label>Operator</label>
+                <label>연산자</label>
                 <select id="joinOp">
                     <option value="=">=</option>
                     <option value="!=">!=</option>
@@ -463,8 +463,8 @@
     <div class="modal modal-xl">
         <!-- Step 1: 파일 선택 -->
         <div id="excelStep1">
-            <h3><i class="fas fa-file-excel text-green-600 mr-2"></i>엑셀 업로드 - Ontology 일괄 등록</h3>
-            <p class="text-xs text-gray-500 mb-4">Column, Table, 설명, 데이터타입, 동의어(Synonyms) 컬럼이 포함된 엑셀 파일을 업로드하세요.</p>
+            <h3><i class="fas fa-file-excel text-green-600 mr-2"></i>엑셀 업로드 - 컬럼 일괄 등록</h3>
+            <p class="text-xs text-gray-500 mb-4">컬럼명, 테이블명, 설명, 데이터타입, 동의어 컬럼이 포함된 엑셀 파일을 업로드하세요.</p>
             <div id="uploadZone" class="upload-zone" onclick="document.getElementById('excelFileInput').click()">
                 <i class="fas fa-cloud-upload-alt"></i>
                 <p>클릭하여 엑셀 파일 선택 또는 여기에 드래그</p>
@@ -502,11 +502,11 @@
                             <th style="width:32px;"><input type="checkbox" id="checkAll" checked onchange="toggleAllRows(this)"></th>
                             <th>행</th>
                             <th>상태</th>
-                            <th>Column</th>
-                            <th>Table</th>
+                            <th>컬럼명</th>
+                            <th>테이블명</th>
                             <th>설명</th>
                             <th>데이터타입</th>
-                            <th>동의어(Synonyms)</th>
+                            <th>동의어</th>
                         </tr>
                     </thead>
                     <tbody id="previewBody"></tbody>
@@ -662,7 +662,7 @@ async function saveOntology() {
         description: document.getElementById('ontDesc').value.trim(),
         data_type: document.getElementById('ontDataType').value.trim(),
     };
-    if (!body.column_name) return alert('Column Name은 필수입니다.');
+    if (!body.column_name) return alert('컬럼명은 필수입니다.');
     try {
         if (editId) {
             await fetch('/api/ontology/' + editId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -708,7 +708,7 @@ function renderMetric() {
     const tbody = document.getElementById('metricBody');
     document.getElementById('metricCount').textContent = metricData.length + '개';
     if (metricData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 Metric이 없습니다.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 계산지표가 없습니다.</td></tr>';
         return;
     }
     tbody.innerHTML = metricData.map((m, i) => `
@@ -766,7 +766,7 @@ async function saveMetric() {
         table_name: document.getElementById('metTableName').value.trim(),
         description: document.getElementById('metDesc').value.trim(),
     };
-    if (!body.metric_code || !body.formula) return alert('Metric Code와 Formula는 필수입니다.');
+    if (!body.metric_code || !body.formula) return alert('지표코드와 산식은 필수입니다.');
     try {
         if (editId) {
             await fetch('/api/metric/' + editId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -838,7 +838,7 @@ function renderJoin() {
 }
 
 function openAddJoinModal() {
-    document.getElementById('joinModalTitle').textContent = 'JOIN 추가';
+    document.getElementById('joinModalTitle').textContent = '조인 추가';
     document.getElementById('joinEditId').value = '';
     document.getElementById('joinLeftCol').value = '';
     document.getElementById('joinLeftTable').value = 'bw_profitability_data';
@@ -852,7 +852,7 @@ function openAddJoinModal() {
 function editJoin(id) {
     const j = joinData.find(x => x.id === id);
     if (!j) return;
-    document.getElementById('joinModalTitle').textContent = 'JOIN 수정';
+    document.getElementById('joinModalTitle').textContent = '조인 수정';
     document.getElementById('joinEditId').value = id;
     document.getElementById('joinLeftCol').value = j.left_column;
     document.getElementById('joinLeftTable').value = j.left_table;
