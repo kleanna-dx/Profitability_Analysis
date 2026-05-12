@@ -246,11 +246,55 @@ let ragReady = false;  // RAG 인덱스 빌드 완료 여부
 const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문가입니다.
 사용자의 자연어 질문을 MariaDB SQL로 변환합니다.
 
-[★★★ 최우선 규칙 — 컬럼명 선택 우선순위 ★★★]
+[★★★ 최우선 규칙 — 컬럼명 사용 (절대 위반 금지) ★★★]
+
+■ 허용되는 컬럼명 — 아래 목록에 있는 컬럼만 SQL에 사용할 수 있습니다:
+SEQ, CALYEAR, CALMONTH, CALDAY, CO_AREA, CO_AREA_NM, PROFIT_CTR, PROFIT_CTR_NM,
+DIVISION, DIVISION_NM, PLANT, PLANT_NM, DISTR_CHAN, DISTR_CHAN_NM, ZDISTCHAN,
+ZORG_TEAM, SALES_OFF, SALES_OFF_NM, MATL_TYPE, MATL_TYPE_NM, MATL_GROUP, MATL_GROUP_NM,
+PRODH1, PRODH1_NM, PRODH2, PRODH2_NM, PRODH3, PRODH3_NM, PRODH4, PRODH4_NM,
+ZJPCODE, ZJPCODE_NM, ZBRAND, ZBRAND_NM, ZSBRAND, ZSBRAND_NM,
+BILL_TYPE, BILL_TYPE_NM, INCOTERMS, INCOTERMS_NM, CUST_GROUP, CUST_GROUP_NM,
+CUST_GRP1, CUST_GRP1_NM, COUNTRY, COUNTRY_NM, ZKUNN2, ZKUNN2_NM,
+CUSTOMER, CUSTOMER_NM, MATERIAL, MATERIAL_NM,
+ZBOXUNIT, ZBAGUNIT, ZUNIT, CURRENCY,
+ZQTY_BOX, ZQTY_BAG, ZQTY_KE,
+ZAMT001, ZAMT002, ZAMT003, ZAMT004, ZAMT005, ZAMT006, ZAMT007, ZAMT008,
+ZAMT009, ZAMT010, ZAMT011, ZAMT012, ZAMT013, ZAMT014, ZAMT015, ZAMT016,
+ZAMT017, ZAMT018, ZAMT019, ZAMT020, ZAMT021, ZAMT022, ZAMT023, ZAMT024,
+ZAMT025, ZAMT026, ZAMT027, ZAMT028, ZAMT029, ZAMT030, ZAMT031, ZAMT032,
+ZAMT033, ZAMT034, ZAMT035, ZAMT036, ZAMT037, ZAMT038, ZAMT039, ZAMT040,
+ZAMT041, ZAMT042, ZAMT043, ZAMT044, ZAMT045, ZAMT046, ZAMT047, ZAMT048,
+ZAMT049, ZAMT050, ZAMT051, ZAMT052, ZAMT053, ZAMT054, ZAMT055, ZAMT056,
+ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
+
+■ 컬럼명 선택 우선순위:
 1순위: 동의어 매칭 결과가 있으면 해당 컬럼을 최우선 사용
-2순위: 동의어 매칭이 없으면 아래 TABLE_SCHEMA의 컬럼명과 설명을 보고 가장 적합한 컬럼을 스스로 판단하여 사용
-- **단, TABLE_SCHEMA에 존재하지 않는 컬럼명을 창작하지 마세요!** (예: ZQTYBOX ✗ → ZQTY_BOX ✓, ZSALES ✗ → ZAMT001 ✓)
-- 언더스코어(_) 위치, 대소문자를 정확히 지켜서 TABLE_SCHEMA에 있는 그대로 사용하세요.
+2순위: 동의어 매칭이 없으면 위 허용 목록 + TABLE_SCHEMA 설명을 보고 가장 적합한 컬럼을 판단하여 사용
+
+■ 절대 금지 — 컬럼명 창작/조합:
+- 위 허용 목록에 없는 컬럼명을 절대 만들지 마세요
+- 컬럼명 일부를 합치거나 변형하지 마세요
+- 설명에 나오는 단어(BOX, BAG, KG, EA 등)를 컬럼명에 붙이지 마세요
+- 언더스코어(_) 위치, 대소문자를 정확히 지켜서 위 목록에 있는 그대로만 사용하세요
+
+■ 자주 틀리는 컬럼명 예시 (왼쪽 ✗ 금지 → 오른쪽 ✓ 정답):
+  ZQTYBOX ✗ → ZQTY_BOX ✓ (수량 BOX)
+  ZQTYBAG ✗ → ZQTY_BAG ✓ (수량 BAG)
+  ZQTYKE ✗ → ZQTY_KE ✓ (수량 KG/EA)
+  ZQTYKGEA ✗ → ZQTY_KE ✓ (KG/EA 수량은 ZQTY_KE임!)
+  ZQTY_KGEA ✗ → ZQTY_KE ✓
+  ZQTY_KG ✗ → ZQTY_KE ✓
+  ZQTY_EA ✗ → ZQTY_KE ✓
+  ZSALES ✗ → ZAMT001 ✓ (총매출)
+  ZREVENUE ✗ → ZAMT001 ✓
+  DISTR_CHAN_NAME ✗ → DISTR_CHAN_NM ✓
+  SALES_OFFICE ✗ → SALES_OFF ✓
+
+■ 내수/수출 비교 질문 처리법:
+- "내수", "수출", "유통경로" → DISTR_CHAN 또는 DISTR_CHAN_NM 컬럼 사용
+- DISTR_CHAN 값: 10=내수, 20=로칼, 30=직수출
+- 내수 vs 수출 매출 비교 → GROUP BY DISTR_CHAN_NM + SUM(ZAMT001) 사용
 
 [핵심 규칙]
 1. SELECT 문만 생성 (INSERT/UPDATE/DELETE/DROP 절대 금지)
@@ -661,30 +705,23 @@ app.post('/api/nlq', async (req, res) => {
         model: 'gpt-5-mini',
         messages: [
           {
-            role: 'system',
-            content: `당신은 데이터 조회 결과를 일반인에게 설명해주는 친절한 도우미입니다.
-조회된 실제 데이터를 보고, 사용자의 질문에 대한 답변을 1~2문장의 자연스러운 한국어로 작성하세요.
-
-반드시 지킬 규칙:
-- SQL, 컬럼명(CALMONTH, ZBRAND 등), 기술 용어는 절대 쓰지 마세요.
-- 조회된 데이터의 실제 값들을 구체적으로 언급하세요.
-- 금액은 억/만 단위로 읽기 쉽게 표현하세요.
-- 결과가 0행이면 "해당 조건에 맞는 데이터가 없습니다"라고 안내하세요.
-- 반드시 텍스트 답변만 출력하세요 (JSON 금지).`
-          },
-          {
             role: 'user',
-            content: `질문: ${query}\n\n조회 결과 (총 ${rows.length}행):\n${sampleText.substring(0, 1500)}`
+            content: `아래 데이터 조회 결과를 보고, 질문에 대한 답변을 1~2문장의 자연스러운 한국어로 작성해주세요.
+SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표현하세요.
+
+질문: ${query}
+결과 (${rows.length}행): ${sampleText.substring(0, 600)}`
           }
         ],
         temperature: 0.3,
-        max_tokens: 1000,
       });
       const rawAnswer = answerCompletion.choices[0].message.content;
+      const finishReason = answerCompletion.choices[0].finish_reason;
+      console.log(`[NLQ] Answer GPT raw (${finishReason}): "${rawAnswer}"`);
       if (rawAnswer && rawAnswer.trim()) {
         answer = rawAnswer.trim();
       }
-      console.log(`[NLQ] Answer 생성: "${answer}"`);
+      console.log(`[NLQ] Answer 최종: "${answer}"`);
     } catch (ansErr) {
       console.error('[NLQ] Answer 생성 실패:', ansErr.message);
     }
