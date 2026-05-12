@@ -256,7 +256,7 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 7. GROUP BY 시 반드시 집계 함수 사용
 8. 컬럼 alias는 한글, 사용자가 이해하기 쉬운 의미 있는 이름 사용
 9. 정렬: 금액 DESC, 코드 ASC
-10. NULL 방지: COALESCE 또는 IFNULL
+10. NULL 값 처리: 데이터가 없는 컬럼은 NULL 그대로 표시 (COALESCE/IFNULL로 '미상','Unknown' 등 문자열 치환 금지). 단, 금액/수량 집계에서 NULL→0 변환은 허용
 11. _NM 명칭 컬럼 활용: 코드 컬럼 옆에 대응하는 _NM 컬럼이 있으면 함께 SELECT (CASE WHEN 불필요)
 12. 코드매핑 컬럼은 GROUP BY 코드컬럼 + _NM 컬럼 함께 SELECT
 13. 명칭으로 질문 시 코드값으로 WHERE
