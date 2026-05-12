@@ -2004,16 +2004,15 @@ app.post('/api/builder/query', async (req, res) => {
       });
 
       // ── JOIN 구성 ──
-      // dim이 있으면: LEFT JOIN ... ON dim 컬럼 매칭
-      // dim이 없으면: CROSS JOIN (전체 합계 1행끼리 결합, ON 절 불필요)
+      // CALDAY는 항상 JOIN 조건에 포함 (일자별 매칭 필수)
+      // dim이 있으면: LEFT JOIN ... ON CALDAY + dim 컬럼 매칭
+      // dim이 없으면: LEFT JOIN ... ON CALDAY만 매칭
       let joinClause;
+      const joinConds = ['cur.`CALDAY` = prev.`CALDAY`'];
       if (dimFields.length > 0) {
-        const onCond = dimFields.map(d => `cur.\`${d.col}\` = prev.\`${d.col}\``).join(' AND ');
-        joinClause = `LEFT JOIN (${prevSql}) AS prev ON ${onCond}`;
-      } else {
-        // dim 없으면 각각 1행 → CROSS JOIN (또는 LEFT JOIN ... ON 1=1)
-        joinClause = `LEFT JOIN (${prevSql}) AS prev ON 1=1`;
+        dimFields.forEach(d => joinConds.push(`cur.\`${d.col}\` = prev.\`${d.col}\``));
       }
+      joinClause = `LEFT JOIN (${prevSql}) AS prev ON ${joinConds.join(' AND ')}`;
 
       sql = `SELECT ${outerSelectParts.join(', ')} FROM (${curSql}) AS cur ${joinClause}`;
 
@@ -2031,13 +2030,13 @@ app.post('/api/builder/query', async (req, res) => {
       console.log(`[Builder] 비교모드 params: [${finalParams.join(', ')}]`);
 
     // ═══════════════════════════════════════════════
-    // 일반 모드 (비교 없음): 기존 로직 + CALMONTH 항상 첫 컬럼
+    // 일반 모드 (비교 없음): 기존 로직 + CALDAY 항상 첫 컬럼
     // ═══════════════════════════════════════════════
     } else {
       const selectParts = [];
-      // CALMONTH 항상 첫 컬럼 자동 포함
-      if (!userFieldCols.includes('CALMONTH')) {
-        selectParts.push('`CALMONTH` AS `달력연월`');
+      // CALDAY 항상 첫 컬럼 자동 포함 (달력일)
+      if (!userFieldCols.includes('CALDAY')) {
+        selectParts.push('`CALDAY` AS `달력일`');
       }
       for (const f of fields) {
         const col = f.column;
@@ -2065,13 +2064,15 @@ app.post('/api/builder/query', async (req, res) => {
 
       // GROUP BY
       const groupParts = [];
-      if (!userFieldCols.includes('CALMONTH') && group_by && group_by.length > 0) {
-        groupParts.push('`CALMONTH`');
+      if (!userFieldCols.includes('CALDAY') && group_by && group_by.length > 0) {
+        groupParts.push('`CALDAY`');
       }
       if (group_by && group_by.length > 0) {
         for (const g of group_by) {
-          // CALMONTH 중복 방지 (이미 자동 추가된 경우 스킵)
-          if (g === 'CALMONTH' && groupParts.includes('`CALMONTH`')) continue;
+          // CALDAY 중복 방지 (이미 자동 추가된 경우 스킵)
+          if (g === 'CALDAY' && groupParts.includes('`CALDAY`')) continue;
+          // CALMONTH는 GROUP BY에서 제외 (CALDAY로 대체)
+          if (g === 'CALMONTH') continue;
           if (validCols.has(g)) groupParts.push(`\`${g}\``);
         }
       }
