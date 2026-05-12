@@ -393,7 +393,18 @@
             font-size: 1.2rem; font-weight: 700; color: #a5b4fc; padding: 0 2px;
         }
         .compare-buttons {
-            display: flex; align-items: center; gap: 8px; margin-left: 8px;
+            display: flex; align-items: flex-end; gap: 8px; margin-left: 8px;
+        }
+        .compare-btn-wrap {
+            display: flex; flex-direction: column; align-items: center; gap: 2px;
+        }
+        .compare-selected-label {
+            font-size: 0.65rem; color: #94a3b8; font-weight: 600;
+            opacity: 0; transition: opacity 0.2s; pointer-events: none;
+            height: 14px; line-height: 14px;
+        }
+        .compare-selected-label.visible {
+            opacity: 1;
         }
         .compare-btn {
             padding: 7px 16px; border-radius: 10px; font-size: 0.8rem; font-weight: 700;
@@ -526,12 +537,18 @@
                         <select id="dateEndMonth"></select>
                     </div>
                     <div class="compare-buttons" id="compareButtons">
-                        <button class="compare-btn yoy" id="btnYoY" onclick="toggleCompare('yoy')" title="전년 동기 대비 비교 컬럼 추가">
-                            <i class="fas fa-chart-line" style="margin-right:4px;"></i>전년대비
-                        </button>
-                        <button class="compare-btn mom" id="btnMoM" onclick="toggleCompare('mom')" title="전월 대비 비교 컬럼 추가">
-                            <i class="fas fa-exchange-alt" style="margin-right:4px;"></i>전월대비
-                        </button>
+                        <div class="compare-btn-wrap">
+                            <span class="compare-selected-label" id="labelYoY">✓ 선택됨</span>
+                            <button class="compare-btn yoy" id="btnYoY" onclick="toggleCompare('yoy')" title="전년 동기 대비 비교 컬럼 추가">
+                                <i class="fas fa-chart-line" style="margin-right:4px;"></i>전년대비
+                            </button>
+                        </div>
+                        <div class="compare-btn-wrap">
+                            <span class="compare-selected-label" id="labelMoM">✓ 선택됨</span>
+                            <button class="compare-btn mom" id="btnMoM" onclick="toggleCompare('mom')" title="전월 대비 비교 컬럼 추가">
+                                <i class="fas fa-exchange-alt" style="margin-right:4px;"></i>전월대비
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div class="date-info-text" id="dateInfoText">
@@ -806,15 +823,20 @@ function onDateChange() {
 function updateCompareButtons() {
     const same = isSameMonth();
     const momBtn = document.getElementById('btnMoM');
+    const momWrap = momBtn.closest('.compare-btn-wrap');
+    const momLabel = document.getElementById('labelMoM');
     // 동일 년월: 전년대비+전월대비 모두 표시
     // 다른 년월: 전년대비만 표시, 전월대비 숨김 + 비활성
     if (same) {
-        momBtn.style.display = '';
+        momWrap.style.display = '';
     } else {
-        momBtn.style.display = 'none';
+        momWrap.style.display = 'none';
         compareMoM = false;
         momBtn.classList.remove('active');
+        momLabel.classList.remove('visible');
     }
+    // YoY 라벨도 동기화
+    document.getElementById('labelYoY').classList.toggle('visible', compareYoY);
     // 안내 텍스트 업데이트
     const r = getDateRange();
     const infoEl = document.getElementById('dateInfoText');
@@ -847,6 +869,8 @@ function toggleCompare(type) {
     }
     document.getElementById('btnYoY').classList.toggle('active', compareYoY);
     document.getElementById('btnMoM').classList.toggle('active', compareMoM);
+    document.getElementById('labelYoY').classList.toggle('visible', compareYoY);
+    document.getElementById('labelMoM').classList.toggle('visible', compareMoM);
 }
 
 // ─── Drag & Drop ─────────────────────────────
