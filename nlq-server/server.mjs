@@ -1820,9 +1820,9 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
 // POST /api/builder/query - 쿼리 빌더 실행
 app.post('/api/builder/query', async (req, res) => {
   const { fields, conditions, group_by, order_by, order_dir, limit: limitStr, prompt,
-          date_start, date_end, compare_yoy, compare_mom } = req.body;
+          date_start, date_end, compare_yoy, compare_mom, compare_dims } = req.body;
 
-  console.log(`[Builder] 요청: fields=${fields?.length}, compare_mom=${compare_mom}, compare_yoy=${compare_yoy}, date=${date_start}~${date_end}`);
+  console.log(`[Builder] 요청: fields=${fields?.length}, compare_mom=${compare_mom}, compare_yoy=${compare_yoy}, date=${date_start}~${date_end}, compare_dims=${JSON.stringify(compare_dims)}`);
 
   if (!fields || fields.length === 0) {
     return res.status(400).json({ error: '조회할 필드를 하나 이상 선택해주세요.' });
@@ -1948,15 +1948,25 @@ app.post('/api/builder/query', async (req, res) => {
       console.log(`[Builder] 비교모드: curMonth=${curMonth}, prevMonth=${prevMonth}, dim=${dimFields.length}, measure=${measureFields.length}`);
 
       // ── 전략: cur 서브쿼리 LEFT JOIN prev 서브쿼리 ──
-      // cur = 당월 데이터만 GROUP BY → 기준 행 (당월에 존재하는 조합만)
-      // prev = 전월 데이터만 GROUP BY → LEFT JOIN으로 매칭
-      // → 당월에 존재하는 조합만 결과에 나옴, 전월에만 있는 건 제외
+      // cur = 당월 데이터만 GROUP BY (모든 dim) → 기준 행
+      // prev = 전월 데이터만 GROUP BY (compare_dims만) → LEFT JOIN으로 매칭
+      // → 비교 기준(compare_dims)만으로 매칭, 나머지 dim은 조회만
 
-      const dimColsList = dimFields.map(d => `\`${d.col}\``);
+      // compare_dims: 프론트엔드에서 선택한 비교 기준 DIM (없으면 전체 dim 사용)
+      const compareDimSet = new Set(Array.isArray(compare_dims) ? compare_dims.filter(d => validCols.has(d)) : []);
+      // 비교 기준 dim 필드 (JOIN 조건에 사용)
+      const joinDimFields = compareDimSet.size > 0
+        ? dimFields.filter(d => compareDimSet.has(d.col))
+        : dimFields;  // compare_dims 미지정 시 전체 dim 사용 (하위 호환)
 
-      // ── cur 서브쿼리 ── (CALMONTH 기준 월 전체 합산)
-      const curGroupByCols = [...dimColsList];
-      const curSelectParts = [...dimColsList];
+      const allDimColsList = dimFields.map(d => `\`${d.col}\``);
+      const joinDimColsList = joinDimFields.map(d => `\`${d.col}\``);
+
+      console.log(`[Builder] 비교기준 DIM: [${joinDimFields.map(d=>d.col).join(',')}] (전체 DIM: [${dimFields.map(d=>d.col).join(',')}])`);
+
+      // ── cur 서브쿼리 ── (모든 dim으로 GROUP BY — 조회 세분화)
+      const curGroupByCols = [...allDimColsList];
+      const curSelectParts = [...allDimColsList];
       measureFields.forEach(m => {
         curSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_cur\``);
       });
@@ -1967,9 +1977,9 @@ app.post('/api/builder/query', async (req, res) => {
         curSql += ` GROUP BY ${curGroupByCols.join(', ')}`;
       }
 
-      // ── prev 서브쿼리 ── (CALMONTH 기준 월 전체 합산)
-      const prevGroupByCols = [...dimColsList];
-      const prevSelectParts = [...dimColsList];
+      // ── prev 서브쿼리 ── (비교기준 dim만으로 GROUP BY — 매칭용 합산)
+      const prevGroupByCols = [...joinDimColsList];
+      const prevSelectParts = [...joinDimColsList];
       measureFields.forEach(m => {
         prevSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_prev\``);
       });
@@ -1997,8 +2007,10 @@ app.post('/api/builder/query', async (req, res) => {
 
         outerSelectParts.push(`COALESCE(cur.\`${m.col}_cur\`, 0) AS \`${curAlias}\``);
         outerSelectParts.push(`COALESCE(prev.\`${m.col}_prev\`, 0) AS \`${prevAlias}\``);
+        // 전월값 0일 때 '🆕 신규' 표시, 아니면 기존 증감 표시
         outerSelectParts.push(
           `CASE ` +
+            `WHEN prev.\`${m.col}_prev\` IS NULL THEN '🆕 신규(${prevLabel} 데이터 없음)' ` +
             `WHEN COALESCE(cur.\`${m.col}_cur\`, 0) > COALESCE(prev.\`${m.col}_prev\`, 0) ` +
               `THEN CONCAT('▲ ', FORMAT(ABS(COALESCE(cur.\`${m.col}_cur\`, 0) - COALESCE(prev.\`${m.col}_prev\`, 0)), 0), ' 상승') ` +
             `WHEN COALESCE(cur.\`${m.col}_cur\`, 0) < COALESCE(prev.\`${m.col}_prev\`, 0) ` +
@@ -2008,12 +2020,12 @@ app.post('/api/builder/query', async (req, res) => {
       });
 
       // ── JOIN 구성 ──
-      // CALMONTH 기준 월단위 비교: dim 컬럼만으로 JOIN
-      // dim이 있으면: LEFT JOIN ... ON dim 컬럼 매칭
-      // dim이 없으면: LEFT JOIN ... ON 1=1 (각각 합계 1행끼리 결합)
+      // 비교기준 dim(joinDimFields)만으로 매칭
+      // 비교기준이 있으면: LEFT JOIN ... ON 비교기준 dim 매칭
+      // 비교기준이 없으면: LEFT JOIN ... ON 1=1 (전체 합계끼리 결합)
       let joinClause;
-      if (dimFields.length > 0) {
-        const onCond = dimFields.map(d => `cur.\`${d.col}\` = prev.\`${d.col}\``).join(' AND ');
+      if (joinDimFields.length > 0) {
+        const onCond = joinDimFields.map(d => `cur.\`${d.col}\` = prev.\`${d.col}\``).join(' AND ');
         joinClause = `LEFT JOIN (${prevSql}) AS prev ON ${onCond}`;
       } else {
         joinClause = `LEFT JOIN (${prevSql}) AS prev ON 1=1`;
@@ -2031,7 +2043,7 @@ app.post('/api/builder/query', async (req, res) => {
       // 파라미터 조합: cur서브쿼리 params + prev서브쿼리 params
       finalParams = [...curParams, ...prevParams];
 
-      console.log(`[Builder] 비교모드 SQL: ${sql.substring(0, 200)}...`);
+      console.log(`[Builder] 비교모드 SQL: ${sql.substring(0, 300)}...`);
       console.log(`[Builder] 비교모드 params: [${finalParams.join(', ')}]`);
 
     // ═══════════════════════════════════════════════
@@ -2155,7 +2167,27 @@ app.post('/api/builder/query', async (req, res) => {
     saveBuilderHistory(fields, conditions, group_by, order_by, order_dir, limitStr, prompt, sql, clean.length, 0, 'SUCCESS', null)
       .catch(e => console.error('[Builder History] 저장 실패:', e.message));
 
-    res.json({ success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart });
+    // 비교모드일 때 compare_info 포함
+    const responseObj = { success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart };
+    if (hasCompare && measureFields.length > 0) {
+      // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
+      const allDimAliases = fields.filter(f => {
+        const a = f.aggregate;
+        return (!a || a === '') && !['CALMONTH', 'CALDAY'].includes(f.column);
+      }).map(f => f.alias || f.column);
+      const compareDimAliases = (Array.isArray(compare_dims) ? compare_dims : [])
+        .filter(d => validCols.has(d))
+        .map(d => {
+          const fld = fields.find(f => f.column === d);
+          return fld ? (fld.alias || d) : d;
+        });
+      responseObj.compare_info = {
+        compare_dims: compareDimAliases.length > 0 ? compareDimAliases : allDimAliases,
+        all_dims: allDimAliases,
+        mode: compare_mom ? '전월대비' : '전년대비',
+      };
+    }
+    res.json(responseObj);
   } catch (err) {
     console.error('[Builder] query error:', err.message);
     // 실패 이력도 저장

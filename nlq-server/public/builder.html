@@ -429,6 +429,51 @@
         }
         .date-info-text i { margin-right: 4px; }
 
+        /* ===== Compare Dim Selector ===== */
+        .compare-dim-panel {
+            display: none; margin-top: 12px; padding: 14px 18px;
+            background: linear-gradient(135deg, #fefce8 0%, #fef9c3 100%);
+            border: 1.5px solid #fde68a; border-radius: 12px;
+            animation: fadeSlideIn 0.25s ease;
+        }
+        .compare-dim-panel.active { display: block; }
+        @keyframes fadeSlideIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+        .compare-dim-header {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+            font-size: 0.82rem; font-weight: 700; color: #92400e;
+        }
+        .compare-dim-header .badge {
+            font-size: 0.65rem; padding: 2px 8px; border-radius: 8px;
+            background: #fef08a; color: #854d0e; font-weight: 700;
+        }
+        .compare-dim-list { display: flex; flex-wrap: wrap; gap: 8px; }
+        .compare-dim-chip {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 6px 14px; border-radius: 20px; font-size: 0.78rem; font-weight: 600;
+            cursor: pointer; transition: all 0.2s; user-select: none;
+            border: 1.5px solid #d1d5db; background: white; color: #6b7280;
+        }
+        .compare-dim-chip:hover { border-color: #f59e0b; color: #92400e; }
+        .compare-dim-chip.checked {
+            background: #f59e0b; color: white; border-color: #f59e0b;
+            box-shadow: 0 2px 8px rgba(245,158,11,0.3);
+        }
+        .compare-dim-chip .check-icon { font-size: 0.7rem; }
+        .compare-dim-hint {
+            font-size: 0.72rem; color: #a16207; margin-top: 8px; line-height: 1.5;
+        }
+        .compare-dim-hint i { margin-right: 4px; }
+        .compare-result-banner {
+            padding: 10px 16px; border-radius: 10px; font-size: 0.8rem;
+            margin-bottom: 12px; display: none;
+            background: #fffbeb; border: 1.5px solid #fde68a; color: #92400e;
+        }
+        .compare-result-banner.active { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .compare-result-banner .tag {
+            display: inline-block; padding: 2px 10px; border-radius: 12px;
+            background: #f59e0b; color: white; font-size: 0.72rem; font-weight: 700;
+        }
+
         @media (max-width:900px) {
             .builder-layout { grid-template-columns:1fr; }
             .field-panel { max-height:300px; position:static; }
@@ -557,6 +602,21 @@
                 </div>
                 <div class="date-info-text" id="dateInfoText">
                     <i class="fas fa-info-circle"></i> 동일 년월 선택 시 전년대비·전월대비 비교가 가능합니다.
+                </div>
+                <!-- 비교 기준 DIM 선택 패널 -->
+                <div class="compare-dim-panel" id="compareDimPanel">
+                    <div class="compare-dim-header">
+                        <i class="fas fa-key"></i> 비교 기준 필드 선택
+                        <span class="badge" id="compareDimCountBadge">0개</span>
+                    </div>
+                    <div class="compare-dim-list" id="compareDimList">
+                        <span style="font-size:0.78rem;color:#a16207;">조회 필드에 차원 필드를 추가하면 여기에 표시됩니다.</span>
+                    </div>
+                    <div class="compare-dim-hint">
+                        <i class="fas fa-lightbulb"></i>
+                        체크된 필드만 당월/전월 매칭에 사용됩니다. 나머지는 조회만 되고 비교 조건에는 포함되지 않습니다.<br>
+                        <strong>권장:</strong> 자재명, 사업부, 손익센터 등 월별 변동이 적은 필드를 기준으로 선택하세요.
+                    </div>
                 </div>
             </div>
 
@@ -704,7 +764,10 @@ let lastResultRows = [];
 // 날짜 조건 상태
 let compareYoY = false;
 let compareMoM = false;
+let compareDimSelections = {};  // { columnName: true/false } 비교기준 DIM 선택 상태
 const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 필터에서 제외할 날짜 필드
+// 권장 비교기준 DIM (월별 변동이 적은 필드)
+const RECOMMENDED_COMPARE_DIMS = ['MATERIAL_DESC','MATERIAL','DIVISION','PROFIT_CTR','MATL_GROUP','MATL_TYPE'];
 
 const CATEGORY_NAMES = {
     period: '기간', org: '조직/사업부', product: '자재/제품',
@@ -878,6 +941,8 @@ function toggleCompare(type) {
 
     // 비교 모드 안내 메시지 업데이트
     updateCompareInfoBanner();
+    // 비교 기준 DIM 패널 표시/숨김
+    updateCompareDimPanel();
 }
 
 function updateCompareInfoBanner() {
@@ -902,6 +967,65 @@ function updateCompareInfoBanner() {
     } else {
         banner.style.display = 'none';
     }
+}
+
+// ─── Compare Dim Panel ──────────────────────
+function updateCompareDimPanel() {
+    const panel = document.getElementById('compareDimPanel');
+    const listEl = document.getElementById('compareDimList');
+    const badgeEl = document.getElementById('compareDimCountBadge');
+    const isCompareActive = compareYoY || compareMoM;
+
+    if (!isCompareActive) {
+        panel.classList.remove('active');
+        return;
+    }
+
+    // 현재 조회 필드 중 dim 필드(aggregate가 없는 비날짜 필드) 추출
+    const dimFields = selectedFields.filter(f => !f.aggregate && !DATE_FIELDS.includes(f.column));
+
+    if (dimFields.length === 0) {
+        panel.classList.add('active');
+        listEl.innerHTML = '<span style="font-size:0.78rem;color:#a16207;">조회 필드에 차원 필드(자재명, 사업부 등)를 추가하면 여기에 표시됩니다.</span>';
+        badgeEl.textContent = '0개';
+        return;
+    }
+
+    panel.classList.add('active');
+
+    // 기존 선택 상태에 없는 새 dim은 권장 목록이면 자동 체크
+    dimFields.forEach(f => {
+        if (!(f.column in compareDimSelections)) {
+            compareDimSelections[f.column] = RECOMMENDED_COMPARE_DIMS.includes(f.column);
+        }
+    });
+    // 삭제된 필드 정리
+    const currentDimCols = new Set(dimFields.map(f => f.column));
+    Object.keys(compareDimSelections).forEach(k => {
+        if (!currentDimCols.has(k)) delete compareDimSelections[k];
+    });
+
+    // 체크박스 칩 렌더링
+    let html = '';
+    dimFields.forEach(f => {
+        const checked = compareDimSelections[f.column];
+        const isRecommended = RECOMMENDED_COMPARE_DIMS.includes(f.column);
+        const label = f.alias || f.column;
+        const recBadge = isRecommended ? ' <span style="font-size:0.6rem;color:#d97706;">★권장</span>' : '';
+        html += `<div class="compare-dim-chip ${checked ? 'checked' : ''}" onclick="toggleCompareDim('${f.column}')">
+            <span class="check-icon">${checked ? '<i class="fas fa-check-circle"></i>' : '<i class="far fa-circle"></i>'}</span>
+            ${label}${recBadge}
+        </div>`;
+    });
+    listEl.innerHTML = html;
+
+    const checkedCount = Object.values(compareDimSelections).filter(v => v).length;
+    badgeEl.textContent = `${checkedCount}개`;
+}
+
+function toggleCompareDim(colName) {
+    compareDimSelections[colName] = !compareDimSelections[colName];
+    updateCompareDimPanel();
 }
 
 // ─── Drag & Drop ─────────────────────────────
@@ -949,18 +1073,22 @@ function addField(colName) {
     selectedFields.push({ column: colName, alias: col.label, aggregate: '', type: col.type });
     renderSelectedFields();
     updateOrderByOptions();
+    updateCompareDimPanel();
 }
 
 function removeField(idx) {
     selectedFields.splice(idx, 1);
     renderSelectedFields();
     updateOrderByOptions();
+    updateCompareDimPanel();
 }
 
 function clearFields() {
     selectedFields = [];
+    compareDimSelections = {};
     renderSelectedFields();
     updateOrderByOptions();
+    updateCompareDimPanel();
 }
 
 function setAggregate(idx, agg) {
@@ -968,6 +1096,7 @@ function setAggregate(idx, agg) {
     const col = allColumns.find(c => c.name === selectedFields[idx].column);
     selectedFields[idx].alias = agg ? `${agg}_${col ? col.label : selectedFields[idx].column}` : (col ? col.label : selectedFields[idx].column);
     updateOrderByOptions();
+    updateCompareDimPanel();
 }
 
 // ─── Selected Field Mouse-based Drag & Drop Reorder ─────
@@ -1261,6 +1390,9 @@ async function executeQuery() {
         date_end: dateRange.end,
         compare_yoy: compareYoY,
         compare_mom: compareMoM,
+        compare_dims: (compareYoY || compareMoM)
+            ? Object.keys(compareDimSelections).filter(k => compareDimSelections[k])
+            : [],
     };
 
     try {
@@ -1316,6 +1448,31 @@ function displayResults(data) {
     document.getElementById('resultInfoChip').textContent = `${data.row_count.toLocaleString()}행 × ${data.columns.length}컬럼 로드 완료`;
     document.getElementById('resultInfo').textContent = '조회 완료';
     document.getElementById('rowCount').textContent = `${data.row_count.toLocaleString()}건`;
+
+    // 비교기준 정보 배너 표시
+    let crBanner = document.getElementById('compareResultBanner');
+    if (!crBanner) {
+        crBanner = document.createElement('div');
+        crBanner.id = 'compareResultBanner';
+        crBanner.className = 'compare-result-banner';
+        const resultsSection = document.getElementById('resultsSection');
+        resultsSection.insertBefore(crBanner, resultsSection.firstChild);
+    }
+    if (data.compare_info) {
+        const ci = data.compare_info;
+        const dimTags = (ci.compare_dims || []).map(d => `<span class="tag">${d}</span>`).join(' ');
+        const allDimTags = (ci.all_dims || []).map(d => {
+            const isKey = (ci.compare_dims || []).includes(d);
+            return isKey ? `<span class="tag">${d}</span>` : `<span style="padding:2px 10px;border-radius:12px;background:#e5e7eb;color:#6b7280;font-size:0.72rem;font-weight:600;">${d}</span>`;
+        }).join(' ');
+        crBanner.innerHTML = `<i class="fas fa-key" style="color:#f59e0b;"></i>
+            <strong>비교 기준:</strong> ${dimTags || '<span style="color:#94a3b8;">없음 (전체 합계 비교)</span>'}
+            <span style="margin-left:8px;color:#a16207;font-size:0.75rem;">| 전체 조회 DIM: ${allDimTags || '없음'}</span>`;
+        crBanner.classList.add('active');
+    } else {
+        crBanner.classList.remove('active');
+    }
+
     renderTable(data.columns, data.rows);
     renderChart(data.chart, data.columns, data.rows);
     document.getElementById('resultsSection').classList.add('active');
