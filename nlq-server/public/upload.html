@@ -208,12 +208,12 @@
                     <i class="fas fa-file-excel"></i>
                 </div>
                 <p class="text-lg font-semibold text-gray-700 mb-2">엑셀 파일을 드래그하거나 클릭하여 선택</p>
-                <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx, .xls, .xlsb, .csv (최대 300MB)</p>
+                <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx (최대 300MB)</p>
                 <div class="inline-flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 px-4 py-2 rounded-lg text-sm font-medium">
                     <i class="fas fa-folder-open"></i> 파일 선택
                 </div>
             </div>
-            <input type="file" id="fileInput" accept=".xlsx,.xls,.xlsb,.csv" style="display:none" onchange="handleFileSelect(event)">
+            <input type="file" id="fileInput" accept=".xlsx" style="display:none" onchange="handleFileSelect(event)">
 
             <!-- File Format Guide -->
             <div class="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-12" style="border-radius:12px;">
@@ -373,7 +373,7 @@
         </div>
 
         <!-- Result Stats Grid -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5" id="resultStats">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5" style="grid-auto-rows:auto;" id="resultStats">
             <!-- filled dynamically -->
         </div>
 
@@ -506,8 +506,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 120000) {
 // ===== Upload & Preview =====
 async function uploadFile(file) {
     const ext = file.name.split('.').pop().toLowerCase();
-    if (!['xlsx', 'xls', 'xlsb', 'csv'].includes(ext)) {
-        alert('지원하지 않는 파일 형식입니다. (xlsx, xls, xlsb, csv만 지원)');
+    if (ext !== 'xlsx') {
+        alert('지원하지 않는 파일 형식입니다. (.xlsx 파일만 지원)');
         return;
     }
     if (file.size > 300 * 1024 * 1024) {
@@ -547,7 +547,7 @@ function resetUploadZone() {
     uploadZone.innerHTML = `
         <div class="icon"><i class="fas fa-file-excel"></i></div>
         <p class="text-lg font-semibold text-gray-700 mb-2">엑셀 파일을 드래그하거나 클릭하여 선택</p>
-        <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx, .xls, .xlsb, .csv (최대 300MB)</p>
+        <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx (최대 300MB)</p>
         <div class="inline-flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 px-4 py-2 rounded-lg text-sm font-medium">
             <i class="fas fa-folder-open"></i> 파일 선택
         </div>
@@ -613,10 +613,10 @@ async function applyUpload() {
 
     const rowCount = previewData.totalRows;
     const estSec = Math.max(10, Math.round(rowCount / 800)); // 예상 소요 시간
-    if (!confirm(`⚠️ 기존 데이터를 모두 삭제하고 새로 적재합니다.\n\n업로드 행: ${rowCount.toLocaleString()}행\n매핑 컬럼: ${previewData.mappedCount}개\n예상 소요시간: 약 ${estSec}초\n\n※ 기존 bw_profitability_data 테이블의 모든 데이터가 삭제됩니다.\n계속하시겠습니까?`)) return;
+    if (!confirm(`📥 기존 데이터를 유지하면서 추가 적재합니다.\n\n업로드 행: ${rowCount.toLocaleString()}행\n매핑 컬럼: ${previewData.mappedCount}개\n예상 소요시간: 약 ${estSec}초\n\n※ 기존 데이터는 삭제되지 않고, 새 데이터가 추가(Append)됩니다.\n계속하시겠습니까?`)) return;
 
     showPhase('phaseLoading');
-    document.getElementById('loadingMsg').textContent = `기존 데이터 삭제 후 ${rowCount.toLocaleString()}행 적재 중... 예상 소요시간: 약 ${estSec}초`;
+    document.getElementById('loadingMsg').textContent = `${rowCount.toLocaleString()}행 추가 적재 중... 예상 소요시간: 약 ${estSec}초`;
 
     // Animate progress bar
     let pct = 0;
@@ -675,26 +675,52 @@ function renderResult(d) {
     `;
 
     const statsEl = document.getElementById('resultStats');
+    const addedRows = d.addedRows != null ? d.addedRows : d.insertedRows;
+    let calmonthHtml = '';
+    if (d.calmonthDist && d.calmonthDist.length > 0) {
+        calmonthHtml = `
+        <div class="stat-card" style="grid-column: 1 / -1;">
+            <div class="stat-icon bg-cyan-100 text-cyan-600"><i class="fas fa-calendar-alt"></i></div>
+            <div style="flex:1;">
+                <p class="text-sm font-bold text-gray-700 mb-2">CALMONTH별 분포</p>
+                <div class="flex flex-wrap gap-3">
+                    ${d.calmonthDist.map(m => `
+                        <div class="bg-slate-50 rounded-lg px-4 py-2 text-center">
+                            <p class="text-base font-bold text-gray-800">${m.calmonth || 'NULL'}</p>
+                            <p class="text-xs text-gray-400">${Number(m.count).toLocaleString()}행</p>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        </div>`;
+    }
     statsEl.innerHTML = `
         <div class="stat-card">
-            <div class="stat-icon bg-red-100 text-red-600"><i class="fas fa-trash-alt"></i></div>
+            <div class="stat-icon bg-blue-100 text-blue-600"><i class="fas fa-layer-group"></i></div>
             <div>
-                <p class="text-2xl font-bold text-red-600">${(d.deletedRows || 0).toLocaleString()}</p>
-                <p class="text-xs text-gray-400">기존 데이터 삭제</p>
+                <p class="text-2xl font-bold text-blue-600">${(d.beforeRows || 0).toLocaleString()}</p>
+                <p class="text-xs text-gray-400">적재 전 기존 행</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon bg-green-100 text-green-600"><i class="fas fa-plus-circle"></i></div>
+            <div>
+                <p class="text-2xl font-bold text-green-600">+${addedRows.toLocaleString()}</p>
+                <p class="text-xs text-gray-400">추가된 행</p>
             </div>
         </div>
         <div class="stat-card">
             <div class="stat-icon bg-indigo-100 text-indigo-600"><i class="fas fa-file-alt"></i></div>
             <div>
                 <p class="text-2xl font-bold text-gray-800">${d.totalExcelRows.toLocaleString()}</p>
-                <p class="text-xs text-gray-400">전체 업로드 행</p>
+                <p class="text-xs text-gray-400">엑셀 데이터 행</p>
             </div>
         </div>
         <div class="stat-card">
             <div class="stat-icon bg-green-100 text-green-600"><i class="fas fa-check"></i></div>
             <div>
                 <p class="text-2xl font-bold text-green-600">${d.insertedRows.toLocaleString()}</p>
-                <p class="text-xs text-gray-400">신규 INSERT 행</p>
+                <p class="text-xs text-gray-400">INSERT 성공</p>
             </div>
         </div>
         <div class="stat-card">
@@ -704,6 +730,15 @@ function renderResult(d) {
                 <p class="text-xs text-gray-400">현재 DB 총 행</p>
             </div>
         </div>
+        ${d.elapsedSec ? `
+        <div class="stat-card">
+            <div class="stat-icon bg-amber-100 text-amber-600"><i class="fas fa-clock"></i></div>
+            <div>
+                <p class="text-2xl font-bold text-amber-600">${d.elapsedSec}초</p>
+                <p class="text-xs text-gray-400">소요 시간</p>
+            </div>
+        </div>` : ''}
+        ${calmonthHtml}
     `;
 
     // Mapped columns list
