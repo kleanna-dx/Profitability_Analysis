@@ -32,7 +32,7 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const upload = multer({
   dest: UPLOAD_DIR,
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 300 * 1024 * 1024 },  // 300MB
   fileFilter: (req, file, cb) => {
     const allowed = /xlsx|xls|xlsb|csv|png|jpg|jpeg|gif|bmp|pdf/;
     const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
@@ -2328,57 +2328,118 @@ app.delete('/api/builder/history', async (req, res) => {
 // DB 컬럼명이 엑셀 원본명(/BIC/... 포함)과 동일하므로 매핑 불필요
 const EXCEL_TO_DB_COL_MAP = {};
 
-// POST /api/data-upload/preview - 엑셀 파일 업로드 후 프리뷰 (컬럼 매핑 분석)
-// 최적화: xlsx는 sheetRows로 헤더만, xlsb는 1회 전체 로드 후 메모리에서 처리
+// ── CSV 스트림 파싱 헬퍼 (대용량 CSV 지원) ──
+import readline from 'readline';
+
+/**
+ * CSV 한 줄을 필드 배열로 파싱 (따옴표, 쉼표 내 쉼표 처리)
+ */
+function parseCSVLine(line) {
+  const fields = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < line.length && line[i + 1] === '"') { cur += '"'; i++; }
+        else { inQuotes = false; }
+      } else { cur += ch; }
+    } else {
+      if (ch === '"') { inQuotes = true; }
+      else if (ch === ',') { fields.push(cur); cur = ''; }
+      else { cur += ch; }
+    }
+  }
+  fields.push(cur);
+  return fields;
+}
+
+/**
+ * CSV 프리뷰: 스트림으로 헤더 2줄 + 샘플 5줄 + 전체 행수 카운트
+ * 메모리 사용 최소화 (115MB CSV도 OK)
+ */
+function csvStreamPreview(filePath) {
+  return new Promise((resolve, reject) => {
+    const rl = readline.createInterface({
+      input: fs.createReadStream(filePath, { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    });
+    let lineNum = 0;
+    let korHeaders = [], engHeaders = [];
+    const sampleRows = [];
+    let dataRowCount = 0;
+
+    rl.on('line', (line) => {
+      lineNum++;
+      if (lineNum === 1) { korHeaders = parseCSVLine(line); return; }
+      if (lineNum === 2) { engHeaders = parseCSVLine(line); return; }
+      // 데이터 행 (3행부터)
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === ','.repeat(trimmed.length)) return; // 빈 행 스킵
+      dataRowCount++;
+      if (sampleRows.length < 5) {
+        sampleRows.push(parseCSVLine(line));
+      }
+    });
+    rl.on('close', () => resolve({ korHeaders, engHeaders, sampleRows, totalDataRows: dataRowCount }));
+    rl.on('error', reject);
+  });
+}
+
+// POST /api/data-upload/preview - 엑셀/CSV 파일 업로드 후 프리뷰 (컬럼 매핑 분석)
+// CSV: 스트림 방식 (대용량 OK), xlsx/xlsb: xlsx 라이브러리 사용
 app.post('/api/data-upload/preview', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
   const filePath = path.join(UPLOAD_DIR, req.file.filename);
   try {
-    const XLSXRaw = await import('xlsx');
-    const XLSX = XLSXRaw.default || XLSXRaw;
     const ext = path.extname(req.file.originalname).toLowerCase();
-    const isXlsb = ext === '.xlsb';
+    const isCsv = ext === '.csv';
 
     console.time('[Data Upload] preview-readFile');
 
     let sheetName, korHeaders, engHeaders, sampleDataRows, totalDataRows;
 
-    if (isXlsb) {
-      // xlsb는 sheetRows 최적화가 안 먹으므로 1회만 전체 로드
-      const wb = XLSX.readFile(filePath, { type: 'file' });
-      sheetName = wb.SheetNames[0];
-      const ws = wb.Sheets[sheetName];
-      // 전체 데이터를 JSON으로 변환하여 실제 비어있지 않은 행만 카운트
-      const allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-      korHeaders = allData[0] || [];
-      engHeaders = allData[1] || [];
-      const allDataRows = allData.slice(2);
-      // 빈 행 필터링: 하나라도 실제 값이 있는 행만 카운트
-      const isRowNonEmpty = (row) => {
-        if (!Array.isArray(row)) return false;
-        return row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
-      };
-      totalDataRows = allDataRows.filter(isRowNonEmpty).length;
-      sampleDataRows = allDataRows.filter(isRowNonEmpty).slice(0, 5);
-      console.log(`[Data Upload] xlsb 빈 행 필터링: sheet_to_json ${allDataRows.length}행 → 실제 데이터 ${totalDataRows}행`);
+    if (isCsv) {
+      // ★ CSV: 스트림 파싱 (메모리 효율적, 대용량 OK)
+      const csvResult = await csvStreamPreview(filePath);
+      sheetName = 'CSV';
+      korHeaders = csvResult.korHeaders;
+      engHeaders = csvResult.engHeaders;
+      sampleDataRows = csvResult.sampleRows;
+      totalDataRows = csvResult.totalDataRows;
+      console.log(`[Data Upload] CSV 스트림 프리뷰: ${totalDataRows}행 카운트 완료`);
     } else {
-      // xlsx/xls/csv → 전체 로드하여 빈 행 필터링 적용
-      const wbMeta = XLSX.readFile(filePath, { type: 'file', bookSheets: true });
-      sheetName = wbMeta.SheetNames[0];
-      const wbFull = XLSX.readFile(filePath, { type: 'file' });
-      const wsFull = wbFull.Sheets[sheetName];
-      const allData = XLSX.utils.sheet_to_json(wsFull, { header: 1, defval: null });
-      korHeaders = allData[0] || [];
-      engHeaders = allData[1] || [];
-      const allDataRows = allData.slice(2);
-      // 빈 행 필터링: 하나라도 실제 값이 있는 행만 카운트
-      const isRowNonEmpty = (row) => {
-        if (!Array.isArray(row)) return false;
-        return row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
-      };
-      totalDataRows = allDataRows.filter(isRowNonEmpty).length;
-      sampleDataRows = allDataRows.filter(isRowNonEmpty).slice(0, 5);
-      console.log(`[Data Upload] 빈 행 필터링: sheet_to_json ${allDataRows.length}행 → 실제 데이터 ${totalDataRows}행`);
+      // xlsx/xls/xlsb: xlsx 라이브러리 사용
+      const XLSXRaw = await import('xlsx');
+      const XLSX2 = XLSXRaw.default || XLSXRaw;
+
+      if (ext === '.xlsb') {
+        const wb = XLSX2.readFile(filePath, { type: 'file' });
+        sheetName = wb.SheetNames[0];
+        const ws = wb.Sheets[sheetName];
+        const allData = XLSX2.utils.sheet_to_json(ws, { header: 1, defval: null });
+        korHeaders = allData[0] || [];
+        engHeaders = allData[1] || [];
+        const allDataRows = allData.slice(2);
+        const isRowNonEmpty = (row) => Array.isArray(row) && row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
+        totalDataRows = allDataRows.filter(isRowNonEmpty).length;
+        sampleDataRows = allDataRows.filter(isRowNonEmpty).slice(0, 5);
+        console.log(`[Data Upload] xlsb 빈 행 필터링: ${allDataRows.length}행 → 실제 데이터 ${totalDataRows}행`);
+      } else {
+        const wbMeta = XLSX2.readFile(filePath, { type: 'file', bookSheets: true });
+        sheetName = wbMeta.SheetNames[0];
+        const wbFull = XLSX2.readFile(filePath, { type: 'file' });
+        const wsFull = wbFull.Sheets[sheetName];
+        const allData = XLSX2.utils.sheet_to_json(wsFull, { header: 1, defval: null });
+        korHeaders = allData[0] || [];
+        engHeaders = allData[1] || [];
+        const allDataRows = allData.slice(2);
+        const isRowNonEmpty = (row) => Array.isArray(row) && row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
+        totalDataRows = allDataRows.filter(isRowNonEmpty).length;
+        sampleDataRows = allDataRows.filter(isRowNonEmpty).slice(0, 5);
+        console.log(`[Data Upload] 빈 행 필터링: ${allDataRows.length}행 → 실제 데이터 ${totalDataRows}행`);
+      }
     }
 
     console.timeEnd('[Data Upload] preview-readFile');
@@ -2410,7 +2471,7 @@ app.post('/api/data-upload/preview', upload.single('file'), async (req, res) => 
     // 프리뷰 데이터 (미리보기 행)
     const previewRows = sampleDataRows.slice(0, 5).map(row => {
       const obj = {};
-      mapped.forEach(m => { obj[m.dbColumn] = row[m.index] ?? null; });
+      mapped.forEach(m => { obj[m.dbColumn] = (Array.isArray(row) ? row[m.index] : null) ?? null; });
       return obj;
     });
 
@@ -2436,9 +2497,10 @@ app.post('/api/data-upload/preview', upload.single('file'), async (req, res) => 
 });
 
 // POST /api/data-upload/apply - 실제 DB 적재 (배치 INSERT 최적화)
-// 성능: 단건 INSERT → 멀티 VALUES 배치 INSERT (100행씩), 10만행 기준 약 50~100배 빠름
+// CSV: readline 스트림으로 한 줄씩 읽어 배치 INSERT (메모리 최소화, 대용량 지원)
+// xlsx/xlsb: 기존 XLSX 라이브러리로 읽기 (메모리 로드)
 app.post('/api/data-upload/apply', async (req, res) => {
-  const { filePath, mappedCols } = req.body;
+  const { filePath, fileName, mappedCols } = req.body;
   if (!filePath || !mappedCols || mappedCols.length === 0) {
     return res.status(400).json({ error: '필수 파라미터가 누락되었습니다.' });
   }
@@ -2447,29 +2509,12 @@ app.post('/api/data-upload/apply', async (req, res) => {
     return res.status(400).json({ error: '업로드된 파일을 찾을 수 없습니다. 다시 업로드해주세요.' });
   }
 
+  // 원본 파일명(fileName)으로 확장자 판별 (filePath는 multer 해시값이라 확장자 없음)
+  const ext = fileName ? path.extname(fileName).toLowerCase() : path.extname(filePath).toLowerCase();
+  const isCSV = (ext === '.csv');
+  console.log(`[Data Upload] Apply 시작: file=${fileName || filePath}, ext=${ext}, isCSV=${isCSV}, mappedCols=${mappedCols.length}개`);
+
   try {
-    const XLSXRaw = await import('xlsx');
-    const XLSX = XLSXRaw.default || XLSXRaw;
-
-    console.time('[Data Upload] apply-readFile');
-    let wb = XLSX.readFile(fullPath, { type: 'file' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    let allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-    // 워크북 객체 즉시 해제 (대용량 xlsb 메모리 절약)
-    wb = null;
-    console.timeEnd('[Data Upload] apply-readFile');
-    // 빈 행 필터링: 매핑된 컬럼 중 하나라도 실제 값이 있는 행만 INSERT 대상
-    const rawDataRows = allData.slice(2);
-    allData = null; // 원본 배열 해제
-    const dataRows = rawDataRows.filter(row => {
-      if (!Array.isArray(row)) return false;
-      return mappedCols.some(m => {
-        const v = row[m.index];
-        return v !== null && v !== undefined && String(v).trim() !== '';
-      });
-    });
-    console.log(`[Data Upload] Apply 빈 행 필터링: ${rawDataRows.length}행 → 실제 데이터 ${dataRows.length}행`);
-
     const dbColumns = mappedCols.map(m => m.dbColumn);
     const colList = dbColumns.map(c => '`' + c + '`').join(', ');
     const singleRowPlaceholder = '(' + dbColumns.map(() => '?').join(',') + ')';
@@ -2477,8 +2522,9 @@ app.post('/api/data-upload/apply', async (req, res) => {
     const conn = await pool.getConnection();
     let inserted = 0;
     let deletedRows = 0;
+    let totalDataRows = 0;
     const errors = [];
-    const BATCH_SIZE = 200; // 한번에 200행씩 멀티 VALUES INSERT
+    const BATCH_SIZE = 200;
 
     // ★ 기존 데이터 전체 삭제 후 새 데이터 INSERT (전체 교체 방식)
     console.time('[Data Upload] delete-existing');
@@ -2487,7 +2533,6 @@ app.post('/api/data-upload/apply', async (req, res) => {
       deletedRows = Number(countBefore[0].cnt);
       if (deletedRows > 0) {
         await conn.query('DELETE FROM bw_profitability_data');
-        // AUTO_INCREMENT 초기화
         await conn.query('ALTER TABLE bw_profitability_data AUTO_INCREMENT = 1');
         console.log(`[Data Upload] 기존 데이터 ${deletedRows.toLocaleString()}행 삭제 완료`);
       } else {
@@ -2499,61 +2544,158 @@ app.post('/api/data-upload/apply', async (req, res) => {
     }
     console.timeEnd('[Data Upload] delete-existing');
 
-    console.time('[Data Upload] apply-insert');
-    // 배치 단위로 트랜잭션 분할 (대용량 시 단일 트랜잭션은 메모리 폭발 위험)
-    for (let i = 0; i < dataRows.length; i += BATCH_SIZE) {
-      const batch = dataRows.slice(i, Math.min(i + BATCH_SIZE, dataRows.length));
+    // ─── 배치 INSERT 공통 함수 ───
+    async function flushBatch(batch) {
+      if (batch.length === 0) return;
       const valuePlaceholders = [];
       const flatValues = [];
-      const batchErrors = [];
-
-      for (let j = 0; j < batch.length; j++) {
-        const row = batch[j];
-        const rowValues = mappedCols.map(m => {
-          const v = row[m.index];
-          if (v === null || v === undefined || v === '') return null;
-          return v;
-        });
+      for (const rowValues of batch) {
         valuePlaceholders.push(singleRowPlaceholder);
         flatValues.push(...rowValues);
       }
-
-      // 멀티 VALUES INSERT: INSERT INTO t (c1,c2) VALUES (?,?),(?,?),(?,?)...
       const batchSQL = `INSERT INTO bw_profitability_data (${colList}) VALUES ${valuePlaceholders.join(',')}`;
       try {
         await conn.query(batchSQL, flatValues);
         inserted += batch.length;
       } catch (batchErr) {
-        // 배치 실패 시 → 개별 INSERT로 폴백하여 실패 행 특정
+        // 배치 실패 → 개별 INSERT 폴백
         for (let j = 0; j < batch.length; j++) {
-          const row = batch[j];
-          const rowIdx = i + j + 3;
-          const rowValues = mappedCols.map(m => {
-            const v = row[m.index];
-            if (v === null || v === undefined || v === '') return null;
-            return v;
-          });
           try {
             await conn.query(
               `INSERT INTO bw_profitability_data (${colList}) VALUES ${singleRowPlaceholder}`,
-              rowValues
+              batch[j]
             );
             inserted++;
           } catch (rowErr) {
             if (errors.length < 50) {
-              errors.push({ row: rowIdx, error: rowErr.message.substring(0, 200) });
+              errors.push({ row: totalDataRows - batch.length + j + 3, error: rowErr.message.substring(0, 200) });
             }
           }
         }
       }
+    }
 
-      // 5000행마다 진행 로그
-      if ((i + BATCH_SIZE) % 5000 < BATCH_SIZE) {
-        console.log(`[Data Upload] 진행: ${Math.min(i + BATCH_SIZE, dataRows.length)}/${dataRows.length}행 (${inserted} 성공)`);
+    console.time('[Data Upload] apply-insert');
+
+    if (isCSV) {
+      // ─── CSV: readline 스트림 기반 (메모리 최소화) ───
+      console.log('[Data Upload] CSV 스트림 모드 시작');
+      await new Promise((resolve, reject) => {
+        const rl = readline.createInterface({
+          input: fs.createReadStream(fullPath, { encoding: 'utf-8' }),
+          crlfDelay: Infinity,
+        });
+        let lineNum = 0;
+        let currentBatch = [];
+        let skippedEmpty = 0;
+
+        rl.on('line', async (line) => {
+          lineNum++;
+          // 1행: 한글 헤더, 2행: 영문 헤더 → 스킵
+          if (lineNum <= 2) return;
+
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === ','.repeat(trimmed.length)) {
+            skippedEmpty++;
+            return;
+          }
+
+          const fields = parseCSVLine(line);
+
+          // 빈 행 필터링: 매핑된 컬럼 중 하나라도 값이 있어야 함
+          const hasValue = mappedCols.some(m => {
+            const v = fields[m.index];
+            return v !== null && v !== undefined && String(v).trim() !== '';
+          });
+          if (!hasValue) {
+            skippedEmpty++;
+            return;
+          }
+
+          totalDataRows++;
+
+          // 매핑된 컬럼 값 추출
+          const rowValues = mappedCols.map(m => {
+            const v = fields[m.index];
+            if (v === null || v === undefined || v === '') return null;
+            return v;
+          });
+          currentBatch.push(rowValues);
+
+          // 배치 크기 도달 시 flush
+          if (currentBatch.length >= BATCH_SIZE) {
+            rl.pause();
+            const batchToFlush = currentBatch;
+            currentBatch = [];
+            flushBatch(batchToFlush).then(() => {
+              // 5000행마다 진행 로그
+              if (totalDataRows % 5000 < BATCH_SIZE) {
+                console.log(`[Data Upload] 진행: ${totalDataRows}행 읽음 (${inserted} INSERT 성공)`);
+              }
+              rl.resume();
+            }).catch(reject);
+          }
+        });
+
+        rl.on('close', async () => {
+          try {
+            // 남은 배치 flush
+            if (currentBatch.length > 0) {
+              await flushBatch(currentBatch);
+            }
+            console.log(`[Data Upload] CSV 스트림 완료: ${totalDataRows}행 데이터, ${skippedEmpty}행 스킵`);
+            resolve();
+          } catch (e) {
+            reject(e);
+          }
+        });
+
+        rl.on('error', reject);
+      });
+
+    } else {
+      // ─── xlsx/xlsb: 기존 XLSX 라이브러리 (메모리 로드) ───
+      console.log('[Data Upload] XLSX 라이브러리 모드 시작');
+      const XLSXRaw = await import('xlsx');
+      const XLSX = XLSXRaw.default || XLSXRaw;
+
+      console.time('[Data Upload] apply-readFile');
+      let wb = XLSX.readFile(fullPath, { type: 'file' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      let allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+      wb = null;
+      console.timeEnd('[Data Upload] apply-readFile');
+
+      const rawDataRows = allData.slice(2);
+      allData = null;
+      const dataRows = rawDataRows.filter(row => {
+        if (!Array.isArray(row)) return false;
+        return mappedCols.some(m => {
+          const v = row[m.index];
+          return v !== null && v !== undefined && String(v).trim() !== '';
+        });
+      });
+      totalDataRows = dataRows.length;
+      console.log(`[Data Upload] Apply 빈 행 필터링: ${rawDataRows.length}행 → 실제 데이터 ${totalDataRows}행`);
+
+      for (let i = 0; i < dataRows.length; i += BATCH_SIZE) {
+        const batch = dataRows.slice(i, Math.min(i + BATCH_SIZE, dataRows.length));
+        const batchValues = batch.map(row =>
+          mappedCols.map(m => {
+            const v = row[m.index];
+            if (v === null || v === undefined || v === '') return null;
+            return v;
+          })
+        );
+        await flushBatch(batchValues);
+
+        if ((i + BATCH_SIZE) % 5000 < BATCH_SIZE) {
+          console.log(`[Data Upload] 진행: ${Math.min(i + BATCH_SIZE, dataRows.length)}/${totalDataRows}행 (${inserted} 성공)`);
+        }
       }
     }
-    console.timeEnd('[Data Upload] apply-insert');
 
+    console.timeEnd('[Data Upload] apply-insert');
     conn.release();
 
     // 적재 후 총 행 수 조회
@@ -2563,14 +2705,14 @@ app.post('/api/data-upload/apply', async (req, res) => {
     // 임시 파일 삭제
     try { fs.unlinkSync(fullPath); } catch(e) {}
 
-    console.log(`[Data Upload] 적재 완료: 기존 ${deletedRows}행 삭제 → 신규 ${inserted}/${dataRows.length}행 INSERT, 에러 ${errors.length}건`);
+    console.log(`[Data Upload] 적재 완료: 기존 ${deletedRows}행 삭제 → 신규 ${inserted}/${totalDataRows}행 INSERT, 에러 ${errors.length}건`);
 
     res.json({
       success: true,
       deletedRows,
-      totalExcelRows: dataRows.length,
+      totalExcelRows: totalDataRows,
       insertedRows: inserted,
-      failedRows: dataRows.length - inserted,
+      failedRows: totalDataRows - inserted,
       errors,
       totalDbRows: Number(totalDbRows),
       mappedColumns: dbColumns,

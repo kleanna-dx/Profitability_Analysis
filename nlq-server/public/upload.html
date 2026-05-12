@@ -208,7 +208,7 @@
                     <i class="fas fa-file-excel"></i>
                 </div>
                 <p class="text-lg font-semibold text-gray-700 mb-2">엑셀 파일을 드래그하거나 클릭하여 선택</p>
-                <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx, .xls, .xlsb, .csv (최대 50MB)</p>
+                <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx, .xls, .xlsb, .csv (최대 300MB)</p>
                 <div class="inline-flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 px-4 py-2 rounded-lg text-sm font-medium">
                     <i class="fas fa-folder-open"></i> 파일 선택
                 </div>
@@ -510,8 +510,8 @@ async function uploadFile(file) {
         alert('지원하지 않는 파일 형식입니다. (xlsx, xls, xlsb, csv만 지원)');
         return;
     }
-    if (file.size > 50 * 1024 * 1024) {
-        alert('파일 크기가 50MB를 초과합니다.');
+    if (file.size > 300 * 1024 * 1024) {
+        alert('파일 크기가 300MB를 초과합니다.');
         return;
     }
 
@@ -520,14 +520,14 @@ async function uploadFile(file) {
         <div class="icon"><i class="fas fa-cog spinner"></i></div>
         <p class="text-lg font-semibold text-gray-700 mb-2">파일 분석 중...</p>
         <p class="text-sm text-gray-400">${file.name} (${(file.size/1024/1024).toFixed(1)}MB)</p>
-        <p class="text-xs text-gray-300 mt-2">대용량 파일은 최대 30초 소요될 수 있습니다</p>
+        <p class="text-xs text-gray-300 mt-2">대용량 파일은 수 분 소요될 수 있습니다. 페이지를 닫지 마세요.</p>
     `;
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-        const res = await fetchWithTimeout('/api/data-upload/preview', { method: 'POST', body: formData }, 120000);
+        const res = await fetchWithTimeout('/api/data-upload/preview', { method: 'POST', body: formData }, 600000); // 10분
         const text = await res.text();
         let data;
         try { data = JSON.parse(text); } catch(e) { throw new Error('서버 응답 파싱 실패. 서버 로그를 확인해주세요.'); }
@@ -547,7 +547,7 @@ function resetUploadZone() {
     uploadZone.innerHTML = `
         <div class="icon"><i class="fas fa-file-excel"></i></div>
         <p class="text-lg font-semibold text-gray-700 mb-2">엑셀 파일을 드래그하거나 클릭하여 선택</p>
-        <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx, .xls, .xlsb, .csv (최대 50MB)</p>
+        <p class="text-sm text-gray-400 mb-3">지원 형식: .xlsx, .xls, .xlsb, .csv (최대 300MB)</p>
         <div class="inline-flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 px-4 py-2 rounded-lg text-sm font-medium">
             <i class="fas fa-folder-open"></i> 파일 선택
         </div>
@@ -634,6 +634,7 @@ async function applyUpload() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 filePath: previewData.filePath,
+                fileName: previewData.fileName,
                 mappedCols: previewData.mappedCols,
             }),
         }, applyTimeout);
