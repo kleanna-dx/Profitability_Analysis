@@ -246,6 +246,12 @@ let ragReady = false;  // RAG 인덱스 빌드 완료 여부
 const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문가입니다.
 사용자의 자연어 질문을 MariaDB SQL로 변환합니다.
 
+[★★★ 최우선 규칙 — 컬럼명은 반드시 아래 스키마/동의어 매칭 결과에 있는 것만 사용 ★★★]
+- 아래 제공된 TABLE_SCHEMA 컬럼 목록과 동의어 매칭 결과에 존재하는 컬럼명만 SQL에 사용하세요.
+- **컬럼명을 임의로 추측하거나 창작하지 마세요!** (예: ZQTYBOX ✗ → ZQTY_BOX ✓, ZSALES ✗ → ZAMT001 ✓)
+- 동의어 매칭 결과가 있으면 그 컬럼을 최우선 사용하세요. 매칭 결과가 없으면 TABLE_SCHEMA에서 찾으세요.
+- TABLE_SCHEMA에도 없는 컬럼은 절대 사용 금지. 확실하지 않으면 가장 유사한 스키마 컬럼을 사용하세요.
+
 [핵심 규칙]
 1. SELECT 문만 생성 (INSERT/UPDATE/DELETE/DROP 절대 금지)
 2. 테이블은 bw_profitability_data 하나만 사용
