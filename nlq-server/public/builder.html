@@ -829,13 +829,24 @@ function updateCompareButtons() {
 
 function toggleCompare(type) {
     if (type === 'yoy') {
-        compareYoY = !compareYoY;
-        document.getElementById('btnYoY').classList.toggle('active', compareYoY);
+        // 이미 활성 → 해제, 아니면 → yoy 활성 + mom 해제
+        if (compareYoY) {
+            compareYoY = false;
+        } else {
+            compareYoY = true;
+            compareMoM = false;
+        }
     } else if (type === 'mom') {
-        if (!isSameMonth()) return; // 다른 년월이면 전월대비 불가
-        compareMoM = !compareMoM;
-        document.getElementById('btnMoM').classList.toggle('active', compareMoM);
+        if (!isSameMonth()) return;
+        if (compareMoM) {
+            compareMoM = false;
+        } else {
+            compareMoM = true;
+            compareYoY = false;
+        }
     }
+    document.getElementById('btnYoY').classList.toggle('active', compareYoY);
+    document.getElementById('btnMoM').classList.toggle('active', compareMoM);
 }
 
 // ─── Drag & Drop ─────────────────────────────
