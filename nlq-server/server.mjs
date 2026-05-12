@@ -2476,8 +2476,28 @@ app.post('/api/data-upload/apply', async (req, res) => {
 
     const conn = await pool.getConnection();
     let inserted = 0;
+    let deletedRows = 0;
     const errors = [];
     const BATCH_SIZE = 200; // 한번에 200행씩 멀티 VALUES INSERT
+
+    // ★ 기존 데이터 전체 삭제 후 새 데이터 INSERT (전체 교체 방식)
+    console.time('[Data Upload] delete-existing');
+    try {
+      const [countBefore] = await conn.query('SELECT COUNT(*) AS cnt FROM bw_profitability_data');
+      deletedRows = Number(countBefore[0].cnt);
+      if (deletedRows > 0) {
+        await conn.query('DELETE FROM bw_profitability_data');
+        // AUTO_INCREMENT 초기화
+        await conn.query('ALTER TABLE bw_profitability_data AUTO_INCREMENT = 1');
+        console.log(`[Data Upload] 기존 데이터 ${deletedRows.toLocaleString()}행 삭제 완료`);
+      } else {
+        console.log('[Data Upload] 기존 데이터 없음 — 바로 INSERT 진행');
+      }
+    } catch (delErr) {
+      conn.release();
+      throw new Error(`기존 데이터 삭제 실패: ${delErr.message}`);
+    }
+    console.timeEnd('[Data Upload] delete-existing');
 
     console.time('[Data Upload] apply-insert');
     // 배치 단위로 트랜잭션 분할 (대용량 시 단일 트랜잭션은 메모리 폭발 위험)
@@ -2543,10 +2563,11 @@ app.post('/api/data-upload/apply', async (req, res) => {
     // 임시 파일 삭제
     try { fs.unlinkSync(fullPath); } catch(e) {}
 
-    console.log(`[Data Upload] 적재 완료: ${inserted}/${dataRows.length}행, 에러 ${errors.length}건`);
+    console.log(`[Data Upload] 적재 완료: 기존 ${deletedRows}행 삭제 → 신규 ${inserted}/${dataRows.length}행 INSERT, 에러 ${errors.length}건`);
 
     res.json({
       success: true,
+      deletedRows,
       totalExcelRows: dataRows.length,
       insertedRows: inserted,
       failedRows: dataRows.length - inserted,

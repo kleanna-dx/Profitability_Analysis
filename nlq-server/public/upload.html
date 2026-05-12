@@ -613,10 +613,10 @@ async function applyUpload() {
 
     const rowCount = previewData.totalRows;
     const estSec = Math.max(10, Math.round(rowCount / 800)); // 예상 소요 시간
-    if (!confirm(`총 ${rowCount.toLocaleString()}행을 DB에 적재합니다.\n매핑 컬럼: ${previewData.mappedCount}개\n예상 소요시간: 약 ${estSec}초\n\n계속하시겠습니까?`)) return;
+    if (!confirm(`⚠️ 기존 데이터를 모두 삭제하고 새로 적재합니다.\n\n업로드 행: ${rowCount.toLocaleString()}행\n매핑 컬럼: ${previewData.mappedCount}개\n예상 소요시간: 약 ${estSec}초\n\n※ 기존 bw_profitability_data 테이블의 모든 데이터가 삭제됩니다.\n계속하시겠습니까?`)) return;
 
     showPhase('phaseLoading');
-    document.getElementById('loadingMsg').textContent = `${rowCount.toLocaleString()}행 적재 중... 예상 소요시간: 약 ${estSec}초`;
+    document.getElementById('loadingMsg').textContent = `기존 데이터 삭제 후 ${rowCount.toLocaleString()}행 적재 중... 예상 소요시간: 약 ${estSec}초`;
 
     // Animate progress bar
     let pct = 0;
@@ -676,6 +676,13 @@ function renderResult(d) {
     const statsEl = document.getElementById('resultStats');
     statsEl.innerHTML = `
         <div class="stat-card">
+            <div class="stat-icon bg-red-100 text-red-600"><i class="fas fa-trash-alt"></i></div>
+            <div>
+                <p class="text-2xl font-bold text-red-600">${(d.deletedRows || 0).toLocaleString()}</p>
+                <p class="text-xs text-gray-400">기존 데이터 삭제</p>
+            </div>
+        </div>
+        <div class="stat-card">
             <div class="stat-icon bg-indigo-100 text-indigo-600"><i class="fas fa-file-alt"></i></div>
             <div>
                 <p class="text-2xl font-bold text-gray-800">${d.totalExcelRows.toLocaleString()}</p>
@@ -686,7 +693,7 @@ function renderResult(d) {
             <div class="stat-icon bg-green-100 text-green-600"><i class="fas fa-check"></i></div>
             <div>
                 <p class="text-2xl font-bold text-green-600">${d.insertedRows.toLocaleString()}</p>
-                <p class="text-xs text-gray-400">DB 반영 행</p>
+                <p class="text-xs text-gray-400">신규 INSERT 행</p>
             </div>
         </div>
         <div class="stat-card">
