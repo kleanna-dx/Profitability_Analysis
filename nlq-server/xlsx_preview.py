@@ -92,10 +92,11 @@ def main():
                     "reason": "DB 테이블에 존재하지 않는 컬럼"
                 })
 
-        # 3행~: 데이터 행 수 카운트 + 샘플 5행
-        sample_rows = []
-        total_data_rows = 0
+        # 3행~: max_row 기반 빠른 행 수 추정 + 샘플 5행만 읽기
+        # ★ 전체 행 순회하지 않음 — 대용량 파일(수만~수십만 행)에서 수십 초 → 0.1초로 단축
+        total_data_rows = max(0, (max_row or 2) - 2)  # 헤더 2행 제거
 
+        sample_rows = []
         for row in row_iter:
             row_list = list(row)
             # 빈 행 체크
@@ -109,14 +110,14 @@ def main():
             if not has_value:
                 continue
 
-            total_data_rows += 1
-            if len(sample_rows) < 5:
-                sample_obj = {}
-                for m in mapped:
-                    idx = m["index"]
-                    v = row_list[idx] if idx < len(row_list) else None
-                    sample_obj[m["dbColumn"]] = str(v) if v is not None else None
-                sample_rows.append(sample_obj)
+            sample_obj = {}
+            for m in mapped:
+                idx = m["index"]
+                v = row_list[idx] if idx < len(row_list) else None
+                sample_obj[m["dbColumn"]] = str(v) if v is not None else None
+            sample_rows.append(sample_obj)
+            if len(sample_rows) >= 5:
+                break  # 샘플 5행만 읽고 종료
 
         wb.close()
 
