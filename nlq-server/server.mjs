@@ -2330,6 +2330,44 @@ const EXCEL_TO_DB_COL_MAP = {};
 
 // ── CSV 스트림 파싱 헬퍼 (대용량 CSV 지원) ──
 import readline from 'readline';
+import iconv from 'iconv-lite';
+
+/**
+ * CSV 파일 인코딩 감지: 첫 4KB를 읽어 UTF-8 / EUC-KR 판별
+ * UTF-8 BOM → 'utf-8', 유효 UTF-8 → 'utf-8', 그 외 → 'euc-kr'
+ */
+function detectCsvEncoding(filePath) {
+  const buf = Buffer.alloc(4096);
+  const fd = fs.openSync(filePath, 'r');
+  const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+  fs.closeSync(fd);
+  const sample = buf.subarray(0, bytesRead);
+  // UTF-8 BOM
+  if (sample[0] === 0xEF && sample[1] === 0xBB && sample[2] === 0xBF) return 'utf-8';
+  // 순수 ASCII면 UTF-8 취급
+  if (sample.every(b => b < 0x80)) return 'utf-8';
+  // UTF-8 유효성 검사
+  try {
+    const decoded = new TextDecoder('utf-8', { fatal: true });
+    decoded.decode(sample);
+    return 'utf-8';
+  } catch {
+    return 'euc-kr';
+  }
+}
+
+/**
+ * CSV 파일용 읽기 스트림 생성: 인코딩 자동 감지 후 UTF-8로 변환
+ */
+function createCsvReadStream(filePath) {
+  const encoding = detectCsvEncoding(filePath);
+  console.log(`[Data Upload] CSV 인코딩 감지: ${encoding}`);
+  if (encoding === 'utf-8') {
+    return fs.createReadStream(filePath, { encoding: 'utf-8' });
+  }
+  // EUC-KR → iconv-lite 디코더 파이프
+  return fs.createReadStream(filePath).pipe(iconv.decodeStream(encoding));
+}
 
 /**
  * CSV 한 줄을 필드 배열로 파싱 (따옴표, 쉼표 내 쉼표 처리)
@@ -2362,7 +2400,7 @@ function parseCSVLine(line) {
 function csvStreamPreview(filePath) {
   return new Promise((resolve, reject) => {
     const rl = readline.createInterface({
-      input: fs.createReadStream(filePath, { encoding: 'utf-8' }),
+      input: createCsvReadStream(filePath),
       crlfDelay: Infinity,
     });
     let lineNum = 0;
@@ -2582,7 +2620,7 @@ app.post('/api/data-upload/apply', async (req, res) => {
       console.log('[Data Upload] CSV 스트림 모드 시작');
       await new Promise((resolve, reject) => {
         const rl = readline.createInterface({
-          input: fs.createReadStream(fullPath, { encoding: 'utf-8' }),
+          input: createCsvReadStream(fullPath),
           crlfDelay: Infinity,
         });
         let lineNum = 0;
