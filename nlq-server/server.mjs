@@ -312,7 +312,8 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 응답 형식 (반드시 JSON):
 {
   "sql": "SELECT ...",
-  "explanation": "이 쿼리는 ... 을 조회합니다",
+  "answer": "사용자에게 보여줄 친절한 한줄 답변 (비개발자가 이해할 수 있는 말)",
+  "explanation": "이 쿼리의 기술적 설명 (SQL 탭에서만 표시됨)",
   "chartType": "bar|line|pie|table",
   "chartConfig": {
     "labelColumn": "라벨컬럼alias",
@@ -321,6 +322,16 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
   },
   "analysisRequired": false
 }
+
+[answer 작성 규칙 — 매우 중요!]
+- answer는 일반 사용자(비개발자)가 바로 이해할 수 있는 친절한 답변이어야 합니다.
+- SQL이나 컬럼명, 기술 용어를 절대 포함하지 마세요.
+- 질문에 대한 핵심 결과를 자연스러운 한국어 문장으로 요약하세요.
+- 예시:
+  - "현재 2026년 2월, 3월, 4월 데이터가 존재합니다."
+  - "브랜드별 판매수량을 내림차순으로 조회했습니다. 깨끗한나라가 가장 많습니다."
+  - "2026년 3월 총매출은 약 152억원입니다."
+- explanation은 개발자/분석가용 기술 설명으로, SQL 탭에서만 보입니다.
 
 chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(상세 데이터)
 `;
@@ -534,7 +545,7 @@ app.post('/api/nlq', async (req, res) => {
       console.error('[NLQ] 학습 데이터 조회 실패:', e.message);
     }
 
-    let sql, explanation, chartType, chartConfig, analysisRequired = false;
+    let sql, answer = '', explanation, chartType, chartConfig, analysisRequired = false;
     let ragInfo = null;  // RAG 검색 상세 정보
 
     if (matchedSql) {
@@ -615,6 +626,7 @@ app.post('/api/nlq', async (req, res) => {
       }
 
       sql = parsed.sql;
+      // answer는 1단계에서 무시 — SQL 실행 후 결과 기반으로 4-A에서 생성
       explanation = parsed.explanation;
       chartType = parsed.chartType;
       chartConfig = parsed.chartConfig;
@@ -640,7 +652,44 @@ app.post('/api/nlq', async (req, res) => {
 
     console.log(`[NLQ] SQL 실행: ${execTime}ms, ${rows.length}행`);
 
-    // 4. 분석형 질문이면 2단계: GPT 텍스트 분석 답변 생성 (결과 0행이어도 생성)
+    // 4-A. SQL 결과 기반 사용자 친화적 answer 생성 (항상 결과 데이터를 보고 생성)
+    try {
+      const sampleData = rows.slice(0, 20);
+      const sampleText = JSON.stringify(sampleData, (k, v) => typeof v === 'bigint' ? Number(v) : v);
+
+      const answerCompletion = await openai.chat.completions.create({
+        model: 'gpt-5-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `당신은 데이터 조회 결과를 일반인에게 설명해주는 친절한 도우미입니다.
+조회된 실제 데이터를 보고, 사용자의 질문에 대한 답변을 1~2문장의 자연스러운 한국어로 작성하세요.
+
+반드시 지킬 규칙:
+- SQL, 컬럼명(CALMONTH, ZBRAND 등), 기술 용어는 절대 쓰지 마세요.
+- 조회된 데이터의 실제 값들을 구체적으로 언급하세요.
+- 금액은 억/만 단위로 읽기 쉽게 표현하세요.
+- 결과가 0행이면 "해당 조건에 맞는 데이터가 없습니다"라고 안내하세요.
+- 반드시 텍스트 답변만 출력하세요 (JSON 금지).`
+          },
+          {
+            role: 'user',
+            content: `질문: ${query}\n\n조회 결과 (총 ${rows.length}행):\n${sampleText.substring(0, 1500)}`
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 1000,
+      });
+      const rawAnswer = answerCompletion.choices[0].message.content;
+      if (rawAnswer && rawAnswer.trim()) {
+        answer = rawAnswer.trim();
+      }
+      console.log(`[NLQ] Answer 생성: "${answer}"`);
+    } catch (ansErr) {
+      console.error('[NLQ] Answer 생성 실패:', ansErr.message);
+    }
+
+    // 4-B. 분석형 질문이면 2단계: GPT 텍스트 분석 답변 생성 (결과 0행이어도 생성)
     let analysis = null;
     if (analysisRequired) {
       try {
@@ -694,7 +743,8 @@ app.post('/api/nlq', async (req, res) => {
       success: true,
       query,
       sql,
-      explanation: explanation + (matchedSql ? ' 📚' : (ragReady ? ' 🔍 RAG' : '')),
+      answer: answer || '',  // 사용자 친화적 답변 (상단 표시)
+      explanation: explanation + (matchedSql ? ' 📚' : (ragReady ? ' 🔍 RAG' : '')),  // 기술적 설명 (SQL탭)
       chartType: chartType || 'table',
       chartConfig: chartConfig || {},
       data: rows,
