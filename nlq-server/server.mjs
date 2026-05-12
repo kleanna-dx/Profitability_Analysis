@@ -1954,20 +1954,20 @@ app.post('/api/builder/query', async (req, res) => {
 
       const dimColsList = dimFields.map(d => `\`${d.col}\``);
 
-      // ── cur 서브쿼리 ── (CALDAY 포함: 일자별 구분 + 표시용)
-      const curGroupByCols = ['`CALDAY`', ...dimColsList];
-      const curSelectParts = ['`CALDAY`', ...dimColsList];
+      // ── cur 서브쿼리 ── (CALMONTH 기준 월 전체 합산)
+      const curGroupByCols = [...dimColsList];
+      const curSelectParts = [...dimColsList];
       measureFields.forEach(m => {
         curSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_cur\``);
       });
       const curParams = [curMonth];
       const curUserWhere = buildUserConditions(curParams);
       let curSql = `SELECT ${curSelectParts.join(', ')} FROM bw_profitability_data WHERE \`CALMONTH\` = ?${curUserWhere ? ' ' + curUserWhere : ''}`;
-      curSql += ` GROUP BY ${curGroupByCols.join(', ')}`;
+      if (curGroupByCols.length > 0) {
+        curSql += ` GROUP BY ${curGroupByCols.join(', ')}`;
+      }
 
-      // ── prev 서브쿼리 ── (CALDAY 제외: 월 전체 합산)
-      // 비교모드에서 prev는 전월 전체를 dim 기준으로 합산해야 함
-      // CALDAY가 월마다 다르므로 (20240601 vs 20240501~31) JOIN 불가
+      // ── prev 서브쿼리 ── (CALMONTH 기준 월 전체 합산)
       const prevGroupByCols = [...dimColsList];
       const prevSelectParts = [...dimColsList];
       measureFields.forEach(m => {
@@ -1981,7 +1981,8 @@ app.post('/api/builder/query', async (req, res) => {
       }
 
       // ── 최종 SELECT 컬럼 ──
-      const outerSelectParts = [`cur.\`CALDAY\` AS \`달력일\``];
+      // 첫 컬럼: 달력연도/월 (당월 값 리터럴)
+      const outerSelectParts = [`'${curMonth}' AS \`달력연도/월\``];
 
       // dim 컬럼 (cur 기준)
       dimFields.forEach(d => {
@@ -2007,8 +2008,8 @@ app.post('/api/builder/query', async (req, res) => {
       });
 
       // ── JOIN 구성 ──
-      // CALDAY는 JOIN 조건에서 제외 (월마다 일자가 다르므로 매칭 불가)
-      // dim이 있으면: LEFT JOIN ... ON dim 컬럼만 매칭
+      // CALMONTH 기준 월단위 비교: dim 컬럼만으로 JOIN
+      // dim이 있으면: LEFT JOIN ... ON dim 컬럼 매칭
       // dim이 없으면: LEFT JOIN ... ON 1=1 (각각 합계 1행끼리 결합)
       let joinClause;
       if (dimFields.length > 0) {
@@ -2034,13 +2035,13 @@ app.post('/api/builder/query', async (req, res) => {
       console.log(`[Builder] 비교모드 params: [${finalParams.join(', ')}]`);
 
     // ═══════════════════════════════════════════════
-    // 일반 모드 (비교 없음): 기존 로직 + CALDAY 항상 첫 컬럼
+    // 일반 모드 (비교 없음): 기존 로직 + CALMONTH 항상 첫 컬럼
     // ═══════════════════════════════════════════════
     } else {
       const selectParts = [];
-      // CALDAY 항상 첫 컬럼 자동 포함 (달력일)
-      if (!userFieldCols.includes('CALDAY')) {
-        selectParts.push('`CALDAY` AS `달력일`');
+      // CALMONTH 항상 첫 컬럼 자동 포함 (달력연도/월)
+      if (!userFieldCols.includes('CALMONTH')) {
+        selectParts.push('`CALMONTH` AS `달력연도/월`');
       }
       for (const f of fields) {
         const col = f.column;
@@ -2068,15 +2069,15 @@ app.post('/api/builder/query', async (req, res) => {
 
       // GROUP BY
       const groupParts = [];
-      if (!userFieldCols.includes('CALDAY') && group_by && group_by.length > 0) {
-        groupParts.push('`CALDAY`');
+      if (!userFieldCols.includes('CALMONTH') && group_by && group_by.length > 0) {
+        groupParts.push('`CALMONTH`');
       }
       if (group_by && group_by.length > 0) {
         for (const g of group_by) {
-          // CALDAY 중복 방지 (이미 자동 추가된 경우 스킵)
-          if (g === 'CALDAY' && groupParts.includes('`CALDAY`')) continue;
-          // CALMONTH는 GROUP BY에서 제외 (CALDAY로 대체)
-          if (g === 'CALMONTH') continue;
+          // CALMONTH 중복 방지 (이미 자동 추가된 경우 스킵)
+          if (g === 'CALMONTH' && groupParts.includes('`CALMONTH`')) continue;
+          // CALDAY는 GROUP BY에서 제외 (월단위 집계 기준)
+          if (g === 'CALDAY') continue;
           if (validCols.has(g)) groupParts.push(`\`${g}\``);
         }
       }
