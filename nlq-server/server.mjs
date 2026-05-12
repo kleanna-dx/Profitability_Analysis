@@ -2254,12 +2254,15 @@ app.post('/api/data-upload/apply', async (req, res) => {
     const XLSX = XLSXRaw.default || XLSXRaw;
 
     console.time('[Data Upload] apply-readFile');
-    const wb = XLSX.readFile(fullPath, { type: 'file' });
+    let wb = XLSX.readFile(fullPath, { type: 'file' });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+    let allData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+    // 워크북 객체 즉시 해제 (대용량 xlsb 메모리 절약)
+    wb = null;
     console.timeEnd('[Data Upload] apply-readFile');
     // 빈 행 필터링: 매핑된 컬럼 중 하나라도 실제 값이 있는 행만 INSERT 대상
     const rawDataRows = allData.slice(2);
+    allData = null; // 원본 배열 해제
     const dataRows = rawDataRows.filter(row => {
       if (!Array.isArray(row)) return false;
       return mappedCols.some(m => {
