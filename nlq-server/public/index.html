@@ -173,6 +173,46 @@
         }
         .learned-detail-panel .learned-header i{color:#d97706;}
 
+        /* AI 분석 답변 패널 */
+        .analysis-panel{
+            margin:0 16px 12px;padding:20px 22px;border-radius:12px;
+            background:linear-gradient(135deg,#f8faff,#eef2ff);
+            border:1px solid #c7d2fe;font-size:14px;color:#1e293b;line-height:1.8;
+        }
+        .analysis-panel .analysis-header{
+            display:flex;align-items:center;gap:8px;margin-bottom:14px;
+            padding-bottom:10px;border-bottom:1px solid #c7d2fe;
+        }
+        .analysis-panel .analysis-header i{
+            font-size:18px;color:#6366f1;
+        }
+        .analysis-panel .analysis-header span{
+            font-size:15px;font-weight:700;color:#4338ca;
+        }
+        .analysis-panel h1,.analysis-panel h2,.analysis-panel h3{
+            color:#312e81;margin:16px 0 8px;font-weight:700;
+        }
+        .analysis-panel h1{font-size:18px;}
+        .analysis-panel h2{font-size:16px;}
+        .analysis-panel h3{font-size:14px;color:#4338ca;}
+        .analysis-panel p{margin:6px 0;}
+        .analysis-panel ul,.analysis-panel ol{
+            margin:6px 0 6px 20px;
+        }
+        .analysis-panel li{margin:4px 0;}
+        .analysis-panel strong{color:#312e81;}
+        .analysis-panel code{
+            background:#e0e7ff;padding:1px 5px;border-radius:3px;
+            font-size:13px;color:#4338ca;
+        }
+        .analysis-panel blockquote{
+            border-left:3px solid #818cf8;padding-left:12px;
+            margin:8px 0;color:#475569;font-style:italic;
+        }
+        .analysis-panel hr{
+            border:none;border-top:1px solid #c7d2fe;margin:12px 0;
+        }
+
         /* 상단바 RAG pill */
         .status-pill .dot.purple{background:#8b5cf6;box-shadow:0 0 5px rgba(139,92,246,0.4);}
 
@@ -937,10 +977,16 @@ function appendBotMessage(data) {
     // Build tabs content
     const chartId = 'chart_' + id;
     const hasChart = data.chartType && data.chartType !== 'table';
+    const hasAnalysis = data.analysis && data.analysis.trim().length > 0;
 
+    // 분석 답변이 있으면 분석 탭이 기본 활성, 없으면 표 탭이 기본 활성
     let tabsHtml = `
         <div class="res-tabs">
-            <div class="res-tab active" data-panel="${id}_table" onclick="switchTab(this,'${id}')">
+            ${hasAnalysis ? `
+            <div class="res-tab active" data-panel="${id}_analysis" onclick="switchTab(this,'${id}')">
+                <i class="fas fa-lightbulb mr-1"></i>AI 분석
+            </div>` : ''}
+            <div class="res-tab ${hasAnalysis ? '' : 'active'}" data-panel="${id}_table" onclick="switchTab(this,'${id}')">
                 <i class="fas fa-table mr-1"></i>표
             </div>
             <div class="res-tab" data-panel="${id}_chart" onclick="switchTab(this,'${id}')" ${!hasChart ? 'style="display:none"' : ''}>
@@ -974,6 +1020,21 @@ function appendBotMessage(data) {
         tableHtml = t;
     }
 
+    // Analysis HTML (분석 답변 패널)
+    let analysisHtml = '';
+    if (hasAnalysis) {
+        analysisHtml = `
+            <div id="${id}_analysis" class="res-panel active">
+                <div class="analysis-panel">
+                    <div class="analysis-header">
+                        <i class="fas fa-brain"></i>
+                        <span>AI 분석 답변</span>
+                    </div>
+                    <div class="analysis-content">${mdToHtml(data.analysis)}</div>
+                </div>
+            </div>`;
+    }
+
     botMsg.innerHTML = `
         <div class="msg-bot-inner">
             <div class="msg-bot-header">
@@ -989,7 +1050,8 @@ function appendBotMessage(data) {
             </div>
             ${buildRagDetailPanel(id, data)}
             ${tabsHtml}
-            <div id="${id}_table" class="res-panel active">
+            ${analysisHtml}
+            <div id="${id}_table" class="res-panel ${hasAnalysis ? '' : 'active'}">
                 ${tableHtml}
             </div>
             <div id="${id}_chart" class="res-panel" style="${!hasChart ? 'display:none' : ''}">
@@ -1188,6 +1250,50 @@ function scrollToBottom() {
     setTimeout(() => { ca.scrollTop = ca.scrollHeight; }, 50);
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// 간단한 마크다운 → HTML 변환 (분석 답변용)
+function mdToHtml(md) {
+    if (!md) return '';
+    let html = esc(md);
+    // 코드블록 (```...```)
+    html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+    // 인라인 코드
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // 헤더 (### → h3, ## → h2, # → h1)
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    // 볼드/이탤릭
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // 인용문
+    html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+    // 수평선
+    html = html.replace(/^---$/gm, '<hr>');
+    // 순서 있는 리스트
+    html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+    // 순서 없는 리스트 (-, *)
+    html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+    // 연속 li를 ul로 감싸기
+    html = html.replace(/(<li>.*?<\/li>\n?)+/gs, (match) => '<ul>' + match + '</ul>');
+    // 줄바꿈 (빈 줄 → 단락, 단일 줄바꿈 → <br>)
+    html = html.replace(/\n\n+/g, '</p><p>');
+    html = html.replace(/\n/g, '<br>');
+    html = '<p>' + html + '</p>';
+    // 빈 단락 정리
+    html = html.replace(/<p>\s*<\/p>/g, '');
+    html = html.replace(/<p>\s*(<h[123]>)/g, '$1');
+    html = html.replace(/(<\/h[123]>)\s*<\/p>/g, '$1');
+    html = html.replace(/<p>\s*(<ul>)/g, '$1');
+    html = html.replace(/(<\/ul>)\s*<\/p>/g, '$1');
+    html = html.replace(/<p>\s*(<blockquote>)/g, '$1');
+    html = html.replace(/(<\/blockquote>)\s*<\/p>/g, '$1');
+    html = html.replace(/<p>\s*(<hr>)/g, '$1');
+    html = html.replace(/(<hr>)\s*<\/p>/g, '$1');
+    html = html.replace(/<p>\s*(<pre>)/g, '$1');
+    html = html.replace(/(<\/pre>)\s*<\/p>/g, '$1');
+    return html;
+}
 
 // ============================================================
 // SQL Formatter + Syntax Highlighter

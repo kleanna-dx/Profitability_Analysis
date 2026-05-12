@@ -875,6 +875,33 @@ function toggleCompare(type) {
     document.getElementById('btnMoM').classList.toggle('active', compareMoM);
     document.getElementById('labelYoY').classList.toggle('visible', compareYoY);
     document.getElementById('labelMoM').classList.toggle('visible', compareMoM);
+
+    // 비교 모드 안내 메시지 업데이트
+    updateCompareInfoBanner();
+}
+
+function updateCompareInfoBanner() {
+    let banner = document.getElementById('compareInfoBanner');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'compareInfoBanner';
+        banner.style.cssText = 'padding:10px 16px;border-radius:10px;font-size:0.82rem;font-weight:600;margin-top:10px;display:none;transition:all 0.2s;';
+        document.getElementById('dateSection').appendChild(banner);
+    }
+    if (compareYoY || compareMoM) {
+        const label = compareMoM ? '전월대비' : '전년대비';
+        const icon = compareMoM ? 'fa-exchange-alt' : 'fa-chart-line';
+        const bgColor = compareMoM ? '#fdf4ff' : '#eff6ff';
+        const bdColor = compareMoM ? '#e9d5ff' : '#bfdbfe';
+        const txColor = compareMoM ? '#7e22ce' : '#1d4ed8';
+        banner.style.display = 'block';
+        banner.style.background = bgColor;
+        banner.style.border = `1.5px solid ${bdColor}`;
+        banner.style.color = txColor;
+        banner.innerHTML = `<i class="fas ${icon}" style="margin-right:6px;"></i>${label} 비교 모드 활성 — 숫자 필드는 자동 합계(SUM) 처리되어 [당월값 / 전월값 / 증감상태(▲▼)] 컬럼으로 표시됩니다.`;
+    } else {
+        banner.style.display = 'none';
+    }
 }
 
 // ─── Drag & Drop ─────────────────────────────
@@ -1384,17 +1411,39 @@ function downloadExcel() {
 
 function renderTable(columns, rows) {
     const numCols = new Set();
+    // 비교 컬럼 감지 (전월대비/전년대비 등 증감상태 컬럼)
+    const compareCols = new Set();
+    columns.forEach(col => {
+        if (/전월대비|전년대비/.test(col)) compareCols.add(col);
+    });
     if (rows.length > 0) {
-        columns.forEach(col => { if (typeof rows[0][col] === 'number') numCols.add(col); });
+        columns.forEach(col => {
+            if (!compareCols.has(col) && typeof rows[0][col] === 'number') numCols.add(col);
+        });
     }
     let html = '<table><thead><tr><th>#</th>';
-    columns.forEach(col => html += `<th>${col}</th>`);
+    columns.forEach(col => {
+        // 비교 컬럼 헤더에 스타일 추가
+        if (compareCols.has(col)) {
+            html += `<th style="background:#fef3c7;color:#92400e;text-align:center;">${col}</th>`;
+        } else {
+            html += `<th>${col}</th>`;
+        }
+    });
     html += '</tr></thead><tbody>';
     rows.forEach((row, idx) => {
         html += `<tr><td style="color:#94a3b8;font-size:0.72rem">${idx+1}</td>`;
         columns.forEach(col => {
             const val = row[col];
-            if (numCols.has(col) && val !== null && val !== undefined) {
+            if (compareCols.has(col)) {
+                // 증감상태 컬럼: ▲ 상승(빨강), ▼ 하락(파랑), — 변동없음(회색)
+                const str = String(val ?? '');
+                let style = 'text-align:center;font-weight:600;font-size:0.8rem;';
+                if (str.includes('▲')) style += 'color:#dc2626;background:#fef2f2;';
+                else if (str.includes('▼')) style += 'color:#2563eb;background:#eff6ff;';
+                else style += 'color:#94a3b8;';
+                html += `<td style="${style}">${str}</td>`;
+            } else if (numCols.has(col) && val !== null && val !== undefined) {
                 html += `<td class="num">${Number(val).toLocaleString()}</td>`;
             } else {
                 html += `<td>${val ?? ''}</td>`;

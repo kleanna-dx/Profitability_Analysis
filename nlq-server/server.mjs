@@ -265,6 +265,22 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 - 집계 함수를 사용한 경우 "합계", "평균", "최대" 등을 별칭에 포함
 - 예시: FORMAT(SUM(ZQTYBOX), 0) AS '판매수량 합계(BOX)',  FORMAT(SUM(ZAMT001), 0) AS '총매출 합계(원)'
 
+[분석형 질문 판별 - 매우 중요!]
+사용자의 질문이 단순 데이터 조회가 아니라 **분석, 요약, 시사점, 인사이트, 해석, 평가, 제언, 비교분석, 원인, 이유, 추천** 등을 요청하는 경우:
+- "analysisRequired": true 로 설정하세요
+- 이 경우에도 반드시 SQL은 생성하세요 (분석에 필요한 핵심 지표들을 폭넓게 조회)
+- 분석형 질문의 SQL은 주요 지표(총매출, 순매출, 매출총이익률, 재료비, 마케팅비 등)를 포괄적으로 포함하세요
+- 예: "시사점을 요약해줘" → analysisRequired: true, SQL은 주요 KPI 전체 조회
+
+분석형 질문의 예:
+- "~를 분석해줘", "시사점을 요약해줘", "인사이트를 알려줘"
+- "왜 ~인지 설명해줘", "원인이 뭐야", "이유를 분석해줘"
+- "~에 대해 평가해줘", "개선점을 제시해줘", "추천해줘"
+- "어떤 의미야", "해석해줘", "트렌드를 분석해줘"
+
+단순 조회형 질문의 예 (analysisRequired: false):
+- "총매출 합계 보여줘", "제품군별 매출", "상위 10개 품목"
+
 응답 형식 (반드시 JSON):
 {
   "sql": "SELECT ...",
@@ -274,7 +290,8 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
     "labelColumn": "라벨컬럼alias",
     "dataColumns": ["데이터컬럼alias"],
     "title": "차트 제목"
-  }
+  },
+  "analysisRequired": false
 }
 
 chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(상세 데이터)
@@ -489,7 +506,7 @@ app.post('/api/nlq', async (req, res) => {
       console.error('[NLQ] 학습 데이터 조회 실패:', e.message);
     }
 
-    let sql, explanation, chartType, chartConfig;
+    let sql, explanation, chartType, chartConfig, analysisRequired = false;
     let ragInfo = null;  // RAG 검색 상세 정보
 
     if (matchedSql) {
@@ -573,6 +590,7 @@ app.post('/api/nlq', async (req, res) => {
       explanation = parsed.explanation;
       chartType = parsed.chartType;
       chartConfig = parsed.chartConfig;
+      analysisRequired = parsed.analysisRequired === true;
     }
 
     // 2. SQL 검증
@@ -594,6 +612,52 @@ app.post('/api/nlq', async (req, res) => {
 
     console.log(`[NLQ] SQL 실행: ${execTime}ms, ${rows.length}행`);
 
+    // 4. 분석형 질문이면 2단계: 데이터 기반 GPT 텍스트 분석 답변 생성
+    let analysis = null;
+    if (analysisRequired && rows.length > 0) {
+      try {
+        console.log(`[NLQ] 분석형 질문 감지 — GPT 텍스트 분석 답변 생성 시작`);
+        // 데이터를 요약하여 GPT에 전달 (최대 50행, 토큰 절약)
+        const dataForAnalysis = rows.slice(0, 50);
+        const dataText = JSON.stringify(dataForAnalysis, (key, val) =>
+          typeof val === 'bigint' ? Number(val) : val
+        , 2);
+
+        const analysisCompletion = await openai.chat.completions.create({
+          model: 'gpt-5-mini',
+          messages: [
+            {
+              role: 'system',
+              content: `당신은 기업 수익성 분석 전문 컨설턴트입니다.
+아래 제공된 데이터를 기반으로 사용자의 질문에 대해 전문적인 분석 답변을 작성하세요.
+
+[답변 작성 규칙]
+1. 마크다운 형식으로 작성 (제목, 볼드, 리스트 활용)
+2. 핵심 수치를 반드시 인용하며 분석 (예: "총매출 454억원")
+3. 긍정적/부정적 시사점을 균형 있게 제시
+4. 구체적이고 실행 가능한 제언 포함
+5. 금액은 억/만 단위로 읽기 쉽게 표현 (예: 45,409,440,210원 → 약 454억원)
+6. 한국어로 답변
+7. 데이터에 없는 내용은 추측하지 말고, 있는 데이터만으로 분석
+8. 분석 답변은 충분히 길고 상세하게 작성 (최소 300자 이상)`
+            },
+            {
+              role: 'user',
+              content: `[사용자 질문]\n${query}\n\n[조회된 데이터]\n${dataText}\n\n위 데이터를 기반으로 질문에 대한 전문적인 분석 답변을 작성해주세요.`
+            }
+          ],
+          temperature: 0.3,
+          max_tokens: 2000,
+        });
+
+        analysis = analysisCompletion.choices[0].message.content.trim();
+        console.log(`[NLQ] 분석 답변 생성 완료: ${analysis.length}자`);
+      } catch (analysisErr) {
+        console.error('[NLQ] 분석 답변 생성 실패:', analysisErr.message);
+        // 분석 실패해도 기본 SQL 결과는 반환
+      }
+    }
+
     const result = {
       success: true,
       query,
@@ -606,9 +670,10 @@ app.post('/api/nlq', async (req, res) => {
       executionTimeMs: execTime,
       ragEnabled: ragReady,
       ragInfo: ragInfo,
+      analysis: analysis,  // 분석형 질문이면 텍스트 답변 포함
     };
 
-    // 4. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
+    // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
     saveHistory(query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null)
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
@@ -1757,6 +1822,8 @@ app.post('/api/builder/query', async (req, res) => {
   const { fields, conditions, group_by, order_by, order_dir, limit: limitStr, prompt,
           date_start, date_end, compare_yoy, compare_mom } = req.body;
 
+  console.log(`[Builder] 요청: fields=${fields?.length}, compare_mom=${compare_mom}, compare_yoy=${compare_yoy}, date=${date_start}~${date_end}`);
+
   if (!fields || fields.length === 0) {
     return res.status(400).json({ error: '조회할 필드를 하나 이상 선택해주세요.' });
   }
@@ -1828,19 +1895,43 @@ app.post('/api/builder/query', async (req, res) => {
     };
 
     // ── SELECT 절: 기준 필드(dimension) / 수치 필드(measure) 분리 ──
+    // 비교 모드에서는 숫자 필드에 집계함수가 없으면 자동으로 SUM 적용
     const dimFields = [];  // GROUP BY 대상 (텍스트 필드)
     const measureFields = []; // 집계 대상 (SUM 등)
+
+    // 숫자 타입 컬럼 목록 조회 (비교 모드 자동 SUM용)
+    const numericTypes = new Set(['int','bigint','decimal','double','float','tinyint','smallint','mediumint','numeric']);
+    let numericColSet = new Set();
+    if (hasCompare) {
+      try {
+        const [typeRows] = await pool.query(`
+          SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data'
+        `);
+        numericColSet = new Set(typeRows.filter(r => numericTypes.has(r.DATA_TYPE.toLowerCase())).map(r => r.COLUMN_NAME));
+      } catch(e) { /* fallback: 빈 set */ }
+    }
+
     for (const f of fields) {
       const col = f.column;
       if (!validCols.has(col)) return res.status(400).json({ error: `유효하지 않은 컬럼: ${col}` });
-      const agg = f.aggregate;
+      let agg = f.aggregate;
       const alias = f.alias || col;
+
+      // ★ 비교 모드: 집계함수 없는 숫자 필드는 자동으로 SUM 적용
+      if (hasCompare && (!agg || agg === '') && numericColSet.has(col)) {
+        agg = 'SUM';
+        console.log(`[Builder] 비교모드 자동 SUM 적용: ${col} (alias: ${alias})`);
+      }
+
       if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
         measureFields.push({ col, agg: agg.toUpperCase(), alias });
       } else {
         dimFields.push({ col, alias });
       }
     }
+
+    console.log(`[Builder] 필드 분류: dim=${dimFields.length}개(${dimFields.map(d=>d.col).join(',')}), measure=${measureFields.length}개(${measureFields.map(m=>m.col).join(',')})`);
 
     let sql, finalParams;
 
