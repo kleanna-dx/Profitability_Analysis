@@ -767,7 +767,7 @@ let compareMoM = false;
 let compareDimSelections = {};  // { columnName: true/false } 비교기준 DIM 선택 상태
 const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 필터에서 제외할 날짜 필드
 // 권장 비교기준 DIM (월별 변동이 적은 필드)
-const RECOMMENDED_COMPARE_DIMS = ['MATERIAL_DESC','MATERIAL','DIVISION','PROFIT_CTR','MATL_GROUP','MATL_TYPE'];
+const RECOMMENDED_COMPARE_DIMS = ['MATERIAL_NM','MATERIAL','DIVISION','PROFIT_CTR','MATL_GROUP','MATL_TYPE'];
 
 const CATEGORY_NAMES = {
     period: '기간', org: '조직/사업부', product: '자재/제품',
