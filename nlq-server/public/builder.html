@@ -357,9 +357,68 @@
             text-align:center;padding:20px 16px;color:#818cf8;font-size:12px;opacity:0.6;
         }
 
+        /* ===== Date Condition Section ===== */
+        .date-section {
+            background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+            border: 2px solid #c7d2fe;
+            border-radius: 14px;
+            padding: 16px 20px;
+            margin-bottom: 0;
+        }
+        .date-section-header {
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 12px; font-size: 0.88rem; font-weight: 700; color: var(--indigo);
+        }
+        .date-section-header .badge {
+            font-size: 0.68rem; padding: 2px 8px; border-radius: 8px; font-weight: 700;
+            background: #ddd6fe; color: #6d28d9;
+        }
+        .date-controls {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+        }
+        .date-input-group {
+            display: flex; align-items: center; gap: 8px;
+        }
+        .date-input-group label {
+            font-size: 0.82rem; font-weight: 600; color: var(--text-light); white-space: nowrap;
+        }
+        .date-input-group select {
+            padding: 8px 12px; border: 1.5px solid #c7d2fe; border-radius: 10px;
+            font-size: 0.88rem; font-weight: 600; outline: none; background: white;
+            color: var(--text); cursor: pointer; transition: border-color 0.2s;
+            min-width: 100px;
+        }
+        .date-input-group select:focus { border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+        .date-tilde {
+            font-size: 1.2rem; font-weight: 700; color: #a5b4fc; padding: 0 2px;
+        }
+        .compare-buttons {
+            display: flex; align-items: center; gap: 8px; margin-left: 8px;
+        }
+        .compare-btn {
+            padding: 7px 16px; border-radius: 10px; font-size: 0.8rem; font-weight: 700;
+            cursor: pointer; transition: all 0.2s; border: 1.5px solid; user-select: none;
+        }
+        .compare-btn.yoy {
+            background: #eff6ff; color: #2563eb; border-color: #93c5fd;
+        }
+        .compare-btn.yoy:hover { background: #dbeafe; }
+        .compare-btn.yoy.active { background: #2563eb; color: white; border-color: #2563eb; }
+        .compare-btn.mom {
+            background: #fdf4ff; color: #9333ea; border-color: #d8b4fe;
+        }
+        .compare-btn.mom:hover { background: #fae8ff; }
+        .compare-btn.mom.active { background: #9333ea; color: white; border-color: #9333ea; }
+        .date-info-text {
+            font-size: 0.72rem; color: #94a3b8; margin-top: 8px;
+        }
+        .date-info-text i { margin-right: 4px; }
+
         @media (max-width:900px) {
             .builder-layout { grid-template-columns:1fr; }
             .field-panel { max-height:300px; position:static; }
+            .date-controls { flex-direction: column; align-items: flex-start; }
+            .compare-buttons { margin-left: 0; }
         }
     </style>
 </head>
@@ -448,6 +507,38 @@
 
         <!-- Right: Builder -->
         <div class="builder-area">
+            <!-- 0. Date Condition (최상단) -->
+            <div class="date-section" id="dateSection">
+                <div class="date-section-header">
+                    <i class="fas fa-calendar-alt"></i> 날짜 조건
+                    <span class="badge" id="dateBadge">필수</span>
+                </div>
+                <div class="date-controls">
+                    <div class="date-input-group">
+                        <label>시작 년월</label>
+                        <select id="dateStartYear"></select>
+                        <select id="dateStartMonth"></select>
+                    </div>
+                    <span class="date-tilde">~</span>
+                    <div class="date-input-group">
+                        <label>종료 년월</label>
+                        <select id="dateEndYear"></select>
+                        <select id="dateEndMonth"></select>
+                    </div>
+                    <div class="compare-buttons" id="compareButtons">
+                        <button class="compare-btn yoy" id="btnYoY" onclick="toggleCompare('yoy')" title="전년 동기 대비 비교 컬럼 추가">
+                            <i class="fas fa-chart-line" style="margin-right:4px;"></i>전년대비
+                        </button>
+                        <button class="compare-btn mom" id="btnMoM" onclick="toggleCompare('mom')" title="전월 대비 비교 컬럼 추가">
+                            <i class="fas fa-exchange-alt" style="margin-right:4px;"></i>전월대비
+                        </button>
+                    </div>
+                </div>
+                <div class="date-info-text" id="dateInfoText">
+                    <i class="fas fa-info-circle"></i> 동일 년월 선택 시 전년대비·전월대비 비교가 가능합니다.
+                </div>
+            </div>
+
             <!-- 1. Selected Fields -->
             <div class="section-card">
                 <div class="section-header">
@@ -589,6 +680,11 @@ let valuesCache = {};
 let lastResultColumns = [];
 let lastResultRows = [];
 
+// 날짜 조건 상태
+let compareYoY = false;
+let compareMoM = false;
+const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 필터에서 제외할 날짜 필드
+
 const CATEGORY_NAMES = {
     period: '기간', org: '조직/사업부', product: '자재/제품',
     trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액', other: '기타', system: '시스템'
@@ -597,6 +693,7 @@ const CATEGORY_ORDER = ['period','org','product','trade','quantity','amount','un
 
 // ─── Init ────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+    initDateSelectors();
     loadColumns();
     loadBuilderHistory();
 });
@@ -622,8 +719,11 @@ function renderFieldList(cols) {
     let html = '';
     CATEGORY_ORDER.forEach(cat => {
         if (!grouped[cat] || grouped[cat].length === 0) return;
-        html += `<div class="field-cat-label">${CATEGORY_NAMES[cat] || cat} (${grouped[cat].length})</div>`;
-        grouped[cat].forEach(c => {
+        // 날짜 필드를 제외한 카운트
+        const visibleCols = grouped[cat].filter(c => !DATE_FIELDS.includes(c.name));
+        if (visibleCols.length === 0) return;
+        html += `<div class="field-cat-label">${CATEGORY_NAMES[cat] || cat} (${visibleCols.length})</div>`;
+        visibleCols.forEach(c => {
             html += `<div class="field-item" draggable="true"
                 ondragstart="dragStart(event, '${c.name}')"
                 ondblclick="addFieldByClick('${c.name}')"
@@ -643,6 +743,99 @@ function filterFields() {
         c.label.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)
     );
     renderFieldList(filtered);
+}
+
+// ─── Date Condition ──────────────────────────
+function initDateSelectors() {
+    const startY = document.getElementById('dateStartYear');
+    const startM = document.getElementById('dateStartMonth');
+    const endY = document.getElementById('dateEndYear');
+    const endM = document.getElementById('dateEndMonth');
+
+    // 년도: 2020 ~ 현재+1년
+    const curYear = new Date().getFullYear();
+    for (let y = 2020; y <= curYear + 1; y++) {
+        const opt1 = new Option(`${y}년`, y);
+        const opt2 = new Option(`${y}년`, y);
+        startY.add(opt1);
+        endY.add(opt2);
+    }
+    // 월: 01~12
+    for (let m = 1; m <= 12; m++) {
+        const val = String(m).padStart(2, '0');
+        const label = `${m}월`;
+        startM.add(new Option(label, val));
+        endM.add(new Option(label, val));
+    }
+
+    // 기본값: 현재 DB에 202405 데이터가 있으므로 기본 2024년 5월
+    startY.value = '2024'; startM.value = '05';
+    endY.value = '2024'; endM.value = '05';
+
+    // 변경 이벤트
+    [startY, startM, endY, endM].forEach(el => {
+        el.addEventListener('change', onDateChange);
+    });
+    updateCompareButtons();
+}
+
+function getDateRange() {
+    const sy = document.getElementById('dateStartYear').value;
+    const sm = document.getElementById('dateStartMonth').value;
+    const ey = document.getElementById('dateEndYear').value;
+    const em = document.getElementById('dateEndMonth').value;
+    if (!sy || !sm || !ey || !em) return { start: '', end: '' };
+    return { start: `${sy}${sm}`, end: `${ey}${em}` };
+}
+
+function isSameMonth() {
+    const r = getDateRange();
+    return r.start === r.end;
+}
+
+function onDateChange() {
+    // 종료가 시작보다 앞서면 자동 보정
+    const r = getDateRange();
+    if (r.start && r.end && r.start > r.end) {
+        document.getElementById('dateEndYear').value = document.getElementById('dateStartYear').value;
+        document.getElementById('dateEndMonth').value = document.getElementById('dateStartMonth').value;
+    }
+    updateCompareButtons();
+}
+
+function updateCompareButtons() {
+    const same = isSameMonth();
+    const momBtn = document.getElementById('btnMoM');
+    // 동일 년월: 전년대비+전월대비 모두 표시
+    // 다른 년월: 전년대비만 표시, 전월대비 숨김 + 비활성
+    if (same) {
+        momBtn.style.display = '';
+    } else {
+        momBtn.style.display = 'none';
+        compareMoM = false;
+        momBtn.classList.remove('active');
+    }
+    // 안내 텍스트 업데이트
+    const r = getDateRange();
+    const infoEl = document.getElementById('dateInfoText');
+    if (same) {
+        infoEl.innerHTML = `<i class="fas fa-info-circle"></i> ${r.start.slice(0,4)}년 ${parseInt(r.start.slice(4))}월 단월 조회 — 전년대비·전월대비 비교가 가능합니다.`;
+    } else {
+        infoEl.innerHTML = `<i class="fas fa-info-circle"></i> ${r.start.slice(0,4)}년 ${parseInt(r.start.slice(4))}월 ~ ${r.end.slice(0,4)}년 ${parseInt(r.end.slice(4))}월 기간 조회 — 전년대비 비교가 가능합니다.`;
+    }
+    // 배지 업데이트
+    document.getElementById('dateBadge').textContent = same ? '단월' : '기간';
+}
+
+function toggleCompare(type) {
+    if (type === 'yoy') {
+        compareYoY = !compareYoY;
+        document.getElementById('btnYoY').classList.toggle('active', compareYoY);
+    } else if (type === 'mom') {
+        if (!isSameMonth()) return; // 다른 년월이면 전월대비 불가
+        compareMoM = !compareMoM;
+        document.getElementById('btnMoM').classList.toggle('active', compareMoM);
+    }
 }
 
 // ─── Drag & Drop ─────────────────────────────
@@ -682,6 +875,8 @@ function handleCondDrop(e) {
 function addFieldByClick(colName) { addField(colName); }
 
 function addField(colName) {
+    // 날짜 필드는 조회 필드에 추가 차단
+    if (DATE_FIELDS.includes(colName)) return;
     if (selectedFields.find(f => f.column === colName && !f.aggregate)) return;
     const col = allColumns.find(c => c.name === colName);
     if (!col) return;
@@ -839,6 +1034,8 @@ function updateOrderByOptions() {
 
 // ─── Condition Management ────────────────────
 function addConditionRow(presetCol) {
+    // 날짜 필드는 필터 조건에 추가 차단
+    if (presetCol && DATE_FIELDS.includes(presetCol)) return;
     const idx = conditions.length;
     conditions.push({ column: presetCol || '', operator: '=', value: '', logic: 'AND' });
     renderConditions();
@@ -885,7 +1082,7 @@ function renderConditions() {
         html += `<select onchange="setCondColumn(${i}, this.value)" style="min-width:140px;">
             <option value="">필드 선택</option>`;
         CATEGORY_ORDER.forEach(cat => {
-            const cols = allColumns.filter(c => c.category === cat);
+            const cols = allColumns.filter(c => c.category === cat && !DATE_FIELDS.includes(c.name));
             if (cols.length === 0) return;
             html += `<optgroup label="${CATEGORY_NAMES[cat]}">`;
             cols.forEach(c => {
@@ -978,6 +1175,14 @@ async function executeQuery() {
     const hasAgg = selectedFields.some(f => f.aggregate);
     const groupBy = hasAgg ? selectedFields.filter(f => !f.aggregate).map(f => f.column) : [];
 
+    // 날짜 조건 수집
+    const dateRange = getDateRange();
+    if (!dateRange.start || !dateRange.end) {
+        alert('날짜 조건을 설정해주세요.');
+        btn.disabled = false;
+        return;
+    }
+
     const payload = {
         fields: selectedFields.map(f => ({ column: f.column, aggregate: f.aggregate || '', alias: f.alias || '' })),
         conditions: conditions.filter(c => c.column).map(c => ({ column: c.column, operator: c.operator, value: c.value, logic: c.logic })),
@@ -986,6 +1191,10 @@ async function executeQuery() {
         order_dir: document.getElementById('orderDirSelect').value,
         limit: document.getElementById('limitSelect').value,
         prompt: document.getElementById('promptInput').value.trim(),
+        date_start: dateRange.start,
+        date_end: dateRange.end,
+        compare_yoy: compareYoY,
+        compare_mom: compareMoM,
     };
 
     try {

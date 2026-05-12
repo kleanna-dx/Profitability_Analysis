@@ -1754,10 +1754,16 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
 
 // POST /api/builder/query - 쿼리 빌더 실행
 app.post('/api/builder/query', async (req, res) => {
-  const { fields, conditions, group_by, order_by, order_dir, limit: limitStr, prompt } = req.body;
+  const { fields, conditions, group_by, order_by, order_dir, limit: limitStr, prompt,
+          date_start, date_end, compare_yoy, compare_mom } = req.body;
 
   if (!fields || fields.length === 0) {
     return res.status(400).json({ error: '조회할 필드를 하나 이상 선택해주세요.' });
+  }
+
+  // 날짜 조건 필수 검증
+  if (!date_start || !date_end || date_start.length !== 6 || date_end.length !== 6) {
+    return res.status(400).json({ error: '날짜 조건(시작/종료 년월)을 설정해주세요.' });
   }
 
   const safeLimit = Math.min(parseInt(limitStr) || 1000, 5000);
@@ -1784,9 +1790,21 @@ app.post('/api/builder/query', async (req, res) => {
       }
     }
 
-    // WHERE 절
+    // WHERE 절 — 날짜 조건을 맨 앞에 자동 삽입
     const whereParts = [];
     const params = [];
+
+    if (date_start === date_end) {
+      // 단월 조회
+      whereParts.push('`CALMONTH` = ?');
+      params.push(date_start);
+    } else {
+      // 기간 조회
+      whereParts.push('`CALMONTH` BETWEEN ? AND ?');
+      params.push(date_start, date_end);
+    }
+
+    // 사용자 필터 조건 (날짜 이후에 AND로 추가)
     if (conditions && conditions.length > 0) {
       for (let i = 0; i < conditions.length; i++) {
         const cond = conditions[i];
@@ -1826,11 +1844,8 @@ app.post('/api/builder/query', async (req, res) => {
           params.push(val);
         }
 
-        if (i === 0) {
-          whereParts.push(clause);
-        } else {
-          whereParts.push(`${logic === 'OR' ? 'OR' : 'AND'} ${clause}`);
-        }
+        // 날짜 조건이 이미 whereParts[0]에 있으므로 사용자 조건은 항상 AND/OR로 연결
+        whereParts.push(`${i === 0 ? 'AND' : (logic === 'OR' ? 'OR' : 'AND')} ${clause}`);
       }
     }
 
@@ -1858,8 +1873,9 @@ app.post('/api/builder/query', async (req, res) => {
 
     let finalParams = params;
 
-    // 추가 프롬프트가 있으면 GPT로 SQL 보완
-    if (prompt && prompt.trim()) {
+    // 비교 옵션 또는 추가 프롬프트가 있으면 GPT로 SQL 보완
+    const needGpt = (prompt && prompt.trim()) || compare_yoy || compare_mom;
+    if (needGpt) {
       try {
         // GPT에게는 ? 바인딩을 실제 값으로 치환한 SQL을 전달
         let resolvedSql = sql;
@@ -1870,11 +1886,27 @@ app.post('/api/builder/query', async (req, res) => {
           if (typeof v === 'number') return String(v);
           return `'${String(v).replace(/'/g, "''")}'`;
         });
-        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}\n\n[추가 요청]\n${prompt}\n\n위 기본 SQL을 기반으로 추가 요청을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요. 존재하지 않는 컬럼(예: SALES, REVENUE 등)을 절대 만들지 마세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
+
+        // 비교 옵션 요청 텍스트 생성
+        const compareReqs = [];
+        if (compare_yoy) {
+          compareReqs.push(`전년대비 비교: 조회 기간의 전년 동기(${date_start === date_end ? `CALMONTH='${String(Number(date_start) - 100)}'` : `CALMONTH BETWEEN '${String(Number(date_start) - 100)}' AND '${String(Number(date_end) - 100)}'`}) 데이터를 함께 조회하여, 각 수치 컬럼에 대해 '전년' 값과 '전년대비 증감률(%)' 컬럼을 추가해주세요. 증감률 = (당기-전기)/ABS(전기)*100으로 계산하고 소수 1자리까지 표시하세요.`);
+        }
+        if (compare_mom && date_start === date_end) {
+          const prevMonth = Number(date_start) - 1;
+          const prevMonthStr = date_start.endsWith('01')
+            ? String(Number(date_start.slice(0,4)) - 1) + '12'
+            : String(prevMonth).padStart(6, '0');
+          compareReqs.push(`전월대비 비교: 전월(CALMONTH='${prevMonthStr}') 데이터를 함께 조회하여, 각 수치 컬럼에 대해 '전월' 값과 '전월대비 증감률(%)' 컬럼을 추가해주세요. 증감률 = (당기-전기)/ABS(전기)*100으로 계산하고 소수 1자리까지 표시하세요.`);
+        }
+        const compareText = compareReqs.length > 0 ? '\n\n[비교 분석 요청]\n' + compareReqs.join('\n') : '';
+        const userPromptText = prompt && prompt.trim() ? `\n\n[추가 요청]\n${prompt}` : '';
+
+        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${compareText}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요. 존재하지 않는 컬럼(예: SALES, REVENUE 등)을 절대 만들지 마세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         const completion = await openai.chat.completions.create({
           model: 'gpt-5-mini',
           messages: [
-            { role: 'system', content: '당신은 SQL 전문가입니다. 주어진 기본 SQL을 기반으로 추가 요청을 반영한 SELECT 문만 작성하세요.\n중요 규칙:\n1. 반드시 제공된 테이블 스키마에 존재하는 컬럼명만 사용하세요.\n2. "매출"은 ZAMT001(총매출), "순매출"은 ZAMT003 등 스키마의 한국어 설명을 참고하여 올바른 컬럼을 매핑하세요.\n3. 존재하지 않는 컬럼명을 임의로 생성하지 마세요.\n4. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.' },
+            { role: 'system', content: '당신은 SQL 전문가입니다. 주어진 기본 SQL을 기반으로 요청사항을 반영한 SELECT 문만 작성하세요.\n중요 규칙:\n1. 반드시 제공된 테이블 스키마에 존재하는 컬럼명만 사용하세요.\n2. "매출"은 ZAMT001(총매출), "순매출"은 ZAMT003 등 스키마의 한국어 설명을 참고하여 올바른 컬럼을 매핑하세요.\n3. 존재하지 않는 컬럼명을 임의로 생성하지 마세요.\n4. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.\n5. 비교 분석 요청 시 서브쿼리 또는 LEFT JOIN을 사용하여 전년/전월 데이터를 함께 조회하세요. 결과 컬럼에 한글 alias를 사용하세요 (예: `당기매출`, `전년매출`, `전년대비(%)`)\n6. 증감률 계산 시 전기 값이 0이면 NULL을 반환하세요.' },
             { role: 'user', content: gptPrompt },
           ],
           temperature: 0.1,
