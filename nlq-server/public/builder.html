@@ -852,9 +852,13 @@ function initDateSelectors() {
         endM.add(new Option(label, val));
     }
 
-    // 기본값: 현재 DB에 202405 데이터가 있으므로 기본 2024년 5월
-    startY.value = '2024'; startM.value = '05';
-    endY.value = '2024'; endM.value = '05';
+    // 기본값: 전월 (예: 현재 2026년 5월 → 2026년 4월)
+    const now = new Date();
+    let prevMonth = now.getMonth(); // 0-indexed이므로 현재월-1 = 전월
+    let prevYear = now.getFullYear();
+    if (prevMonth === 0) { prevMonth = 12; prevYear--; } // 1월이면 전년도 12월
+    startY.value = String(prevYear); startM.value = String(prevMonth).padStart(2, '0');
+    endY.value = String(prevYear); endM.value = String(prevMonth).padStart(2, '0');
 
     // 변경 이벤트
     [startY, startM, endY, endM].forEach(el => {
