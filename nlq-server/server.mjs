@@ -863,27 +863,56 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
             {
               role: 'system',
               content: `당신은 기업 수익성 분석 전문 컨설턴트입니다.
-사용자의 질문에 대해 핵심 중심으로 분석 답변을 작성하세요.
+핵심 위주로 간결하게 분석 답변을 작성하세요.
 
 [답변 작성 규칙]
-1. 마크다운 형식 (제목, 볼드, 리스트 활용)
-2. 핵심 수치를 인용하며 분석 (예: "총매출 454억원")
-3. 긍정적/부정적 시사점을 균형 있게 제시
-4. 실행 가능한 제언 포함
-5. 금액은 억/만 단위로 표현 (예: 45,409,440,210원 → 약 454억원)
-6. 한국어로 답변
-7. 데이터에 없는 내용은 추측 금지
-8. 답변은 800~1500자 범위로 핵심만 간결하게 작성 (불필요한 반복·나열 금지)
-9. 조회 결과가 0행인 경우: 원인과 대안 조회 방법을 간단히 제안`
+1. 마크다운 형식 (제목, 볼드, 리스트)
+2. 핵심 수치 인용 (예: "총매출 454억원")
+3. 긍정/부정 시사점 균형 제시
+4. 실행 가능한 제언 1~3개
+5. 금액은 억/만 단위 (예: 45,409,440,210원 → 약 454억원)
+6. 한국어 답변
+7. 데이터에 없는 내용 추측 금지
+8. 조회 결과 0행: 원인과 대안을 간단히 제안
+
+[★ 길이·완결성 규칙 — 반드시 준수]
+- 답변은 500~800자 이내로 핵심만 작성 (장황한 나열·반복 금지)
+- 모든 문장은 반드시 완결된 형태로 끝낼 것
+- 쓰다가 중간에 끊길 수 있는 긴 문장은 애초에 시작하지 말 것
+- 마지막 문장까지 깔끔하게 마무리한 뒤 종료`
             },
             { role: 'user', content: userContent }
           ],
           temperature: 0.3,
-          max_tokens: 8000,
+          max_tokens: 5000,
         });
 
         const analysisFinishReason = analysisCompletion.choices[0].finish_reason;
         analysis = analysisCompletion.choices[0].message.content.trim();
+
+        // ★ 토큰 한도로 잘린 경우: 미완성 마지막 문장 제거 (사용자에게 오류처럼 보이지 않도록)
+        if (analysisFinishReason === 'length' && analysis.length > 0) {
+          console.log(`[NLQ] 분석 답변 토큰 한도 도달 — 미완성 문장 정리 (원본 ${analysis.length}자)`);
+          // 마지막 완결된 문장 끝(. 또는 다 또는 요 또는 세요 + 줄바꿈) 위치를 찾아 거기까지만 사용
+          const lastCleanEnd = Math.max(
+            analysis.lastIndexOf('.\n'),
+            analysis.lastIndexOf('다.\n'),
+            analysis.lastIndexOf('다.'),
+            analysis.lastIndexOf('요.\n'),
+            analysis.lastIndexOf('요.'),
+            analysis.lastIndexOf('세요.\n'),
+            analysis.lastIndexOf('세요.'),
+            analysis.lastIndexOf('니다.'),
+            analysis.lastIndexOf('시오.'),
+          );
+          if (lastCleanEnd > analysis.length * 0.5) {
+            // 마침표 다음 문자까지 포함
+            const cutPos = analysis.indexOf('.', lastCleanEnd) + 1;
+            analysis = analysis.substring(0, cutPos).trim();
+            console.log(`[NLQ] 분석 답변 정리 완료: ${analysis.length}자`);
+          }
+        }
+
         console.log(`[NLQ] 분석 답변 생성 완료: ${analysis.length}자 (finish_reason: ${analysisFinishReason})`);
       } catch (analysisErr) {
         console.error('[NLQ] 분석 답변 생성 실패:', analysisErr.message);
