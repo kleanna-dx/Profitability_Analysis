@@ -879,11 +879,12 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
             { role: 'user', content: userContent }
           ],
           temperature: 0.3,
-          max_tokens: 2000,
+          max_tokens: 16000,
         });
 
+        const analysisFinishReason = analysisCompletion.choices[0].finish_reason;
         analysis = analysisCompletion.choices[0].message.content.trim();
-        console.log(`[NLQ] 분석 답변 생성 완료: ${analysis.length}자`);
+        console.log(`[NLQ] 분석 답변 생성 완료: ${analysis.length}자 (finish_reason: ${analysisFinishReason})`);
       } catch (analysisErr) {
         console.error('[NLQ] 분석 답변 생성 실패:', analysisErr.message);
         // 분석 실패해도 기본 SQL 결과는 반환
