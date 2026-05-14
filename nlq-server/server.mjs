@@ -49,8 +49,7 @@ const openai = new OpenAI({
 });
 
 // GPT 모델명 (환경변수로 변경 가능)
-const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o-mini';
-const EMBEDDING_MODEL_NAME = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
+const GPT_MODEL = process.env.GPT_MODEL || 'gpt-5-mini';
 
 console.log(`[NLQ] AI 설정: model=${GPT_MODEL}, baseURL=${process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'}`);
 
