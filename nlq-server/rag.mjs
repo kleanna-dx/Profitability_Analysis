@@ -12,14 +12,14 @@
 import OpenAI from 'openai';
 
 // ============================================================
-// OpenAI Embedding Client (GSK_TOKEN 사용)
+// OpenAI Embedding Client
 // ============================================================
 const embeddingClient = new OpenAI({
-  apiKey: process.env.GSK_TOKEN || process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL || 'https://www.genspark.ai/api/llm_proxy/v1',
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
 });
 
-const EMBEDDING_MODEL = 'text-embedding-3-small';
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 const EMBEDDING_DIM = 1536;
 
 // ============================================================

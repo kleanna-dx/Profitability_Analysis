@@ -44,21 +44,28 @@ const upload = multer({
 // OpenAI Client 초기화
 // ============================================================
 const openai = new OpenAI({
-  apiKey: process.env.GSK_TOKEN || process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL || 'https://www.genspark.ai/api/llm_proxy/v1',
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
 });
+
+// GPT 모델명 (환경변수로 변경 가능)
+const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o-mini';
+const EMBEDDING_MODEL_NAME = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
+
+console.log(`[NLQ] AI 설정: model=${GPT_MODEL}, baseURL=${process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'}`);
 
 // ============================================================
 // MariaDB 커넥션 풀
 // ============================================================
 const pool = mysql.createPool({
-  host: 'localhost',
-  user: 'company',
-  password: 'company1234!',
-  database: 'company_board',
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '3306'),
+  user: process.env.DB_USER || 'company',
+  password: process.env.DB_PASSWORD || 'company1234!',
+  database: process.env.DB_NAME || 'company_board',
   charset: 'utf8mb4',
   waitForConnections: true,
-  connectionLimit: 5,
+  connectionLimit: parseInt(process.env.DB_POOL_SIZE || '5'),
   queueLimit: 0,
 });
 
@@ -712,7 +719,7 @@ app.post('/api/nlq', async (req, res) => {
       // 차트 타입은 AI에게 간단히 판별 요청 (비용 절약을 위해 짧은 프롬프트)
       try {
         const chartCompletion = await openai.chat.completions.create({
-          model: 'gpt-5-mini',
+          model: GPT_MODEL,
           messages: [
             { role: 'system', content: '주어진 SQL의 결과에 가장 적합한 차트 유형을 판단하세요. 응답은 반드시 JSON: {"chartType":"bar|line|pie|table","chartConfig":{"labelColumn":"라벨컬럼alias","dataColumns":["데이터컬럼alias"],"title":"차트 제목"}}' },
             { role: 'user', content: `질문: ${query}\nSQL: ${sql}` },
@@ -765,7 +772,7 @@ app.post('/api/nlq', async (req, res) => {
       messages.push({ role: 'user', content: query });
 
       const completion = await openai.chat.completions.create({
-        model: 'gpt-5-mini',
+        model: GPT_MODEL,
         messages,
         temperature: 0.1,
         response_format: { type: 'json_object' },
@@ -816,7 +823,7 @@ app.post('/api/nlq', async (req, res) => {
       const sampleText = JSON.stringify(sampleData, (k, v) => typeof v === 'bigint' ? Number(v) : v);
 
       const answerCompletion = await openai.chat.completions.create({
-        model: 'gpt-5-mini',
+        model: GPT_MODEL,
         messages: [
           {
             role: 'user',
@@ -858,7 +865,7 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
         }
 
         const analysisCompletion = await openai.chat.completions.create({
-          model: 'gpt-5-mini',
+          model: GPT_MODEL,
           messages: [
             {
               role: 'system',
@@ -1030,7 +1037,7 @@ app.get('/api/status', async (req, res) => {
       db: 'connected',
       table: 'bw_profitability_data',
       totalRows: rows[0].cnt,
-      ai: 'gpt-5-mini',
+      ai: GPT_MODEL,
       rag: {
         enabled: ragReady,
         totalChunks: ragStats?.total || 0,
@@ -2386,7 +2393,7 @@ app.post('/api/builder/query', async (req, res) => {
         const userPromptText = `\n\n[추가 요청]\n${prompt}`;
         const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         const completion = await openai.chat.completions.create({
-          model: 'gpt-5-mini',
+          model: GPT_MODEL,
           messages: [
             { role: 'system', content: '당신은 SQL 전문가입니다. 주어진 기본 SQL을 기반으로 요청사항을 반영한 SELECT 문만 작성하세요.\n중요 규칙:\n1. 반드시 제공된 테이블 스키마에 존재하는 컬럼명만 사용하세요.\n2. "매출"은 ZAMT001(총매출), "순매출"은 ZAMT003 등 스키마의 한국어 설명을 참고하여 올바른 컬럼을 매핑하세요.\n3. 존재하지 않는 컬럼명을 임의로 생성하지 마세요.\n4. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.\n5. 결과 컬럼에 한글 alias를 사용하세요.\n6. WHERE 조건의 CALMONTH 범위를 절대 변경하지 마세요.' },
             { role: 'user', content: gptPrompt },
