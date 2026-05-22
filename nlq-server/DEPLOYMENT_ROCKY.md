@@ -474,134 +474,195 @@ sudo journalctl -u nlq-server -p err
 
 ## 9단계: Nginx 리버스 프록시 설정
 
+> **설정 파일**: `/data/analytics/config/application.yml` (nginx.conf 형식)
+> **서비스 관리**: `/etc/systemd/system/analytics.service` (전용 systemd 유닛)
+
 ### 9-1. nginx 설정 파일 생성
 
 ```bash
-sudo vi /etc/nginx/conf.d/analytics.conf
+vi /data/analytics/config/application.yml
 ```
 
 ```nginx
 # ============================================================
 # NLQ 수익성분석 서버 — Nginx 리버스 프록시
+# 파일: /data/analytics/config/application.yml
 # ============================================================
 
-# Upstream 정의 (향후 다중 인스턴스 대비)
-upstream nlq_backend {
-    server 127.0.0.1:3000;
-    keepalive 32;
+# ── 워커 설정 ──
+worker_processes  auto;
+error_log  /data/analytics/logs/nginx_error.log warn;
+pid        /data/analytics/logs/nginx.pid;
+
+events {
+    worker_connections  1024;
 }
 
-server {
-    listen       80;
-    server_name  your-domain.com;    # ★ 실제 도메인으로 변경
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
 
-    # ── 기본 설정 ──
-    charset utf-8;
+    # ── 로그 형식 ──
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
 
-    # 업로드 파일 크기 제한 (엑셀 업로드 최대 300MB)
-    client_max_body_size 300M;
+    access_log  /data/analytics/logs/nginx_access.log  main;
 
-    # ── 접근 로그 ──
-    access_log /data/analytics/logs/nginx_access.log;
-    error_log  /data/analytics/logs/nginx_error.log;
+    sendfile        on;
+    tcp_nopush      on;
+    keepalive_timeout  65;
+    gzip  on;
+    gzip_types text/plain text/css application/json application/javascript text/xml;
 
-    # ── 정적 파일 (nginx 직접 서비스 — 선택사항) ──
-    # Node.js가 자체적으로 static 서빙하므로 기본적으로 불필요
-    # 성능 최적화가 필요할 때만 활성화
+    # ── Upstream 정의 (향후 다중 인스턴스 대비) ──
+    upstream nlq_backend {
+        server 127.0.0.1:3000;
+        keepalive 32;
+    }
+
+    server {
+        listen       80;
+        server_name  your-domain.com;    # ★ 실제 도메인으로 변경
+
+        # ── 기본 설정 ──
+        charset utf-8;
+
+        # 업로드 파일 크기 제한 (엑셀 업로드 최대 300MB)
+        client_max_body_size 300M;
+
+        # ── 정적 파일 (nginx 직접 서비스 — 선택사항) ──
+        # Node.js가 자체적으로 static 서빙하므로 기본적으로 불필요
+        # 성능 최적화가 필요할 때만 활성화
+        #
+        # location /static/ {
+        #     alias /data/analytics/static/;
+        #     expires 30d;
+        #     add_header Cache-Control "public, immutable";
+        # }
+
+        # ── Node.js 서버로 프록시 ──
+        location / {
+            proxy_pass http://nlq_backend;
+            proxy_http_version 1.1;
+
+            # 헤더 전달
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # WebSocket 지원 (필요 시)
+            proxy_set_header Upgrade    $http_upgrade;
+            proxy_set_header Connection "upgrade";
+
+            # Keep-Alive
+            proxy_set_header Connection "";
+
+            # ── 타임아웃 ──
+            # NLQ AI 분석 + PPT 보고서 생성은 시간이 걸림
+            proxy_connect_timeout 10s;
+            proxy_read_timeout    180s;    # 최대 3분 (PPT 생성 타임아웃)
+            proxy_send_timeout    60s;
+
+            # ── 버퍼링 ──
+            proxy_buffering on;
+            proxy_buffer_size 16k;
+            proxy_buffers 4 64k;
+            proxy_busy_buffers_size 128k;
+        }
+
+        # ── 헬스체크 (로드밸런서 연동 시) ──
+        location /health {
+            proxy_pass http://nlq_backend/api/status;
+            proxy_read_timeout 5s;
+            access_log off;
+        }
+
+        # ── 보안: 숨김 파일 차단 ──
+        location ~ /\. {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+
+        # ── .env 파일 직접 접근 차단 ──
+        location ~ /\.env {
+            deny all;
+            return 404;
+        }
+    }
+
+    # ── (선택) HTTPS 설정 — SSL 인증서가 있을 때 ──
     #
-    # location /static/ {
-    #     alias /data/analytics/static/;
-    #     expires 30d;
-    #     add_header Cache-Control "public, immutable";
+    # server {
+    #     listen       80;
+    #     server_name  your-domain.com;
+    #     return 301   https://$host$request_uri;
     # }
-
-    # ── Node.js 서버로 프록시 ──
-    location / {
-        proxy_pass http://nlq_backend;
-        proxy_http_version 1.1;
-
-        # 헤더 전달
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # WebSocket 지원 (필요 시)
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # Keep-Alive
-        proxy_set_header Connection "";
-
-        # ── 타임아웃 ──
-        # NLQ AI 분석 + PPT 보고서 생성은 시간이 걸림
-        proxy_connect_timeout 10s;
-        proxy_read_timeout    180s;    # 최대 3분 (PPT 생성 타임아웃)
-        proxy_send_timeout    60s;
-
-        # ── 버퍼링 ──
-        proxy_buffering on;
-        proxy_buffer_size 16k;
-        proxy_buffers 4 64k;
-        proxy_busy_buffers_size 128k;
-    }
-
-    # ── 헬스체크 (로드밸런서 연동 시) ──
-    location /health {
-        proxy_pass http://nlq_backend/api/status;
-        proxy_read_timeout 5s;
-        access_log off;
-    }
-
-    # ── 보안: 숨김 파일 차단 ──
-    location ~ /\. {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-
-    # ── .env 파일 직접 접근 차단 ──
-    location ~ /\.env {
-        deny all;
-        return 404;
-    }
+    #
+    # server {
+    #     listen       443 ssl http2;
+    #     server_name  your-domain.com;
+    #
+    #     ssl_certificate     /etc/nginx/ssl/your-domain.crt;
+    #     ssl_certificate_key /etc/nginx/ssl/your-domain.key;
+    #     ssl_protocols       TLSv1.2 TLSv1.3;
+    #     ssl_ciphers         HIGH:!aNULL:!MD5;
+    #
+    #     # 나머지 설정은 위 80 포트 server 블록과 동일
+    # }
 }
 ```
 
-### 9-2. (선택) HTTPS 설정 — SSL 인증서가 있을 때
-
-```nginx
-server {
-    listen       80;
-    server_name  your-domain.com;
-    return 301   https://$host$request_uri;
-}
-
-server {
-    listen       443 ssl http2;
-    server_name  your-domain.com;
-
-    ssl_certificate     /etc/nginx/ssl/your-domain.crt;
-    ssl_certificate_key /etc/nginx/ssl/your-domain.key;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    # 나머지 설정은 위 80 포트 설정과 동일
-    # ...
-}
-```
-
-### 9-3. 설정 검증 + 적용
+### 9-2. analytics.service (nginx 전용 systemd 유닛) 생성
 
 ```bash
+sudo vi /etc/systemd/system/analytics.service
+```
+
+```ini
+[Unit]
+Description=Analytics Nginx Reverse Proxy
+Documentation=https://github.com/kleanna-dx/Profitability_Analysis
+After=network.target nlq-server.service
+Wants=nlq-server.service
+
+[Service]
+Type=forking
+User=root
+ExecStartPre=/usr/sbin/nginx -t -c /data/analytics/config/application.yml
+ExecStart=/usr/sbin/nginx -c /data/analytics/config/application.yml
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s QUIT $MAINPID
+PIDFile=/data/analytics/logs/nginx.pid
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 9-3. 로그 디렉토리 준비 + 서비스 시작
+
+```bash
+# 로그 디렉토리 확인
+mkdir -p /data/analytics/logs
+
 # 설정 문법 검증
-sudo nginx -t
+sudo nginx -t -c /data/analytics/config/application.yml
 
-# nginx 리로드 (무중단)
-sudo systemctl reload nginx
+# ※ 기존 시스템 nginx가 80 포트를 점유 중이면 먼저 중지
+sudo systemctl stop nginx
+sudo systemctl disable nginx
 
-# 또는 재시작
-sudo systemctl restart nginx
+# analytics.service 시작
+sudo systemctl daemon-reload
+sudo systemctl start analytics
+sudo systemctl enable analytics
+
+# 상태 확인
+sudo systemctl status analytics
 ```
 
 ---
@@ -667,7 +728,7 @@ sudo sealert -a /var/log/audit/audit.log
 # 모든 서비스 상태
 sudo systemctl status mariadb
 sudo systemctl status nlq-server
-sudo systemctl status nginx
+sudo systemctl status analytics      # nginx 리버스 프록시
 
 # Node.js 프로세스 확인
 ps aux | grep "node server.mjs"
@@ -730,9 +791,10 @@ cp package.json package-lock.json /data/analytics/app/
 cd /data/analytics/app && npm install --omit=dev
 sudo systemctl restart nlq-server
 
-# ── nginx ──
-sudo nginx -t                         # 설정 검증
-sudo systemctl reload nginx           # 무중단 리로드
+# ── nginx (analytics.service) ──
+sudo nginx -t -c /data/analytics/config/application.yml   # 설정 검증
+sudo systemctl reload analytics                            # 무중단 리로드
+sudo systemctl restart analytics                           # 재시작
 ```
 
 ---
@@ -755,11 +817,17 @@ mysql -u company -p -h localhost company_board -e "SELECT 1;"
 ### ❌ "502 Bad Gateway" — nginx → Node.js 연결 실패
 
 ```bash
+# analytics(nginx) 서비스 확인
+sudo systemctl status analytics
+
 # nlq-server 실행 중인지 확인
 sudo systemctl status nlq-server
 
 # 포트 리스닝 확인
 ss -tlnp | grep 3000
+
+# nginx 설정 검증
+sudo nginx -t -c /data/analytics/config/application.yml
 
 # SELinux 차단 확인
 sudo ausearch -m avc -ts recent | grep nginx
