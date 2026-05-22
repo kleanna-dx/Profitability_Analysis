@@ -16,7 +16,7 @@
 ├── app/            ← Node.js 서버 실행 영역 (배포 대상)
 ├── config/         ← .env 환경변수 설정
 ├── logs/           ← 서비스 로그
-├── source/         ← GitHub 소스 원본
+├── source/         ← GitHub 소스 원본 (repo root = source/ 디렉토리)
 └── static/         ← (예비, nginx 직접 서비스용)
 ```
 
@@ -106,8 +106,8 @@ rm -rf $(python3 -c "import matplotlib; print(matplotlib.get_cachedir())")
 ## 4단계: 소스 배치 + npm install
 
 ```bash
-# source에 이미 clone 되어 있다면:
-cd /data/analytics/source/Profitability_Analysis
+# source 디렉토리가 곧 Git 저장소 루트 (source/ 안에 직접 clone)
+cd /data/analytics/source
 
 # 최신 소스 pull
 git pull origin main
@@ -116,9 +116,9 @@ git pull origin main
 # ※ 주의: nlq-server/ 하위가 실제 서버, 상위 package.json 의존성도 필요
 
 # 방법 1: nlq-server 내용 + 상위 의존성 파일 복사
-cp -r /data/analytics/source/Profitability_Analysis/nlq-server/* /data/analytics/app/
-cp /data/analytics/source/Profitability_Analysis/package.json /data/analytics/app/
-cp /data/analytics/source/Profitability_Analysis/package-lock.json /data/analytics/app/
+cp -r /data/analytics/source/nlq-server/* /data/analytics/app/
+cp /data/analytics/source/package.json /data/analytics/app/
+cp /data/analytics/source/package-lock.json /data/analytics/app/
 
 # uploads 디렉토리 생성 (엑셀 업로드 임시 저장)
 mkdir -p /data/analytics/app/uploads
@@ -723,7 +723,7 @@ sudo journalctl -u nlq-server -n 200 --no-pager     # 최근 200줄
 sudo journalctl -u nlq-server --since "1 hour ago"  # 1시간 이내
 
 # ── 소스 업데이트 배포 ──
-cd /data/analytics/source/Profitability_Analysis
+cd /data/analytics/source
 git pull origin main
 cp -r nlq-server/* /data/analytics/app/
 cp package.json package-lock.json /data/analytics/app/
