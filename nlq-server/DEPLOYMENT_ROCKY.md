@@ -359,14 +359,14 @@ curl -s http://localhost:3000/login | head -5
 
 ## 8단계: systemd 서비스 등록
 
-### 8-1. 전용 시스템 사용자 생성 (보안)
+### 8-1. 디렉토리 소유권 확인
 
 ```bash
-# analytics 사용자 생성 (로그인 불가, 홈디렉토리 없음)
-sudo useradd -r -s /sbin/nologin -d /data/analytics analytics
+# 서비스를 knaraadm 계정으로 실행하므로 소유권 확인
+ls -la /data/analytics/
 
-# 디렉토리 소유권 변경
-sudo chown -R analytics:analytics /data/analytics
+# 소유권이 knaraadm이 아닌 경우에만 실행
+sudo chown -R knaraadm:knaraadm /data/analytics
 ```
 
 ### 8-2. systemd 서비스 파일 생성
@@ -385,8 +385,8 @@ Wants=mariadb.service
 [Service]
 # ── 실행 설정 ──
 Type=simple
-User=analytics
-Group=analytics
+User=knaraadm
+Group=knaraadm
 WorkingDirectory=/data/analytics/app
 ExecStart=/usr/bin/node server.mjs
 Restart=always
@@ -411,8 +411,8 @@ StandardError=journal
 SyslogIdentifier=nlq-server
 
 # ── 보안 강화 ──
-# /home, /root 등 불필요한 디렉토리 접근 차단
-ProtectHome=true
+# ※ knaraadm은 일반 로그인 계정이므로 ProtectHome 사용 안 함
+# ProtectHome=true
 # /usr, /boot, /efi 를 읽기 전용으로 마운트
 ProtectSystem=full
 # /tmp을 프로세스 전용 임시 디렉토리로 격리
@@ -775,7 +775,7 @@ sudo setsebool -P httpd_can_network_connect 1
 ls -la /data/analytics/app/
 
 # 소유권 재설정
-sudo chown -R analytics:analytics /data/analytics
+sudo chown -R knaraadm:knaraadm /data/analytics
 ```
 
 ### ❌ "Error: Cannot find module" — npm 모듈 누락
@@ -821,8 +821,8 @@ curl -s https://www.genspark.ai/api/llm_proxy/v1/models \
 - [x] 3000 포트 외부 비노출 (nginx 프록시만 접근)
 - [x] SELinux Enforcing 유지
 - [x] firewalld HTTP/HTTPS만 허용
-- [x] systemd `ProtectHome`, `ProtectSystem`, `PrivateTmp` 활성화
-- [x] analytics 전용 사용자 (로그인 불가)
+- [x] systemd `ProtectSystem`, `PrivateTmp` 활성화
+- [x] knaraadm 계정으로 서비스 실행 (서버 접속 계정)
 - [ ] HTTPS 인증서 적용 (운영 환경 필수)
 - [ ] SESSION_SECRET 고정값 설정 (.env)
 - [ ] GW_API_KEY 실제 운영용 키로 변경
