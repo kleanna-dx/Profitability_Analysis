@@ -476,6 +476,7 @@ sudo journalctl -u nlq-server -p err
 
 > **설정 파일**: `/data/analytics/config/application.yml` (nginx.conf 형식)
 > **서비스 관리**: `/etc/systemd/system/analytics.service` (전용 systemd 유닛)
+> **서비스 포트**: `18083` (nginx 다수 서비스 포트 구분 용)
 
 ### 9-1. nginx 설정 파일 생성
 
@@ -487,6 +488,7 @@ vi /data/analytics/config/application.yml
 # ============================================================
 # NLQ 수익성분석 서버 — Nginx 리버스 프록시
 # 파일: /data/analytics/config/application.yml
+# 포트: 18083 (nginx 에서 다수 서비스를 포트로 구분)
 # ============================================================
 
 # ── 워커 설정 ──
@@ -522,8 +524,8 @@ http {
     }
 
     server {
-        listen       80;
-        server_name  your-domain.com;    # ★ 실제 도메인으로 변경
+        listen       18083;
+        server_name  _;    # 포트 기반 구분이므로 모든 호스트로 수신
 
         # ── 기본 설정 ──
         charset utf-8;
@@ -594,23 +596,18 @@ http {
     }
 
     # ── (선택) HTTPS 설정 — SSL 인증서가 있을 때 ──
+    # 포트 18083을 SSL로 변경하거나, 별도 443 포트로 설정 가능
     #
     # server {
-    #     listen       80;
-    #     server_name  your-domain.com;
-    #     return 301   https://$host$request_uri;
-    # }
-    #
-    # server {
-    #     listen       443 ssl http2;
-    #     server_name  your-domain.com;
+    #     listen       18083 ssl http2;
+    #     server_name  _;
     #
     #     ssl_certificate     /etc/nginx/ssl/your-domain.crt;
     #     ssl_certificate_key /etc/nginx/ssl/your-domain.key;
     #     ssl_protocols       TLSv1.2 TLSv1.3;
     #     ssl_ciphers         HIGH:!aNULL:!MD5;
     #
-    #     # 나머지 설정은 위 80 포트 server 블록과 동일
+    #     # 나머지 설정은 위 server 블록과 동일
     # }
 }
 ```
@@ -674,9 +671,8 @@ sudo systemctl status analytics
 sudo firewall-cmd --state
 sudo firewall-cmd --list-all
 
-# HTTP/HTTPS 포트 개방
-sudo firewall-cmd --permanent --add-service=http
-sudo firewall-cmd --permanent --add-service=https
+# analytics 서비스 포트 개방 (18083)
+sudo firewall-cmd --permanent --add-port=18083/tcp
 
 # ★ 3000 포트는 외부에 직접 노출하지 않음 (nginx 프록시만 접근)
 # 만약 테스트 목적으로 열어야 한다면:
@@ -734,7 +730,7 @@ sudo systemctl status analytics      # nginx 리버스 프록시
 ps aux | grep "node server.mjs"
 
 # 포트 확인
-ss -tlnp | grep -E "3000|80|443|3306"
+ss -tlnp | grep -E "3000|18083|3306"
 ```
 
 ### 12-2. 동작 테스트
@@ -743,27 +739,27 @@ ss -tlnp | grep -E "3000|80|443|3306"
 # 1) Node.js 직접 (내부)
 curl http://localhost:3000/api/status
 
-# 2) Nginx 경유 (외부 접근 시뮬레이션)
-curl http://localhost/api/status
+# 2) Nginx 경유 (18083 포트)
+curl http://localhost:18083/api/status
 
 # 3) NLQ 테스트 질의
-curl -X POST http://localhost/api/nlq \
+curl -X POST http://localhost:18083/api/nlq \
   -H "Content-Type: application/json" \
   -d '{"query": "브랜드별 총매출 TOP 5"}'
 
 # 4) 로그인 테스트
-curl -s http://localhost/login | head -3
+curl -s http://localhost:18083/login | head -3
 
 # 5) 사용자 API 테스트 (API Key 인증)
 curl -H "X-API-KEY: gw-kleannara-2026-secure-api-key" \
-  http://localhost/api/users?limit=3
+  http://localhost:18083/api/users?limit=3
 ```
 
 ### 12-3. 외부 접근 테스트
 
 브라우저에서:
 ```
-http://your-server-ip/login
+http://your-server-ip:18083/login
 ```
 로그인 페이지가 나오면 성공!
 
@@ -886,7 +882,7 @@ curl -s https://www.genspark.ai/api/llm_proxy/v1/models \
 ## 보안 체크리스트
 
 - [x] `.env` 파일 권한 `600` (소유자만 읽기)
-- [x] 3000 포트 외부 비노출 (nginx 프록시만 접근)
+- [x] 3000 포트 외부 비노출 (nginx 18083 포트 프록시 경유)
 - [x] SELinux Enforcing 유지
 - [x] firewalld HTTP/HTTPS만 허용
 - [x] systemd `ProtectSystem`, `PrivateTmp` 활성화
