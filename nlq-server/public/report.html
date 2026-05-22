@@ -427,6 +427,7 @@
         <h1 class="text-sm font-bold text-gray-800 mr-auto">
             <i class="fas fa-file-powerpoint" style="margin-right:6px;color:var(--primary);"></i>PPT 분석 장표 생성
         </h1>
+        <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
     </div>
 
     <!-- Content Area -->
@@ -1050,5 +1051,6 @@
         }
     }
 </script>
+<script>async function doLogout(){if(!confirm("로그아웃 하시겠습니까?"))return;try{await fetch("/api/logout",{method:"POST"})}catch(e){}window.location.href="/login"}</script>
 </body>
 </html>

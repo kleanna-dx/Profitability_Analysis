@@ -191,9 +191,7 @@
         </h1>
         <span class="text-xs text-gray-400 ml-2">데이터 사전 (컬럼 / 계산지표 / 테이블 조인)</span>
         <div class="ml-auto flex items-center gap-2">
-            <a href="/" class="btn btn-outline btn-sm" style="text-decoration:none;">
-                <i class="fas fa-comments"></i> 질의 화면
-            </a>
+            <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
         </div>
     </div>
 
@@ -1121,5 +1119,6 @@ function showResult(result) {
 // ============================================================
 function esc(s) { if (s == null) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
 </script>
+<script>async function doLogout(){if(!confirm("로그아웃 하시겠습니까?"))return;try{await fetch("/api/logout",{method:"POST"})}catch(e){}window.location.href="/login"}</script>
 </body>
 </html>

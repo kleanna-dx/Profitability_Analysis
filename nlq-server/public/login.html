@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 수익성분석 - 로그인</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 40%, #60a5fa 70%, #93c5fd 100%);
+            overflow: hidden;
+        }
+
+        /* 배경 장식 원 */
+        body::before,
+        body::after {
+            content: '';
+            position: fixed;
+            border-radius: 50%;
+            opacity: 0.08;
+            background: #fff;
+        }
+        body::before {
+            width: 600px; height: 600px;
+            top: -200px; right: -100px;
+        }
+        body::after {
+            width: 400px; height: 400px;
+            bottom: -150px; left: -80px;
+        }
+
+        .login-card {
+            background: #fff;
+            border-radius: 20px;
+            padding: 48px 44px 40px;
+            width: 420px;
+            max-width: 92vw;
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.15), 0 8px 20px rgba(0, 0, 0, 0.08);
+            position: relative;
+            z-index: 1;
+            animation: slideUp 0.5s ease-out;
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 36px;
+        }
+
+        .login-logo {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 56px;
+            height: 56px;
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+            border-radius: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+        }
+
+        .login-logo svg {
+            width: 32px;
+            height: 32px;
+        }
+
+        .login-title {
+            font-size: 24px;
+            font-weight: 700;
+            color: #111827;
+            letter-spacing: -0.5px;
+        }
+
+        .login-subtitle {
+            font-size: 14px;
+            color: #6b7280;
+            margin-top: 6px;
+            font-weight: 400;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 13px 16px;
+            border: 1.5px solid #e5e7eb;
+            border-radius: 12px;
+            font-size: 14px;
+            font-family: 'Noto Sans KR', sans-serif;
+            color: #111827;
+            background: #f9fafb;
+            transition: all 0.2s ease;
+            outline: none;
+        }
+
+        .form-input::placeholder {
+            color: #9ca3af;
+        }
+
+        .form-input:focus {
+            border-color: #3b82f6;
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .form-input.error {
+            border-color: #ef4444;
+            background: #fef2f2;
+        }
+
+        .form-input.error:focus {
+            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+        }
+
+        .error-message {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #dc2626;
+            animation: shake 0.4s ease-in-out;
+        }
+
+        .error-message.show {
+            display: flex;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%      { transform: translateX(-6px); }
+            40%      { transform: translateX(6px); }
+            60%      { transform: translateX(-4px); }
+            80%      { transform: translateX(4px); }
+        }
+
+        .error-message svg {
+            flex-shrink: 0;
+            width: 18px;
+            height: 18px;
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 14px 0;
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: #fff;
+            border: none;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            font-family: 'Noto Sans KR', sans-serif;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-top: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .login-btn:hover {
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+            transform: translateY(-1px);
+        }
+
+        .login-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+        }
+
+        .login-btn:disabled {
+            background: #93c5fd;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .login-btn .spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 2.5px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            margin: 0 auto;
+        }
+
+        .login-btn.loading .btn-text { display: none; }
+        .login-btn.loading .spinner { display: inline-block; }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .login-footer {
+            text-align: center;
+            margin-top: 28px;
+            padding-top: 20px;
+            border-top: 1px solid #f3f4f6;
+        }
+
+        .login-footer p {
+            font-size: 12px;
+            color: #9ca3af;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="login-header">
+            <div class="login-logo">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <!-- 막대 차트 (수익성 분석) -->
+                    <rect x="3" y="14" width="4" height="7" rx="1" fill="white" opacity="0.6"/>
+                    <rect x="10" y="9" width="4" height="12" rx="1" fill="white" opacity="0.8"/>
+                    <rect x="17" y="5" width="4" height="16" rx="1" fill="white"/>
+                    <!-- 상승 화살표 -->
+                    <path d="M4 12 L11 6 L15 9 L20 3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                    <path d="M16 3 L20 3 L20 7" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                </svg>
+            </div>
+            <h1 class="login-title">AI 수익성분석</h1>
+            <p class="login-subtitle">수익성 데이터 기반 AI 분석 서비스</p>
+        </div>
+
+        <div class="error-message" id="errorMsg">
+            <svg viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+            </svg>
+            <span id="errorText"></span>
+        </div>
+
+        <form id="loginForm" autocomplete="off">
+            <div class="form-group">
+                <label class="form-label" for="username">아이디</label>
+                <input class="form-input" type="text" id="username" name="username"
+                       placeholder="아이디 입력" autocomplete="username" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="password">비밀번호</label>
+                <input class="form-input" type="password" id="password" name="password"
+                       placeholder="비밀번호 입력" autocomplete="current-password" required>
+            </div>
+            <button class="login-btn" type="submit" id="loginBtn">
+                <span class="btn-text">로그인</span>
+                <span class="spinner"></span>
+            </button>
+        </form>
+
+        <div class="login-footer">
+            <p>&copy; 2026 AI 수익성분석 &middot; Profitability Analysis Platform</p>
+        </div>
+    </div>
+
+    <script>
+        const form    = document.getElementById('loginForm');
+        const btn     = document.getElementById('loginBtn');
+        const errorEl = document.getElementById('errorMsg');
+        const errorTx = document.getElementById('errorText');
+        const idInput = document.getElementById('username');
+        const pwInput = document.getElementById('password');
+
+        // 이미 로그인 상태이면 메인으로 이동
+        fetch('/api/me').then(r => r.json()).then(d => {
+            if (d.loggedIn) window.location.href = '/';
+        }).catch(() => {});
+
+        function showError(msg) {
+            errorTx.textContent = msg;
+            errorEl.classList.add('show');
+            idInput.classList.add('error');
+            pwInput.classList.add('error');
+        }
+
+        function hideError() {
+            errorEl.classList.remove('show');
+            idInput.classList.remove('error');
+            pwInput.classList.remove('error');
+        }
+
+        // 입력 시 에러 초기화
+        idInput.addEventListener('input', hideError);
+        pwInput.addEventListener('input', hideError);
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+
+            const username = idInput.value.trim();
+            const password = pwInput.value;
+
+            if (!username) { showError('아이디를 입력해주세요.'); idInput.focus(); return; }
+            if (!password) { showError('비밀번호를 입력해주세요.'); pwInput.focus(); return; }
+
+            btn.classList.add('loading');
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password }),
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    // 로그인 성공 — 메인 페이지로 이동
+                    window.location.href = '/';
+                } else {
+                    showError(data.message || '로그인에 실패했습니다.');
+                }
+            } catch (err) {
+                showError('서버 연결에 실패했습니다. 잠시 후 다시 시도해주세요.');
+            } finally {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+            }
+        });
+
+        // 페이지 로드 시 아이디 입력란 포커스
+        idInput.focus();
+    </script>
+</body>
+</html>
