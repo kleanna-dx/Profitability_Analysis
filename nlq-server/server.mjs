@@ -3332,7 +3332,10 @@ app.listen(PORT, '0.0.0.0', async () => {
       console.log(`[RAG] ✅ 자동 빌드 완료: ${count}개 청크`);
     }
   } catch (e) {
-    console.error('[RAG] 초기화 실패 (폴백 모드로 계속):', e.message);
+    console.error('[RAG] 초기화 실패 (폴백 모드로 계속):', e.message || e);
+    if (e.stack) console.error('[RAG] 스택:', e.stack);
+    if (e.code) console.error('[RAG] 에러코드:', e.code);
+    if (e.errno) console.error('[RAG] errno:', e.errno);
     ragReady = false;
   }
 });
