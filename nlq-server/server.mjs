@@ -10,6 +10,8 @@ import { promisify } from 'util';
 import fs from 'fs';
 import multer from 'multer';
 import XLSX from 'xlsx-js-style';
+import session from 'express-session';
+import crypto from 'crypto';
 import {
   buildRagIndex,
   searchRelevantMeta,
@@ -22,7 +24,604 @@ import {
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// ============================================================
+// 세션 설정
+// ============================================================
+app.use(session({
+  secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000, // 24시간
+  }
+}));
+
+// ============================================================
+// 그룹웨어 연동 API Key 설정
+// ============================================================
+const GW_API_KEY = process.env.GW_API_KEY || 'gw-kleannara-2026-secure-api-key';
+
+/**
+ * 그룹웨어 API Key 인증 미들웨어
+ * X-API-KEY 헤더 또는 Authorization: Bearer 토큰으로 인증
+ */
+function verifyApiKey(req, res, next) {
+  const apiKey = req.headers['x-api-key'] || (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+  if (!apiKey || apiKey !== GW_API_KEY) {
+    return res.status(401).json({ success: false, error: 'API Key가 유효하지 않습니다.', code: 'INVALID_API_KEY' });
+  }
+  next();
+}
+
+// ============================================================
+// 인증 라우트 (로그인 페이지 / API) — static 미들웨어보다 먼저 등록
+// ============================================================
+
+// 로그인 페이지 서빙
+app.get('/login', (req, res) => {
+  if (req.session && req.session.user) return res.redirect('/');
+  res.sendFile(path.join(import.meta.dirname, 'public', 'login.html'));
+});
+
+// 로그인 API (DB 조회 방식)
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ success: false, message: '아이디와 비밀번호를 입력하세요.' });
+  }
+  try {
+    const [rows] = await pool.query(
+      'SELECT user_id, password, name, role, is_active FROM users WHERE user_id = ?',
+      [username]
+    );
+    if (rows.length === 0) {
+      return res.status(401).json({ success: false, message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+    }
+    const user = rows[0];
+    if (!user.is_active) {
+      return res.status(401).json({ success: false, message: '비활성화된 계정입니다. 관리자에게 문의하세요.' });
+    }
+    if (user.password !== password) {
+      return res.status(401).json({ success: false, message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+    }
+    req.session.user = { id: user.user_id, name: user.name, role: user.role, loginAt: new Date().toISOString() };
+    return res.json({ success: true, user: user.user_id, name: user.name });
+  } catch (err) {
+    console.error('[Login] DB 조회 오류:', err.message);
+    return res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+// ============================================================
+// SSO EncData 로그인 (그룹웨어 연동)
+// ============================================================
+// SSO 설정 (환경변수로 변경 가능)
+const SSO_VALIDATE_URL = process.env.SSO_VALIDATE_URL || 'https://sso.kleannara.com/rest/security/encValidateProduct';
+const SSO_PRODUCT_ID   = process.env.SSO_PRODUCT_ID   || 'PRO_000643';
+
+/**
+ * POST /api/login/sendEncData
+ * 그룹웨어에서 form submit으로 encData를 전송하면
+ * SSO 서버에 검증 → 성공 시 세션 생성 → 메인페이지 이동
+ */
+app.post('/api/login/sendEncData', async (req, res) => {
+  const encData = req.body?.encData;
+
+  // encData 누락 체크
+  if (!encData || !String(encData).trim()) {
+    return res.status(200).type('html').send(buildSsoErrorHtml('encData가 전달되지 않았습니다.'));
+  }
+
+  try {
+    console.log(`[SSO] encData 수신, 길이=${encData.length}`);
+
+    // SSO 서버에 검증 요청
+    const ssoRes = await fetch(SSO_VALIDATE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productId: SSO_PRODUCT_ID, encData }),
+      signal: AbortSignal.timeout(10000), // 10초 타임아웃
+    });
+
+    if (!ssoRes.ok) {
+      console.error(`[SSO] SSO 서버 응답 오류: ${ssoRes.status}`);
+      return res.status(200).type('html').send(buildSsoErrorHtml('SSO 서버 연결에 실패했습니다.'));
+    }
+
+    const ssoData = await ssoRes.json();
+    console.log(`[SSO] SSO 응답:`, JSON.stringify(ssoData));
+
+    // returnCode 체크 (숫자 0 또는 문자열 "0" 모두 허용)
+    const returnCode = ssoData?.head?.returnCode;
+    if (String(returnCode) !== '0') {
+      const msg = ssoData?.head?.returnDesc || ssoData?.head?.returnMessage || 'SSO 검증 실패';
+      console.warn(`[SSO] 검증 실패: returnCode=${returnCode}, ${msg}`);
+      return res.status(200).type('html').send(buildSsoErrorHtml(msg));
+    }
+
+    // 사용자 ID 추출 (sproId 우선, userId 폴백)
+    const userId = ssoData?.body?.sproId || ssoData?.body?.userId;
+    if (!userId) {
+      console.warn('[SSO] sproId/userId 누락');
+      return res.status(200).type('html').send(buildSsoErrorHtml('SSO 사용자 정보를 가져올 수 없습니다.'));
+    }
+
+    // users 테이블에서 해당 사용자 조회 (없으면 자동 생성)
+    let [userRows] = await pool.query('SELECT user_id, name, role, is_active FROM users WHERE user_id = ?', [userId]);
+    if (userRows.length === 0) {
+      // SSO 사용자 자동 생성
+      await pool.query(
+        'INSERT INTO users (user_id, name, role, is_active, sso_yn) VALUES (?, ?, ?, 1, 1)',
+        [userId, ssoData?.body?.sproId || userId, 'user']
+      );
+      console.log(`[SSO] 신규 사용자 자동 생성: ${userId}`);
+      [userRows] = await pool.query('SELECT user_id, name, role, is_active FROM users WHERE user_id = ?', [userId]);
+    }
+    const ssoUser = userRows[0];
+    if (!ssoUser.is_active) {
+      console.warn(`[SSO] 비활성화된 계정: ${userId}`);
+      return res.status(200).type('html').send(buildSsoErrorHtml('비활성화된 계정입니다. 관리자에게 문의하세요.'));
+    }
+
+    // 세션 생성 (SSO 로그인 성공)
+    req.session.user = {
+      id: userId,
+      name: ssoUser.name,
+      role: ssoUser.role,
+      loginAt: new Date().toISOString(),
+      sso: true,
+      tenantId: ssoData?.body?.tenantId || null,
+    };
+
+    console.log(`[SSO] ✅ 로그인 성공: ${userId} (${ssoUser.name})`);
+
+    // 성공 HTML 반환 → 메인페이지로 이동
+    return res.status(200).type('html').send(buildSsoSuccessHtml(userId));
+
+  } catch (err) {
+    console.error(`[SSO] 오류:`, err.message);
+    const msg = err.name === 'TimeoutError'
+      ? 'SSO 서버 응답 시간이 초과되었습니다.'
+      : 'SSO 처리 중 오류가 발생했습니다.';
+    return res.status(200).type('html').send(buildSsoErrorHtml(msg));
+  }
+});
+
+/** SSO 성공 HTML — 세션 설정 후 메인페이지로 이동 */
+function buildSsoSuccessHtml(sproId) {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 수익성분석 - SSO 로그인</title>
+  <style>
+    body{font-family:'Noto Sans KR',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:linear-gradient(135deg,#1e3a8a,#3b82f6,#60a5fa);}
+    .card{background:#fff;border-radius:16px;padding:40px;text-align:center;box-shadow:0 20px 40px rgba(0,0,0,.15);max-width:400px;width:90%;}
+    .spinner{width:40px;height:40px;border:4px solid #e5e7eb;border-top-color:#3b82f6;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px;}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    h2{font-size:18px;color:#111827;margin-bottom:8px;}
+    p{font-size:14px;color:#6b7280;}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h2>${sproId}님, 환영합니다!</h2>
+    <p>AI 수익성분석 화면으로 이동 중...</p>
+  </div>
+  <script>
+    // 세션은 서버에서 이미 생성됨 → 바로 메인으로 이동
+    setTimeout(function(){ window.location.href = '/'; }, 800);
+  </script>
+</body>
+</html>`;
+}
+
+/** SSO 실패 HTML — 에러 메시지 + 로그인 페이지 이동 */
+function buildSsoErrorHtml(message) {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 수익성분석 - SSO 오류</title>
+  <style>
+    body{font-family:'Noto Sans KR',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:linear-gradient(135deg,#1e3a8a,#3b82f6,#60a5fa);}
+    .card{background:#fff;border-radius:16px;padding:40px;text-align:center;box-shadow:0 20px 40px rgba(0,0,0,.15);max-width:420px;width:90%;}
+    .icon{width:56px;height:56px;background:#fef2f2;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:28px;}
+    h2{font-size:18px;color:#111827;margin-bottom:8px;}
+    .msg{font-size:14px;color:#dc2626;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;margin-bottom:20px;}
+    .info{font-size:13px;color:#9ca3af;margin-bottom:16px;}
+    .btn{display:inline-block;padding:10px 24px;background:#3b82f6;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer;text-decoration:none;font-family:inherit;}
+    .btn:hover{background:#2563eb;}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">⚠️</div>
+    <h2>SSO 로그인 실패</h2>
+    <div class="msg">${message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+    <p class="info"><span id="countdown">3</span>초 후 로그인 페이지로 이동합니다...</p>
+    <a href="/login" class="btn">로그인 페이지로 바로 이동</a>
+  </div>
+  <script>
+    var sec = 3;
+    var el = document.getElementById('countdown');
+    var timer = setInterval(function(){
+      sec--;
+      el.textContent = sec;
+      if(sec <= 0){ clearInterval(timer); window.location.href = '/login'; }
+    }, 1000);
+  </script>
+</body>
+</html>`;
+}
+
+// 로그아웃 API
+app.post('/api/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.json({ success: true });
+  });
+});
+
+// 세션 확인 API
+app.get('/api/me', (req, res) => {
+  if (req.session && req.session.user) {
+    return res.json({ loggedIn: true, user: req.session.user.id });
+  }
+  return res.json({ loggedIn: false });
+});
+
+// ============================================================
+// 인증 미들웨어 — 로그인하지 않으면 /login으로 리다이렉트
+// ============================================================
+app.use((req, res, next) => {
+  // 인증이 필요 없는 경로
+  const publicPaths = ['/login', '/login.html', '/api/login', '/api/login/sendEncData', '/api/logout', '/api/me'];
+  if (publicPaths.some(p => req.path === p)) return next();
+  // 그룹웨어 연동 API (/api/users/*) — API Key 인증은 각 라우트에서 별도 처리
+  if (req.path.startsWith('/api/users')) return next();
+  // 정적 리소스 (css/js/font/icon 등)는 통과
+  if (/\.(css|js|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map)$/i.test(req.path)) return next();
+  // CDN 등 외부 스크립트 요청은 해당 없음 (express에서 처리 안 함)
+
+  if (req.session && req.session.user) return next();
+
+  // API 요청이면 401
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
+  }
+  // 페이지 요청이면 리다이렉트
+  return res.redirect('/login');
+});
+
+// 정적 파일 서빙 (인증 미들웨어 뒤에 배치)
 app.use(express.static(path.join(import.meta.dirname, 'public')));
+
+// ============================================================
+// 그룹웨어 연동 — 사용자 관리 API (API Key 인증 필수)
+// ============================================================
+// 모든 /api/users 라우트에 API Key 인증 적용
+// 그룹웨어 → 우리 서비스 API 호출 → 우리 DB에 사용자 동기화
+
+/**
+ * GET /api/users — 전체 사용자 조회 (pagination 지원)
+ * Query: page(기본1), limit(기본50, 최대500), is_active(0|1), role, group_name, group_id, search
+ */
+app.get('/api/users', verifyApiKey, async (req, res) => {
+  try {
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 500);
+    const offset = (page - 1) * limit;
+
+    // 필터 조건 동적 빌드
+    const whereParts = [];
+    const params = [];
+
+    if (req.query.is_active !== undefined) {
+      whereParts.push('is_active = ?');
+      params.push(parseInt(req.query.is_active));
+    }
+    if (req.query.role) {
+      whereParts.push('role = ?');
+      params.push(req.query.role);
+    }
+    if (req.query.group_name) {
+      whereParts.push('group_name = ?');
+      params.push(req.query.group_name);
+    }
+    if (req.query.group_id) {
+      whereParts.push('group_id = ?');
+      params.push(req.query.group_id);
+    }
+    if (req.query.search) {
+      whereParts.push('(user_id LIKE ? OR name LIKE ? OR email LIKE ?)');
+      const kw = `%${req.query.search}%`;
+      params.push(kw, kw, kw);
+    }
+
+    const whereClause = whereParts.length > 0 ? 'WHERE ' + whereParts.join(' AND ') : '';
+
+    // 총 건수
+    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM users ${whereClause}`, params);
+    const total = countRows[0].total;
+
+    // 데이터 조회 (password 제외)
+    const [rows] = await pool.query(
+      `SELECT id, user_id, name, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role, is_active, sso_yn, created_at, updated_at
+       FROM users ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (err) {
+    console.error('[Users API] 전체 조회 오류:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/users/:userId — 개별 사용자 조회
+ */
+app.get('/api/users/:userId', verifyApiKey, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, user_id, name, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role, is_active, sso_yn, created_at, updated_at
+       FROM users WHERE user_id = ?`,
+      [req.params.userId]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: '사용자를 찾을 수 없습니다.', userId: req.params.userId });
+    }
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[Users API] 개별 조회 오류:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/users/bulk — Bulk 사용자 생성
+ * Body: { users: [{ userId, name, email?, groupName?, groupId?, parentGroupId?, tenantId?, phone?, position?, role? }] }
+ */
+app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
+  const { users } = req.body;
+  if (!Array.isArray(users) || users.length === 0) {
+    return res.status(400).json({ success: false, error: 'users 배열이 필요합니다.' });
+  }
+  if (users.length > 1000) {
+    return res.status(400).json({ success: false, error: '한 번에 최대 1000명까지 처리 가능합니다.' });
+  }
+
+  const results = [];
+  let successCount = 0, failCount = 0;
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    for (const u of users) {
+      try {
+        if (!u.userId || !u.name) {
+          results.push({ userId: u.userId || '(없음)', status: 'fail', message: 'userId와 name은 필수입니다.' });
+          failCount++;
+          continue;
+        }
+
+        // 중복 체크
+        const [existing] = await conn.query('SELECT id, is_active FROM users WHERE user_id = ?', [u.userId]);
+        if (existing.length > 0) {
+          // 이미 존재하지만 비활성화 상태 → 재활성화
+          if (!existing[0].is_active) {
+            await conn.query(
+              `UPDATE users SET name=?, email=?, group_name=?, group_id=?, parent_group_id=?, tenant_id=?, phone=?, position=?, role=?, is_active=1, sso_yn=1, updated_at=NOW() WHERE user_id=?`,
+              [u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, u.role || 'user', u.userId]
+            );
+            results.push({ userId: u.userId, status: 'success', message: 'reactivated (기존 비활성 계정 재활성화)' });
+            successCount++;
+          } else {
+            results.push({ userId: u.userId, status: 'fail', message: 'already exists (이미 활성 계정 존재)' });
+            failCount++;
+          }
+          continue;
+        }
+
+        await conn.query(
+          `INSERT INTO users (user_id, name, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role, is_active, sso_yn) VALUES (?,?,?,?,?,?,?,?,?,?,1,1)`,
+          [u.userId, u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, u.role || 'user']
+        );
+        results.push({ userId: u.userId, status: 'success', message: 'created' });
+        successCount++;
+      } catch (rowErr) {
+        results.push({ userId: u.userId || '(없음)', status: 'fail', message: rowErr.message });
+        failCount++;
+      }
+    }
+
+    await conn.commit();
+    console.log(`[Users API] Bulk 생성 완료: 성공 ${successCount}, 실패 ${failCount}`);
+
+    res.json({
+      success: true,
+      totalCount: users.length,
+      successCount,
+      failCount,
+      results,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error('[Users API] Bulk 생성 오류:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+/**
+ * PUT /api/users/bulk — Bulk 사용자 수정
+ * Body: { users: [{ userId, name?, email?, groupName?, groupId?, parentGroupId?, tenantId?, phone?, position?, role? }] }
+ */
+app.put('/api/users/bulk', verifyApiKey, async (req, res) => {
+  const { users } = req.body;
+  if (!Array.isArray(users) || users.length === 0) {
+    return res.status(400).json({ success: false, error: 'users 배열이 필요합니다.' });
+  }
+  if (users.length > 1000) {
+    return res.status(400).json({ success: false, error: '한 번에 최대 1000명까지 처리 가능합니다.' });
+  }
+
+  const results = [];
+  let successCount = 0, failCount = 0;
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    for (const u of users) {
+      try {
+        if (!u.userId) {
+          results.push({ userId: '(없음)', status: 'fail', message: 'userId는 필수입니다.' });
+          failCount++;
+          continue;
+        }
+
+        // 존재 확인
+        const [existing] = await conn.query('SELECT id FROM users WHERE user_id = ?', [u.userId]);
+        if (existing.length === 0) {
+          results.push({ userId: u.userId, status: 'fail', message: 'not found (사용자를 찾을 수 없습니다)' });
+          failCount++;
+          continue;
+        }
+
+        // 동적 UPDATE 빌드 (전달된 필드만 수정)
+        const updates = [];
+        const vals = [];
+        if (u.name !== undefined)       { updates.push('name=?');       vals.push(u.name); }
+        if (u.email !== undefined)      { updates.push('email=?');      vals.push(u.email); }
+        if (u.groupName !== undefined)      { updates.push('group_name=?');      vals.push(u.groupName); }
+        if (u.groupId !== undefined)        { updates.push('group_id=?');        vals.push(u.groupId); }
+        if (u.parentGroupId !== undefined)  { updates.push('parent_group_id=?'); vals.push(u.parentGroupId); }
+        if (u.tenantId !== undefined)       { updates.push('tenant_id=?');       vals.push(u.tenantId); }
+        if (u.phone !== undefined)      { updates.push('phone=?');      vals.push(u.phone); }
+        if (u.position !== undefined)   { updates.push('position=?');   vals.push(u.position); }
+        if (u.role !== undefined)       { updates.push('role=?');       vals.push(u.role); }
+
+        if (updates.length === 0) {
+          results.push({ userId: u.userId, status: 'fail', message: '수정할 필드가 없습니다.' });
+          failCount++;
+          continue;
+        }
+
+        vals.push(u.userId);
+        await conn.query(`UPDATE users SET ${updates.join(', ')}, updated_at=NOW() WHERE user_id=?`, vals);
+        results.push({ userId: u.userId, status: 'success', message: 'updated' });
+        successCount++;
+      } catch (rowErr) {
+        results.push({ userId: u.userId || '(없음)', status: 'fail', message: rowErr.message });
+        failCount++;
+      }
+    }
+
+    await conn.commit();
+    console.log(`[Users API] Bulk 수정 완료: 성공 ${successCount}, 실패 ${failCount}`);
+
+    res.json({
+      success: true,
+      totalCount: users.length,
+      successCount,
+      failCount,
+      results,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error('[Users API] Bulk 수정 오류:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+/**
+ * DELETE /api/users/bulk — Bulk 사용자 비활성화 (소프트 삭제)
+ * Body: { userIds: ["user001", "user002", ...] }
+ * 실제 DELETE가 아닌 is_active = 0 처리 (안전)
+ */
+app.delete('/api/users/bulk', verifyApiKey, async (req, res) => {
+  const { userIds } = req.body;
+  if (!Array.isArray(userIds) || userIds.length === 0) {
+    return res.status(400).json({ success: false, error: 'userIds 배열이 필요합니다.' });
+  }
+  if (userIds.length > 1000) {
+    return res.status(400).json({ success: false, error: '한 번에 최대 1000명까지 처리 가능합니다.' });
+  }
+
+  const results = [];
+  let successCount = 0, failCount = 0;
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    for (const uid of userIds) {
+      try {
+        if (!uid) {
+          results.push({ userId: '(없음)', status: 'fail', message: 'userId가 비어있습니다.' });
+          failCount++;
+          continue;
+        }
+
+        const [existing] = await conn.query('SELECT id, is_active FROM users WHERE user_id = ?', [uid]);
+        if (existing.length === 0) {
+          results.push({ userId: uid, status: 'fail', message: 'not found (사용자를 찾을 수 없습니다)' });
+          failCount++;
+          continue;
+        }
+        if (!existing[0].is_active) {
+          results.push({ userId: uid, status: 'success', message: 'already inactive (이미 비활성화 상태)' });
+          successCount++;
+          continue;
+        }
+
+        await conn.query('UPDATE users SET is_active = 0, updated_at = NOW() WHERE user_id = ?', [uid]);
+        results.push({ userId: uid, status: 'success', message: 'deactivated' });
+        successCount++;
+      } catch (rowErr) {
+        results.push({ userId: uid || '(없음)', status: 'fail', message: rowErr.message });
+        failCount++;
+      }
+    }
+
+    await conn.commit();
+    console.log(`[Users API] Bulk 비활성화 완료: 성공 ${successCount}, 실패 ${failCount}`);
+
+    res.json({
+      success: true,
+      totalCount: userIds.length,
+      successCount,
+      failCount,
+      results,
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error('[Users API] Bulk 비활성화 오류:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  } finally {
+    conn.release();
+  }
+});
 
 // ============================================================
 // File Upload (multer) - 엑셀/PPT 등 공용

@@ -34,3 +34,7 @@ lerna-debug.log*
 __pycache__/
 *.pyc
 uploads/
+
+# data files
+*.xlsx
+*.csv
