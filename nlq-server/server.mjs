@@ -100,7 +100,7 @@ app.post('/api/login', async (req, res) => {
 // ============================================================
 // SSO 설정 (환경변수로 변경 가능)
 const SSO_VALIDATE_URL = process.env.SSO_VALIDATE_URL || 'https://sso.kleannara.com/rest/security/encValidateProduct';
-const SSO_PRODUCT_ID   = process.env.SSO_PRODUCT_ID   || 'PRO_000643';
+const SSO_PRODUCT_ID   = process.env.SSO_PRODUCT_ID   || 'PRO_000644';
 
 /**
  * POST /api/login/sendEncData
