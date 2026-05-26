@@ -103,12 +103,15 @@ const SSO_VALIDATE_URL = process.env.SSO_VALIDATE_URL || 'https://sso.kleannara.
 const SSO_PRODUCT_ID   = process.env.SSO_PRODUCT_ID   || 'PRO_000644';
 
 /**
- * POST /api/login/sendEncData
- * 그룹웨어에서 form submit으로 encData를 전송하면
+ * GET/POST /api/login/sendEncData
+ * 그룹웨어에서 encData를 전송하면
  * SSO 서버에 검증 → 성공 시 세션 생성 → 메인페이지 이동
+ *
+ * - POST: form submit body로 encData 수신 (표준)
+ * - GET:  쿼리스트링 ?encData=xxx 또는 그룹웨어 SSO 리다이렉트 대기
  */
-app.post('/api/login/sendEncData', async (req, res) => {
-  const encData = req.body?.encData;
+async function handleSsoLogin(req, res) {
+  const encData = req.body?.encData || req.query?.encData;
 
   // encData 누락 체크
   if (!encData || !String(encData).trim()) {
@@ -188,7 +191,9 @@ app.post('/api/login/sendEncData', async (req, res) => {
       : 'SSO 처리 중 오류가 발생했습니다.';
     return res.status(200).type('html').send(buildSsoErrorHtml(msg));
   }
-});
+}
+app.get('/api/login/sendEncData', handleSsoLogin);
+app.post('/api/login/sendEncData', handleSsoLogin);
 
 /** SSO 성공 HTML — 세션 설정 후 메인페이지로 이동 */
 function buildSsoSuccessHtml(sproId) {
