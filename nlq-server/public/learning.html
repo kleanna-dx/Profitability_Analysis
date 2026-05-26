@@ -28,6 +28,9 @@
         .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
         .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
         .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        .domain-select{font-size:12px;font-weight:600;color:#4f46e5;background:#eef2ff;padding:5px 12px;border-radius:8px;border:1px solid #c7d2fe;cursor:pointer;outline:none;font-family:inherit;}
+        .domain-select:hover{border-color:#818cf8;}
+        .admin-only{display:none;}
 
         /* Content area */
         .content-area{flex:1;overflow-y:auto;padding:24px;}
@@ -161,6 +164,9 @@
         <a href="/learning.html" class="sidebar-menu-item active" style="text-decoration:none;">
             <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
         </a>
+        <a href="/admin.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-users-cog"></i><span>권한 관리</span>
+        </a>
         <a href="/upload.html" class="sidebar-menu-item" style="text-decoration:none;">
             <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
         </a>
@@ -190,7 +196,8 @@
             <i class="fas fa-graduation-cap text-indigo-500 mr-1"></i>학습 관리
         </h1>
         <span class="text-xs text-gray-400 ml-2">데이터 사전 (컬럼 / 계산지표 / 테이블 조인)</span>
-        <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-3">
+            <select id="domainSelect" class="domain-select" onchange="switchDomainAndReload(this.value)"></select>
             <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
         </div>
     </div>
@@ -542,7 +549,32 @@ let joinData = [];
 // ============================================================
 // Init
 // ============================================================
+let currentDomain = 'PS';
+
+async function initLearningDomain() {
+    try {
+        const r = await fetch('/api/me'); const me = await r.json();
+        if (!me.loggedIn) { window.location.href='/login'; return; }
+        if (me.role !== 'admin') { window.location.href='/'; return; }
+        currentDomain = me.active_domain || me.domain_code || 'PS';
+        const sel = document.getElementById('domainSelect');
+        try {
+            const dr = await fetch('/api/domains'); const doms = await dr.json();
+            sel.innerHTML = doms.map(d => `<option value="${d.domain_code}" ${d.domain_code===currentDomain?'selected':''}>${d.domain_name} (${d.domain_code})</option>`).join('');
+        } catch(e) { sel.innerHTML = `<option>${currentDomain}</option>`; }
+    } catch(e) { console.error(e); }
+}
+
+async function switchDomainAndReload(dc) {
+    try {
+        await fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:dc}) });
+        currentDomain = dc;
+        await loadStats(); await loadOntology(); await loadMetric(); await loadJoin();
+    } catch(e) { console.error(e); }
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
+    await initLearningDomain();
     await loadStats();
     await loadOntology();
     await loadMetric();
@@ -562,7 +594,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 // ============================================================
 async function loadStats() {
     try {
-        const res = await fetch('/api/learning/stats');
+        const res = await fetch('/api/learning/stats?domain_code=' + currentDomain);
         const d = await res.json();
         document.getElementById('statOntology').textContent = d.ontologyColumns;
         document.getElementById('statOntSyn').textContent = d.ontologySynonyms;
@@ -598,7 +630,7 @@ function closeModal(id) { document.getElementById(id).classList.remove('active')
 // ONTOLOGY
 // ============================================================
 async function loadOntology() {
-    const res = await fetch('/api/ontology');
+    const res = await fetch('/api/ontology?domain_code=' + currentDomain);
     ontologyData = await res.json();
     renderOntology();
 }
@@ -659,6 +691,7 @@ async function saveOntology() {
         table_name: document.getElementById('ontTableName').value.trim(),
         description: document.getElementById('ontDesc').value.trim(),
         data_type: document.getElementById('ontDataType').value.trim(),
+        domain_code: currentDomain,
     };
     if (!body.column_name) return alert('컬럼명은 필수입니다.');
     try {
@@ -698,7 +731,7 @@ async function delOntSynonym(synId) {
 // METRIC
 // ============================================================
 async function loadMetric() {
-    const res = await fetch('/api/metric');
+    const res = await fetch('/api/metric?domain_code=' + currentDomain);
     metricData = await res.json();
     renderMetric();
 }
@@ -763,6 +796,7 @@ async function saveMetric() {
         formula: document.getElementById('metFormula').value.trim(),
         table_name: document.getElementById('metTableName').value.trim(),
         description: document.getElementById('metDesc').value.trim(),
+        domain_code: currentDomain,
     };
     if (!body.metric_code || !body.formula) return alert('지표코드와 산식은 필수입니다.');
     try {
@@ -802,7 +836,7 @@ async function delMetSynonym(synId) {
 // JOIN
 // ============================================================
 async function loadJoin() {
-    const res = await fetch('/api/join');
+    const res = await fetch('/api/join?domain_code=' + currentDomain);
     joinData = await res.json();
     renderJoin();
 }
@@ -871,6 +905,7 @@ async function saveJoin() {
         join_type: document.getElementById('joinType').value,
         operator: document.getElementById('joinOp').value,
         description: document.getElementById('joinDesc').value.trim(),
+        domain_code: currentDomain,
     };
     if (!body.left_column || !body.left_table || !body.right_column || !body.right_table)
         return alert('Left/Right Column과 Table은 필수입니다.');

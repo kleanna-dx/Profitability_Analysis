@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>권한 관리 - 수익성분석 AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        *{box-sizing:border-box;}
+        body{margin:0;font-family:'Noto Sans KR','Segoe UI',sans-serif;background:#f1f5f9;display:flex;height:100vh;overflow:hidden;}
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;}
+        .sidebar-overlay.active{display:block;}
+        .sidebar{position:fixed;top:0;left:-300px;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
+        .sidebar.open{left:0;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,.1);margin:0 16px;}
+        .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:10px 24px;color:#c7d2fe;cursor:pointer;transition:all .15s;text-decoration:none;}
+        .sidebar-menu-item:hover,.sidebar-menu-item.active{background:rgba(255,255,255,.1);color:#fff;}
+        .main-wrapper{display:flex;flex-direction:column;flex:1;overflow:hidden;}
+        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+        .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        .content-area{flex:1;overflow-y:auto;padding:24px;}
+        .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.08);border:1px solid #e5e7eb;overflow:hidden;}
+        .card-header{padding:16px 20px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px;color:#1e293b;}
+        table{width:100%;border-collapse:collapse;font-size:13px;}
+        thead th{background:#f8fafc;padding:10px 12px;text-align:left;font-weight:600;color:#64748b;border-bottom:1px solid #e5e7eb;white-space:nowrap;}
+        tbody td{padding:9px 12px;border-bottom:1px solid #f1f5f9;color:#334155;vertical-align:middle;}
+        tbody tr:hover{background:#f8fafc;}
+        .badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;}
+        .badge-admin{background:#eef2ff;color:#4f46e5;}
+        .badge-user{background:#f0fdf4;color:#15803d;}
+        .badge-active{background:#dcfce7;color:#166534;}
+        .badge-inactive{background:#fef2f2;color:#991b1b;}
+        .badge-domain{background:#fef3c7;color:#92400e;}
+        select.inline-select{padding:3px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;cursor:pointer;background:#fff;}
+        select.inline-select:focus{outline:none;border-color:#818cf8;}
+        .btn{padding:6px 14px;border-radius:8px;font-size:12px;cursor:pointer;border:none;font-family:inherit;transition:all .15s;}
+        .btn-primary{background:#4f46e5;color:#fff;}.btn-primary:hover{background:#4338ca;}
+        .btn-outline{background:#fff;color:#64748b;border:1px solid #e5e7eb;}.btn-outline:hover{background:#f1f5f9;}
+        .btn-sm{padding:4px 10px;font-size:11px;}
+        .org-path{font-size:11px;color:#94a3b8;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+        .search-box{padding:8px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;width:260px;font-family:inherit;}
+        .search-box:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.1);}
+        .stat-card{background:#fff;border-radius:12px;padding:16px 20px;border:1px solid #e5e7eb;text-align:center;}
+        .stat-num{font-size:24px;font-weight:700;color:#1e293b;}
+        .stat-label{font-size:12px;color:#94a3b8;margin-top:2px;}
+    </style>
+</head>
+<body>
+
+<!-- SIDEBAR OVERLAY -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav class="py-2">
+        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-comments"></i><span>자연어 질의</span>
+        </a>
+        <a href="/builder.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
+        </a>
+        <a href="/report" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
+        </a>
+        <a href="/learning.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
+        </a>
+        <a href="/admin.html" class="sidebar-menu-item active" style="text-decoration:none;">
+            <i class="fas fa-users-cog"></i><span>권한 관리</span>
+        </a>
+        <a href="/upload.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
+        </a>
+    </nav>
+    <div class="sidebar-divider"></div>
+</aside>
+
+<!-- MAIN -->
+<div class="main-wrapper">
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
+        <h1 class="text-sm font-bold text-gray-800">
+            <i class="fas fa-users-cog text-indigo-500 mr-1"></i>권한 관리
+        </h1>
+        <span class="text-xs text-gray-400 ml-2">사용자 역할 및 영역 관리</span>
+        <div class="ml-auto flex items-center gap-2">
+            <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
+        </div>
+    </div>
+
+    <div class="content-area" id="contentArea">
+        <!-- Stats -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
+            <div class="stat-card">
+                <div class="stat-num" id="statTotal">-</div>
+                <div class="stat-label">전체 사용자</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-num" id="statAdmin">-</div>
+                <div class="stat-label">관리자</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-num" id="statActive">-</div>
+                <div class="stat-label">활성 사용자</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-num" id="statInactive">-</div>
+                <div class="stat-label">비활성 사용자</div>
+            </div>
+        </div>
+
+        <!-- User Table -->
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-users text-indigo-500"></i>
+                <span>사용자 목록</span>
+                <div class="ml-auto flex items-center gap-3">
+                    <input type="text" id="searchInput" class="search-box" placeholder="이름 또는 ID로 검색..." oninput="filterTable()">
+                    <select id="filterRole" class="inline-select" onchange="filterTable()" style="padding:7px 10px;">
+                        <option value="">전체 역할</option>
+                        <option value="admin">관리자</option>
+                        <option value="user">일반 사용자</option>
+                    </select>
+                    <select id="filterDomain" class="inline-select" onchange="filterTable()" style="padding:7px 10px;">
+                        <option value="">전체 영역</option>
+                    </select>
+                </div>
+            </div>
+            <div style="overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>이름</th>
+                            <th>소속</th>
+                            <th>조직도 경로</th>
+                            <th>역할</th>
+                            <th>영역(Domain)</th>
+                            <th>상태</th>
+                            <th>작업</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userTableBody">
+                        <tr><td colspan="8" style="text-align:center;padding:40px;color:#94a3b8;">로딩 중...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// Sidebar
+// ============================================================
+function openSidebar() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebarOverlay').classList.add('active');
+}
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('active');
+}
+
+// ============================================================
+// Data
+// ============================================================
+let allUsers = [];
+let domainList = [];
+
+async function init() {
+    // 권한 체크
+    try {
+        const r = await fetch('/api/me');
+        const me = await r.json();
+        if (!me.loggedIn) { window.location.href = '/login'; return; }
+        if (me.role !== 'admin') { window.location.href = '/'; return; }
+    } catch(e) { window.location.href = '/login'; return; }
+
+    // 도메인 목록 로드
+    try {
+        const dr = await fetch('/api/domains');
+        domainList = await dr.json();
+        const sel = document.getElementById('filterDomain');
+        domainList.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.domain_code;
+            opt.textContent = d.domain_name + ' (' + d.domain_code + ')';
+            sel.appendChild(opt);
+        });
+    } catch(e) {}
+
+    await loadUsers();
+}
+
+async function loadUsers() {
+    try {
+        const res = await fetch('/api/admin/users');
+        allUsers = await res.json();
+        updateStats();
+        renderTable(allUsers);
+    } catch(e) {
+        document.getElementById('userTableBody').innerHTML = `<tr><td colspan="8" style="text-align:center;padding:40px;color:#dc2626;">로딩 실패: ${e.message}</td></tr>`;
+    }
+}
+
+function updateStats() {
+    document.getElementById('statTotal').textContent = allUsers.length;
+    document.getElementById('statAdmin').textContent = allUsers.filter(u => u.role === 'admin').length;
+    document.getElementById('statActive').textContent = allUsers.filter(u => u.is_active).length;
+    document.getElementById('statInactive').textContent = allUsers.filter(u => !u.is_active).length;
+}
+
+function renderTable(users) {
+    const tbody = document.getElementById('userTableBody');
+    if (users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#94a3b8;">사용자가 없습니다.</td></tr>';
+        return;
+    }
+    const domainOptions = domainList.map(d => `<option value="${d.domain_code}">${d.domain_code}</option>`).join('');
+    tbody.innerHTML = users.map(u => `
+        <tr data-uid="${u.user_id}">
+            <td><code style="font-size:12px;background:#f1f5f9;padding:2px 6px;border-radius:4px;">${u.user_id}</code></td>
+            <td style="font-weight:500;">${u.name || '-'}</td>
+            <td>${u.group_name || '-'}</td>
+            <td><span class="org-path" title="${u.org_path || ''}">${u.org_path || '-'}</span></td>
+            <td>
+                <select class="inline-select" onchange="updateUser('${u.user_id}', 'role', this.value)" style="font-weight:600;">
+                    <option value="user" ${u.role==='user'?'selected':''}>USER</option>
+                    <option value="admin" ${u.role==='admin'?'selected':''}>ADMIN</option>
+                </select>
+            </td>
+            <td>
+                <select class="inline-select" onchange="updateUser('${u.user_id}', 'domain_code', this.value)">
+                    <option value="">미지정</option>
+                    ${domainList.map(d => `<option value="${d.domain_code}" ${u.domain_code===d.domain_code?'selected':''}>${d.domain_code}</option>`).join('')}
+                </select>
+            </td>
+            <td>
+                ${u.is_active
+                    ? `<span class="badge badge-active">활성</span>`
+                    : `<span class="badge badge-inactive">비활성</span>`}
+            </td>
+            <td>
+                ${u.is_active
+                    ? `<button class="btn btn-outline btn-sm" onclick="updateUser('${u.user_id}', 'is_active', false)" title="비활성화"><i class="fas fa-user-slash"></i></button>`
+                    : `<button class="btn btn-primary btn-sm" onclick="updateUser('${u.user_id}', 'is_active', true)" title="활성화"><i class="fas fa-user-check"></i></button>`}
+            </td>
+        </tr>
+    `).join('');
+}
+
+async function updateUser(userId, field, value) {
+    try {
+        const body = {};
+        body[field] = value;
+        const res = await fetch('/api/admin/users/' + userId, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const d = await res.json();
+        if (!d.success) throw new Error(d.error || '업데이트 실패');
+        // 로컬 데이터 갱신
+        const u = allUsers.find(x => x.user_id === userId);
+        if (u) u[field] = value;
+        updateStats();
+        filterTable();
+    } catch(e) {
+        alert('수정 실패: ' + e.message);
+        await loadUsers();
+    }
+}
+
+function filterTable() {
+    const search = document.getElementById('searchInput').value.toLowerCase().trim();
+    const role = document.getElementById('filterRole').value;
+    const domain = document.getElementById('filterDomain').value;
+    let filtered = allUsers;
+    if (search) filtered = filtered.filter(u => (u.user_id||'').toLowerCase().includes(search) || (u.name||'').toLowerCase().includes(search));
+    if (role) filtered = filtered.filter(u => u.role === role);
+    if (domain) filtered = filtered.filter(u => u.domain_code === domain);
+    renderTable(filtered);
+}
+
+// ============================================================
+// Logout
+// ============================================================
+async function doLogout() {
+    if (!confirm('로그아웃 하시겠습니까?')) return;
+    try { await fetch('/api/logout', { method: 'POST' }); } catch(e) {}
+    window.location.href = '/login';
+}
+
+// Init
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

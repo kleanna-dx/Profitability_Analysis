@@ -390,10 +390,13 @@
         <a href="/report" class="sidebar-menu-item active" style="text-decoration:none;">
             <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
         </a>
-        <a href="/learning.html" class="sidebar-menu-item" style="text-decoration:none;">
+        <a href="/learning.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
             <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
         </a>
-        <a href="/upload.html" class="sidebar-menu-item" style="text-decoration:none;">
+        <a href="/admin.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
+            <i class="fas fa-users-cog"></i><span>권한 관리</span>
+        </a>
+        <a href="/upload.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
             <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
         </a>
     </nav>
@@ -593,6 +596,10 @@
     let chartInstances = {};
     let currentFile = null;
 
+    // 관리자 메뉴 표시
+    fetch('/api/me').then(r=>r.json()).then(me=>{
+        if(me.loggedIn && me.role==='admin') document.querySelectorAll('.admin-menu-item').forEach(el=>el.style.display='');
+    }).catch(()=>{});
     window.addEventListener('DOMContentLoaded', loadMonths);
 
     // --- File Drop Zone ---
