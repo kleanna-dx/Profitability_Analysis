@@ -87,8 +87,23 @@ app.post('/api/login', async (req, res) => {
     if (user.password !== password) {
       return res.status(401).json({ success: false, message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     }
-    req.session.user = { id: user.user_id, name: user.name, role: user.role, loginAt: new Date().toISOString() };
-    return res.json({ success: true, user: user.user_id, name: user.name });
+    // 도메인 결정: users.domain_code → 없으면 조직도 탐색
+    let domainCode = null;
+    try {
+      const [uRow] = await pool.query('SELECT domain_code FROM users WHERE user_id=?', [user.user_id]);
+      domainCode = uRow[0]?.domain_code || await resolveDomainByOrg(user.user_id);
+      // 조직도에서 찾은 domain_code를 users에 캐시
+      if (domainCode && !uRow[0]?.domain_code) {
+        await pool.query('UPDATE users SET domain_code=? WHERE user_id=?', [domainCode, user.user_id]);
+      }
+    } catch(e) { console.error('[Login] domain 해석 실패:', e.message); }
+
+    req.session.user = {
+      id: user.user_id, name: user.name, role: user.role,
+      domain_code: domainCode, active_domain: domainCode || 'PS',
+      loginAt: new Date().toISOString(),
+    };
+    return res.json({ success: true, user: user.user_id, name: user.name, role: user.role, domain_code: domainCode });
   } catch (err) {
     console.error('[Login] DB 조회 오류:', err.message);
     return res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
@@ -166,11 +181,23 @@ app.post('/api/login/sendEncData', async (req, res) => {
       return res.status(200).type('html').send(buildSsoErrorHtml('비활성화된 계정입니다. 관리자에게 문의하세요.'));
     }
 
+    // 도메인 결정
+    let domainCode = null;
+    try {
+      const [uDom] = await pool.query('SELECT domain_code FROM users WHERE user_id=?', [userId]);
+      domainCode = uDom[0]?.domain_code || await resolveDomainByOrg(userId);
+      if (domainCode && !uDom[0]?.domain_code) {
+        await pool.query('UPDATE users SET domain_code=? WHERE user_id=?', [domainCode, userId]);
+      }
+    } catch(e) { console.error('[SSO] domain 해석 실패:', e.message); }
+
     // 세션 생성 (SSO 로그인 성공)
     req.session.user = {
       id: userId,
       name: ssoUser.name,
       role: ssoUser.role,
+      domain_code: domainCode,
+      active_domain: domainCode || 'PS',
       loginAt: new Date().toISOString(),
       sso: true,
       tenantId: ssoData?.body?.tenantId || null,
@@ -268,13 +295,120 @@ app.post('/api/logout', (req, res) => {
   });
 });
 
-// 세션 확인 API
-app.get('/api/me', (req, res) => {
+// ============================================================
+// 도메인(영역) 해석 — 조직도 상위 탐색으로 사용자 domain_code 결정
+// ============================================================
+/**
+ * 사용자의 group_id에서 조직도를 타고 올라가서 domain_code를 결정
+ * user_group_info.group_id → group_info.parent_group_id 반복 탐색
+ * → domain_group_mapping에 매칭되는 group_id를 찾으면 해당 domain_code 반환
+ */
+async function resolveDomainByOrg(userId) {
+  try {
+    // 1. user_group_info에서 사용자의 group_id 조회
+    const [ugRows] = await pool.query(
+      'SELECT group_id FROM user_group_info WHERE user_id = ? ORDER BY represent_group DESC LIMIT 1',
+      [userId]
+    );
+    if (ugRows.length === 0) return null;
+
+    let currentGroupId = ugRows[0].group_id;
+    const visited = new Set();
+
+    // 2. 조직도를 타고 올라가면서 domain_group_mapping 매칭
+    while (currentGroupId && !visited.has(currentGroupId)) {
+      visited.add(currentGroupId);
+
+      // domain_group_mapping에서 매칭 체크
+      const [mapRows] = await pool.query(
+        'SELECT domain_code FROM domain_group_mapping WHERE group_id = ? LIMIT 1',
+        [currentGroupId]
+      );
+      if (mapRows.length > 0) return mapRows[0].domain_code;
+
+      // 상위 그룹으로 이동
+      const [parentRows] = await pool.query(
+        'SELECT parent_group_id FROM group_info WHERE group_id = ? LIMIT 1',
+        [currentGroupId]
+      );
+      if (parentRows.length === 0 || !parentRows[0].parent_group_id) break;
+      currentGroupId = parentRows[0].parent_group_id;
+    }
+    return null;
+  } catch (e) {
+    console.error('[Domain] 조직도 탐색 실패:', e.message);
+    return null;
+  }
+}
+
+/**
+ * 사용자의 조직도 경로를 문자열로 구성 (예: "깨끗한나라 > CEO > COO > 페이퍼솔루션사업부 > PS기획팀")
+ */
+async function buildOrgPath(groupId) {
+  const path = [];
+  let currentId = groupId;
+  const visited = new Set();
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const [rows] = await pool.query(
+      'SELECT group_id, group_name, parent_group_id FROM group_info WHERE group_id = ? LIMIT 1',
+      [currentId]
+    );
+    if (rows.length === 0) break;
+    path.unshift(rows[0].group_name);
+    currentId = rows[0].parent_group_id;
+  }
+  return path.join(' > ');
+}
+
+// 세션 확인 API (도메인/권한 정보 포함)
+app.get('/api/me', async (req, res) => {
   if (req.session && req.session.user) {
-    return res.json({ loggedIn: true, user: req.session.user.id });
+    const u = req.session.user;
+    return res.json({
+      loggedIn: true,
+      user: u.id,
+      name: u.name,
+      role: u.role,
+      domain_code: u.domain_code || null,
+      active_domain: u.active_domain || u.domain_code || null,
+    });
   }
   return res.json({ loggedIn: false });
 });
+
+// 관리자 도메인 전환 API
+app.post('/api/me/domain', (req, res) => {
+  if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
+  if (req.session.user.role !== 'admin') return res.status(403).json({ error: '관리자만 가능' });
+  const { domain_code } = req.body;
+  if (!domain_code) return res.status(400).json({ error: 'domain_code 필수' });
+  req.session.user.active_domain = domain_code;
+  res.json({ success: true, active_domain: domain_code });
+});
+
+// 도메인 목록 API
+app.get('/api/domains', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT domain_code, domain_name, sort_order FROM domain_master WHERE is_active = 1 ORDER BY sort_order');
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 관리자 전용 미들웨어
+function requireAdmin(req, res, next) {
+  if (!req.session?.user) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  if (req.session.user.role !== 'admin') return res.status(403).json({ error: '관리자 권한이 필요합니다.' });
+  next();
+}
+
+// 현재 세션의 active_domain 가져오기 (일반사용자: domain_code 고정, 관리자: active_domain)
+function getActiveDomain(req) {
+  const u = req.session?.user;
+  if (!u) return null;
+  if (u.role === 'admin') return u.active_domain || u.domain_code || 'PS';
+  return u.domain_code || 'PS';
+}
 
 // ============================================================
 // 인증 미들웨어 — 로그인하지 않으면 /login으로 리다이렉트
@@ -289,7 +423,14 @@ app.use((req, res, next) => {
   if (/\.(css|js|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map)$/i.test(req.path)) return next();
   // CDN 등 외부 스크립트 요청은 해당 없음 (express에서 처리 안 함)
 
-  if (req.session && req.session.user) return next();
+  if (req.session && req.session.user) {
+    // 관리자 전용 페이지 접근 차단 (일반 사용자)
+    const adminOnlyPages = ['/learning.html', '/admin.html', '/upload.html'];
+    if (adminOnlyPages.includes(req.path) && req.session.user.role !== 'admin') {
+      return res.redirect('/');
+    }
+    return next();
+  }
 
   // API 요청이면 401
   if (req.path.startsWith('/api/')) {
@@ -997,15 +1138,17 @@ chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(
  * @param {string} query - 사용자 질문
  * @returns {Promise<Array<{synonym: string, column_name: string, description: string, data_type: string, source: string}>>}
  */
-async function matchSynonymsDirectly(query) {
+async function matchSynonymsDirectly(query, domainCode) {
   const matched = [];
   let filtered = [];  // try 블록 밖에서도 접근 가능하도록 선언
+  const dc = domainCode || 'PS';
   try {
-    // 1. Ontology 동의어 매칭
+    // 1. Ontology 동의어 매칭 (domain_code 필터)
     const [ontSyns] = await pool.query(
       `SELECT s.synonym_text, c.column_name, c.description, c.data_type
        FROM ontology_synonym s
-       JOIN ontology_column c ON s.column_id = c.id`
+       JOIN ontology_column c ON s.column_id = c.id
+       WHERE c.domain_code = ?`, [dc]
     );
     for (const row of ontSyns) {
       if (query.includes(row.synonym_text)) {
@@ -1019,11 +1162,12 @@ async function matchSynonymsDirectly(query) {
       }
     }
 
-    // 2. Metric 동의어 매칭
+    // 2. Metric 동의어 매칭 (domain_code 필터)
     const [metSyns] = await pool.query(
       `SELECT s.synonym_text, m.metric_code, m.aggregation, m.formula, m.description
        FROM metric_synonym s
-       JOIN metric m ON s.metric_id = m.id`
+       JOIN metric m ON s.metric_id = m.id
+       WHERE m.domain_code = ?`, [dc]
     );
     for (const row of metSyns) {
       if (query.includes(row.synonym_text)) {
@@ -1037,9 +1181,9 @@ async function matchSynonymsDirectly(query) {
       }
     }
 
-    // 3. Ontology 컬럼 설명(description) 자체도 매칭 (설명이 질문에 포함된 경우)
+    // 3. Ontology 컬럼 설명(description) 자체도 매칭 (domain_code 필터)
     const [ontCols] = await pool.query(
-      `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != ''`
+      `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != '' AND domain_code = ?`, [dc]
     );
     for (const row of ontCols) {
       if (row.description.length >= 2 && query.includes(row.description)) {
@@ -1085,12 +1229,12 @@ async function matchSynonymsDirectly(query) {
  * @param {string} query - 사용자 질문
  * @returns {Promise<{prompt: string, ragContext: Object}>}
  */
-async function buildRAGSystemPrompt(query) {
+async function buildRAGSystemPrompt(query, domainCode) {
   let ragContext = null;
   let contextText = '';
 
-  // ★ 동의어 직접 매칭 (RAG 보완 - 최우선 적용)
-  const synonymMatches = await matchSynonymsDirectly(query);
+  // ★ 동의어 직접 매칭 (RAG 보완 - 최우선 적용, domain 기반)
+  const synonymMatches = await matchSynonymsDirectly(query, domainCode);
   let synonymContext = '';
   if (synonymMatches.length > 0) {
     // Metric 산식 매칭과 일반 컬럼 매칭 분리
@@ -1177,12 +1321,12 @@ async function buildRAGSystemPrompt(query) {
       console.log(`[RAG] 프롬프트 컨텍스트 길이: ${contextText.length}자`);
     } catch (e) {
       console.error('[RAG] 검색 실패, 폴백 프롬프트 사용:', e.message);
-      contextText = await buildFallbackContext();
+      contextText = await buildFallbackContext(domainCode);
     }
   } else {
     // RAG 미준비 시 폴백 (기존 방식과 동일하게 전체 로드)
     console.warn('[RAG] 인덱스 미준비, 폴백 프롬프트 사용');
-    contextText = await buildFallbackContext();
+    contextText = await buildFallbackContext(domainCode);
   }
 
   // RAG 모드에서는 검색된 메타데이터만 사용 (전체 스키마/메트릭 덤프 제거)
@@ -1205,12 +1349,13 @@ async function buildRAGSystemPrompt(query) {
 /**
  * RAG 미준비 시 폴백: 기존 프롬프트 스터핑 방식
  */
-async function buildFallbackContext() {
+async function buildFallbackContext(domainCode) {
+  const dc = domainCode || 'PS';
   let ctx = '';
   try {
     const [rows] = await pool.query(
       `SELECT column_name, column_name_nm, code_value, display_name
-       FROM code_mapping WHERE is_active = 1 ORDER BY column_name, code_value`
+       FROM code_mapping WHERE is_active = 1 AND (domain_code = ? OR domain_code IS NULL) ORDER BY column_name, code_value`, [dc]
     );
     if (rows.length > 0) {
       const grouped = {};
@@ -1226,7 +1371,7 @@ async function buildFallbackContext() {
   } catch (e) { /* 무시 */ }
   try {
     const [fbRows] = await pool.query(
-      `SELECT query_text, corrected_sql, feedback_type FROM sql_feedback WHERE is_active = 1 ORDER BY created_at DESC LIMIT 20`
+      `SELECT query_text, corrected_sql, feedback_type FROM sql_feedback WHERE is_active = 1 AND (domain_code = ? OR domain_code IS NULL) ORDER BY created_at DESC LIMIT 20`, [dc]
     );
     if (fbRows.length > 0) {
       ctx += '\n[검증된 SQL 예시]\n';
@@ -1243,11 +1388,12 @@ async function buildFallbackContext() {
 // Helper: Metric 산식 자동 치환 (SUM(단순컬럼) → Metric 산식)
 // 학습 데이터 경로 + GPT 생성 경로 양쪽에서 재사용
 // ============================================================
-async function applyMetricFormulaReplacement(inputSql) {
+async function applyMetricFormulaReplacement(inputSql, domainCode) {
   if (!inputSql) return inputSql;
   try {
+    const dc = domainCode || 'PS';
     const [metricRows] = await pool.query(
-      `SELECT metric_code, aggregation, formula FROM metric WHERE aggregation = 'SUM' AND (formula LIKE '%-%' OR formula LIKE '%+%')`
+      `SELECT metric_code, aggregation, formula FROM metric WHERE aggregation = 'SUM' AND (formula LIKE '%-%' OR formula LIKE '%+%') AND domain_code = ?`, [dc]
     );
     let result = inputSql;
     for (const m of metricRows) {
@@ -1282,6 +1428,7 @@ app.post('/api/nlq', async (req, res) => {
   if (!query || !query.trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.' });
   }
+  const activeDomain = getActiveDomain(req);
 
   try {
     console.log(`[NLQ] 질의: ${query}`);
@@ -1291,10 +1438,10 @@ app.post('/api/nlq', async (req, res) => {
     try {
       const [fbMatch] = await pool.query(
         `SELECT corrected_sql, feedback_type FROM sql_feedback
-         WHERE query_text = ? AND is_active = 1
+         WHERE query_text = ? AND is_active = 1 AND (domain_code = ? OR domain_code IS NULL)
          ORDER BY FIELD(feedback_type, 'corrected', 'correct') ASC, created_at DESC
          LIMIT 1`,
-        [query.trim()]
+        [query.trim(), activeDomain]
       );
       if (fbMatch.length > 0) {
         matchedSql = fbMatch[0].corrected_sql;
@@ -1310,7 +1457,7 @@ app.post('/api/nlq', async (req, res) => {
     if (matchedSql) {
       // 학습 데이터 매칭 → AI 호출 없이 직접 사용
       // ★ Metric 산식 자동 치환 (헬퍼 함수 사용)
-      matchedSql = await applyMetricFormulaReplacement(matchedSql);
+      matchedSql = await applyMetricFormulaReplacement(matchedSql, activeDomain);
       sql = matchedSql;
       explanation = '학습된 SQL을 사용합니다 (사용자 검증 완료).';
       ragInfo = { mode: 'learned', chunksUsed: 0, promptLength: 0, details: {} };
@@ -1335,7 +1482,7 @@ app.post('/api/nlq', async (req, res) => {
       }
     } else {
       // 1. RAG 기반 SQL 생성 (질문 관련 메타데이터만 검색하여 프롬프트에 주입)
-      const { prompt: systemPrompt, ragContext } = await buildRAGSystemPrompt(query);
+      const { prompt: systemPrompt, ragContext } = await buildRAGSystemPrompt(query, activeDomain);
       console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady})`);
 
       // RAG 검색 상세 정보 수집
@@ -1388,7 +1535,7 @@ app.post('/api/nlq', async (req, res) => {
 
       sql = parsed.sql;
       // ★ GPT 생성 SQL에도 Metric 산식 자동 치환 적용 (GPT가 프롬프트를 무시하고 단순 컬럼 사용 시 안전장치)
-      sql = await applyMetricFormulaReplacement(sql);
+      sql = await applyMetricFormulaReplacement(sql, activeDomain);
       // answer는 1단계에서 무시 — SQL 실행 후 결과 기반으로 4-A에서 생성
       explanation = parsed.explanation;
       chartType = parsed.chartType;
@@ -1666,16 +1813,18 @@ app.get('/api/suggestions', (req, res) => {
 });
 
 // ============================================================
-// 학습관리 API: Ontology (컬럼)
+// 학습관리 API: Ontology (컬럼) — 관리자 전용 + domain 필터
 // ============================================================
-// 전체 목록 (동의어 포함)
-app.get('/api/ontology', async (req, res) => {
+// 전체 목록 (동의어 포함, domain 필터)
+app.get('/api/ontology', requireAdmin, async (req, res) => {
+  const dc = req.query.domain_code || getActiveDomain(req);
   try {
     const [columns] = await pool.query(
       `SELECT c.*, GROUP_CONCAT(s.id, ':::', s.synonym_text ORDER BY s.id SEPARATOR '|||') AS synonyms
        FROM ontology_column c
        LEFT JOIN ontology_synonym s ON s.column_id = c.id
-       GROUP BY c.id ORDER BY c.id`
+       WHERE c.domain_code = ?
+       GROUP BY c.id ORDER BY c.id`, [dc]
     );
     const result = columns.map(row => ({
       ...row,
@@ -1688,20 +1837,21 @@ app.get('/api/ontology', async (req, res) => {
 });
 
 // 추가
-app.post('/api/ontology', async (req, res) => {
+app.post('/api/ontology', requireAdmin, async (req, res) => {
   const { column_name, table_name, description, data_type } = req.body;
+  const dc = req.body.domain_code || getActiveDomain(req);
   if (!column_name) return res.status(400).json({ error: 'column_name 필수' });
   try {
     const [r] = await pool.query(
-      'INSERT INTO ontology_column (column_name, table_name, description, data_type) VALUES (?,?,?,?)',
-      [column_name, table_name || 'bw_profitability_data', description || '', data_type || '']
+      'INSERT INTO ontology_column (domain_code, column_name, table_name, description, data_type) VALUES (?,?,?,?,?)',
+      [dc, column_name, table_name || 'bw_profitability_data', description || '', data_type || '']
     );
-    res.json({ id: r.insertId, column_name, table_name: table_name || 'bw_profitability_data', description, data_type });
+    res.json({ id: r.insertId, domain_code: dc, column_name, table_name: table_name || 'bw_profitability_data', description, data_type });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // 수정
-app.put('/api/ontology/:id', async (req, res) => {
+app.put('/api/ontology/:id', requireAdmin, async (req, res) => {
   const { column_name, table_name, description, data_type } = req.body;
   try {
     await pool.query(
@@ -1713,7 +1863,7 @@ app.put('/api/ontology/:id', async (req, res) => {
 });
 
 // 삭제
-app.delete('/api/ontology/:id', async (req, res) => {
+app.delete('/api/ontology/:id', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM ontology_synonym WHERE column_id=?', [req.params.id]);
     await pool.query('DELETE FROM ontology_column WHERE id=?', [req.params.id]);
@@ -1722,7 +1872,7 @@ app.delete('/api/ontology/:id', async (req, res) => {
 });
 
 // 동의어 추가
-app.post('/api/ontology/:id/synonym', async (req, res) => {
+app.post('/api/ontology/:id/synonym', requireAdmin, async (req, res) => {
   const { synonym_text } = req.body;
   if (!synonym_text) return res.status(400).json({ error: 'synonym_text 필수' });
   try {
@@ -1735,7 +1885,7 @@ app.post('/api/ontology/:id/synonym', async (req, res) => {
 });
 
 // 동의어 삭제
-app.delete('/api/ontology/synonym/:synId', async (req, res) => {
+app.delete('/api/ontology/synonym/:synId', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM ontology_synonym WHERE id=?', [req.params.synId]);
     res.json({ success: true });
@@ -1747,7 +1897,7 @@ app.delete('/api/ontology/synonym/:synId', async (req, res) => {
 // ============================================================
 
 // 엑셀 미리보기 (파싱만 수행, DB 반영 안함)
-app.post('/api/ontology/upload-excel/preview', upload.single('file'), async (req, res) => {
+app.post('/api/ontology/upload-excel/preview', requireAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
 
@@ -1839,7 +1989,7 @@ app.post('/api/ontology/upload-excel/preview', upload.single('file'), async (req
 });
 
 // 엑셀 실제 적용 (미리보기 후 확정)
-app.post('/api/ontology/upload-excel/apply', express.json({ limit: '10mb' }), async (req, res) => {
+app.post('/api/ontology/upload-excel/apply', requireAdmin, express.json({ limit: '10mb' }), async (req, res) => {
   const { rows, filePath } = req.body;
   if (!rows || !Array.isArray(rows) || rows.length === 0) {
     return res.status(400).json({ error: '적용할 데이터가 없습니다.' });
@@ -2101,15 +2251,17 @@ app.get('/api/ontology/upload-excel/template', (req, res) => {
 });
 
 // ============================================================
-// 학습관리 API: Metric (계산 지표)
+// 학습관리 API: Metric (계산 지표) — 관리자 전용 + domain 필터
 // ============================================================
-app.get('/api/metric', async (req, res) => {
+app.get('/api/metric', requireAdmin, async (req, res) => {
+  const dc = req.query.domain_code || getActiveDomain(req);
   try {
     const [metrics] = await pool.query(
       `SELECT m.*, GROUP_CONCAT(s.id, ':::', s.synonym_text ORDER BY s.id SEPARATOR '|||') AS synonyms
        FROM metric m
        LEFT JOIN metric_synonym s ON s.metric_id = m.id
-       GROUP BY m.id ORDER BY m.id`
+       WHERE m.domain_code = ?
+       GROUP BY m.id ORDER BY m.id`, [dc]
     );
     const result = metrics.map(row => ({
       ...row,
@@ -2121,19 +2273,20 @@ app.get('/api/metric', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/metric', async (req, res) => {
+app.post('/api/metric', requireAdmin, async (req, res) => {
   const { metric_code, aggregation, formula, table_name, description } = req.body;
+  const dc = req.body.domain_code || getActiveDomain(req);
   if (!metric_code || !formula) return res.status(400).json({ error: 'metric_code, formula 필수' });
   try {
     const [r] = await pool.query(
-      'INSERT INTO metric (metric_code, aggregation, formula, table_name, description) VALUES (?,?,?,?,?)',
-      [metric_code, aggregation || 'SUM', formula, table_name || 'bw_profitability_data', description || '']
+      'INSERT INTO metric (domain_code, metric_code, aggregation, formula, table_name, description) VALUES (?,?,?,?,?,?)',
+      [dc, metric_code, aggregation || 'SUM', formula, table_name || 'bw_profitability_data', description || '']
     );
-    res.json({ id: r.insertId, metric_code, aggregation: aggregation || 'SUM', formula, table_name: table_name || 'bw_profitability_data', description });
+    res.json({ id: r.insertId, domain_code: dc, metric_code, aggregation: aggregation || 'SUM', formula, table_name: table_name || 'bw_profitability_data', description });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/metric/:id', async (req, res) => {
+app.put('/api/metric/:id', requireAdmin, async (req, res) => {
   const { metric_code, aggregation, formula, table_name, description } = req.body;
   try {
     await pool.query(
@@ -2144,7 +2297,7 @@ app.put('/api/metric/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/metric/:id', async (req, res) => {
+app.delete('/api/metric/:id', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM metric_synonym WHERE metric_id=?', [req.params.id]);
     await pool.query('DELETE FROM metric WHERE id=?', [req.params.id]);
@@ -2152,7 +2305,7 @@ app.delete('/api/metric/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/metric/:id/synonym', async (req, res) => {
+app.post('/api/metric/:id/synonym', requireAdmin, async (req, res) => {
   const { synonym_text } = req.body;
   if (!synonym_text) return res.status(400).json({ error: 'synonym_text 필수' });
   try {
@@ -2164,7 +2317,7 @@ app.post('/api/metric/:id/synonym', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/metric/synonym/:synId', async (req, res) => {
+app.delete('/api/metric/synonym/:synId', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM metric_synonym WHERE id=?', [req.params.synId]);
     res.json({ success: true });
@@ -2172,29 +2325,31 @@ app.delete('/api/metric/synonym/:synId', async (req, res) => {
 });
 
 // ============================================================
-// 학습관리 API: JOIN (조인 조건)
+// 학습관리 API: JOIN (조인 조건) — 관리자 전용 + domain 필터
 // ============================================================
-app.get('/api/join', async (req, res) => {
+app.get('/api/join', requireAdmin, async (req, res) => {
+  const dc = req.query.domain_code || getActiveDomain(req);
   try {
-    const [rows] = await pool.query('SELECT * FROM join_condition ORDER BY id');
+    const [rows] = await pool.query('SELECT * FROM join_condition WHERE domain_code = ? ORDER BY id', [dc]);
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/join', async (req, res) => {
+app.post('/api/join', requireAdmin, async (req, res) => {
   const { left_column, left_table, right_column, right_table, join_type, operator, description } = req.body;
+  const dc = req.body.domain_code || getActiveDomain(req);
   if (!left_column || !left_table || !right_column || !right_table)
     return res.status(400).json({ error: '필수 필드 누락' });
   try {
     const [r] = await pool.query(
-      'INSERT INTO join_condition (left_column, left_table, right_column, right_table, join_type, operator, description) VALUES (?,?,?,?,?,?,?)',
-      [left_column, left_table, right_column, right_table, join_type || 'LEFT', operator || '=', description || '']
+      'INSERT INTO join_condition (domain_code, left_column, left_table, right_column, right_table, join_type, operator, description) VALUES (?,?,?,?,?,?,?,?)',
+      [dc, left_column, left_table, right_column, right_table, join_type || 'LEFT', operator || '=', description || '']
     );
-    res.json({ id: r.insertId, left_column, left_table, right_column, right_table, join_type: join_type || 'LEFT', operator: operator || '=' });
+    res.json({ id: r.insertId, domain_code: dc, left_column, left_table, right_column, right_table, join_type: join_type || 'LEFT', operator: operator || '=' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/join/:id', async (req, res) => {
+app.put('/api/join/:id', requireAdmin, async (req, res) => {
   const { left_column, left_table, right_column, right_table, join_type, operator, description } = req.body;
   try {
     await pool.query(
@@ -2205,7 +2360,7 @@ app.put('/api/join/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/join/:id', async (req, res) => {
+app.delete('/api/join/:id', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM join_condition WHERE id=?', [req.params.id]);
     res.json({ success: true });
@@ -2213,36 +2368,39 @@ app.delete('/api/join/:id', async (req, res) => {
 });
 
 // ============================================================
-// 학습관리 API: 코드값 매핑 (Code Mapping)
+// 학습관리 API: 코드값 매핑 (Code Mapping) — 관리자 전용 + domain 필터
 // ============================================================
-// 전체 조회 (컬럼별 그룹핑)
-app.get('/api/code-mapping', async (req, res) => {
+// 전체 조회 (컬럼별 그룹핑, domain 필터)
+app.get('/api/code-mapping', requireAdmin, async (req, res) => {
+  const dc = req.query.domain_code || getActiveDomain(req);
   try {
-    const [rows] = await pool.query('SELECT * FROM code_mapping ORDER BY column_name, code_value');
+    const [rows] = await pool.query('SELECT * FROM code_mapping WHERE domain_code = ? OR domain_code IS NULL ORDER BY column_name, code_value', [dc]);
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // 컬럼별 조회
-app.get('/api/code-mapping/column/:colName', async (req, res) => {
+app.get('/api/code-mapping/column/:colName', requireAdmin, async (req, res) => {
+  const dc = req.query.domain_code || getActiveDomain(req);
   try {
     const [rows] = await pool.query(
-      'SELECT * FROM code_mapping WHERE column_name=? ORDER BY code_value',
-      [req.params.colName]
+      'SELECT * FROM code_mapping WHERE column_name=? AND (domain_code = ? OR domain_code IS NULL) ORDER BY code_value',
+      [req.params.colName, dc]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // 추가
-app.post('/api/code-mapping', async (req, res) => {
+app.post('/api/code-mapping', requireAdmin, async (req, res) => {
   const { column_name, column_name_nm, code_value, display_name, table_name, description } = req.body;
+  const dc = req.body.domain_code || getActiveDomain(req);
   if (!column_name || !code_value || !display_name)
     return res.status(400).json({ error: 'column_name, code_value, display_name 필수' });
   try {
     const [r] = await pool.query(
-      'INSERT INTO code_mapping (column_name, column_name_nm, code_value, display_name, table_name, description) VALUES (?,?,?,?,?,?)',
-      [column_name, column_name_nm || null, code_value, display_name, table_name || 'bw_profitability_data', description || '']
+      'INSERT INTO code_mapping (domain_code, column_name, column_name_nm, code_value, display_name, table_name, description) VALUES (?,?,?,?,?,?,?)',
+      [dc, column_name, column_name_nm || null, code_value, display_name, table_name || 'bw_profitability_data', description || '']
     );
 
     // RAG 인덱스 갱신: 해당 컬럼의 매핑 전체를 재인덱싱 (비동기)
@@ -2270,7 +2428,7 @@ app.post('/api/code-mapping', async (req, res) => {
 });
 
 // 수정
-app.put('/api/code-mapping/:id', async (req, res) => {
+app.put('/api/code-mapping/:id', requireAdmin, async (req, res) => {
   const { column_name, column_name_nm, code_value, display_name, table_name, description, is_active } = req.body;
   try {
     await pool.query(
@@ -2282,7 +2440,7 @@ app.put('/api/code-mapping/:id', async (req, res) => {
 });
 
 // 삭제
-app.delete('/api/code-mapping/:id', async (req, res) => {
+app.delete('/api/code-mapping/:id', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM code_mapping WHERE id=?', [req.params.id]);
     res.json({ success: true });
@@ -2290,7 +2448,7 @@ app.delete('/api/code-mapping/:id', async (req, res) => {
 });
 
 // DB 실데이터에 매핑 적용 (현재 스키마에는 _NM 컬럼이 없으므로 AI 프롬프트에만 반영)
-app.post('/api/code-mapping/apply', async (req, res) => {
+app.post('/api/code-mapping/apply', requireAdmin, async (req, res) => {
   try {
     // 현재 스키마에는 _NM 컬럼이 없으므로 DB UPDATE 대신 매핑 건수만 확인
     const [mappings] = await pool.query(
@@ -2307,10 +2465,11 @@ app.post('/api/code-mapping/apply', async (req, res) => {
 });
 
 // 고유 컬럼명 목록 조회 (드롭다운용)
-app.get('/api/code-mapping/columns', async (req, res) => {
+app.get('/api/code-mapping/columns', requireAdmin, async (req, res) => {
+  const dc = req.query.domain_code || getActiveDomain(req);
   try {
     const [rows] = await pool.query(
-      'SELECT column_name, column_name_nm, COUNT(*) AS cnt FROM code_mapping GROUP BY column_name, column_name_nm ORDER BY column_name'
+      'SELECT column_name, column_name_nm, COUNT(*) AS cnt FROM code_mapping WHERE domain_code = ? OR domain_code IS NULL GROUP BY column_name, column_name_nm ORDER BY column_name', [dc]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2322,6 +2481,7 @@ app.get('/api/code-mapping/columns', async (req, res) => {
 // 피드백 저장
 app.post('/api/feedback', async (req, res) => {
   const { query_text, original_sql, corrected_sql, feedback_type } = req.body;
+  const dc = getActiveDomain(req);
   if (!query_text || !original_sql || !feedback_type)
     return res.status(400).json({ error: 'query_text, original_sql, feedback_type 필수' });
   if (!['correct', 'corrected'].includes(feedback_type))
@@ -2329,8 +2489,8 @@ app.post('/api/feedback', async (req, res) => {
   try {
     const finalSql = feedback_type === 'correct' ? original_sql : (corrected_sql || original_sql);
     const [r] = await pool.query(
-      'INSERT INTO sql_feedback (query_text, original_sql, corrected_sql, feedback_type) VALUES (?,?,?,?)',
-      [query_text, original_sql, finalSql, feedback_type]
+      'INSERT INTO sql_feedback (query_text, original_sql, corrected_sql, feedback_type, domain_code) VALUES (?,?,?,?,?)',
+      [query_text, original_sql, finalSql, feedback_type, dc]
     );
 
     // RAG 인덱스에 자동 추가 (비동기)
@@ -2369,11 +2529,12 @@ app.post('/api/execute-sql', async (req, res) => {
   }
 });
 
-// 피드백 목록 조회
+// 피드백 목록 조회 (domain 필터)
 app.get('/api/feedback', async (req, res) => {
+  const dc = getActiveDomain(req);
   try {
     const [rows] = await pool.query(
-      'SELECT * FROM sql_feedback ORDER BY created_at DESC LIMIT 100'
+      'SELECT * FROM sql_feedback WHERE domain_code = ? OR domain_code IS NULL ORDER BY created_at DESC LIMIT 100', [dc]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2390,14 +2551,15 @@ app.delete('/api/feedback/:id', async (req, res) => {
 // ============================================================
 // 학습관리 API: 통계
 // ============================================================
-app.get('/api/learning/stats', async (req, res) => {
+app.get('/api/learning/stats', requireAdmin, async (req, res) => {
+  const dc = req.query.domain_code || getActiveDomain(req);
   try {
-    const [o] = await pool.query('SELECT COUNT(*) AS cnt FROM ontology_column');
-    const [os] = await pool.query('SELECT COUNT(*) AS cnt FROM ontology_synonym');
-    const [m] = await pool.query('SELECT COUNT(*) AS cnt FROM metric');
-    const [ms] = await pool.query('SELECT COUNT(*) AS cnt FROM metric_synonym');
-    const [j] = await pool.query('SELECT COUNT(*) AS cnt FROM join_condition');
-    const [cm] = await pool.query('SELECT COUNT(*) AS cnt FROM code_mapping WHERE is_active=1');
+    const [o] = await pool.query('SELECT COUNT(*) AS cnt FROM ontology_column WHERE domain_code = ?', [dc]);
+    const [os] = await pool.query('SELECT COUNT(*) AS cnt FROM ontology_synonym s JOIN ontology_column c ON s.column_id=c.id WHERE c.domain_code = ?', [dc]);
+    const [m] = await pool.query('SELECT COUNT(*) AS cnt FROM metric WHERE domain_code = ?', [dc]);
+    const [ms] = await pool.query('SELECT COUNT(*) AS cnt FROM metric_synonym s JOIN metric mt ON s.metric_id=mt.id WHERE mt.domain_code = ?', [dc]);
+    const [j] = await pool.query('SELECT COUNT(*) AS cnt FROM join_condition WHERE domain_code = ?', [dc]);
+    const [cm] = await pool.query('SELECT COUNT(*) AS cnt FROM code_mapping WHERE is_active=1 AND (domain_code = ? OR domain_code IS NULL)', [dc]);
     let ragStats = null;
     try { ragStats = await getRagStats(pool); } catch (e) { /* 무시 */ }
     res.json({
@@ -2600,8 +2762,9 @@ app.get('/api/builder/columns', async (req, res) => {
       ORDER BY ORDINAL_POSITION
     `);
 
-    // 2. Ontology 컬럼 정보 조회 (설명 보강)
-    const [ontoCols] = await pool.query(`SELECT column_name, description, data_type FROM ontology_column`);
+    // 2. Ontology 컬럼 정보 조회 (설명 보강, domain 필터)
+    const dc = getActiveDomain(req);
+    const [ontoCols] = await pool.query(`SELECT column_name, description, data_type FROM ontology_column WHERE domain_code = ?`, [dc]);
     const ontoMap = {};
     for (const o of ontoCols) {
       ontoMap[o.column_name.toUpperCase()] = o;
@@ -3169,8 +3332,47 @@ app.delete('/api/builder/history', async (req, res) => {
 // 데이터 업로드 API (Python openpyxl 기반 — xlsx 전용, 추가 적재)
 // ============================================================
 
+// ============================================================
+// 관리자 전용 API: 사용자 권한 관리
+// ============================================================
+// 전체 사용자 목록 (조직도 경로 포함)
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT u.id, u.user_id, u.name, u.group_name, u.group_id, u.role, u.domain_code, u.is_active
+       FROM users u ORDER BY u.id`
+    );
+    // 각 사용자의 조직도 경로 구성
+    const result = [];
+    for (const row of rows) {
+      let orgPath = '';
+      if (row.group_id) {
+        try { orgPath = await buildOrgPath(row.group_id); } catch(e) { /* 무시 */ }
+      }
+      result.push({ ...row, org_path: orgPath });
+    }
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 사용자 권한/도메인/활성 수정
+app.put('/api/admin/users/:userId', requireAdmin, async (req, res) => {
+  const { role, domain_code, is_active } = req.body;
+  const updates = [];
+  const vals = [];
+  if (role !== undefined) { updates.push('role=?'); vals.push(role); }
+  if (domain_code !== undefined) { updates.push('domain_code=?'); vals.push(domain_code); }
+  if (is_active !== undefined) { updates.push('is_active=?'); vals.push(is_active ? 1 : 0); }
+  if (updates.length === 0) return res.status(400).json({ error: '수정할 필드가 없습니다.' });
+  vals.push(req.params.userId);
+  try {
+    await pool.query(`UPDATE users SET ${updates.join(', ')}, updated_at=NOW() WHERE user_id=?`, vals);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/data-upload/preview — Python xlsx_preview.py 호출
-app.post('/api/data-upload/preview', upload.single('file'), async (req, res) => {
+app.post('/api/data-upload/preview', requireAdmin, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
 
   const ext = path.extname(req.file.originalname).toLowerCase();
@@ -3214,7 +3416,7 @@ app.post('/api/data-upload/preview', upload.single('file'), async (req, res) => 
 });
 
 // POST /api/data-upload/apply — Python xlsx_load.py 호출 (추가 적재, DELETE 없음!)
-app.post('/api/data-upload/apply', async (req, res) => {
+app.post('/api/data-upload/apply', requireAdmin, async (req, res) => {
   const { filePath, fileName, mappedCols } = req.body;
   if (!filePath || !mappedCols || mappedCols.length === 0) {
     return res.status(400).json({ error: '필수 파라미터가 누락되었습니다.' });
