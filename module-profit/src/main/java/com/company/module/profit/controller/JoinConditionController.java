@@ -8,7 +8,6 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
@@ -40,7 +39,6 @@ public class JoinConditionController {
     }
 
     @PostMapping
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<JoinConditionResponse>> save(
             @Valid @RequestBody JoinConditionSaveRequest request,
             Principal principal) {
@@ -49,7 +47,6 @@ public class JoinConditionController {
     }
 
     @PutMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<JoinConditionResponse>> update(
             @PathVariable Long id,
             @Valid @RequestBody JoinConditionSaveRequest request,
@@ -59,7 +56,6 @@ public class JoinConditionController {
     }
 
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id, Principal principal) {
         String updatedBy = principal != null ? principal.getName() : "system";
         joinConditionService.delete(id, updatedBy);

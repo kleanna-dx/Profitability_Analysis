@@ -8,7 +8,6 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
@@ -45,7 +44,6 @@ public class MetricController {
     }
 
     @PostMapping
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<MetricResponse>> save(
             @Valid @RequestBody MetricSaveRequest request,
             Principal principal) {
@@ -54,7 +52,6 @@ public class MetricController {
     }
 
     @PutMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<MetricResponse>> update(
             @PathVariable Long id,
             @Valid @RequestBody MetricSaveRequest request,
@@ -64,7 +61,6 @@ public class MetricController {
     }
 
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id, Principal principal) {
         String updatedBy = principal != null ? principal.getName() : "system";
         metricService.delete(id, updatedBy);

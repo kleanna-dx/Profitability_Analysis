@@ -1,142 +1,91 @@
-# SAP RFC 동기화 설정 가이드
+# Module-Profit 독립 실행 가이드
 
 ## 개요
 SAP BW 시스템에서 RFC 함수(Z_BI_WEB_EX_BL)를 호출하여
 `bw_profitability_data` 테이블에 수익성분석 데이터를 동기화합니다.
 
-## 1. SAP JCo 설치
+## 1. SAP JCo 파일 배치
 
-### 1-1. SAP JCo 3.1 다운로드
-- SAP Service Marketplace (https://support.sap.com) 에서 다운로드
-- 또는 SAP Note 2786882 참조
-
-### 1-2. 파일 배치 (libs 폴더에 통합)
+두 파일 모두 `libs/` 폴더에 넣습니다:
 ```
-/data/analytics/source/module-profit/
-├── libs/
-│   ├── sapjco3.jar           ← JCo Java 라이브러리
-│   └── libsapjco3.so         ← JCo 네이티브 라이브러리 (Linux)
-└── ...
+module-profit/libs/
+├── sapjco3.jar           ← JCo Java 라이브러리
+└── libsapjco3.so         ← JCo 네이티브 라이브러리 (Linux)
 ```
 
-두 파일 모두 같은 `libs/` 폴더에 넣으면 됩니다:
+## 2. 빌드
+
 ```bash
-cp sapjco3.jar  /data/analytics/source/module-profit/libs/
-cp libsapjco3.so /data/analytics/source/module-profit/libs/
+cd /data/analytics/source/module-profit
+./gradlew clean bootJar -x test
 ```
 
-### 1-3. Spring Boot 실행 시 네이티브 라이브러리 경로 지정
+빌드 결과: `build/libs/module-profit.jar`
+
+## 3. JAR 복사 및 실행
+
 ```bash
-# java.library.path에 libs 폴더를 지정하여 실행
-java -Djava.library.path=/data/analytics/source/module-profit/libs -jar app.jar
+# JAR를 app 디렉토리에 복사
+cp build/libs/module-profit.jar /data/analytics/app/
 
-# 또는 Gradle로 실행할 경우
-./gradlew :module-profit:bootRun -Djava.library.path=/data/analytics/source/module-profit/libs
-
-# 또는 환경변수로 설정
-export LD_LIBRARY_PATH=/data/analytics/source/module-profit/libs:$LD_LIBRARY_PATH
+# 실행
+java -Djava.library.path=/data/analytics/source/module-profit/libs \
+     -jar /data/analytics/app/module-profit.jar
 ```
 
-## 2. application.yml 설정
-
-```yaml
-sap:
-  rfc:
-    # SAP 연결 정보
-    ashost: 10.2.14.220        # SAP 어플리케이션 서버
-    sysnr: "01"                # 인스턴스 번호
-    sysid: BWP                 # 시스템 ID
-    client: "100"              # 클라이언트(만트)
-    user: ITM120               # 로그인 사용자
-    passwd: kleannara123@      # 로그인 비밀번호
-    lang: KO                   # 언어
-    rfc-function: Z_BI_WEB_EX_BL  # RFC 함수명
-
-    # 커넥션 풀
-    pool-capacity: 3
-    peak-limit: 5
-
-    # 스케줄러
-    schedule:
-      enabled: true            # 자동 동기화 활성화
-      cron: "0 0 2 1 * *"      # 매월 1일 새벽 2시
-      daily-cron: "0 0 6 * * *" # (선택) 매일 새벽 6시
-```
-
-## 3. API 사용법
-
-### 3-1. 수동 실행 (관리자)
+또는 설정 파일을 외부에서 지정:
 ```bash
-POST /profit-api/sap-rfc/execute
-Content-Type: application/json
-Authorization: Bearer {JWT_TOKEN}
-
-{
-  "cmonth": "202604",
-  "mode": "replace"
-}
+java -Djava.library.path=/data/analytics/source/module-profit/libs \
+     -jar /data/analytics/app/module-profit.jar \
+     --spring.config.location=file:/data/analytics/config/application-profit.yml
 ```
 
-mode 옵션:
-- `replace`: 해당 월 기존 데이터 삭제 후 INSERT (기본)
-- `append`: 기존 데이터 유지, 추가 INSERT
-- `dry-run`: RFC 호출만 (DB INSERT 안 함)
+## 4. systemctl 서비스 등록 (선택)
 
-### 3-2. 실행 전 확인
+`/etc/systemd/system/module-profit.service`:
+```ini
+[Unit]
+Description=Module-Profit SAP RFC Sync
+After=network.target mariadb.service
+
+[Service]
+Type=simple
+User=knaraadm
+ExecStart=/usr/bin/java \
+    -Djava.library.path=/data/analytics/source/module-profit/libs \
+    -Xmx512m \
+    -jar /data/analytics/app/module-profit.jar
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
 ```bash
-GET /profit-api/sap-rfc/check/202604
+sudo systemctl daemon-reload
+sudo systemctl enable module-profit
+sudo systemctl start module-profit
+sudo systemctl status module-profit
 ```
-응답: 해당 월 기존 데이터 건수 + 실행 중인 배치 여부
 
-### 3-3. 월별 데이터 현황
+## 5. API 확인
+
 ```bash
-GET /profit-api/sap-rfc/monthly-summary
+# 헬스체크
+curl http://localhost:18083/profit-api/sap-rfc/check/202604
+
+# 수동 실행
+curl -X POST http://localhost:18083/profit-api/sap-rfc/execute \
+     -H "Content-Type: application/json" \
+     -d '{"cmonth":"202604","mode":"replace"}'
 ```
 
-### 3-4. 배치 상태 조회
-```bash
-GET /profit-api/batches?batchType=SAP_RFC_SYNC&page=0&size=20
-GET /profit-api/batches/{id}
-```
-
-## 4. SAP 연결 정보
+## 6. 서버 정보
 
 | 항목 | 값 |
 |------|-----|
-| 어플리케이션 서버 | 10.2.14.220 |
-| 인스턴스 번호 | 01 |
-| 시스템 ID | BWP |
-| 클라이언트 | 100 |
+| Spring Boot 포트 | 18083 |
+| SAP 서버 | 10.2.14.220:01 (BWP) |
+| DB 서버 | 10.2.14.247:3306 (integration) |
 | RFC 함수 | Z_BI_WEB_EX_BL |
-| 입력 파라미터 | I_CMONTH (YYYYMM) |
-| 출력 테이블 | T_DATA |
-
-## 5. 대상 DB
-
-| 항목 | 값 |
-|------|-----|
-| 호스트 | 10.2.14.247 |
-| 포트 | 3306 |
-| 데이터베이스 | integration |
-| 테이블 | bw_profitability_data |
-
-## 6. 트러블슈팅
-
-### JCo 라이브러리 오류
-```
-ClassNotFoundException: com.sap.conn.jco.JCoDestinationManager
-```
-→ `sapjco3.jar`가 classpath에 없음. `libs/` 디렉토리에 배치
-
-### 네이티브 라이브러리 오류
-```
-UnsatisfiedLinkError: no sapjco3 in java.library.path
-```
-→ `libsapjco3.so`가 java.library.path에 없음
-→ 실행 시 `-Djava.library.path=/data/analytics/source/module-profit/libs` 옵션 확인
-
-### SAP 연결 실패
-```
-JCoException: COMMUNICATION_FAILURE
-```
-→ SAP 서버(10.2.14.220) 접근 가능 여부 확인: `telnet 10.2.14.220 3301`

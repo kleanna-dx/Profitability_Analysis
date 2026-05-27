@@ -1,20 +1,50 @@
-// module-profit: RAG 기반 수익성분석 AI 챗봇 모듈
-dependencies {
-    // core 공통 클래스 참조 (컴파일 전용: 순환 의존 방지)
-    compileOnly project(':core')
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.2.5'
+    id 'io.spring.dependency-management' version '1.1.4'
+}
 
+group = 'com.company.module'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
 
-    // SAP JCo 3.1 (로컬 jar — SAP Service Marketplace에서 다운로드 필요)
-    // sapjco3.jar → module-profit/libs/ 디렉토리에 배치
+    // MariaDB
+    runtimeOnly 'org.mariadb.jdbc:mariadb-java-client'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // SAP JCo 3.1 (libs/ 디렉토리에 sapjco3.jar 배치)
     compileOnly fileTree(dir: 'libs', include: ['*.jar'])
 }
 
-// spring-boot 플러그인 미적용 서브모듈: plain jar만 생성
-jar {
+bootJar {
     enabled = true
+    archiveFileName = 'module-profit.jar'
+}
+
+jar {
+    enabled = false
 }

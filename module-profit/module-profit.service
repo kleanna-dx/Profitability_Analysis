@@ -1,0 +1,45 @@
+# ============================================================
+# module-profit Spring Boot 서비스 (systemd)
+#
+# 설치:
+#   sudo cp /data/analytics/source/module-profit/module-profit.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable module-profit
+#   sudo systemctl start module-profit
+#
+# 참고: deploy.sh가 이 파일이 없으면 자동으로 생성합니다.
+# ============================================================
+
+[Unit]
+Description=Module-Profit Spring Boot Application (SAP RFC + Batch API)
+Documentation=https://github.com/kleanna-dx/Profitability_Analysis
+After=network.target mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/data/analytics/app
+
+ExecStart=/usr/bin/java \
+    -Djava.library.path=/data/analytics/source/module-profit/libs \
+    -Xms256m -Xmx512m \
+    -jar /data/analytics/app/module-profit.jar \
+    --spring.config.location=file:/data/analytics/source/module-profit/src/main/resources/application.yml
+
+ExecStop=/bin/kill -TERM $MAINPID
+
+Restart=on-failure
+RestartSec=10
+SuccessExitStatus=143
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=module-profit
+
+# 환경 변수
+Environment=JAVA_HOME=/usr/lib/jvm/java-17
+Environment=LANG=ko_KR.UTF-8
+
+[Install]
+WantedBy=multi-user.target

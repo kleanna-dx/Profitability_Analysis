@@ -9,7 +9,6 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
@@ -39,7 +38,6 @@ public class SapRfcSyncController {
      * - 비동기 실행: 즉시 작업 ID 반환, 백그라운드에서 처리
      */
     @PostMapping("/execute")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<SapRfcSyncResponse>> execute(
             @Valid @RequestBody SapRfcSyncRequest request,
             Principal principal) {
