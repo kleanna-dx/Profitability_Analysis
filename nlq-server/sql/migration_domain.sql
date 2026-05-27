@@ -68,10 +68,62 @@ ALTER TABLE code_mapping ADD INDEX IF NOT EXISTS idx_codemapping_domain (domain_
 ALTER TABLE sql_feedback ADD COLUMN IF NOT EXISTS domain_code VARCHAR(10) DEFAULT NULL COMMENT '영역 코드' AFTER id;
 ALTER TABLE sql_feedback ADD INDEX IF NOT EXISTS idx_feedback_domain (domain_code);
 
--- 4. 기존 테스트 사용자 도메인 설정 (예시)
--- UPDATE users SET domain_code = 'PS' WHERE user_id IN ('admin', 'hjchoi1');
--- UPDATE users SET domain_code = 'MGMT' WHERE user_id = 'ceo_user';
+-- 4. 유니크키 수정 (domain_code 포함하여 도메인별 데이터 분리 지원)
+
+-- ontology_column: (column_name, table_name) → (domain_code, column_name, table_name)
+ALTER TABLE ontology_column DROP INDEX uk_col_table;
+ALTER TABLE ontology_column ADD UNIQUE KEY uk_col_table (domain_code, column_name, table_name);
+
+-- metric: (metric_code) → (domain_code, metric_code)
+ALTER TABLE metric DROP INDEX uk_metric_code;
+ALTER TABLE metric ADD UNIQUE KEY uk_metric_code (domain_code, metric_code);
+
+-- code_mapping: (column_name, code_value, table_name) → (domain_code, column_name, code_value, table_name)
+ALTER TABLE code_mapping DROP INDEX uk_col_code;
+ALTER TABLE code_mapping ADD UNIQUE KEY uk_col_code (domain_code, column_name, code_value, table_name);
+
+-- 5. HL, MGMT 도메인 초기 데이터 세팅 (PS 데이터 복사)
+
+-- ontology_column (122건 × 2 도메인)
+INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, description, data_type)
+SELECT 'HL', column_name, table_name, description, data_type
+FROM ontology_column WHERE domain_code = 'PS';
+
+INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, description, data_type)
+SELECT 'MGMT', column_name, table_name, description, data_type
+FROM ontology_column WHERE domain_code = 'PS';
+
+-- metric (19건 × 2 도메인)
+INSERT IGNORE INTO metric (domain_code, metric_code, aggregation, formula, table_name, description)
+SELECT 'HL', metric_code, aggregation, formula, table_name, description
+FROM metric WHERE domain_code = 'PS';
+
+INSERT IGNORE INTO metric (domain_code, metric_code, aggregation, formula, table_name, description)
+SELECT 'MGMT', metric_code, aggregation, formula, table_name, description
+FROM metric WHERE domain_code = 'PS';
+
+-- join_condition (3건 × 2 도메인)
+INSERT INTO join_condition (domain_code, left_column, left_table, right_column, right_table, join_type, operator, description)
+SELECT 'HL', left_column, left_table, right_column, right_table, join_type, operator, description
+FROM join_condition WHERE domain_code = 'PS'
+AND NOT EXISTS (SELECT 1 FROM join_condition j2 WHERE j2.domain_code = 'HL');
+
+INSERT INTO join_condition (domain_code, left_column, left_table, right_column, right_table, join_type, operator, description)
+SELECT 'MGMT', left_column, left_table, right_column, right_table, join_type, operator, description
+FROM join_condition WHERE domain_code = 'PS'
+AND NOT EXISTS (SELECT 1 FROM join_condition j2 WHERE j2.domain_code = 'MGMT');
+
+-- code_mapping (26건 × 2 도메인)
+INSERT IGNORE INTO code_mapping (domain_code, column_name, column_name_nm, code_value, display_name, table_name, description, is_active)
+SELECT 'HL', column_name, column_name_nm, code_value, display_name, table_name, description, is_active
+FROM code_mapping WHERE domain_code = 'PS';
+
+INSERT IGNORE INTO code_mapping (domain_code, column_name, column_name_nm, code_value, display_name, table_name, description, is_active)
+SELECT 'MGMT', column_name, column_name_nm, code_value, display_name, table_name, description, is_active
+FROM code_mapping WHERE domain_code = 'PS';
 
 -- ============================================================
 -- 완료. 서버 재시작 후 적용됩니다.
+-- 참고: 동의어(ontology_synonym, metric_synonym)는 도메인별로
+-- 관리자가 개별 세팅합니다 (초기 복사 대상 아님).
 -- ============================================================

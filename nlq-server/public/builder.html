@@ -517,6 +517,9 @@
         <a href="/upload.html" class="sidebar-menu-item admin-only" style="text-decoration:none;">
             <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
         </a>
+        <a href="/batch.html" class="sidebar-menu-item admin-only" style="text-decoration:none;">
+            <i class="fas fa-sync-alt"></i><span>배치 관리</span>
+        </a>
     </nav>
     <div class="sidebar-divider"></div>
     <div class="px-5 py-3">
@@ -791,7 +794,7 @@ async function initDomainAndRole(){
         const r=await fetch('/api/me');const me=await r.json();if(!me.loggedIn)return;
         currentUserRole=me.role||'user';currentDomain=me.active_domain||me.domain_code||'PS';
         if(currentUserRole==='admin'){
-            document.querySelectorAll('.admin-only').forEach(el=>el.style.display='');
+            document.querySelectorAll('.admin-only').forEach(el=>el.classList.remove('admin-only'));
             const sel=document.getElementById('domainSelect');sel.style.display='';
             document.getElementById('domainIndicator').style.display='none';
             try{const dr=await fetch('/api/domains');const doms=await dr.json();sel.innerHTML=doms.map(d=>`<option value="${d.domain_code}" ${d.domain_code===currentDomain?'selected':''}>${d.domain_name} (${d.domain_code})</option>`).join('');}catch(e){}

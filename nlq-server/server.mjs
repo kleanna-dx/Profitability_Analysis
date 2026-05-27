@@ -87,14 +87,19 @@ app.post('/api/login', async (req, res) => {
     if (user.password !== password) {
       return res.status(401).json({ success: false, message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     }
-    // 도메인 결정: users.domain_code → 없으면 조직도 탐색
+    // 도메인 결정: admin은 전체(null) 유지, 일반 사용자는 users.domain_code → 없으면 조직도 탐색
     let domainCode = null;
     try {
       const [uRow] = await pool.query('SELECT domain_code FROM users WHERE user_id=?', [user.user_id]);
-      domainCode = uRow[0]?.domain_code || await resolveDomainByOrg(user.user_id);
-      // 조직도에서 찾은 domain_code를 users에 캐시
-      if (domainCode && !uRow[0]?.domain_code) {
-        await pool.query('UPDATE users SET domain_code=? WHERE user_id=?', [domainCode, user.user_id]);
+      if (user.role === 'admin') {
+        // admin: DB에 명시적으로 지정된 경우만 사용, 아니면 null (전체 영역)
+        domainCode = uRow[0]?.domain_code || null;
+      } else {
+        // 일반 사용자: DB → 조직도 탐색 → 캐시
+        domainCode = uRow[0]?.domain_code || await resolveDomainByOrg(user.user_id);
+        if (domainCode && !uRow[0]?.domain_code) {
+          await pool.query('UPDATE users SET domain_code=? WHERE user_id=?', [domainCode, user.user_id]);
+        }
       }
     } catch(e) { console.error('[Login] domain 해석 실패:', e.message); }
 
@@ -181,13 +186,17 @@ app.post('/api/login/sendEncData', async (req, res) => {
       return res.status(200).type('html').send(buildSsoErrorHtml('비활성화된 계정입니다. 관리자에게 문의하세요.'));
     }
 
-    // 도메인 결정
+    // 도메인 결정: admin은 전체(null) 유지, 일반 사용자는 DB → 조직도 탐색
     let domainCode = null;
     try {
       const [uDom] = await pool.query('SELECT domain_code FROM users WHERE user_id=?', [userId]);
-      domainCode = uDom[0]?.domain_code || await resolveDomainByOrg(userId);
-      if (domainCode && !uDom[0]?.domain_code) {
-        await pool.query('UPDATE users SET domain_code=? WHERE user_id=?', [domainCode, userId]);
+      if (ssoUser.role === 'admin') {
+        domainCode = uDom[0]?.domain_code || null;
+      } else {
+        domainCode = uDom[0]?.domain_code || await resolveDomainByOrg(userId);
+        if (domainCode && !uDom[0]?.domain_code) {
+          await pool.query('UPDATE users SET domain_code=? WHERE user_id=?', [domainCode, userId]);
+        }
       }
     } catch(e) { console.error('[SSO] domain 해석 실패:', e.message); }
 
@@ -425,7 +434,7 @@ app.use((req, res, next) => {
 
   if (req.session && req.session.user) {
     // 관리자 전용 페이지 접근 차단 (일반 사용자)
-    const adminOnlyPages = ['/learning.html', '/admin.html', '/upload.html'];
+    const adminOnlyPages = ['/learning.html', '/admin.html', '/upload.html', '/batch.html'];
     if (adminOnlyPages.includes(req.path) && req.session.user.role !== 'admin') {
       return res.redirect('/');
     }
@@ -3467,6 +3476,274 @@ app.get('/report', (req, res) => {
 });
 
 // ============================================================
+// 배치관리 API: SAP RFC → bw_profitability_data 동기화 작업 관리
+// ============================================================
+
+/**
+ * 서버 시작 시 batch_jobs 테이블 자동 생성
+ */
+async function ensureBatchJobsTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS batch_jobs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        job_type VARCHAR(50) NOT NULL DEFAULT 'SAP_RFC_SYNC' COMMENT '작업유형',
+        cmonth VARCHAR(6) NOT NULL COMMENT '입력년월 (YYYYMM)',
+        mode VARCHAR(20) NOT NULL DEFAULT 'replace' COMMENT '실행모드: replace/append/dry-run',
+        status ENUM('pending','running','success','failed','cancelled') NOT NULL DEFAULT 'pending',
+        started_at DATETIME NULL,
+        finished_at DATETIME NULL,
+        total_rows INT DEFAULT 0 COMMENT 'T_DATA 수신 행 수',
+        inserted_rows INT DEFAULT 0 COMMENT 'DB INSERT 행 수',
+        deleted_rows INT DEFAULT 0 COMMENT 'DELETE한 기존 행 수',
+        error_message TEXT NULL,
+        log_text LONGTEXT NULL COMMENT '실행 로그',
+        created_by VARCHAR(50) NULL COMMENT '실행자 ID',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_batch_status (status),
+        INDEX idx_batch_cmonth (cmonth)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='배치 작업 이력'
+    `);
+    console.log('[Batch] batch_jobs 테이블 준비 완료');
+  } catch (e) {
+    console.error('[Batch] batch_jobs 테이블 생성 실패:', e.message);
+  }
+}
+
+// 배치 작업 목록 조회 (최근 50건)
+app.get('/api/batch/jobs', requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const [rows] = await pool.query(
+      `SELECT id, job_type, cmonth, mode, status, started_at, finished_at,
+              total_rows, inserted_rows, deleted_rows, error_message,
+              created_by, created_at,
+              TIMESTAMPDIFF(SECOND, started_at, IFNULL(finished_at, NOW())) AS elapsed_sec
+       FROM batch_jobs ORDER BY id DESC LIMIT ?`,
+      [limit]
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 배치 작업 상세 조회 (로그 포함)
+app.get('/api/batch/jobs/:id', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM batch_jobs WHERE id=?', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: '작업을 찾을 수 없습니다.' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 배치 작업 실행 (SAP RFC → DB INSERT)
+app.post('/api/batch/execute', requireAdmin, async (req, res) => {
+  const { cmonth, mode } = req.body;
+
+  // 입력 유효성 검사
+  if (!cmonth || cmonth.length !== 6 || !/^\d{6}$/.test(cmonth)) {
+    return res.status(400).json({ error: '유효하지 않은 년월입니다. YYYYMM 형식으로 입력하세요. (예: 202604)' });
+  }
+
+  const year = parseInt(cmonth.substring(0, 4));
+  const month = parseInt(cmonth.substring(4, 6));
+  if (year < 2020 || year > 2030 || month < 1 || month > 12) {
+    return res.status(400).json({ error: '유효 범위를 벗어난 년월입니다. (2020~2030년, 1~12월)' });
+  }
+
+  const execMode = mode || 'replace';
+  if (!['replace', 'append', 'dry-run'].includes(execMode)) {
+    return res.status(400).json({ error: '유효하지 않은 실행모드입니다. (replace/append/dry-run)' });
+  }
+
+  // 중복 실행 체크 (running 상태 작업이 있으면 차단)
+  try {
+    const [running] = await pool.query(
+      "SELECT id, cmonth FROM batch_jobs WHERE status = 'running' LIMIT 1"
+    );
+    if (running.length > 0) {
+      return res.status(409).json({
+        error: `이미 실행 중인 작업이 있습니다. (ID: ${running[0].id}, ${running[0].cmonth})`,
+        runningJobId: running[0].id,
+      });
+    }
+  } catch (e) { /* 무시, 계속 진행 */ }
+
+  // 작업 레코드 생성
+  const userId = req.session?.user?.id || 'unknown';
+  let jobId;
+  try {
+    const [r] = await pool.query(
+      `INSERT INTO batch_jobs (job_type, cmonth, mode, status, created_by)
+       VALUES ('SAP_RFC_SYNC', ?, ?, 'pending', ?)`,
+      [cmonth, execMode, userId]
+    );
+    jobId = r.insertId;
+  } catch (e) {
+    return res.status(500).json({ error: '작업 생성 실패: ' + e.message });
+  }
+
+  // 즉시 응답 반환 (비동기 실행)
+  res.json({
+    success: true,
+    jobId,
+    cmonth,
+    mode: execMode,
+    message: '배치 작업이 시작되었습니다. 작업 목록에서 진행 상황을 확인하세요.',
+  });
+
+  // 비동기로 Python 스크립트 실행
+  executeBatchJob(jobId, cmonth, execMode).catch(err => {
+    console.error(`[Batch] 작업 ${jobId} 비동기 실행 실패:`, err.message);
+  });
+});
+
+/**
+ * 배치 작업 비동기 실행 (Python sap_rfc_sync.py 호출)
+ */
+async function executeBatchJob(jobId, cmonth, mode) {
+  const logLines = [];
+  const addLog = (msg) => {
+    const ts = new Date().toISOString().substring(11, 19);
+    logLines.push(`[${ts}] ${msg}`);
+  };
+
+  try {
+    // 상태 → running
+    await pool.query(
+      "UPDATE batch_jobs SET status='running', started_at=NOW(), log_text=? WHERE id=?",
+      ['작업 시작...\n', jobId]
+    );
+    addLog(`배치 작업 시작 (ID: ${jobId}, CMONTH: ${cmonth}, MODE: ${mode})`);
+
+    // Python 스크립트 경로
+    const scriptPath = path.join(import.meta.dirname, 'scripts', 'sap_rfc_sync.py');
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`스크립트 파일이 없습니다: ${scriptPath}`);
+    }
+
+    // 인수 구성
+    const args = [scriptPath, cmonth];
+    if (mode === 'dry-run') args.push('--dry-run');
+    if (mode === 'replace') args.push('--replace');
+
+    addLog(`Python 스크립트 실행: python3 ${args.join(' ')}`);
+    await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
+
+    // 실행 (최대 30분 타임아웃)
+    const { stdout, stderr } = await execFileAsync('python3', args, {
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 1800000,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
+
+    // 로그 기록
+    if (stdout) addLog('--- stdout ---\n' + stdout);
+    if (stderr) addLog('--- stderr ---\n' + stderr);
+
+    // stdout에서 결과 파싱
+    const lines = (stdout || '').split('\n');
+    let totalRows = 0, insertedRows = 0, deletedRows = 0;
+
+    for (const line of lines) {
+      // [RFC] T_DATA: 12345 rows
+      const tDataMatch = line.match(/T_DATA:\s*(\d+)\s*rows/);
+      if (tDataMatch) totalRows = parseInt(tDataMatch[1]);
+
+      // [DB] INSERT 완료: 12345건
+      const insertMatch = line.match(/INSERT 완료:\s*(\d+)건/);
+      if (insertMatch) insertedRows = parseInt(insertMatch[1]);
+
+      // [DB] 1234건 삭제 완료
+      const deleteMatch = line.match(/(\d+)건 삭제 완료/);
+      if (deleteMatch) deletedRows = parseInt(deleteMatch[1]);
+
+      // [DRY RUN] DB INSERT 건너뜀. 총 N건이 INSERT될 예정.
+      const dryRunMatch = line.match(/총 (\d+)건이 INSERT될 예정/);
+      if (dryRunMatch) totalRows = parseInt(dryRunMatch[1]);
+    }
+
+    addLog(`완료: T_DATA=${totalRows}행, INSERT=${insertedRows}행, DELETE=${deletedRows}행`);
+
+    // 성공
+    await pool.query(
+      `UPDATE batch_jobs SET status='success', finished_at=NOW(),
+              total_rows=?, inserted_rows=?, deleted_rows=?, log_text=?
+       WHERE id=?`,
+      [totalRows, insertedRows, deletedRows, logLines.join('\n'), jobId]
+    );
+    console.log(`[Batch] 작업 ${jobId} 완료: ${totalRows}행 수신, ${insertedRows}행 INSERT`);
+
+  } catch (err) {
+    const errMsg = err.message || String(err);
+    addLog(`오류 발생: ${errMsg}`);
+    if (err.stderr) addLog('stderr: ' + err.stderr);
+
+    await pool.query(
+      `UPDATE batch_jobs SET status='failed', finished_at=NOW(),
+              error_message=?, log_text=?
+       WHERE id=?`,
+      [errMsg.substring(0, 5000), logLines.join('\n'), jobId]
+    ).catch(e => console.error('[Batch] 실패 상태 업데이트 실패:', e.message));
+
+    console.error(`[Batch] 작업 ${jobId} 실패:`, errMsg);
+  }
+}
+
+// 해당 월 기존 데이터 건수 조회 (실행 전 확인용)
+app.get('/api/batch/check/:cmonth', requireAdmin, async (req, res) => {
+  const { cmonth } = req.params;
+  if (!cmonth || cmonth.length !== 6 || !/^\d{6}$/.test(cmonth)) {
+    return res.status(400).json({ error: '유효하지 않은 년월' });
+  }
+  try {
+    const [rows] = await pool.query(
+      'SELECT COUNT(*) AS cnt FROM bw_profitability_data WHERE CALMONTH = ?',
+      [cmonth]
+    );
+    // 최근 해당 월 작업 이력
+    const [history] = await pool.query(
+      `SELECT id, status, mode, total_rows, inserted_rows, finished_at
+       FROM batch_jobs WHERE cmonth = ? ORDER BY id DESC LIMIT 5`,
+      [cmonth]
+    );
+    res.json({
+      cmonth,
+      existingRows: rows[0].cnt,
+      recentJobs: history,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 배치 작업 DB 전체 통계
+app.get('/api/batch/stats', requireAdmin, async (req, res) => {
+  try {
+    const [total] = await pool.query('SELECT COUNT(*) AS cnt FROM batch_jobs');
+    const [success] = await pool.query("SELECT COUNT(*) AS cnt FROM batch_jobs WHERE status='success'");
+    const [failed] = await pool.query("SELECT COUNT(*) AS cnt FROM batch_jobs WHERE status='failed'");
+    const [running] = await pool.query("SELECT COUNT(*) AS cnt FROM batch_jobs WHERE status='running'");
+    const [lastJob] = await pool.query(
+      "SELECT id, cmonth, status, finished_at FROM batch_jobs ORDER BY id DESC LIMIT 1"
+    );
+    // bw_profitability_data 전체 행수
+    const [dbRows] = await pool.query('SELECT COUNT(*) AS cnt FROM bw_profitability_data');
+    // CALMONTH별 데이터 건수
+    const [monthData] = await pool.query(
+      'SELECT CALMONTH, COUNT(*) AS cnt FROM bw_profitability_data GROUP BY CALMONTH ORDER BY CALMONTH DESC LIMIT 12'
+    );
+    res.json({
+      totalJobs: total[0].cnt,
+      successJobs: success[0].cnt,
+      failedJobs: failed[0].cnt,
+      runningJobs: running[0].cnt,
+      lastJob: lastJob[0] || null,
+      totalDbRows: dbRows[0].cnt,
+      monthlyData: monthData,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
 app.get('/{*splat}', (req, res) => {
   // API 경로는 SPA fallback에서 제외 (404 반환)
   if (req.path.startsWith('/api/')) {
@@ -3494,6 +3771,9 @@ app.use((err, req, res, _next) => {
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 NLQ Server running on http://0.0.0.0:${PORT}`);
+
+  // 배치관리 테이블 자동 생성
+  await ensureBatchJobsTable();
 
   // 서버 시작 시 RAG 인덱스 자동 빌드 (비동기, 서버 응답에 영향 없음)
   try {

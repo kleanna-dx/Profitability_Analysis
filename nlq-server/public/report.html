@@ -399,6 +399,9 @@
         <a href="/upload.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
             <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
         </a>
+        <a href="/batch.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
+            <i class="fas fa-sync-alt"></i><span>배치 관리</span>
+        </a>
     </nav>
 
     <div class="sidebar-divider"></div>
@@ -598,7 +601,7 @@
 
     // 관리자 메뉴 표시
     fetch('/api/me').then(r=>r.json()).then(me=>{
-        if(me.loggedIn && me.role==='admin') document.querySelectorAll('.admin-menu-item').forEach(el=>el.style.display='');
+        if(me.loggedIn && me.role==='admin') document.querySelectorAll('.admin-menu-item').forEach(el=>{ el.style.display=''; el.style.display='flex'; });
     }).catch(()=>{});
     window.addEventListener('DOMContentLoaded', loadMonths);
 
