@@ -1,5 +1,7 @@
+# v2-port18084
 # ============================================================
 # module-profit Spring Boot 서비스 (systemd)
+# 포트: 18084 (Nginx 18083과 분리)
 #
 # 설치:
 #   sudo cp /data/analytics/source/module-profit/module-profit.service /etc/systemd/system/
@@ -11,7 +13,7 @@
 # ============================================================
 
 [Unit]
-Description=Module-Profit Spring Boot Application (SAP RFC + Batch API)
+Description=Module-Profit Spring Boot Application (port 18084)
 Documentation=https://github.com/kleanna-dx/Profitability_Analysis
 After=network.target mariadb.service
 Wants=mariadb.service

@@ -37,7 +37,8 @@ dependencies {
     annotationProcessor 'org.projectlombok:lombok'
 
     // SAP JCo 3.1 (libs/ 디렉토리에 sapjco3.jar 배치)
-    compileOnly fileTree(dir: 'libs', include: ['*.jar'])
+    // implementation으로 설정하여 bootJar에 포함 (런타임 ClassNotFoundException 방지)
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
 }
 
 bootJar {
