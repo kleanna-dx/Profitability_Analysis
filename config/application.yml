@@ -1,6 +1,6 @@
 # ============================================================
 # NLQ 수익성분석 서버 — Nginx 리버스 프록시
-# 파일: /data/analytics/config/nginx.conf
+# 파일: /data/analytics/config/application.yml
 # 포트: 18083 (외부 → Nginx → Node.js + Spring Boot)
 #
 # 구조:
