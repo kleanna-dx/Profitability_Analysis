@@ -6,8 +6,12 @@
 #
 # 서비스 구성:
 #   1. nlq-server     - Node.js Express (port 3000)
-#   2. module-profit   - Spring Boot JAR (port 18083)
-#   3. analytics       - Nginx reverse proxy (port 18083 → 3000 + Spring Boot)
+#   2. module-profit   - Spring Boot JAR (port 18084)
+#   3. analytics       - Nginx reverse proxy (port 18083 → 3000 + 18084)
+#
+# 포트 구조:
+#   Nginx(18083) ─→ Node.js(3000)    : /api/*, /pages/*, etc.
+#                ─→ SpringBoot(18084) : /profit-api/*
 #
 # 옵션:
 #   (없음)        전체 배포 (pull + 빌드 + 복사 + npm install + 재시작)
@@ -37,6 +41,11 @@ PROFIT_JAR_PATH="${APP_DIR}/${PROFIT_JAR_NAME}"
 PROFIT_LIBS_DIR="${PROFIT_SOURCE_DIR}/libs"
 PROFIT_LOG="${LOG_DIR}/module-profit.log"
 
+# 포트 설정
+SPRING_BOOT_PORT=18084
+NGINX_PORT=18083
+NODEJS_PORT=3000
+
 # ── 색상 ──
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -59,19 +68,22 @@ print_header() {
     echo ""
 }
 
-# ── module-profit systemd 서비스 설치 확인 ──
+# ── module-profit systemd 서비스 설치/업데이트 ──
 ensure_profit_service() {
     local service_file="/etc/systemd/system/module-profit.service"
+    local service_version="v2-port18084"
 
-    if [ -f "${service_file}" ]; then
+    # 서비스 파일이 있고 버전 태그도 있으면 스킵
+    if [ -f "${service_file}" ] && grep -q "${service_version}" "${service_file}" 2>/dev/null; then
         return 0
     fi
 
     log_info "module-profit systemd 서비스 파일 생성 중..."
 
-    sudo tee "${service_file}" > /dev/null << 'UNIT'
+    sudo tee "${service_file}" > /dev/null << UNIT
+# ${service_version}
 [Unit]
-Description=Module-Profit Spring Boot Application
+Description=Module-Profit Spring Boot Application (port ${SPRING_BOOT_PORT})
 Documentation=https://github.com/kleanna-dx/Profitability_Analysis
 After=network.target mariadb.service
 Wants=mariadb.service
@@ -80,12 +92,12 @@ Wants=mariadb.service
 Type=simple
 User=root
 WorkingDirectory=/data/analytics/app
-ExecStart=/usr/bin/java \
-    -Djava.library.path=/data/analytics/source/module-profit/libs \
-    -Xms256m -Xmx512m \
-    -jar /data/analytics/app/module-profit.jar \
+ExecStart=/usr/bin/java \\
+    -Djava.library.path=/data/analytics/source/module-profit/libs \\
+    -Xms256m -Xmx512m \\
+    -jar /data/analytics/app/module-profit.jar \\
     --spring.config.location=file:/data/analytics/source/module-profit/src/main/resources/application.yml
-ExecStop=/bin/kill -TERM $MAINPID
+ExecStop=/bin/kill -TERM \$MAINPID
 Restart=on-failure
 RestartSec=10
 SuccessExitStatus=143
@@ -103,7 +115,7 @@ UNIT
 
     sudo systemctl daemon-reload
     sudo systemctl enable module-profit
-    log_ok "module-profit 서비스 등록 완료"
+    log_ok "module-profit 서비스 등록 완료 (port ${SPRING_BOOT_PORT})"
 }
 
 # ── 서비스 상태 확인 ──
@@ -135,34 +147,34 @@ check_status() {
 
     echo ""
     log_info "── 포트 확인 ──"
-    ss -tlnp | grep -E "3000|18083" || log_warn "리스닝 포트 없음"
+    ss -tlnp | grep -E "${NODEJS_PORT}|${SPRING_BOOT_PORT}|${NGINX_PORT}" || log_warn "리스닝 포트 없음"
 
     echo ""
     log_info "── 헬스체크 ──"
 
     # Node.js (3000)
-    if curl -sf http://localhost:3000/api/status > /dev/null 2>&1; then
-        local status_json=$(curl -s http://localhost:3000/api/status 2>/dev/null)
-        log_ok "Node.js    (3000):  정상"
+    if curl -sf http://localhost:${NODEJS_PORT}/api/status > /dev/null 2>&1; then
+        local status_json=$(curl -s http://localhost:${NODEJS_PORT}/api/status 2>/dev/null)
+        log_ok "Node.js    (${NODEJS_PORT}):  정상"
         echo "  ${status_json}" | head -1
     else
-        log_error "Node.js    (3000):  응답 없음"
+        log_error "Node.js    (${NODEJS_PORT}):  응답 없음"
     fi
 
-    # Spring Boot (18083) - profit-api 엔드포인트로 확인
-    if curl -sf http://localhost:18083/profit-api/metrics > /dev/null 2>&1; then
-        log_ok "SpringBoot (18083): 정상"
-    elif curl -sf http://localhost:18083/profit-api/sap-rfc/check/202501 > /dev/null 2>&1; then
-        log_ok "SpringBoot (18083): 정상 (SAP RFC 응답)"
+    # Spring Boot (18084) - profit-api 엔드포인트로 확인
+    if curl -sf http://localhost:${SPRING_BOOT_PORT}/profit-api/metrics > /dev/null 2>&1; then
+        log_ok "SpringBoot (${SPRING_BOOT_PORT}): 정상"
+    elif curl -sf http://localhost:${SPRING_BOOT_PORT}/profit-api/sap-rfc/check/202501 > /dev/null 2>&1; then
+        log_ok "SpringBoot (${SPRING_BOOT_PORT}): 정상 (SAP RFC 응답)"
     else
-        log_warn "SpringBoot (18083): 응답 없음"
+        log_warn "SpringBoot (${SPRING_BOOT_PORT}): 응답 없음"
     fi
 
     # Nginx proxy 확인
-    if curl -sf http://localhost:18083/api/status > /dev/null 2>&1; then
-        log_ok "Nginx      (18083): 프록시 정상"
+    if curl -sf http://localhost:${NGINX_PORT}/api/status > /dev/null 2>&1; then
+        log_ok "Nginx      (${NGINX_PORT}): 프록시 정상"
     else
-        log_warn "Nginx      (18083): 프록시 응답 없음"
+        log_warn "Nginx      (${NGINX_PORT}): 프록시 응답 없음"
     fi
 
     # JAR 파일 확인
@@ -355,10 +367,10 @@ restart_profit_service() {
 
     log_info "module-profit 재시작 중..."
     sudo systemctl restart module-profit
-    sleep 5  # Spring Boot 기동에 시간이 더 필요
+    sleep 8  # Spring Boot 기동에 시간이 더 필요
 
     if systemctl is-active --quiet module-profit; then
-        log_ok "module-profit 재시작 완료"
+        log_ok "module-profit 재시작 완료 (port ${SPRING_BOOT_PORT})"
     else
         log_error "module-profit 시작 실패!"
         sudo journalctl -u module-profit -n 30 --no-pager
@@ -384,9 +396,9 @@ start_services() {
     if [ -f "${PROFIT_JAR_PATH}" ]; then
         ensure_profit_service
         sudo systemctl start module-profit
-        sleep 5
+        sleep 8
         if systemctl is-active --quiet module-profit; then
-            log_ok "module-profit 시작 완료"
+            log_ok "module-profit 시작 완료 (port ${SPRING_BOOT_PORT})"
         else
             log_error "module-profit 시작 실패!"
             sudo journalctl -u module-profit -n 20 --no-pager
@@ -421,13 +433,14 @@ start_services() {
 
 # ── 헬스체크 (서비스 안정화 대기) ──
 wait_healthy() {
+    echo ""
     log_info "헬스체크 대기 중..."
     local max_wait=30
     local waited=0
 
     # Node.js 헬스체크
     while [ $waited -lt $max_wait ]; do
-        if curl -sf http://localhost:3000/api/status > /dev/null 2>&1; then
+        if curl -sf http://localhost:${NODEJS_PORT}/api/status > /dev/null 2>&1; then
             log_ok "Node.js 정상 응답 확인 (${waited}초)"
             break
         fi
@@ -447,17 +460,19 @@ wait_healthy() {
         local java_wait=0
         local java_max=60  # Spring Boot는 기동이 오래 걸림
         while [ $java_wait -lt $java_max ]; do
-            if curl -sf http://localhost:18083/profit-api/metrics > /dev/null 2>&1; then
+            if curl -sf http://localhost:${SPRING_BOOT_PORT}/profit-api/metrics > /dev/null 2>&1; then
                 log_ok "Spring Boot 정상 응답 확인 (${java_wait}초)"
-                return 0
+                break
             fi
             sleep 3
             java_wait=$((java_wait + 3))
             echo -n "."
         done
-        echo ""
-        log_warn "Spring Boot: ${java_max}초 내에 응답 없음 (기동 중일 수 있음)"
-        sudo journalctl -u module-profit -n 20 --no-pager
+        if [ $java_wait -ge $java_max ]; then
+            echo ""
+            log_warn "Spring Boot: ${java_max}초 내에 응답 없음 (기동 중일 수 있음)"
+            sudo journalctl -u module-profit -n 20 --no-pager
+        fi
     fi
 
     echo ""
@@ -514,7 +529,7 @@ deploy_java_only() {
         local java_max=60
         log_info "Spring Boot 헬스체크 대기 중..."
         while [ $java_wait -lt $java_max ]; do
-            if curl -sf http://localhost:18083/profit-api/metrics > /dev/null 2>&1; then
+            if curl -sf http://localhost:${SPRING_BOOT_PORT}/profit-api/metrics > /dev/null 2>&1; then
                 log_ok "Spring Boot 정상 응답 확인 (${java_wait}초)"
                 break
             fi
@@ -601,9 +616,9 @@ case "${1:-}" in
         echo "  --help        도움말"
         echo ""
         echo "서비스 구성:"
-        echo "  nlq-server     Node.js Express  (port 3000)"
-        echo "  module-profit  Spring Boot JAR  (port 18083)"
-        echo "  analytics      Nginx proxy      (port 18083)"
+        echo "  nlq-server     Node.js Express  (port ${NODEJS_PORT})"
+        echo "  module-profit  Spring Boot JAR  (port ${SPRING_BOOT_PORT})"
+        echo "  analytics      Nginx proxy      (port ${NGINX_PORT})"
         echo ""
         echo "예시:"
         echo "  bash /data/analytics/deploy.sh              # 전체 배포"
