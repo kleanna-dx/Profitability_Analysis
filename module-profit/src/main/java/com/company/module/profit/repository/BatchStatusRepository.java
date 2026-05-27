@@ -44,4 +44,8 @@ public interface BatchStatusRepository extends JpaRepository<BatchStatus, Long> 
     /** 실행 중인 배치 조회 */
     @Query("SELECT bs FROM BatchStatus bs WHERE bs.status = 'running'")
     List<BatchStatus> findRunningBatches();
+
+    /** 실행 중인 배치 조회 (특정 ID 제외 — 자기 자신 제외용) */
+    @Query("SELECT bs FROM BatchStatus bs WHERE bs.status = 'running' AND bs.id <> :excludeId")
+    List<BatchStatus> findRunningBatchesExcluding(@Param("excludeId") Long excludeId);
 }
