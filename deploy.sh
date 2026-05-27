@@ -315,6 +315,32 @@ install_deps() {
     echo ""
 }
 
+# ── Nginx 설정 동기화 ──
+# 레포의 config/nginx.conf → 프로덕션 config 디렉토리로 복사
+# 기존 application.yml → nginx.conf 마이그레이션도 처리
+sync_nginx_config() {
+    local repo_conf="${SOURCE_DIR}/config/nginx.conf"
+    local prod_conf="${CONFIG_DIR}/nginx.conf"
+    local old_conf="${CONFIG_DIR}/application.yml"
+
+    # 레포에 nginx.conf가 있으면 복사
+    if [ -f "${repo_conf}" ]; then
+        cp "${repo_conf}" "${prod_conf}"
+        log_ok "nginx.conf 동기화 완료"
+    fi
+
+    # analytics systemd 서비스가 기존 application.yml을 참조하는 경우 대비
+    # nginx.conf로 심볼릭 링크 생성
+    if [ -f "${prod_conf}" ] && [ ! -L "${old_conf}" ]; then
+        if [ -f "${old_conf}" ]; then
+            mv "${old_conf}" "${old_conf}.bak.$(date +%Y%m%d)"
+            log_info "기존 application.yml → application.yml.bak 백업"
+        fi
+        ln -sf "${prod_conf}" "${old_conf}"
+        log_info "application.yml → nginx.conf 심볼릭 링크 생성"
+    fi
+}
+
 # ── 서비스 재시작 (전체) ──
 restart_services() {
     log_info "서비스 재시작 중..."
@@ -335,7 +361,8 @@ restart_services() {
     fi
 
     # 3) nginx 설정 검증 후 재시작
-    if sudo nginx -t -c "${CONFIG_DIR}/application.yml" 2>/dev/null; then
+    sync_nginx_config
+    if sudo nginx -t -c "${CONFIG_DIR}/nginx.conf" 2>/dev/null; then
         sudo systemctl restart analytics
         if systemctl is-active --quiet analytics; then
             log_ok "analytics (nginx) 재시작 완료"
@@ -346,7 +373,7 @@ restart_services() {
         fi
     else
         log_error "nginx 설정 검증 실패!"
-        sudo nginx -t -c "${CONFIG_DIR}/application.yml"
+        sudo nginx -t -c "${CONFIG_DIR}/nginx.conf"
         exit 1
     fi
 
