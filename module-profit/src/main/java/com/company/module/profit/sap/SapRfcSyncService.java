@@ -479,9 +479,13 @@ public class SapRfcSyncService {
 
     /**
      * batch_jobs.log_text에 로그 한 줄 추가 (타임스탬프 포함)
+     * + 서버 로그파일(slf4j)에도 동시 출력
      */
     @Transactional
     protected void appendBatchLog(Long batchId, String message) {
+        // 서버 로그파일에 출력 (journalctl / logback으로 확인 가능)
+        log.info("[Batch:{}] {}", batchId, message);
+
         batchStatusRepository.findById(batchId).ifPresent(batch -> {
             String ts = java.time.LocalDateTime.now()
                     .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
