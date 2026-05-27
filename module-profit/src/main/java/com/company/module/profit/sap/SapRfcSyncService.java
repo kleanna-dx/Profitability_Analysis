@@ -9,6 +9,8 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 
 /**
@@ -142,42 +144,100 @@ public class SapRfcSyncService {
 
     /**
      * 동기화 실행 (동기 - 내부 호출)
+     * 각 단계별 상세 로그를 batch_jobs.log_text에 기록
      */
     public void execute(Long batchId, String cmonth, String mode) {
+        Instant jobStart = Instant.now();
+
         // 1. 상태 -> running
         startBatch(batchId);
+        appendBatchLog(batchId, String.format("[1/6] 배치 시작 — cmonth=%s, mode=%s", cmonth, mode));
 
         // 2. SAP RFC 호출
+        appendBatchLog(batchId, "[2/6] SAP RFC 호출 시작...");
+        appendBatchLog(batchId, String.format("  - RFC 함수: %s", sapProperties.getRfcFunction()));
+        appendBatchLog(batchId, String.format("  - SAP 서버: %s (시스넘: %s)",
+                sapProperties.getAshost(), sapProperties.getSysnr()));
+        appendBatchLog(batchId, String.format("  - 입력 파라미터: I_CMONTH=%s", cmonth));
+
+        Instant rfcStart = Instant.now();
         log.info("[SAP RFC] RFC 호출 시작 - cmonth={}", cmonth);
         List<Map<String, Object>> tData = callRfc(cmonth);
+        long rfcElapsed = Duration.between(rfcStart, Instant.now()).toSeconds();
+
+        appendBatchLog(batchId, String.format("  - RFC 호출 완료: %d초 소요", rfcElapsed));
 
         if (tData.isEmpty()) {
             log.warn("[SAP RFC] T_DATA 비어있음 - cmonth={}", cmonth);
+            appendBatchLog(batchId, "  - T_DATA 비어있음 (0행 수신)");
+            appendBatchLog(batchId, "[완료] 수신 데이터 없음");
             completeBatch(batchId, 0, 0, 0);
             return;
         }
 
+        appendBatchLog(batchId, String.format("  - T_DATA 수신: %,d행", tData.size()));
         log.info("[SAP RFC] T_DATA 수신: {} rows", tData.size());
 
-        // 3. dry-run이면 여기서 끝
+        // 3. 샘플 데이터 로그 (첫 1행)
+        if (!tData.isEmpty()) {
+            Map<String, Object> sample = tData.get(0);
+            appendBatchLog(batchId, "[3/6] 수신 데이터 샘플 (첫 1행):");
+            int fieldCount = 0;
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, Object> entry : sample.entrySet()) {
+                if (fieldCount < 10) {
+                    sb.append(String.format("  - %s = %s\n", entry.getKey(), entry.getValue()));
+                }
+                fieldCount++;
+            }
+            sb.append(String.format("  ... 총 %d개 필드", fieldCount));
+            appendBatchLog(batchId, sb.toString());
+        }
+
+        // 4. dry-run이면 여기서 끝
         if ("dry-run".equals(mode)) {
             log.info("[SAP RFC] DRY-RUN 모드 - DB INSERT 건너뜀. {}건이 INSERT될 예정", tData.size());
+            appendBatchLog(batchId, String.format("[DRY-RUN] DB INSERT 건너뜀 — %,d건이 INSERT될 예정", tData.size()));
             completeBatch(batchId, tData.size(), 0, 0);
             return;
         }
 
-        // 4. replace 모드: 기존 데이터 삭제
+        // 5. replace 모드: 기존 데이터 삭제
         int deletedRows = 0;
         if ("replace".equals(mode)) {
+            appendBatchLog(batchId, "[4/6] REPLACE 모드 — 기존 데이터 삭제 중...");
+            long existingCount = countExistingData(cmonth);
+            appendBatchLog(batchId, String.format("  - CALMONTH=%s 기존 데이터: %,d건", cmonth, existingCount));
+
+            Instant delStart = Instant.now();
             deletedRows = (int) deleteExistingData(cmonth);
+            long delElapsed = Duration.between(delStart, Instant.now()).toSeconds();
+
+            appendBatchLog(batchId, String.format("  - 삭제 완료: %,d건 (%d초 소요)", deletedRows, delElapsed));
             log.info("[SAP RFC] REPLACE 모드 - 기존 {}건 삭제 완료 (CALMONTH={})", deletedRows, cmonth);
+        } else {
+            appendBatchLog(batchId, String.format("[4/6] APPEND 모드 — 기존 데이터 유지 (현재 %,d건)", countExistingData(cmonth)));
         }
 
-        // 5. 데이터 변환 + INSERT
-        int insertedRows = (int) insertData(tData);
+        // 6. 데이터 변환 + INSERT
+        appendBatchLog(batchId, String.format("[5/6] DB INSERT 시작 — %,d행 (1,000건 단위 배치)", tData.size()));
+        Instant insertStart = Instant.now();
+        int insertedRows = (int) insertData(batchId, tData);
+        long insertElapsed = Duration.between(insertStart, Instant.now()).toSeconds();
+
+        appendBatchLog(batchId, String.format("  - INSERT 완료: %,d건 (%d초 소요)", insertedRows, insertElapsed));
         log.info("[SAP RFC] INSERT 완료: {}건", insertedRows);
 
-        // 6. 완료
+        // 7. 최종 완료
+        long totalElapsed = Duration.between(jobStart, Instant.now()).toSeconds();
+        appendBatchLog(batchId, String.format(
+                "[6/6] 배치 완료 — T_DATA=%,d행, INSERT=%,d행, DELETE=%,d행, 총 %d초 소요",
+                tData.size(), insertedRows, deletedRows, totalElapsed));
+
+        // INSERT 후 실제 DB 건수 검증
+        long afterCount = countExistingData(cmonth);
+        appendBatchLog(batchId, String.format("  - DB 검증: CALMONTH=%s 현재 %,d건", cmonth, afterCount));
+
         completeBatch(batchId, tData.size(), insertedRows, deletedRows);
     }
 
@@ -264,9 +324,10 @@ public class SapRfcSyncService {
         return count;
     }
 
-    private long insertData(List<Map<String, Object>> tData) {
+    private long insertData(Long batchId, List<Map<String, Object>> tData) {
         int batchSize = 1000;
         long totalInserted = 0;
+        int totalBatches = (int) Math.ceil((double) tData.size() / batchSize);
 
         List<Object[]> batch = new ArrayList<>(batchSize);
 
@@ -276,11 +337,31 @@ public class SapRfcSyncService {
             batch.add(row);
 
             if (batch.size() >= batchSize || i == tData.size() - 1) {
-                jdbcTemplate.batchUpdate(INSERT_SQL, batch);
-                totalInserted += batch.size();
+                int currentBatch = (int) (totalInserted / batchSize) + 1;
+                try {
+                    jdbcTemplate.batchUpdate(INSERT_SQL, batch);
+                    totalInserted += batch.size();
 
-                double pct = (double) totalInserted / tData.size() * 100;
-                log.info("[DB] INSERT 진행: {}/{} ({:.0f}%)", totalInserted, tData.size(), pct);
+                    double pct = (double) totalInserted / tData.size() * 100;
+                    String progressMsg = String.format(
+                            "  - INSERT 진행: %,d/%,d (%.0f%%) [배치 %d/%d]",
+                            totalInserted, tData.size(), pct, currentBatch, totalBatches);
+                    log.info("[DB] {}", progressMsg);
+
+                    // 10% 단위로 log_text에 진행률 기록
+                    if (currentBatch == 1 || currentBatch == totalBatches || (currentBatch % Math.max(1, totalBatches / 10)) == 0) {
+                        appendBatchLog(batchId, progressMsg);
+                    }
+                } catch (Exception e) {
+                    String errMsg = String.format(
+                            "  - INSERT 실패 (배치 %d/%d, 행 %,d~%,d): %s",
+                            currentBatch, totalBatches,
+                            totalInserted + 1, totalInserted + batch.size(),
+                            e.getMessage());
+                    log.error("[DB] {}", errMsg);
+                    appendBatchLog(batchId, errMsg);
+                    throw e;  // 상위에서 failBatch 처리
+                }
 
                 batch.clear();
             }
@@ -332,6 +413,18 @@ public class SapRfcSyncService {
             batch.start();
             batch.appendLog("작업 시작...");
             log.info("[Batch] 작업 {} 시작", batchId);
+        });
+    }
+
+    /**
+     * batch_jobs.log_text에 로그 한 줄 추가 (타임스탬프 포함)
+     */
+    @Transactional
+    protected void appendBatchLog(Long batchId, String message) {
+        batchStatusRepository.findById(batchId).ifPresent(batch -> {
+            String ts = java.time.LocalDateTime.now()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
+            batch.appendLog("[" + ts + "] " + message);
         });
     }
 

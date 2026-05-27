@@ -3713,9 +3713,15 @@ async function executeBatchJob(jobId, cmonth, mode) {
     addLog(`비동기 실행 중... Spring Boot에서 SAP RFC 호출 → DB INSERT 진행`);
 
     // Spring Boot 배치 완료를 폴링 (5초 간격, 최대 30분)
+    // 주의: Spring Boot가 batch_jobs.log_text를 직접 업데이트하므로
+    //       Node.js는 폴링 로그만 별도 관리하고, 최종 결과에서 병합
     const pollUrl = `${springBaseUrl}/profit-api/batches/${springBatchId}`;
     let completed = false;
     const maxPolls = 360; // 5초 × 360 = 30분
+    let lastSpringLogText = '';
+
+    addLog(`── 폴링 시작 (5초 간격, 최대 30분) ──`);
+    addLog(`폴링 URL: ${pollUrl}`);
 
     for (let i = 0; i < maxPolls; i++) {
       await new Promise(resolve => setTimeout(resolve, 5000)); // 5초 대기
@@ -3724,40 +3730,79 @@ async function executeBatchJob(jobId, cmonth, mode) {
         const pollRes = await fetch(pollUrl);
         const pollData = await pollRes.json();
         const springStatus = pollData.data?.status || pollData.status;
+        const springLogText = pollData.data?.logText || '';
+        const totalRows = pollData.data?.totalRows || 0;
+        const insertedRows = pollData.data?.processedRows || pollData.data?.insertedRows || 0;
+        const deletedRows = pollData.data?.deletedRows || 0;
+        const elapsedSec = pollData.data?.elapsedSec || 0;
 
-        // 진행 로그 업데이트 (30초마다)
-        if (i % 6 === 0) {
-          addLog(`폴링 #${i + 1}: Spring 배치 상태 = ${springStatus}`);
-          await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
+        // Spring Boot의 log_text가 업데이트되었으면 콘솔에 출력
+        if (springLogText && springLogText !== lastSpringLogText) {
+          const newLines = springLogText.substring(lastSpringLogText.length).trim();
+          if (newLines) {
+            console.log(`[Batch ${jobId}] Spring Boot 로그 업데이트:\n${newLines}`);
+          }
+          lastSpringLogText = springLogText;
+        }
+
+        // 매 폴링마다 콘솔 로그 (간결하게)
+        const elapsed = (i + 1) * 5;
+        console.log(`[Batch ${jobId}] 폴링 #${i + 1} (${elapsed}초): status=${springStatus}, total=${totalRows}, inserted=${insertedRows}`);
+
+        // 10초마다(2회) log_text에 폴링 상태 기록
+        if (i % 2 === 0) {
+          addLog(`폴링 #${i + 1} (${elapsed}초): status=${springStatus}, rows=${insertedRows}/${totalRows}`);
         }
 
         if (springStatus === 'success' || springStatus === 'COMPLETED' || springStatus === 'COMPLETED_WITH_ERRORS') {
-          const totalRows = pollData.data?.totalRows || 0;
-          const processedRows = pollData.data?.processedRows || pollData.data?.insertedRows || 0;
           const errorRows = pollData.data?.errorRows || 0;
 
-          addLog(`Spring Boot 배치 완료!`);
-          addLog(`결과: T_DATA=${totalRows}행, INSERT=${processedRows}행, 에러=${errorRows}행`);
+          addLog(`── 배치 완료 ──`);
+          addLog(`결과: T_DATA=${totalRows}행, INSERT=${insertedRows}행, DELETE=${deletedRows}행, 에러=${errorRows}행`);
+          addLog(`소요시간: ${elapsedSec}초`);
+
+          // Spring Boot의 상세 log_text를 Node.js 폴링 로그 뒤에 병합
+          const mergedLog = logLines.join('\n') +
+              '\n\n── Spring Boot 실행 상세 로그 ──\n' +
+              (springLogText || '(로그 없음)');
 
           await pool.query(
             `UPDATE batch_jobs SET status='success', finished_at=NOW(),
-                    total_rows=?, inserted_rows=?, deleted_rows=0, log_text=?
+                    total_rows=?, inserted_rows=?, deleted_rows=?, log_text=?
              WHERE id=?`,
-            [totalRows, processedRows, logLines.join('\n'), jobId]
+            [totalRows, insertedRows, deletedRows, mergedLog, jobId]
           );
-          console.log(`[Batch] 작업 ${jobId} 완료 (Spring): ${totalRows}행 수신, ${processedRows}행 INSERT`);
+          console.log(`[Batch] 작업 ${jobId} 완료: T_DATA=${totalRows}행, INSERT=${insertedRows}행, DELETE=${deletedRows}행 (${elapsedSec}초)`);
           completed = true;
           break;
 
         } else if (springStatus === 'failed' || springStatus === 'FAILED') {
           const errMsg = pollData.data?.errorMessage || '알 수 없는 오류';
-          throw new Error(`Spring Boot 배치 실패: ${errMsg}`);
+          addLog(`── 배치 실패 ──`);
+          addLog(`에러: ${errMsg}`);
+
+          // 실패 시에도 Spring Boot 로그 병합
+          const mergedLog = logLines.join('\n') +
+              '\n\n── Spring Boot 실행 상세 로그 ──\n' +
+              (springLogText || '(로그 없음)');
+
+          await pool.query(
+            `UPDATE batch_jobs SET status='failed', finished_at=NOW(),
+                    error_message=?, log_text=?
+             WHERE id=?`,
+            [errMsg.substring(0, 5000), mergedLog, jobId]
+          );
+          console.error(`[Batch] 작업 ${jobId} 실패 (Spring): ${errMsg}`);
+          completed = true;
+          break;
         }
         // pending, running → 계속 폴링
       } catch (pollErr) {
-        if (pollErr.message.includes('Spring Boot 배치 실패')) throw pollErr;
-        // 네트워크 오류는 무시하고 재시도
-        if (i % 12 === 0) addLog(`폴링 오류 (재시도 중): ${pollErr.message}`);
+        // 네트워크 오류는 로그 남기고 재시도
+        if (i % 6 === 0) {
+          addLog(`폴링 오류 (재시도 중): ${pollErr.message}`);
+          console.error(`[Batch ${jobId}] 폴링 오류: ${pollErr.message}`);
+        }
       }
     }
 
