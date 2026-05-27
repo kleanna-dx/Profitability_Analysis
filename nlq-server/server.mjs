@@ -3623,8 +3623,49 @@ async function executeBatchJob(jobId, cmonth, mode) {
 
     // Spring Boot API URL (환경변수 또는 기본값)
     const springBaseUrl = process.env.SPRING_API_URL || 'http://localhost:8080';
+    addLog(`SPRING_API_URL 환경변수: ${process.env.SPRING_API_URL || '(미설정 → 기본값 사용)'}`);
+    addLog(`Spring Boot 대상 URL: ${springBaseUrl}`);
+
+    // ── Spring Boot 사전 연결 진단 ──
+    addLog(`── Spring Boot 연결 진단 시작 ──`);
+    try {
+      const healthUrl = `${springBaseUrl}/profit-api/sap-rfc/check/202601`;
+      addLog(`헬스체크 호출: GET ${healthUrl}`);
+      const healthRes = await fetch(healthUrl, { signal: AbortSignal.timeout(10000) });
+      const healthData = await healthRes.json().catch(() => ({}));
+      addLog(`헬스체크 응답: HTTP ${healthRes.status} → ${JSON.stringify(healthData)}`);
+      addLog(`Spring Boot 연결 확인 완료`);
+    } catch (healthErr) {
+      addLog(`헬스체크 실패: ${healthErr.message}`);
+      addLog(`Spring Boot가 ${springBaseUrl} 에서 응답하지 않습니다.`);
+
+      // 포트 열림 여부 추가 진단
+      try {
+        const url = new URL(springBaseUrl);
+        addLog(`대상 호스트: ${url.hostname}, 포트: ${url.port || '80'}`);
+      } catch (_) { /* ignore */ }
+
+      addLog(`── 진단 결과: Spring Boot 미실행 또는 URL 오류 ──`);
+      await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
+
+      throw new Error(
+        `Spring Boot 연결 실패 (${springBaseUrl})\n` +
+        `상세: ${healthErr.message}\n\n` +
+        `[진단 정보]\n` +
+        `- SPRING_API_URL 환경변수: ${process.env.SPRING_API_URL || '(미설정)'}\n` +
+        `- 대상 URL: ${springBaseUrl}\n\n` +
+        `[해결방법]\n` +
+        `1. Spring Boot 플랫폼 실행 확인: curl ${springBaseUrl}/profit-api/sap-rfc/check/202601\n` +
+        `2. .env에 SPRING_API_URL 설정 확인 (현재: ${process.env.SPRING_API_URL || '미설정'})\n` +
+        `3. Spring Boot 로그 확인: sudo journalctl -u analytics -n 50 --no-pager\n` +
+        `4. 포트 확인: ss -tlnp | grep 8080`
+      );
+    }
+
+    // ── SAP RFC 실행 요청 ──
     const apiUrl = `${springBaseUrl}/profit-api/sap-rfc/execute`;
-    addLog(`Spring Boot API 호출: POST ${apiUrl}`);
+    addLog(`── SAP RFC 실행 요청 ──`);
+    addLog(`API 호출: POST ${apiUrl}`);
     addLog(`요청 데이터: { cmonth: "${cmonth}", mode: "${mode}" }`);
     await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
 
@@ -3638,26 +3679,18 @@ async function executeBatchJob(jobId, cmonth, mode) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // Spring Boot JWT 인증이 필요한 경우 여기에 토큰 추가
-          // 'Authorization': `Bearer ${process.env.SPRING_API_TOKEN || ''}`,
         },
         body: JSON.stringify({ cmonth, mode }),
         signal: controller.signal,
       });
     } catch (fetchErr) {
       clearTimeout(timeout);
-      // Spring Boot 서버 연결 실패
       if (fetchErr.name === 'AbortError') {
         throw new Error('Spring Boot API 호출 타임아웃 (30분 초과)');
       }
       throw new Error(
-        `Spring Boot API 연결 실패 (${springBaseUrl})\n` +
-        `상세: ${fetchErr.message}\n\n` +
-        `[해결방법]\n` +
-        `1. Spring Boot 플랫폼이 실행 중인지 확인\n` +
-        `2. .env에 SPRING_API_URL 설정 (예: SPRING_API_URL=http://10.2.14.247:8080)\n` +
-        `3. SAP JCo 라이브러리(sapjco3.jar + libsapjco3.so) 설치 확인\n` +
-        `4. application.yml에 sap.rfc.* 설정 확인`
+        `Spring Boot API 실행 요청 실패 (${apiUrl})\n` +
+        `상세: ${fetchErr.message}`
       );
     }
     clearTimeout(timeout);
