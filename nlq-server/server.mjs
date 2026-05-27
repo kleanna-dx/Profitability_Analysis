@@ -3599,7 +3599,12 @@ app.post('/api/batch/execute', requireAdmin, async (req, res) => {
 });
 
 /**
- * 배치 작업 비동기 실행 (Python sap_rfc_sync.py 호출)
+ * 배치 작업 비동기 실행 (Spring Boot /profit-api/sap-rfc/execute 호출)
+ *
+ * 운영환경: Spring Boot 플랫폼의 SAP JCo 모듈이 실제 RFC 호출 + DB INSERT를 수행
+ * nlq-server는 배치 작업 이력(batch_jobs)을 관리하고, Spring Boot API에 프록시 요청
+ *
+ * Spring Boot API가 미배포 상태(연결 불가)이면 → batch_jobs에 실패 기록 + 상세 안내
  */
 async function executeBatchJob(jobId, cmonth, mode) {
   const logLines = [];
@@ -3616,85 +3621,128 @@ async function executeBatchJob(jobId, cmonth, mode) {
     );
     addLog(`배치 작업 시작 (ID: ${jobId}, CMONTH: ${cmonth}, MODE: ${mode})`);
 
-    // Python 스크립트 경로
-    const scriptPath = path.join(import.meta.dirname, 'scripts', 'sap_rfc_sync.py');
-    if (!fs.existsSync(scriptPath)) {
-      throw new Error(`스크립트 파일이 없습니다: ${scriptPath}`);
-    }
-
-    // 인수 구성
-    const args = [scriptPath, cmonth];
-    if (mode === 'dry-run') args.push('--dry-run');
-    if (mode === 'replace') args.push('--replace');
-
-    addLog(`Python 스크립트 실행: python3 ${args.join(' ')}`);
+    // Spring Boot API URL (환경변수 또는 기본값)
+    const springBaseUrl = process.env.SPRING_API_URL || 'http://localhost:8080';
+    const apiUrl = `${springBaseUrl}/profit-api/sap-rfc/execute`;
+    addLog(`Spring Boot API 호출: POST ${apiUrl}`);
+    addLog(`요청 데이터: { cmonth: "${cmonth}", mode: "${mode}" }`);
     await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
 
-    // 실행 (최대 30분 타임아웃)
-    const { stdout, stderr } = await execFileAsync('python3', args, {
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: 1800000,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-    });
+    // Spring Boot API 호출 (fetch)
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1800000); // 30분 타임아웃
 
-    // 로그 기록
-    if (stdout) addLog('--- stdout ---\n' + stdout);
-    if (stderr) addLog('--- stderr ---\n' + stderr);
+    let springResponse;
+    try {
+      springResponse = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // Spring Boot JWT 인증이 필요한 경우 여기에 토큰 추가
+          // 'Authorization': `Bearer ${process.env.SPRING_API_TOKEN || ''}`,
+        },
+        body: JSON.stringify({ cmonth, mode }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      // Spring Boot 서버 연결 실패
+      if (fetchErr.name === 'AbortError') {
+        throw new Error('Spring Boot API 호출 타임아웃 (30분 초과)');
+      }
+      throw new Error(
+        `Spring Boot API 연결 실패 (${springBaseUrl})\n` +
+        `상세: ${fetchErr.message}\n\n` +
+        `[해결방법]\n` +
+        `1. Spring Boot 플랫폼이 실행 중인지 확인\n` +
+        `2. .env에 SPRING_API_URL 설정 (예: SPRING_API_URL=http://10.2.14.247:8080)\n` +
+        `3. SAP JCo 라이브러리(sapjco3.jar + libsapjco3.so) 설치 확인\n` +
+        `4. application.yml에 sap.rfc.* 설정 확인`
+      );
+    }
+    clearTimeout(timeout);
 
-    // stdout에서 결과 파싱
-    const lines = (stdout || '').split('\n');
-    let totalRows = 0, insertedRows = 0, deletedRows = 0;
+    const responseData = await springResponse.json().catch(() => ({}));
+    addLog(`Spring Boot 응답: HTTP ${springResponse.status}`);
+    addLog(`응답 데이터: ${JSON.stringify(responseData)}`);
 
-    for (const line of lines) {
-      // [RFC] T_DATA: 12345 rows
-      const tDataMatch = line.match(/T_DATA:\s*(\d+)\s*rows/);
-      if (tDataMatch) totalRows = parseInt(tDataMatch[1]);
-
-      // [DB] INSERT 완료: 12345건
-      const insertMatch = line.match(/INSERT 완료:\s*(\d+)건/);
-      if (insertMatch) insertedRows = parseInt(insertMatch[1]);
-
-      // [DB] 1234건 삭제 완료
-      const deleteMatch = line.match(/(\d+)건 삭제 완료/);
-      if (deleteMatch) deletedRows = parseInt(deleteMatch[1]);
-
-      // [DRY RUN] DB INSERT 건너뜀. 총 N건이 INSERT될 예정.
-      const dryRunMatch = line.match(/총 (\d+)건이 INSERT될 예정/);
-      if (dryRunMatch) totalRows = parseInt(dryRunMatch[1]);
+    if (!springResponse.ok) {
+      throw new Error(
+        `Spring Boot API 오류 (HTTP ${springResponse.status}): ` +
+        (responseData.message || responseData.error || JSON.stringify(responseData))
+      );
     }
 
-    addLog(`완료: T_DATA=${totalRows}행, INSERT=${insertedRows}행, DELETE=${deletedRows}행`);
+    // Spring Boot가 비동기 실행 중이므로, 배치 상태를 폴링하여 추적
+    const springBatchId = responseData.data?.batchId || responseData.batchId;
+    addLog(`Spring Boot 배치 등록 완료 (Spring batchId: ${springBatchId})`);
+    addLog(`비동기 실행 중... Spring Boot에서 SAP RFC 호출 → DB INSERT 진행`);
 
-    // 성공
-    await pool.query(
-      `UPDATE batch_jobs SET status='success', finished_at=NOW(),
-              total_rows=?, inserted_rows=?, deleted_rows=?, log_text=?
-       WHERE id=?`,
-      [totalRows, insertedRows, deletedRows, logLines.join('\n'), jobId]
-    );
-    console.log(`[Batch] 작업 ${jobId} 완료: ${totalRows}행 수신, ${insertedRows}행 INSERT`);
+    // Spring Boot 배치 완료를 폴링 (5초 간격, 최대 30분)
+    const pollUrl = `${springBaseUrl}/profit-api/batches/${springBatchId}`;
+    let completed = false;
+    const maxPolls = 360; // 5초 × 360 = 30분
+
+    for (let i = 0; i < maxPolls; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5000)); // 5초 대기
+
+      try {
+        const pollRes = await fetch(pollUrl);
+        const pollData = await pollRes.json();
+        const springStatus = pollData.data?.status || pollData.status;
+
+        // 진행 로그 업데이트 (30초마다)
+        if (i % 6 === 0) {
+          addLog(`폴링 #${i + 1}: Spring 배치 상태 = ${springStatus}`);
+          await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
+        }
+
+        if (springStatus === 'COMPLETED' || springStatus === 'COMPLETED_WITH_ERRORS') {
+          const totalRows = pollData.data?.totalRows || 0;
+          const processedRows = pollData.data?.processedRows || 0;
+          const errorRows = pollData.data?.errorRows || 0;
+
+          addLog(`Spring Boot 배치 완료!`);
+          addLog(`결과: T_DATA=${totalRows}행, INSERT=${processedRows}행, 에러=${errorRows}행`);
+
+          await pool.query(
+            `UPDATE batch_jobs SET status='success', finished_at=NOW(),
+                    total_rows=?, inserted_rows=?, deleted_rows=0, log_text=?
+             WHERE id=?`,
+            [totalRows, processedRows, logLines.join('\n'), jobId]
+          );
+          console.log(`[Batch] 작업 ${jobId} 완료 (Spring): ${totalRows}행 수신, ${processedRows}행 INSERT`);
+          completed = true;
+          break;
+
+        } else if (springStatus === 'FAILED') {
+          const errMsg = pollData.data?.errorMessage || '알 수 없는 오류';
+          throw new Error(`Spring Boot 배치 실패: ${errMsg}`);
+        }
+        // PENDING, RUNNING → 계속 폴링
+      } catch (pollErr) {
+        if (pollErr.message.includes('Spring Boot 배치 실패')) throw pollErr;
+        // 네트워크 오류는 무시하고 재시도
+        if (i % 12 === 0) addLog(`폴링 오류 (재시도 중): ${pollErr.message}`);
+      }
+    }
+
+    if (!completed) {
+      throw new Error('Spring Boot 배치 작업이 30분 내에 완료되지 않았습니다.');
+    }
 
   } catch (err) {
     const errMsg = err.message || String(err);
     addLog(`오류 발생: ${errMsg}`);
-    // stdout/stderr 상세 캡처 (execFileAsync 에러 객체에 포함됨)
-    if (err.stdout) addLog('--- stdout ---\n' + err.stdout);
-    if (err.stderr) addLog('--- stderr ---\n' + err.stderr);
-    if (err.code) addLog(`종료 코드: ${err.code}`);
-    if (err.signal) addLog(`종료 시그널: ${err.signal}`);
-
-    // error_message에 stderr도 포함하여 UI에서 상세 에러 확인 가능
-    const detailedErr = [errMsg, err.stderr, err.stdout].filter(Boolean).join('\n').substring(0, 5000);
 
     await pool.query(
       `UPDATE batch_jobs SET status='failed', finished_at=NOW(),
               error_message=?, log_text=?
        WHERE id=?`,
-      [detailedErr, logLines.join('\n'), jobId]
+      [errMsg.substring(0, 5000), logLines.join('\n'), jobId]
     ).catch(e => console.error('[Batch] 실패 상태 업데이트 실패:', e.message));
 
     console.error(`[Batch] 작업 ${jobId} 실패:`, errMsg);
-    if (err.stderr) console.error('[Batch] stderr:', err.stderr);
   }
 }
 
