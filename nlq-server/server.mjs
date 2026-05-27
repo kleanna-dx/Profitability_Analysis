@@ -3622,7 +3622,7 @@ async function executeBatchJob(jobId, cmonth, mode) {
     addLog(`배치 작업 시작 (ID: ${jobId}, CMONTH: ${cmonth}, MODE: ${mode})`);
 
     // Spring Boot API URL (환경변수 또는 기본값)
-    const springBaseUrl = process.env.SPRING_API_URL || 'http://localhost:8080';
+    const springBaseUrl = process.env.SPRING_API_URL || 'http://localhost:18083';
     addLog(`SPRING_API_URL 환경변수: ${process.env.SPRING_API_URL || '(미설정 → 기본값 사용)'}`);
     addLog(`Spring Boot 대상 URL: ${springBaseUrl}`);
 
@@ -3658,7 +3658,7 @@ async function executeBatchJob(jobId, cmonth, mode) {
         `1. Spring Boot 플랫폼 실행 확인: curl ${springBaseUrl}/profit-api/sap-rfc/check/202601\n` +
         `2. .env에 SPRING_API_URL 설정 확인 (현재: ${process.env.SPRING_API_URL || '미설정'})\n` +
         `3. Spring Boot 로그 확인: sudo journalctl -u analytics -n 50 --no-pager\n` +
-        `4. 포트 확인: ss -tlnp | grep 8080`
+        `4. 포트 확인: ss -tlnp | grep 18083`
       );
     }
 
