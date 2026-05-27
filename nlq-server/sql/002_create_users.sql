@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `phone`            varchar(20)  DEFAULT NULL        COMMENT '연락처',
   `position`         varchar(50)  DEFAULT NULL        COMMENT '직급',
   `role`             enum('admin','user','viewer') NOT NULL DEFAULT 'user' COMMENT '권한',
+  `domain_code`      varchar(20)  DEFAULT NULL        COMMENT '영역 코드 (PS, HL, MGMT)',
   `is_active`        tinyint(4)   NOT NULL DEFAULT 1  COMMENT '활성 여부 (1=활성, 0=비활성)',
   `sso_yn`           tinyint(4)   NOT NULL DEFAULT 0  COMMENT 'SSO 연동 여부 (1=SSO, 0=일반)',
   `created_at`       datetime     DEFAULT current_timestamp(),
