@@ -58,3 +58,11 @@ logging:
     root: INFO
     com.company.module.profit: DEBUG
     com.company.module.profit.sap: DEBUG
+  file:
+    path: /data/analytics/logs
+    name: /data/analytics/logs/module-profit.log
+  logback:
+    rollingpolicy:
+      max-file-size: 50MB
+      max-history: 30
+      total-size-cap: 1GB
