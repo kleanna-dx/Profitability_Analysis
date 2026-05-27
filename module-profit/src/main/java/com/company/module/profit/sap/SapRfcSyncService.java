@@ -376,4 +376,12 @@ public class SapRfcSyncService {
     public boolean hasRunningBatch() {
         return !batchStatusRepository.findRunningBatches().isEmpty();
     }
+
+    /**
+     * 실행 중인 배치가 있는지 확인 (특정 ID 제외)
+     * - Node.js가 이미 running으로 만든 자기 자신을 제외
+     */
+    public boolean hasRunningBatchExcluding(Long excludeId) {
+        return !batchStatusRepository.findRunningBatchesExcluding(excludeId).isEmpty();
+    }
 }

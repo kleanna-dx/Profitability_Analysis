@@ -50,8 +50,11 @@ public class SapRfcSyncController {
         log.info("[SAP RFC API] 실행 요청 - cmonth={}, mode={}, user={}, jobId={}",
                 cmonth, mode, userId, request.getJobId());
 
-        // 실행 중인 배치가 있는지 확인
-        if (sapRfcSyncService.hasRunningBatch()) {
+        // 실행 중인 배치가 있는지 확인 (jobId 전달 시 자기 자신 제외)
+        boolean hasRunning = request.getJobId() != null
+                ? sapRfcSyncService.hasRunningBatchExcluding(request.getJobId())
+                : sapRfcSyncService.hasRunningBatch();
+        if (hasRunning) {
             return ResponseEntity.badRequest().body(
                     ApiResponse.fail("이미 실행 중인 배치 작업이 있습니다. 완료 후 다시 시도해주세요."));
         }
