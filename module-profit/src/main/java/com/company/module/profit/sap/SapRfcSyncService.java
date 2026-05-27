@@ -155,17 +155,22 @@ public class SapRfcSyncService {
 
         // 2. SAP RFC 호출
         appendBatchLog(batchId, "[2/6] SAP RFC 호출 시작...");
+        appendBatchLog(batchId, String.format("  - SAP 서버: %s (시스넘: %s, SID: %s, Client: %s)",
+                sapProperties.getAshost(), sapProperties.getSysnr(),
+                sapProperties.getSysid(), sapProperties.getClient()));
+        appendBatchLog(batchId, String.format("  - SAP 사용자: %s (언어: %s)",
+                sapProperties.getUser(), sapProperties.getLang()));
+        appendBatchLog(batchId, String.format("  - 커넥션 풀: capacity=%d, peakLimit=%d",
+                sapProperties.getPoolCapacity(), sapProperties.getPeakLimit()));
         appendBatchLog(batchId, String.format("  - RFC 함수: %s", sapProperties.getRfcFunction()));
-        appendBatchLog(batchId, String.format("  - SAP 서버: %s (시스넘: %s)",
-                sapProperties.getAshost(), sapProperties.getSysnr()));
         appendBatchLog(batchId, String.format("  - 입력 파라미터: I_CMONTH=%s", cmonth));
 
         Instant rfcStart = Instant.now();
         log.info("[SAP RFC] RFC 호출 시작 - cmonth={}", cmonth);
-        List<Map<String, Object>> tData = callRfc(cmonth);
+        List<Map<String, Object>> tData = callRfc(batchId, cmonth);
         long rfcElapsed = Duration.between(rfcStart, Instant.now()).toSeconds();
 
-        appendBatchLog(batchId, String.format("  - RFC 호출 완료: %d초 소요", rfcElapsed));
+        appendBatchLog(batchId, String.format("  - RFC 전체 소요: %d초", rfcElapsed));
 
         if (tData.isEmpty()) {
             log.warn("[SAP RFC] T_DATA 비어있음 - cmonth={}", cmonth);
@@ -247,36 +252,76 @@ public class SapRfcSyncService {
 
     /**
      * SAP RFC Z_BI_WEB_EX_BL 호출
+     * 각 단계별 상세 로그를 batch_jobs.log_text에 기록
      */
-    private List<Map<String, Object>> callRfc(String cmonth) {
+    private List<Map<String, Object>> callRfc(Long batchId, String cmonth) {
         try {
+            // ── Step 1: JCo 클래스 로드 ──
+            appendBatchLog(batchId, "  [RFC-1] SAP JCo 클래스 로드 중...");
+            Instant step1 = Instant.now();
             Class<?> destManagerClass = Class.forName("com.sap.conn.jco.JCoDestinationManager");
+            appendBatchLog(batchId, String.format("  [RFC-1] JCo 클래스 로드 완료 (%dms)",
+                    Duration.between(step1, Instant.now()).toMillis()));
+
+            // ── Step 2: Destination 연결 ──
+            appendBatchLog(batchId, String.format("  [RFC-2] SAP Destination 연결 중... (대상: %s)",
+                    SapRfcDestinationProvider.DESTINATION_NAME));
+            Instant step2 = Instant.now();
             Object destination = destManagerClass.getMethod("getDestination", String.class)
                     .invoke(null, SapRfcDestinationProvider.DESTINATION_NAME);
+            long step2ms = Duration.between(step2, Instant.now()).toMillis();
+            appendBatchLog(batchId, String.format("  [RFC-2] Destination 연결 완료 (%dms)", step2ms));
 
+            // ── Step 3: Repository + Function 조회 ──
+            appendBatchLog(batchId, String.format("  [RFC-3] RFC 함수 조회 중... (%s)",
+                    sapProperties.getRfcFunction()));
+            Instant step3 = Instant.now();
             Object repository = destination.getClass().getMethod("getRepository").invoke(destination);
             Object function = repository.getClass().getMethod("getFunction", String.class)
                     .invoke(repository, sapProperties.getRfcFunction());
+            long step3ms = Duration.between(step3, Instant.now()).toMillis();
 
             if (function == null) {
+                appendBatchLog(batchId, String.format("  [RFC-3] RFC 함수 NOT FOUND: %s",
+                        sapProperties.getRfcFunction()));
                 throw new RuntimeException("RFC 함수를 찾을 수 없습니다: " + sapProperties.getRfcFunction());
             }
+            appendBatchLog(batchId, String.format("  [RFC-3] RFC 함수 조회 완료 (%dms)", step3ms));
 
+            // ── Step 4: Import 파라미터 설정 + RFC 실행 ──
             Object importParams = function.getClass().getMethod("getImportParameterList").invoke(function);
             importParams.getClass().getMethod("setValue", String.class, String.class)
                     .invoke(importParams, "I_CMONTH", cmonth);
 
+            appendBatchLog(batchId, String.format("  [RFC-4] RFC 실행 중... (%s, I_CMONTH=%s)",
+                    sapProperties.getRfcFunction(), cmonth));
             log.info("[SAP RFC] {} 호출 (I_CMONTH={})", sapProperties.getRfcFunction(), cmonth);
 
+            Instant step4 = Instant.now();
             function.getClass().getMethod("execute", destination.getClass().getInterfaces()[0])
                     .invoke(function, destination);
+            long step4sec = Duration.between(step4, Instant.now()).toSeconds();
+            long step4ms = Duration.between(step4, Instant.now()).toMillis();
+            appendBatchLog(batchId, String.format("  [RFC-4] RFC 실행 완료 (%d초, %dms)", step4sec, step4ms));
+
+            // ── Step 5: T_DATA 테이블 파싱 ──
+            appendBatchLog(batchId, "  [RFC-5] T_DATA 테이블 파싱 중...");
+            Instant step5 = Instant.now();
 
             Object exportTable = function.getClass().getMethod("getTableParameterList").invoke(function);
             Object tDataTable = exportTable.getClass().getMethod("getTable", String.class)
                     .invoke(exportTable, "T_DATA");
 
             int rowCount = (int) tDataTable.getClass().getMethod("getNumRows").invoke(tDataTable);
+            appendBatchLog(batchId, String.format("  [RFC-5] T_DATA 행 수: %,d", rowCount));
             log.info("[SAP RFC] T_DATA: {} rows 수신", rowCount);
+
+            if (rowCount > 0) {
+                // 첫 행의 필드 수 확인
+                tDataTable.getClass().getMethod("setRow", int.class).invoke(tDataTable, 0);
+                int fieldCount = (int) tDataTable.getClass().getMethod("getFieldCount").invoke(tDataTable);
+                appendBatchLog(batchId, String.format("  [RFC-5] 필드 수: %d개/행", fieldCount));
+            }
 
             List<Map<String, Object>> result = new ArrayList<>(rowCount);
             for (int i = 0; i < rowCount; i++) {
@@ -292,19 +337,35 @@ public class SapRfcSyncService {
                     row.put(fieldName, value);
                 }
                 result.add(row);
+
+                // 10,000행 단위로 파싱 진행률 로그
+                if (rowCount > 10000 && i > 0 && i % 10000 == 0) {
+                    appendBatchLog(batchId, String.format("  [RFC-5] 파싱 진행: %,d/%,d행 (%.0f%%)",
+                            i, rowCount, (double) i / rowCount * 100));
+                }
             }
+
+            long step5ms = Duration.between(step5, Instant.now()).toMillis();
+            appendBatchLog(batchId, String.format("  [RFC-5] T_DATA 파싱 완료: %,d행 (%dms)",
+                    result.size(), step5ms));
 
             return result;
 
         } catch (ClassNotFoundException e) {
-            throw new RuntimeException(
-                    "[SAP JCo 미설치] sapjco3.jar가 classpath에 없습니다.\n" +
+            String msg = "[SAP JCo 미설치] sapjco3.jar가 classpath에 없습니다.\n" +
                     "  1. SAP Service Marketplace에서 SAP JCo 3.1 다운로드\n" +
                     "  2. sapjco3.jar -> libs/ 디렉토리에 복사\n" +
                     "  3. libsapjco3.so (Linux) -> /usr/lib/ 또는 LD_LIBRARY_PATH에 추가\n" +
-                    "  4. build.gradle에 implementation files('libs/sapjco3.jar') 추가", e);
+                    "  4. build.gradle에 implementation files('libs/sapjco3.jar') 추가";
+            appendBatchLog(batchId, "  [RFC-ERR] " + msg);
+            throw new RuntimeException(msg, e);
         } catch (Exception e) {
-            throw new RuntimeException("[SAP RFC 호출 실패] " + e.getMessage(), e);
+            String msg = "[SAP RFC 호출 실패] " + e.getMessage();
+            // InvocationTargetException인 경우 원인 에러 메시지 추출
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            String detail = cause.getClass().getSimpleName() + ": " + cause.getMessage();
+            appendBatchLog(batchId, "  [RFC-ERR] " + detail);
+            throw new RuntimeException(msg, e);
         }
     }
 
