@@ -315,18 +315,6 @@ install_deps() {
     echo ""
 }
 
-# ── Nginx 설정 동기화 ──
-# 레포의 config/application.yml → 프로덕션 config 디렉토리로 복사
-sync_nginx_config() {
-    local repo_conf="${SOURCE_DIR}/config/application.yml"
-    local prod_conf="${CONFIG_DIR}/application.yml"
-
-    if [ -f "${repo_conf}" ]; then
-        cp "${repo_conf}" "${prod_conf}"
-        log_ok "Nginx 설정(application.yml) 동기화 완료"
-    fi
-}
-
 # ── 서비스 재시작 (전체) ──
 restart_services() {
     log_info "서비스 재시작 중..."
@@ -347,7 +335,6 @@ restart_services() {
     fi
 
     # 3) nginx 설정 검증 후 재시작
-    sync_nginx_config
     if sudo nginx -t -c "${CONFIG_DIR}/application.yml" 2>/dev/null; then
         sudo systemctl restart analytics
         if systemctl is-active --quiet analytics; then
