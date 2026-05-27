@@ -19,6 +19,7 @@ import sys
 import os
 import argparse
 import time
+import traceback
 from datetime import datetime
 
 # ============================================================
@@ -103,12 +104,14 @@ def call_rfc(cmonth):
     """SAP RFC Z_BI_WEB_EX_BL 호출하여 T_DATA 반환"""
     try:
         from pyrfc import Connection
-    except ImportError:
-        print("[ERROR] pyrfc 모듈이 설치되어 있지 않습니다.")
-        print("  설치 방법:")
-        print("  1. SAP NW RFC SDK를 /usr/local/sap/nwrfcsdk 에 설치")
-        print("  2. pip install pyrfc")
-        print("  또는 아래 대안 방식을 사용하세요.")
+    except ImportError as e:
+        msg = ("[ERROR] pyrfc 모듈이 설치되어 있지 않습니다.\n"
+               "  설치 방법:\n"
+               "  1. SAP NW RFC SDK를 /usr/local/sap/nwrfcsdk 에 설치\n"
+               "  2. pip install pyrfc\n"
+               f"  상세: {e}")
+        print(msg)
+        print(msg, file=sys.stderr)
         sys.exit(1)
 
     print(f"[RFC] 연결 중... {SAP_CONFIG['ashost']}:{SAP_CONFIG['sysnr']} (SID: {SAP_CONFIG['sysid']})")
@@ -297,4 +300,13 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        # 예상치 못한 에러를 stdout + stderr 모두에 출력
+        err_msg = f"[FATAL] 예상치 못한 오류: {e}\n{traceback.format_exc()}"
+        print(err_msg)
+        print(err_msg, file=sys.stderr)
+        sys.exit(1)
