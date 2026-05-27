@@ -6,12 +6,12 @@
 #
 # 서비스 구성:
 #   1. nlq-server     - Node.js Express (port 3000)
-#   2. module-profit   - Spring Boot JAR (port 18084)
-#   3. analytics       - Nginx reverse proxy (port 18083 → 3000 + 18084)
+#   2. module-profit   - Spring Boot JAR (port 18093)
+#   3. analytics       - Nginx reverse proxy (port 18083 → 3000 + 18093)
 #
 # 포트 구조:
 #   Nginx(18083) ─→ Node.js(3000)    : /api/*, /pages/*, etc.
-#                ─→ SpringBoot(18084) : /profit-api/*
+#                ─→ SpringBoot(18093) : /profit-api/*
 #
 # 옵션:
 #   (없음)        전체 배포 (pull + 빌드 + 복사 + npm install + 재시작)
@@ -42,7 +42,7 @@ PROFIT_LIBS_DIR="${PROFIT_SOURCE_DIR}/libs"
 PROFIT_LOG="${LOG_DIR}/module-profit.log"
 
 # 포트 설정
-SPRING_BOOT_PORT=18084
+SPRING_BOOT_PORT=18093
 NGINX_PORT=18083
 NODEJS_PORT=3000
 
@@ -71,7 +71,7 @@ print_header() {
 # ── module-profit systemd 서비스 설치/업데이트 ──
 ensure_profit_service() {
     local service_file="/etc/systemd/system/module-profit.service"
-    local service_version="v2-port18084"
+    local service_version="v2-port18093"
 
     # 서비스 파일이 있고 버전 태그도 있으면 스킵
     if [ -f "${service_file}" ] && grep -q "${service_version}" "${service_file}" 2>/dev/null; then
@@ -161,7 +161,7 @@ check_status() {
         log_error "Node.js    (${NODEJS_PORT}):  응답 없음"
     fi
 
-    # Spring Boot (18084) - profit-api 엔드포인트로 확인
+    # Spring Boot (18093) - profit-api 엔드포인트로 확인
     if curl -sf http://localhost:${SPRING_BOOT_PORT}/profit-api/metrics > /dev/null 2>&1; then
         log_ok "SpringBoot (${SPRING_BOOT_PORT}): 정상"
     elif curl -sf http://localhost:${SPRING_BOOT_PORT}/profit-api/sap-rfc/check/202501 > /dev/null 2>&1; then
