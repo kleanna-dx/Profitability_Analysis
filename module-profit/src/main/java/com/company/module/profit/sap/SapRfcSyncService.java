@@ -9,24 +9,19 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.*;
 
 /**
- * SAP RFC → MariaDB bw_profitability_data 동기화 서비스
+ * SAP RFC -> MariaDB bw_profitability_data 동기화 서비스
+ *
+ * <p>batch_jobs 테이블에 배치 이력을 기록 (Node.js와 공유)</p>
  *
  * <p>기능:</p>
  * <ul>
  *   <li>SAP BW 시스템에서 RFC 함수(Z_BI_WEB_EX_BL)를 호출하여 T_DATA를 수신</li>
  *   <li>수신 데이터를 integration DB의 bw_profitability_data 테이블에 INSERT</li>
  *   <li>REPLACE 모드: 해당 월 기존 데이터 DELETE 후 INSERT</li>
- *   <li>배치 작업 이력을 profit_batch_status 테이블에 기록</li>
- * </ul>
- *
- * <p>RFC 함수: Z_BI_WEB_EX_BL</p>
- * <ul>
- *   <li>입력: I_CMONTH (YYYYMM)</li>
- *   <li>출력: T_DATA (테이블)</li>
+ *   <li>배치 작업 이력을 batch_jobs 테이블에 기록</li>
  * </ul>
  */
 @Service
@@ -102,11 +97,6 @@ public class SapRfcSyncService {
 
     /**
      * SAP RFC 동기화 실행 (비동기)
-     *
-     * @param cmonth 입력년월 (YYYYMM)
-     * @param mode   실행모드: "replace" | "append" | "dry-run"
-     * @param userId 실행자 ID
-     * @return 배치 작업 ID
      */
     @Async("batchTaskExecutor")
     public void executeAsync(Long batchId, String cmonth, String mode, String userId) {
@@ -121,20 +111,15 @@ public class SapRfcSyncService {
     }
 
     /**
-     * 배치 작업 생성 (동기 — 즉시 ID 반환)
+     * 배치 작업 생성 (동기 - 즉시 ID 반환)
+     * batch_jobs 테이블에 INSERT (Node.js에서도 볼 수 있음)
      */
     @Transactional
     public BatchStatus createBatchJob(String cmonth, String mode, String userId) {
-        int year = Integer.parseInt(cmonth.substring(0, 4));
-        int month = Integer.parseInt(cmonth.substring(4, 6));
-
         BatchStatus batch = BatchStatus.builder()
-                .batchName("SAP RFC 동기화 (" + cmonth + ")")
-                .batchType("SAP_RFC_SYNC")
-                .sourceSystem("SAP BWP (" + sapProperties.getAshost() + ")")
-                .targetTable("bw_profitability_data")
-                .periodYear(year)
-                .periodMonth(month)
+                .jobType("SAP_RFC_SYNC")
+                .cmonth(cmonth)
+                .mode(mode != null ? mode : "replace")
                 .createdBy(userId)
                 .build();
 
@@ -142,10 +127,24 @@ public class SapRfcSyncService {
     }
 
     /**
-     * 동기화 실행 (동기 — 내부 호출)
+     * Node.js가 이미 생성한 batch_jobs 레코드를 찾아 반환
+     * - 존재하면 기존 레코드 반환 (Node.js가 INSERT한 것)
+     * - 존재하지 않으면 새로 생성
+     */
+    @Transactional
+    public BatchStatus getOrCreateBatchJob(Long jobId, String cmonth, String mode, String userId) {
+        return batchStatusRepository.findById(jobId)
+                .orElseGet(() -> {
+                    log.warn("[Batch] jobId={} 를 찾을 수 없어 새로 생성합니다", jobId);
+                    return createBatchJob(cmonth, mode, userId);
+                });
+    }
+
+    /**
+     * 동기화 실행 (동기 - 내부 호출)
      */
     public void execute(Long batchId, String cmonth, String mode) {
-        // 1. 상태 → RUNNING
+        // 1. 상태 -> running
         startBatch(batchId);
 
         // 2. SAP RFC 호출
@@ -154,7 +153,7 @@ public class SapRfcSyncService {
 
         if (tData.isEmpty()) {
             log.warn("[SAP RFC] T_DATA 비어있음 - cmonth={}", cmonth);
-            completeBatch(batchId, 0L, 0L, 0L);
+            completeBatch(batchId, 0, 0, 0);
             return;
         }
 
@@ -163,23 +162,23 @@ public class SapRfcSyncService {
         // 3. dry-run이면 여기서 끝
         if ("dry-run".equals(mode)) {
             log.info("[SAP RFC] DRY-RUN 모드 - DB INSERT 건너뜀. {}건이 INSERT될 예정", tData.size());
-            completeBatch(batchId, (long) tData.size(), 0L, 0L);
+            completeBatch(batchId, tData.size(), 0, 0);
             return;
         }
 
         // 4. replace 모드: 기존 데이터 삭제
-        long deletedRows = 0;
+        int deletedRows = 0;
         if ("replace".equals(mode)) {
-            deletedRows = deleteExistingData(cmonth);
+            deletedRows = (int) deleteExistingData(cmonth);
             log.info("[SAP RFC] REPLACE 모드 - 기존 {}건 삭제 완료 (CALMONTH={})", deletedRows, cmonth);
         }
 
         // 5. 데이터 변환 + INSERT
-        long insertedRows = insertData(tData);
+        int insertedRows = (int) insertData(tData);
         log.info("[SAP RFC] INSERT 완료: {}건", insertedRows);
 
         // 6. 완료
-        completeBatch(batchId, (long) tData.size(), insertedRows, deletedRows);
+        completeBatch(batchId, tData.size(), insertedRows, deletedRows);
     }
 
     // ================================================================
@@ -188,16 +187,13 @@ public class SapRfcSyncService {
 
     /**
      * SAP RFC Z_BI_WEB_EX_BL 호출
-     * SAP JCo 라이브러리를 사용하여 RFC 함수 호출
      */
     private List<Map<String, Object>> callRfc(String cmonth) {
         try {
-            // JCo 클래스를 리플렉션으로 호출 (컴파일 타임 의존 방지)
             Class<?> destManagerClass = Class.forName("com.sap.conn.jco.JCoDestinationManager");
             Object destination = destManagerClass.getMethod("getDestination", String.class)
                     .invoke(null, SapRfcDestinationProvider.DESTINATION_NAME);
 
-            // JCoFunction 가져오기
             Object repository = destination.getClass().getMethod("getRepository").invoke(destination);
             Object function = repository.getClass().getMethod("getFunction", String.class)
                     .invoke(repository, sapProperties.getRfcFunction());
@@ -206,18 +202,15 @@ public class SapRfcSyncService {
                 throw new RuntimeException("RFC 함수를 찾을 수 없습니다: " + sapProperties.getRfcFunction());
             }
 
-            // 입력 파라미터 설정
             Object importParams = function.getClass().getMethod("getImportParameterList").invoke(function);
             importParams.getClass().getMethod("setValue", String.class, String.class)
                     .invoke(importParams, "I_CMONTH", cmonth);
 
             log.info("[SAP RFC] {} 호출 (I_CMONTH={})", sapProperties.getRfcFunction(), cmonth);
 
-            // RFC 실행
             function.getClass().getMethod("execute", destination.getClass().getInterfaces()[0])
                     .invoke(function, destination);
 
-            // T_DATA 테이블 읽기
             Object exportTable = function.getClass().getMethod("getTableParameterList").invoke(function);
             Object tDataTable = exportTable.getClass().getMethod("getTable", String.class)
                     .invoke(exportTable, "T_DATA");
@@ -225,7 +218,6 @@ public class SapRfcSyncService {
             int rowCount = (int) tDataTable.getClass().getMethod("getNumRows").invoke(tDataTable);
             log.info("[SAP RFC] T_DATA: {} rows 수신", rowCount);
 
-            // JCoTable → List<Map> 변환
             List<Map<String, Object>> result = new ArrayList<>(rowCount);
             for (int i = 0; i < rowCount; i++) {
                 tDataTable.getClass().getMethod("setRow", int.class).invoke(tDataTable, i);
@@ -248,8 +240,8 @@ public class SapRfcSyncService {
             throw new RuntimeException(
                     "[SAP JCo 미설치] sapjco3.jar가 classpath에 없습니다.\n" +
                     "  1. SAP Service Marketplace에서 SAP JCo 3.1 다운로드\n" +
-                    "  2. sapjco3.jar → libs/ 디렉토리에 복사\n" +
-                    "  3. libsapjco3.so (Linux) → /usr/lib/ 또는 LD_LIBRARY_PATH에 추가\n" +
+                    "  2. sapjco3.jar -> libs/ 디렉토리에 복사\n" +
+                    "  3. libsapjco3.so (Linux) -> /usr/lib/ 또는 LD_LIBRARY_PATH에 추가\n" +
                     "  4. build.gradle에 implementation files('libs/sapjco3.jar') 추가", e);
         } catch (Exception e) {
             throw new RuntimeException("[SAP RFC 호출 실패] " + e.getMessage(), e);
@@ -260,9 +252,6 @@ public class SapRfcSyncService {
     // DB 작업
     // ================================================================
 
-    /**
-     * 해당 월 기존 데이터 삭제 (REPLACE 모드)
-     */
     private long deleteExistingData(String cmonth) {
         String countSql = "SELECT COUNT(*) FROM bw_profitability_data WHERE CALMONTH = ?";
         Long existing = jdbcTemplate.queryForObject(countSql, Long.class, cmonth);
@@ -275,9 +264,6 @@ public class SapRfcSyncService {
         return count;
     }
 
-    /**
-     * T_DATA를 bw_profitability_data에 배치 INSERT
-     */
     private long insertData(List<Map<String, Object>> tData) {
         int batchSize = 1000;
         long totalInserted = 0;
@@ -303,9 +289,6 @@ public class SapRfcSyncService {
         return totalInserted;
     }
 
-    /**
-     * SAP T_DATA 행 → DB INSERT 파라미터 배열 변환
-     */
     private Object[] convertRow(Map<String, Object> sapRow) {
         Object[] values = new Object[DB_COLUMNS.size()];
 
@@ -323,7 +306,6 @@ public class SapRfcSyncService {
                 try {
                     String strVal = val.toString().replace(",", "").trim();
                     double d = Double.parseDouble(strVal);
-                    // ZQTY_BOX, ZQTY_BAG, ZQTY_KE는 소수점 유지
                     if (col.startsWith("ZQTY_")) {
                         values[i] = d;
                     } else {
@@ -341,22 +323,24 @@ public class SapRfcSyncService {
     }
 
     // ================================================================
-    // 배치 상태 관리
+    // 배치 상태 관리 (batch_jobs 테이블)
     // ================================================================
 
     @Transactional
     protected void startBatch(Long batchId) {
         batchStatusRepository.findById(batchId).ifPresent(batch -> {
             batch.start();
+            batch.appendLog("작업 시작...");
             log.info("[Batch] 작업 {} 시작", batchId);
         });
     }
 
     @Transactional
-    protected void completeBatch(Long batchId, Long totalRows, Long insertedRows, Long deletedRows) {
+    protected void completeBatch(Long batchId, int totalRows, int insertedRows, int deletedRows) {
         batchStatusRepository.findById(batchId).ifPresent(batch -> {
-            batch.complete(insertedRows, 0L);
-            // totalRows는 T_DATA 수신 행 수로 별도 기록
+            batch.complete(totalRows, insertedRows, deletedRows);
+            batch.appendLog(String.format("작업 완료: T_DATA=%d행, INSERT=%d행, DELETE=%d행",
+                    totalRows, insertedRows, deletedRows));
             log.info("[Batch] 작업 {} 완료: T_DATA={}행, INSERT={}행, DELETE={}행",
                     batchId, totalRows, insertedRows, deletedRows);
         });
@@ -366,6 +350,7 @@ public class SapRfcSyncService {
     protected void failBatch(Long batchId, String errorMessage) {
         batchStatusRepository.findById(batchId).ifPresent(batch -> {
             batch.fail(errorMessage);
+            batch.appendLog("작업 실패: " + errorMessage);
             log.error("[Batch] 작업 {} 실패: {}", batchId, errorMessage);
         });
     }
@@ -374,18 +359,12 @@ public class SapRfcSyncService {
     // 유틸리티
     // ================================================================
 
-    /**
-     * 해당 월 기존 데이터 건수 조회 (확인용)
-     */
     public long countExistingData(String cmonth) {
         String sql = "SELECT COUNT(*) FROM bw_profitability_data WHERE CALMONTH = ?";
         Long count = jdbcTemplate.queryForObject(sql, Long.class, cmonth);
         return count != null ? count : 0;
     }
 
-    /**
-     * 전체 월별 데이터 현황 조회
-     */
     public List<Map<String, Object>> getMonthlyDataSummary() {
         String sql = "SELECT CALMONTH, COUNT(*) AS CNT " +
                      "FROM bw_profitability_data " +
@@ -394,9 +373,6 @@ public class SapRfcSyncService {
         return jdbcTemplate.queryForList(sql);
     }
 
-    /**
-     * 현재 실행 중인 배치가 있는지 확인
-     */
     public boolean hasRunningBatch() {
         return !batchStatusRepository.findRunningBatches().isEmpty();
     }

@@ -19,9 +19,9 @@ import java.util.Map;
  * SAP RFC 데이터 동기화 API
  *
  * <ul>
- *   <li>POST /profit-api/sap-rfc/execute — 수동 실행 (관리자)</li>
- *   <li>GET  /profit-api/sap-rfc/check/{cmonth} — 해당 월 기존 데이터 건수 확인</li>
- *   <li>GET  /profit-api/sap-rfc/monthly-summary — 월별 데이터 현황</li>
+ *   <li>POST /profit-api/sap-rfc/execute - 수동 실행</li>
+ *   <li>GET  /profit-api/sap-rfc/check/{cmonth} - 해당 월 기존 데이터 건수 확인</li>
+ *   <li>GET  /profit-api/sap-rfc/monthly-summary - 월별 데이터 현황</li>
  * </ul>
  */
 @RestController
@@ -34,8 +34,9 @@ public class SapRfcSyncController {
 
     /**
      * SAP RFC 동기화 수동 실행
-     * - 관리자만 실행 가능
      * - 비동기 실행: 즉시 작업 ID 반환, 백그라운드에서 처리
+     * - jobId 전달 시: Node.js가 이미 생성한 batch_jobs 레코드 재사용
+     * - jobId 미전달: Spring Boot가 새 batch_jobs 레코드 생성
      */
     @PostMapping("/execute")
     public ResponseEntity<ApiResponse<SapRfcSyncResponse>> execute(
@@ -46,7 +47,8 @@ public class SapRfcSyncController {
         String cmonth = request.getCmonth();
         String mode = request.getMode();
 
-        log.info("[SAP RFC API] 실행 요청 - cmonth={}, mode={}, user={}", cmonth, mode, userId);
+        log.info("[SAP RFC API] 실행 요청 - cmonth={}, mode={}, user={}, jobId={}",
+                cmonth, mode, userId, request.getJobId());
 
         // 실행 중인 배치가 있는지 확인
         if (sapRfcSyncService.hasRunningBatch()) {
@@ -57,11 +59,18 @@ public class SapRfcSyncController {
         // 기존 데이터 건수 조회
         long existingCount = sapRfcSyncService.countExistingData(cmonth);
 
-        // 배치 작업 생성 (동기)
-        BatchStatus batch = sapRfcSyncService.createBatchJob(cmonth, mode, userId);
+        // 배치 작업 처리
+        BatchStatus batch;
+        if (request.getJobId() != null) {
+            // Node.js가 이미 생성한 batch_jobs 레코드 사용
+            batch = sapRfcSyncService.getOrCreateBatchJob(request.getJobId(), cmonth, mode, userId);
+        } else {
+            // Spring Boot 단독 호출 - 새 레코드 생성
+            batch = sapRfcSyncService.createBatchJob(cmonth, mode, userId);
+        }
 
         // 비동기 실행 시작
-        sapRfcSyncService.executeAsync(batch.getBatchId(), cmonth, mode, userId);
+        sapRfcSyncService.executeAsync(batch.getId(), cmonth, mode, userId);
 
         SapRfcSyncResponse response = SapRfcSyncResponse.fromBatch(batch, cmonth, mode, existingCount);
         return ResponseEntity.ok(ApiResponse.created(response));

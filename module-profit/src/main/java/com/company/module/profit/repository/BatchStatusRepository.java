@@ -12,33 +12,36 @@ import java.util.List;
 
 public interface BatchStatusRepository extends JpaRepository<BatchStatus, Long> {
 
+    /** 전체 목록 (최신순) */
     Page<BatchStatus> findByOrderByCreatedAtDesc(Pageable pageable);
 
+    /** 상태별 필터 */
     Page<BatchStatus> findByStatusOrderByCreatedAtDesc(String status, Pageable pageable);
 
-    Page<BatchStatus> findByBatchTypeOrderByCreatedAtDesc(String batchType, Pageable pageable);
+    /** 작업유형별 필터 */
+    Page<BatchStatus> findByJobTypeOrderByCreatedAtDesc(String jobType, Pageable pageable);
 
+    /** 상태 + 작업유형 필터 */
     @Query("SELECT bs FROM BatchStatus bs WHERE bs.status = :status " +
-           "AND bs.batchType = :batchType ORDER BY bs.createdAt DESC")
-    Page<BatchStatus> findByStatusAndBatchType(@Param("status") String status,
-                                                @Param("batchType") String batchType,
-                                                Pageable pageable);
+           "AND bs.jobType = :jobType ORDER BY bs.createdAt DESC")
+    Page<BatchStatus> findByStatusAndJobType(@Param("status") String status,
+                                              @Param("jobType") String jobType,
+                                              Pageable pageable);
 
-    @Query("SELECT bs FROM BatchStatus bs WHERE bs.periodYear = :year " +
-           "AND (:month IS NULL OR bs.periodMonth = :month) ORDER BY bs.createdAt DESC")
-    List<BatchStatus> findByPeriod(@Param("year") Integer year, @Param("month") Integer month);
+    /** 입력년월(cmonth)별 조회 */
+    List<BatchStatus> findByCmonthOrderByCreatedAtDesc(String cmonth);
 
+    /** 날짜 범위별 조회 */
     @Query("SELECT bs FROM BatchStatus bs WHERE bs.createdAt BETWEEN :startDate AND :endDate " +
            "ORDER BY bs.createdAt DESC")
     List<BatchStatus> findByDateRange(@Param("startDate") LocalDateTime startDate,
                                        @Param("endDate") LocalDateTime endDate);
 
+    /** 상태별 건수 통계 */
     @Query("SELECT bs.status, COUNT(bs) FROM BatchStatus bs GROUP BY bs.status")
     List<Object[]> countByStatusGroup();
 
-    @Query("SELECT bs FROM BatchStatus bs WHERE bs.status = 'RUNNING'")
+    /** 실행 중인 배치 조회 */
+    @Query("SELECT bs FROM BatchStatus bs WHERE bs.status = 'running'")
     List<BatchStatus> findRunningBatches();
-
-    @Query("SELECT bs FROM BatchStatus bs WHERE bs.targetTable = :tableName ORDER BY bs.createdAt DESC")
-    Page<BatchStatus> findByTargetTable(@Param("tableName") String tableName, Pageable pageable);
 }

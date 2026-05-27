@@ -164,10 +164,12 @@ CREATE TABLE IF NOT EXISTS profit_nl_query_history (
 
 
 -- ------------------------------------------------------------
--- 7. profit_batch_status  (배치 실행 상태)
---    SAP 마감 → BW DB DATA 생성 배치 추적
---    데이터 검증/정합성 체크 결과 포함
+-- 7. profit_batch_status  (배치 실행 상태) — ※ DEPRECATED
+--    → batch_jobs 테이블로 통합됨 (nlq-server/sql/007_create_batch_jobs.sql)
+--    → Node.js와 Spring Boot가 동일 테이블 사용
+--    아래 DDL은 참고용 (실행하지 마세요)
 -- ------------------------------------------------------------
+-- CREATE TABLE IF NOT EXISTS profit_batch_status (  -- DEPRECATED: batch_jobs 사용
 CREATE TABLE IF NOT EXISTS profit_batch_status (
     BATCH_ID            BIGINT          NOT NULL AUTO_INCREMENT COMMENT '배치 PK',
     BATCH_NAME          VARCHAR(200)    NOT NULL                COMMENT '배치명',

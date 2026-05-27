@@ -2,32 +2,14 @@
 -- Module-Profit 테이블 생성 DDL
 -- 대상 DB: integration (MariaDB)
 -- 실행: mysql -u appuser -p integration < 001_create_profit_tables.sql
+--
+-- NOTE: batch_jobs 테이블은 nlq-server에서 자동 생성하므로 여기에 포함하지 않음
+--       (nlq-server/sql/007_create_batch_jobs.sql 참조)
 -- ============================================================
 
 USE integration;
 
--- ── 1. 배치 상태 ──
-CREATE TABLE IF NOT EXISTS profit_batch_status (
-    BATCH_ID            BIGINT AUTO_INCREMENT PRIMARY KEY,
-    BATCH_NAME          VARCHAR(200)    NOT NULL,
-    BATCH_TYPE          VARCHAR(50)     NOT NULL,
-    SOURCE_SYSTEM       VARCHAR(100),
-    TARGET_TABLE        VARCHAR(200),
-    STATUS              VARCHAR(20)     NOT NULL DEFAULT 'PENDING',
-    TOTAL_ROWS          BIGINT,
-    PROCESSED_ROWS      BIGINT          DEFAULT 0,
-    ERROR_ROWS          BIGINT          DEFAULT 0,
-    PERIOD_YEAR         INT,
-    PERIOD_MONTH        INT,
-    ERROR_MESSAGE       TEXT,
-    STARTED_AT          DATETIME,
-    COMPLETED_AT        DATETIME,
-    EXECUTION_TIME_MS   BIGINT,
-    CREATED_BY          VARCHAR(50),
-    CREATED_AT          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ── 2. Ontology 컬럼 ──
+-- ── 1. Ontology 컬럼 ──
 CREATE TABLE IF NOT EXISTS profit_ontology_column (
     ONTOLOGY_COLUMN_ID  BIGINT AUTO_INCREMENT PRIMARY KEY,
     COLUMN_NAME         VARCHAR(100)    NOT NULL,
@@ -43,7 +25,7 @@ CREATE TABLE IF NOT EXISTS profit_ontology_column (
     UPDATED_AT          DATETIME        DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ── 3. Ontology 동의어 ──
+-- ── 2. Ontology 동의어 ──
 CREATE TABLE IF NOT EXISTS profit_ontology_synonym (
     SYNONYM_ID          BIGINT AUTO_INCREMENT PRIMARY KEY,
     ONTOLOGY_COLUMN_ID  BIGINT          NOT NULL,
@@ -56,7 +38,7 @@ CREATE TABLE IF NOT EXISTS profit_ontology_synonym (
         ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ── 4. Metric (계산 지표) ──
+-- ── 3. Metric (계산 지표) ──
 CREATE TABLE IF NOT EXISTS profit_metric (
     METRIC_ID           BIGINT AUTO_INCREMENT PRIMARY KEY,
     METRIC_CODE         VARCHAR(100)    NOT NULL UNIQUE,
@@ -75,7 +57,7 @@ CREATE TABLE IF NOT EXISTS profit_metric (
     UPDATED_AT          DATETIME        DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ── 5. Metric 동의어 ──
+-- ── 4. Metric 동의어 ──
 CREATE TABLE IF NOT EXISTS profit_metric_synonym (
     METRIC_SYNONYM_ID   BIGINT AUTO_INCREMENT PRIMARY KEY,
     METRIC_ID           BIGINT          NOT NULL,
@@ -88,7 +70,7 @@ CREATE TABLE IF NOT EXISTS profit_metric_synonym (
         ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ── 6. JOIN 조건 ──
+-- ── 5. JOIN 조건 ──
 CREATE TABLE IF NOT EXISTS profit_join_condition (
     JOIN_CONDITION_ID   BIGINT AUTO_INCREMENT PRIMARY KEY,
     JOIN_NAME           VARCHAR(200),
@@ -106,7 +88,7 @@ CREATE TABLE IF NOT EXISTS profit_join_condition (
     UPDATED_AT          DATETIME        DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ── 7. 매핑 인박스 ──
+-- ── 6. 매핑 인박스 ──
 CREATE TABLE IF NOT EXISTS profit_mapping_inbox (
     INBOX_ID            BIGINT AUTO_INCREMENT PRIMARY KEY,
     UNMAPPED_TERM       VARCHAR(300)    NOT NULL,
@@ -123,7 +105,7 @@ CREATE TABLE IF NOT EXISTS profit_mapping_inbox (
     UPDATED_AT          DATETIME        DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ── 8. 자연어 질의 이력 ──
+-- ── 7. 자연어 질의 이력 ──
 CREATE TABLE IF NOT EXISTS profit_nl_query_history (
     QUERY_HISTORY_ID    BIGINT AUTO_INCREMENT PRIMARY KEY,
     USER_ID             BIGINT,
@@ -146,8 +128,6 @@ CREATE TABLE IF NOT EXISTS profit_nl_query_history (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ── 인덱스 ──
-CREATE INDEX idx_batch_status ON profit_batch_status(STATUS);
-CREATE INDEX idx_batch_period ON profit_batch_status(PERIOD_YEAR, PERIOD_MONTH);
 CREATE INDEX idx_ontology_column_table ON profit_ontology_column(TABLE_NAME);
 CREATE INDEX idx_ontology_synonym_text ON profit_ontology_synonym(SYNONYM_TEXT);
 CREATE INDEX idx_metric_code ON profit_metric(METRIC_CODE);
