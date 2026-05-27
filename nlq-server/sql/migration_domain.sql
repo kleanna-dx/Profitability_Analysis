@@ -1,10 +1,21 @@
 -- ============================================================
--- 도메인(영역) 기반 학습관리 구조 마이그레이션 스크립트
+-- 운영서버 마이그레이션 스크립트 (통합본)
 -- 대상 DB: company_board
--- 실행 순서: 위에서 아래로 순차 실행
+-- 실행: 이 파일 하나만 위에서 아래로 순차 실행
+-- 날짜: 2026-05-27
+-- ============================================================
+-- 포함 내용:
+--   1) 도메인 마스터/매핑 테이블 생성 + 데이터
+--   2) 기존 학습 테이블에 domain_code 컬럼 추가
+--   3) 유니크키 수정 (domain_code 포함)
+--   4) HL, MGMT 도메인 초기 데이터 복사
+--   5) batch_jobs 테이블 생성 (배치관리)
 -- ============================================================
 
+
+-- ============================================================
 -- 1. 도메인 마스터 테이블
+-- ============================================================
 CREATE TABLE IF NOT EXISTS domain_master (
     domain_code VARCHAR(10) PRIMARY KEY COMMENT '영역 코드 (PS, HL, MGMT)',
     domain_name VARCHAR(100) NOT NULL COMMENT '영역 이름',
@@ -21,7 +32,10 @@ INSERT IGNORE INTO domain_master (domain_code, domain_name, description, sort_or
 ('HL', '홈앤라이프사업부', '홈앤라이프 사업부 수익성분석 영역', 2),
 ('MGMT', '경영기획', '경영기획·임원진 수익성분석 영역', 3);
 
+
+-- ============================================================
 -- 2. 도메인-조직 그룹 매핑 테이블
+-- ============================================================
 CREATE TABLE IF NOT EXISTS domain_group_mapping (
     id INT AUTO_INCREMENT PRIMARY KEY,
     domain_code VARCHAR(10) NOT NULL COMMENT '영역 코드',
@@ -43,7 +57,11 @@ INSERT IGNORE INTO domain_group_mapping (domain_code, group_id, group_name, desc
 ('MGMT', 'D2013147', 'CEO', 'CEO 직속'),
 ('MGMT', 'D2013135', 'COO', 'COO 직속');
 
+
+-- ============================================================
 -- 3. 기존 테이블에 domain_code 컬럼 추가
+-- ============================================================
+
 -- users
 ALTER TABLE users ADD COLUMN IF NOT EXISTS domain_code VARCHAR(10) DEFAULT NULL COMMENT '영역 코드' AFTER role;
 ALTER TABLE users ADD INDEX IF NOT EXISTS idx_users_domain (domain_code);
@@ -68,7 +86,10 @@ ALTER TABLE code_mapping ADD INDEX IF NOT EXISTS idx_codemapping_domain (domain_
 ALTER TABLE sql_feedback ADD COLUMN IF NOT EXISTS domain_code VARCHAR(10) DEFAULT NULL COMMENT '영역 코드' AFTER id;
 ALTER TABLE sql_feedback ADD INDEX IF NOT EXISTS idx_feedback_domain (domain_code);
 
--- 4. 유니크키 수정 (domain_code 포함하여 도메인별 데이터 분리 지원)
+
+-- ============================================================
+-- 4. 유니크키 수정 (domain_code 포함하여 도메인별 데이터 분리)
+-- ============================================================
 
 -- ontology_column: (column_name, table_name) → (domain_code, column_name, table_name)
 ALTER TABLE ontology_column DROP INDEX uk_col_table;
@@ -82,7 +103,10 @@ ALTER TABLE metric ADD UNIQUE KEY uk_metric_code (domain_code, metric_code);
 ALTER TABLE code_mapping DROP INDEX uk_col_code;
 ALTER TABLE code_mapping ADD UNIQUE KEY uk_col_code (domain_code, column_name, code_value, table_name);
 
+
+-- ============================================================
 -- 5. HL, MGMT 도메인 초기 데이터 세팅 (PS 데이터 복사)
+-- ============================================================
 
 -- ontology_column (122건 × 2 도메인)
 INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, description, data_type)
@@ -122,8 +146,34 @@ INSERT IGNORE INTO code_mapping (domain_code, column_name, column_name_nm, code_
 SELECT 'MGMT', column_name, column_name_nm, code_value, display_name, table_name, description, is_active
 FROM code_mapping WHERE domain_code = 'PS';
 
+
 -- ============================================================
--- 완료. 서버 재시작 후 적용됩니다.
+-- 6. 배치 작업 이력 테이블 (배치관리 기능)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS batch_jobs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    job_type VARCHAR(50) NOT NULL DEFAULT 'SAP_RFC_SYNC' COMMENT '작업유형',
+    cmonth VARCHAR(6) NOT NULL COMMENT '입력년월 (YYYYMM)',
+    mode VARCHAR(20) NOT NULL DEFAULT 'replace' COMMENT '실행모드: replace/append/dry-run',
+    status ENUM('pending','running','success','failed','cancelled') NOT NULL DEFAULT 'pending',
+    started_at DATETIME NULL,
+    finished_at DATETIME NULL,
+    total_rows INT DEFAULT 0 COMMENT 'T_DATA 수신 행 수',
+    inserted_rows INT DEFAULT 0 COMMENT 'DB INSERT 행 수',
+    deleted_rows INT DEFAULT 0 COMMENT 'DELETE한 기존 행 수',
+    error_message TEXT NULL,
+    log_text LONGTEXT NULL COMMENT '실행 로그',
+    created_by VARCHAR(50) NULL COMMENT '실행자 ID',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_batch_status (status),
+    INDEX idx_batch_cmonth (cmonth)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='배치 작업 이력';
+
+
+-- ============================================================
+-- 완료!
+-- 서버 재시작 후 적용됩니다.
 -- 참고: 동의어(ontology_synonym, metric_synonym)는 도메인별로
--- 관리자가 개별 세팅합니다 (초기 복사 대상 아님).
+--       관리자가 개별 세팅합니다 (초기 복사 대상 아님).
 -- ============================================================
