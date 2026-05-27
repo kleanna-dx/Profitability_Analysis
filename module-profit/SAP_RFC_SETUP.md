@@ -10,25 +10,31 @@ SAP BW 시스템에서 RFC 함수(Z_BI_WEB_EX_BL)를 호출하여
 - SAP Service Marketplace (https://support.sap.com) 에서 다운로드
 - 또는 SAP Note 2786882 참조
 
-### 1-2. 파일 배치
+### 1-2. 파일 배치 (libs 폴더에 통합)
 ```
-module-profit/
+/data/analytics/source/module-profit/
 ├── libs/
-│   └── sapjco3.jar          ← JCo Java 라이브러리
+│   ├── sapjco3.jar           ← JCo Java 라이브러리
+│   └── libsapjco3.so         ← JCo 네이티브 라이브러리 (Linux)
 └── ...
-
-/usr/lib/ (또는 LD_LIBRARY_PATH)
-└── libsapjco3.so             ← JCo 네이티브 라이브러리 (Linux)
 ```
 
-### 1-3. 환경 변수 설정
+두 파일 모두 같은 `libs/` 폴더에 넣으면 됩니다:
 ```bash
-# Linux
-export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+cp sapjco3.jar  /data/analytics/source/module-profit/libs/
+cp libsapjco3.so /data/analytics/source/module-profit/libs/
+```
 
-# 또는 /etc/ld.so.conf.d/sapjco.conf 에 추가
-echo "/usr/lib" > /etc/ld.so.conf.d/sapjco.conf
-ldconfig
+### 1-3. Spring Boot 실행 시 네이티브 라이브러리 경로 지정
+```bash
+# java.library.path에 libs 폴더를 지정하여 실행
+java -Djava.library.path=/data/analytics/source/module-profit/libs -jar app.jar
+
+# 또는 Gradle로 실행할 경우
+./gradlew :module-profit:bootRun -Djava.library.path=/data/analytics/source/module-profit/libs
+
+# 또는 환경변수로 설정
+export LD_LIBRARY_PATH=/data/analytics/source/module-profit/libs:$LD_LIBRARY_PATH
 ```
 
 ## 2. application.yml 설정
@@ -126,7 +132,8 @@ ClassNotFoundException: com.sap.conn.jco.JCoDestinationManager
 ```
 UnsatisfiedLinkError: no sapjco3 in java.library.path
 ```
-→ `libsapjco3.so`가 LD_LIBRARY_PATH에 없음
+→ `libsapjco3.so`가 java.library.path에 없음
+→ 실행 시 `-Djava.library.path=/data/analytics/source/module-profit/libs` 옵션 확인
 
 ### SAP 연결 실패
 ```
