@@ -1,10 +1,10 @@
 # ============================================================
 # NLQ 수익성분석 서버 — Nginx 리버스 프록시
 # 파일: /data/analytics/config/application.yml
-# 포트: 18083 (외부 → Nginx → Node.js + Spring Boot)
+# 포트: 18083 (nginx 에서 다수 서비스를 포트로 구분)
 #
-# 구조:
-#   Nginx(18083) ─→ Node.js(3000)     : /api/*, /pages/*, etc.
+# [추가] Spring Boot(module-profit) 프록시 (PR #32)
+#   Nginx(18083) ─→ Node.js(3000)     : 기본 (/)
 #                ─→ Spring Boot(18093) : /profit-api/*
 # ============================================================
 
@@ -34,12 +34,13 @@ http {
     gzip  on;
     gzip_types text/plain text/css application/json application/javascript text/xml;
 
-    # ── Upstream 정의 ──
+    # ── Upstream 정의 (향후 다중 인스턴스 대비) ──
     upstream nlq_backend {
         server 127.0.0.1:3000;
         keepalive 32;
     }
 
+    # [추가] Spring Boot (module-profit) upstream
     upstream profit_backend {
         server 127.0.0.1:18093;
         keepalive 16;
@@ -55,7 +56,17 @@ http {
         # 업로드 파일 크기 제한 (엑셀 업로드 최대 300MB)
         client_max_body_size 300M;
 
-        # ── Spring Boot (module-profit) 프록시 ──
+        # ── 정적 파일 (nginx 직접 서비스 — 선택사항) ──
+        # Node.js가 자체적으로 static 서빙하므로 기본적으로 불필요
+        # 성능 최적화가 필요할 때만 활성화
+        #
+        # location /static/ {
+        #     alias /data/analytics/static/;
+        #     expires 30d;
+        #     add_header Cache-Control "public, immutable";
+        # }
+
+        # [추가] ── Spring Boot (module-profit) 프록시 ──
         # /profit-api/* 요청은 Spring Boot(18093)로 전달
         location /profit-api/ {
             proxy_pass http://profit_backend;
@@ -78,7 +89,7 @@ http {
             proxy_busy_buffers_size 128k;
         }
 
-        # ── Node.js 서버로 프록시 (기본) ──
+        # ── Node.js 서버로 프록시 ──
         location / {
             proxy_pass http://nlq_backend;
             proxy_http_version 1.1;
@@ -129,4 +140,19 @@ http {
             return 404;
         }
     }
+
+    # ── (선택) HTTPS 설정 — SSL 인증서가 있을 때 ──
+    # 포트 18083을 SSL로 변경하거나, 별도 443 포트로 설정 가능
+    #
+    # server {
+    #     listen       18083 ssl http2;
+    #     server_name  _;
+    #
+    #     ssl_certificate     /etc/nginx/ssl/your-domain.crt;
+    #     ssl_certificate_key /etc/nginx/ssl/your-domain.key;
+    #     ssl_protocols       TLSv1.2 TLSv1.3;
+    #     ssl_ciphers         HIGH:!aNULL:!MD5;
+    #
+    #     # 나머지 설정은 위 server 블록과 동일
+    # }
 }
