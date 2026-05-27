@@ -3677,16 +3677,24 @@ async function executeBatchJob(jobId, cmonth, mode) {
   } catch (err) {
     const errMsg = err.message || String(err);
     addLog(`오류 발생: ${errMsg}`);
-    if (err.stderr) addLog('stderr: ' + err.stderr);
+    // stdout/stderr 상세 캡처 (execFileAsync 에러 객체에 포함됨)
+    if (err.stdout) addLog('--- stdout ---\n' + err.stdout);
+    if (err.stderr) addLog('--- stderr ---\n' + err.stderr);
+    if (err.code) addLog(`종료 코드: ${err.code}`);
+    if (err.signal) addLog(`종료 시그널: ${err.signal}`);
+
+    // error_message에 stderr도 포함하여 UI에서 상세 에러 확인 가능
+    const detailedErr = [errMsg, err.stderr, err.stdout].filter(Boolean).join('\n').substring(0, 5000);
 
     await pool.query(
       `UPDATE batch_jobs SET status='failed', finished_at=NOW(),
               error_message=?, log_text=?
        WHERE id=?`,
-      [errMsg.substring(0, 5000), logLines.join('\n'), jobId]
+      [detailedErr, logLines.join('\n'), jobId]
     ).catch(e => console.error('[Batch] 실패 상태 업데이트 실패:', e.message));
 
     console.error(`[Batch] 작업 ${jobId} 실패:`, errMsg);
+    if (err.stderr) console.error('[Batch] stderr:', err.stderr);
   }
 }
 
