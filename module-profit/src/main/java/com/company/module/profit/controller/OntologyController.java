@@ -10,7 +10,6 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
@@ -92,7 +91,6 @@ public class OntologyController {
     /* ───────── 생성 ───────── */
 
     @PostMapping("/columns")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<OntologyColumnResponse>> save(
             @Valid @RequestBody OntologyColumnSaveRequest request,
             @AuthenticationPrincipal UserDetails userDetails) {
@@ -103,7 +101,6 @@ public class OntologyController {
     /* ───────── 수정 ───────── */
 
     @PutMapping("/columns/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<OntologyColumnResponse>> update(
             @PathVariable Long id,
             @Valid @RequestBody OntologyColumnSaveRequest request,
@@ -115,7 +112,6 @@ public class OntologyController {
     /* ───────── 삭제 ───────── */
 
     @DeleteMapping("/columns/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
         ontologyService.delete(id);
         return ResponseEntity.ok(ApiResponse.success(null));
@@ -124,7 +120,6 @@ public class OntologyController {
     /* ───────── 동의어 개별 추가 ───────── */
 
     @PostMapping("/columns/{columnId}/synonyms")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<OntologyColumnResponse>> addSynonym(
             @PathVariable Long columnId,
             @RequestParam String synonymText,
@@ -136,7 +131,6 @@ public class OntologyController {
     /* ───────── 동의어 개별 삭제 ───────── */
 
     @DeleteMapping("/synonyms/{synonymId}")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<Void>> removeSynonym(@PathVariable Long synonymId) {
         ontologyService.removeSynonym(synonymId);
         return ResponseEntity.ok(ApiResponse.success(null));

@@ -6,7 +6,6 @@ import com.company.module.profit.service.BatchStatusService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
@@ -50,7 +49,6 @@ public class BatchStatusController {
      * 배치 등록 (관리자)
      */
     @PostMapping
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<BatchStatusResponse>> create(
             @RequestParam String batchName,
             @RequestParam String batchType,
@@ -70,7 +68,6 @@ public class BatchStatusController {
      * 배치 시작
      */
     @PatchMapping("/{id}/start")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<BatchStatusResponse>> start(@PathVariable Long id) {
         return ResponseEntity.ok(ApiResponse.success(batchStatusService.start(id)));
     }
@@ -79,7 +76,6 @@ public class BatchStatusController {
      * 배치 완료
      */
     @PatchMapping("/{id}/complete")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<BatchStatusResponse>> complete(
             @PathVariable Long id,
             @RequestParam Long processedRows,
@@ -92,7 +88,6 @@ public class BatchStatusController {
      * 배치 실패
      */
     @PatchMapping("/{id}/fail")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<BatchStatusResponse>> fail(
             @PathVariable Long id,
             @RequestParam String errorMessage) {

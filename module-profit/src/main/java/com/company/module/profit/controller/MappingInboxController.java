@@ -8,7 +8,6 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
@@ -76,7 +75,6 @@ public class MappingInboxController {
      * 미매핑 항목 처리 (승인/거절) - 관리자 전용
      */
     @PatchMapping("/{id}/resolve")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<MappingInboxResponse>> resolve(
             @PathVariable Long id,
             @Valid @RequestBody MappingInboxResolveRequest request,
