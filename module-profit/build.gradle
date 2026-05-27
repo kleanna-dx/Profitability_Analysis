@@ -7,6 +7,11 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+
+    // SAP JCo 3.1 (로컬 jar — SAP Service Marketplace에서 다운로드 필요)
+    // sapjco3.jar → module-profit/libs/ 디렉토리에 배치
+    compileOnly fileTree(dir: 'libs', include: ['*.jar'])
 }
 
 // spring-boot 플러그인 미적용 서브모듈: plain jar만 생성
