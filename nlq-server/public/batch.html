@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>배치 관리 - 수익성분석 AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
+        *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
+        body{margin:0;background:#f1f5f9;display:flex;height:100vh;overflow:hidden;}
+
+        /* Sidebar */
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;}
+        .sidebar-overlay.active{display:block;}
+        .sidebar{position:fixed;top:0;left:-300px;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
+        .sidebar.open{left:0;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,.1);margin:0 16px;}
+        .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:10px 24px;color:#c7d2fe;cursor:pointer;transition:all .15s;text-decoration:none;}
+        .sidebar-menu-item:hover,.sidebar-menu-item.active{background:rgba(255,255,255,.1);color:#fff;}
+
+        /* Main layout */
+        .main-wrapper{display:flex;flex-direction:column;flex:1;overflow:hidden;}
+        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+        .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        .content-area{flex:1;overflow-y:auto;padding:24px;}
+
+        /* Stat cards */
+        .stat-card{background:#fff;border-radius:12px;padding:18px 20px;border:1px solid #e5e7eb;display:flex;align-items:center;gap:14px;transition:all .2s;}
+        .stat-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.06);transform:translateY(-1px);}
+        .stat-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
+        .stat-info{flex:1;}
+        .stat-num{font-size:26px;font-weight:800;color:#1e293b;line-height:1;}
+        .stat-label{font-size:12px;color:#94a3b8;margin-top:3px;font-weight:500;}
+
+        /* Card */
+        .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);border:1px solid #e5e7eb;overflow:hidden;}
+        .card-header{padding:16px 20px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px;color:#1e293b;}
+
+        /* Execute Panel */
+        .exec-panel{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 100%);border-radius:16px;padding:28px 32px;color:#fff;margin-bottom:20px;position:relative;overflow:hidden;}
+        .exec-panel::before{content:'';position:absolute;top:-60px;right:-60px;width:200px;height:200px;background:rgba(99,102,241,.15);border-radius:50%;}
+        .exec-panel::after{content:'';position:absolute;bottom:-40px;left:-40px;width:150px;height:150px;background:rgba(129,140,248,.1);border-radius:50%;}
+        .exec-panel *{position:relative;z-index:1;}
+        .exec-title{font-size:18px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:10px;}
+        .exec-desc{font-size:13px;color:#c7d2fe;margin-bottom:20px;}
+        .exec-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;}
+        .exec-field{display:flex;flex-direction:column;gap:4px;}
+        .exec-field label{font-size:11px;color:#a5b4fc;font-weight:600;text-transform:uppercase;letter-spacing:.5px;}
+        .exec-input{padding:10px 16px;border:2px solid rgba(255,255,255,.2);border-radius:10px;background:rgba(255,255,255,.1);color:#fff;font-size:16px;font-weight:700;font-family:inherit;width:180px;transition:all .2s;letter-spacing:2px;text-align:center;}
+        .exec-input::placeholder{color:rgba(255,255,255,.4);font-weight:400;letter-spacing:0;}
+        .exec-input:focus{outline:none;border-color:#818cf8;background:rgba(255,255,255,.15);}
+        .exec-select{padding:10px 14px;border:2px solid rgba(255,255,255,.2);border-radius:10px;background:rgba(255,255,255,.1);color:#fff;font-size:13px;font-family:inherit;cursor:pointer;appearance:none;-webkit-appearance:none;}
+        .exec-select option{background:#1e1b4b;color:#fff;}
+        .exec-select:focus{outline:none;border-color:#818cf8;}
+        .exec-btn{padding:10px 28px;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:8px;font-family:inherit;}
+        .exec-btn-primary{background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;box-shadow:0 4px 12px rgba(34,197,94,.35);}
+        .exec-btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(34,197,94,.45);}
+        .exec-btn-primary:disabled{background:#64748b;box-shadow:none;cursor:not-allowed;transform:none;}
+        .exec-btn-check{background:rgba(255,255,255,.15);color:#fff;border:2px solid rgba(255,255,255,.3);}
+        .exec-btn-check:hover{background:rgba(255,255,255,.25);}
+
+        /* Check result */
+        .check-result{margin-top:16px;background:rgba(255,255,255,.08);border-radius:10px;padding:14px 18px;display:none;animation:fadeIn .3s;}
+        .check-result.show{display:block;}
+        .check-row{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px;}
+        .check-row i{width:16px;text-align:center;}
+        .check-warn{color:#fbbf24;}
+        .check-ok{color:#34d399;}
+
+        /* Table */
+        table{width:100%;border-collapse:collapse;font-size:13px;}
+        thead th{background:#f8fafc;padding:11px 14px;text-align:left;font-weight:600;color:#64748b;border-bottom:2px solid #e5e7eb;white-space:nowrap;font-size:12px;text-transform:uppercase;letter-spacing:.3px;}
+        tbody td{padding:10px 14px;border-bottom:1px solid #f1f5f9;color:#334155;vertical-align:middle;}
+        tbody tr{transition:background .1s;cursor:pointer;}
+        tbody tr:hover{background:#fafbff;}
+
+        /* Status badges */
+        .status-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.3px;}
+        .status-success{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;}
+        .status-failed{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}
+        .status-running{background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;animation:pulse 1.5s infinite;}
+        .status-pending{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;}
+        .status-cancelled{background:#fefce8;color:#a16207;border:1px solid #fde68a;}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+
+        /* Mode badge */
+        .mode-badge{display:inline-block;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;}
+        .mode-replace{background:#fef3c7;color:#b45309;}
+        .mode-append{background:#dbeafe;color:#1d4ed8;}
+        .mode-dry-run{background:#ede9fe;color:#6d28d9;}
+
+        /* Mono */
+        .mono{font-family:'Fira Code','Consolas',monospace;font-size:12px;}
+
+        /* Log Modal */
+        .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s;}
+        .modal-overlay.active{opacity:1;pointer-events:auto;}
+        .modal{background:#fff;border-radius:16px;width:90%;max-width:800px;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.2);transform:translateY(20px);transition:transform .2s;}
+        .modal-overlay.active .modal{transform:translateY(0);}
+        .modal-header{padding:18px 24px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;}
+        .modal-body{flex:1;overflow-y:auto;padding:20px 24px;}
+        .modal-footer{padding:14px 24px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;}
+        .log-pre{background:#0f172a;color:#e2e8f0;font-family:'Fira Code','Consolas',monospace;font-size:12px;line-height:1.7;padding:20px;border-radius:10px;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow-y:auto;}
+        .log-pre .log-error{color:#f87171;}
+        .log-pre .log-success{color:#4ade80;}
+        .log-pre .log-info{color:#60a5fa;}
+        .log-pre .log-warn{color:#fbbf24;}
+
+        /* Monthly data chart */
+        .month-bar{display:flex;align-items:flex-end;gap:4px;height:60px;margin-top:8px;}
+        .month-col{flex:1;min-width:0;border-radius:4px 4px 0 0;background:linear-gradient(180deg,#818cf8,#4f46e5);transition:all .2s;position:relative;cursor:pointer;}
+        .month-col:hover{opacity:.85;}
+        .month-col .month-tooltip{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:#1e293b;color:#fff;padding:4px 8px;border-radius:6px;font-size:10px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;}
+        .month-col:hover .month-tooltip{opacity:1;}
+        .month-labels{display:flex;gap:4px;margin-top:4px;}
+        .month-labels span{flex:1;text-align:center;font-size:9px;color:#94a3b8;min-width:0;overflow:hidden;text-overflow:ellipsis;}
+
+        @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .fade-in{animation:fadeIn .3s ease-out;}
+
+        .content-area::-webkit-scrollbar{width:6px;}
+        .content-area::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+    </style>
+</head>
+<body>
+
+<!-- SIDEBAR OVERLAY -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav class="py-2">
+        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-comments"></i><span>자연어 질의</span>
+        </a>
+        <a href="/builder.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
+        </a>
+        <a href="/report" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
+        </a>
+        <a href="/learning.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
+        </a>
+        <a href="/admin.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-users-cog"></i><span>권한 관리</span>
+        </a>
+        <a href="/upload.html" class="sidebar-menu-item" style="text-decoration:none;">
+            <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
+        </a>
+        <a href="/batch.html" class="sidebar-menu-item active" style="text-decoration:none;">
+            <i class="fas fa-sync-alt"></i><span>배치 관리</span>
+        </a>
+    </nav>
+    <div class="sidebar-divider"></div>
+</aside>
+
+<!-- MAIN -->
+<div class="main-wrapper">
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
+        <h1 class="text-sm font-bold text-gray-800">
+            <i class="fas fa-sync-alt text-indigo-500 mr-1"></i>배치 관리
+        </h1>
+        <span class="text-xs text-gray-400 ml-2">SAP BW 데이터 동기화</span>
+        <div class="ml-auto flex items-center gap-2">
+            <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
+        </div>
+    </div>
+
+    <div class="content-area" id="contentArea">
+
+        <!-- Execute Panel -->
+        <div class="exec-panel">
+            <div class="exec-title">
+                <i class="fas fa-rocket"></i> SAP RFC 데이터 동기화
+            </div>
+            <div class="exec-desc">
+                SAP BW에서 수익성 분석 데이터를 가져와 운영 DB(bw_profitability_data)에 적재합니다.
+                <br>RFC 함수: <strong>Z_BI_WEB_EX_BL</strong> &nbsp;|&nbsp; 매개변수: <strong>I_CMONTH</strong> (입력년월)
+            </div>
+            <div class="exec-form">
+                <div class="exec-field">
+                    <label>입력년월 (I_CMONTH)</label>
+                    <input type="text" id="inputCmonth" class="exec-input" placeholder="YYYYMM" maxlength="6"
+                           oninput="onCmonthInput(this)" autocomplete="off">
+                </div>
+                <div class="exec-field">
+                    <label>실행 모드</label>
+                    <select id="inputMode" class="exec-select">
+                        <option value="replace">REPLACE (기존 삭제 후 INSERT)</option>
+                        <option value="append">APPEND (기존 유지, 추가 INSERT)</option>
+                        <option value="dry-run">DRY RUN (RFC 호출만, DB 변경 없음)</option>
+                    </select>
+                </div>
+                <button class="exec-btn exec-btn-check" onclick="checkBeforeRun()" title="해당 월 기존 데이터 확인">
+                    <i class="fas fa-search"></i> 확인
+                </button>
+                <button class="exec-btn exec-btn-primary" id="btnExecute" onclick="executeJob()" disabled>
+                    <i class="fas fa-play"></i> 실행
+                </button>
+            </div>
+            <div class="check-result" id="checkResult"></div>
+        </div>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#eef2ff;color:#4f46e5;"><i class="fas fa-database"></i></div>
+                <div class="stat-info">
+                    <div class="stat-num" id="statDbRows">-</div>
+                    <div class="stat-label">전체 DB 행수</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#dcfce7;color:#16a34a;"><i class="fas fa-check-circle"></i></div>
+                <div class="stat-info">
+                    <div class="stat-num" id="statSuccess">-</div>
+                    <div class="stat-label">성공</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef2f2;color:#dc2626;"><i class="fas fa-times-circle"></i></div>
+                <div class="stat-info">
+                    <div class="stat-num" id="statFailed">-</div>
+                    <div class="stat-label">실패</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef3c7;color:#d97706;"><i class="fas fa-history"></i></div>
+                <div class="stat-info">
+                    <div class="stat-num" id="statTotal">-</div>
+                    <div class="stat-label">전체 작업</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Monthly Data Bar -->
+        <div class="card mb-5">
+            <div class="card-header">
+                <i class="fas fa-chart-bar text-indigo-500"></i>
+                <span>월별 데이터 현황</span>
+                <span id="monthlyInfo" style="font-size:12px;color:#94a3b8;font-weight:400;margin-left:8px;"></span>
+            </div>
+            <div style="padding:16px 20px;">
+                <div class="month-bar" id="monthBar"></div>
+                <div class="month-labels" id="monthLabels"></div>
+            </div>
+        </div>
+
+        <!-- Job History Table -->
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-list text-indigo-500"></i>
+                <span>작업 이력</span>
+                <span id="jobCount" style="font-size:12px;color:#94a3b8;font-weight:400;"></span>
+                <div class="ml-auto">
+                    <button onclick="loadJobs()" style="padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.borderColor='#818cf8';this.style.color='#4f46e5';" onmouseout="this.style.borderColor='#e5e7eb';this.style.color='#6b7280';">
+                        <i class="fas fa-refresh mr-1"></i>새로고침
+                    </button>
+                </div>
+            </div>
+            <div style="overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:60px;">ID</th>
+                            <th>입력년월</th>
+                            <th>실행모드</th>
+                            <th>상태</th>
+                            <th>T_DATA 행수</th>
+                            <th>INSERT 행수</th>
+                            <th>소요시간</th>
+                            <th>실행자</th>
+                            <th>실행시각</th>
+                            <th style="width:80px;">로그</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobTableBody">
+                        <tr><td colspan="10" style="text-align:center;padding:40px;color:#94a3b8;"><i class="fas fa-spinner fa-spin mr-2"></i>로딩 중...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Log Modal -->
+<div id="logModal" class="modal-overlay" onclick="if(event.target===this)closeLogModal()">
+    <div class="modal">
+        <div class="modal-header">
+            <i class="fas fa-terminal text-indigo-500"></i>
+            <span id="logModalTitle">작업 로그</span>
+            <span id="logModalStatus" style="margin-left:auto;"></span>
+        </div>
+        <div class="modal-body">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;" id="logDetailCards"></div>
+            <div id="logErrorMsg" style="display:none;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;margin-bottom:12px;">
+                <div style="font-size:12px;font-weight:600;color:#dc2626;margin-bottom:4px;"><i class="fas fa-exclamation-triangle mr-1"></i>오류 메시지</div>
+                <div id="logErrorText" style="font-size:12px;color:#7f1d1d;"></div>
+            </div>
+            <div style="font-size:12px;font-weight:600;color:#475569;margin-bottom:8px;"><i class="fas fa-scroll mr-1"></i>실행 로그</div>
+            <pre class="log-pre" id="logContent">로그를 불러오는 중...</pre>
+        </div>
+        <div class="modal-footer">
+            <button onclick="closeLogModal()" style="padding:8px 20px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:13px;color:#475569;cursor:pointer;font-family:inherit;">닫기</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// Sidebar
+// ============================================================
+function openSidebar() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebarOverlay').classList.add('active');
+}
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('active');
+}
+
+// ============================================================
+// Init
+// ============================================================
+let pollingTimer = null;
+
+async function init() {
+    try {
+        const r = await fetch('/api/me');
+        const me = await r.json();
+        if (!me.loggedIn) { window.location.href = '/login'; return; }
+        if (me.role !== 'admin') { window.location.href = '/'; return; }
+    } catch(e) { window.location.href = '/login'; return; }
+
+    await loadStats();
+    await loadJobs();
+}
+
+// ============================================================
+// Input
+// ============================================================
+function onCmonthInput(el) {
+    // 숫자만 허용
+    el.value = el.value.replace(/\D/g, '').substring(0, 6);
+    const v = el.value;
+    const btn = document.getElementById('btnExecute');
+    const checkEl = document.getElementById('checkResult');
+    checkEl.classList.remove('show');
+
+    if (v.length === 6) {
+        const y = parseInt(v.substring(0, 4));
+        const m = parseInt(v.substring(4, 6));
+        if (y >= 2020 && y <= 2030 && m >= 1 && m <= 12) {
+            btn.disabled = false;
+            return;
+        }
+    }
+    btn.disabled = true;
+}
+
+// ============================================================
+// Check before run
+// ============================================================
+async function checkBeforeRun() {
+    const cmonth = document.getElementById('inputCmonth').value;
+    if (!cmonth || cmonth.length !== 6) {
+        alert('입력년월을 YYYYMM 형식으로 입력하세요.');
+        return;
+    }
+
+    const el = document.getElementById('checkResult');
+    el.innerHTML = '<div style="text-align:center;padding:8px;"><i class="fas fa-spinner fa-spin mr-2"></i>확인 중...</div>';
+    el.classList.add('show');
+
+    try {
+        const res = await fetch('/api/batch/check/' + cmonth);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+
+        const year = cmonth.substring(0, 4);
+        const month = cmonth.substring(4, 6);
+        let html = `<div class="check-row"><i class="fas fa-calendar check-ok"></i> <strong>${year}년 ${month}월</strong> 데이터 확인 결과</div>`;
+
+        if (data.existingRows > 0) {
+            html += `<div class="check-row check-warn"><i class="fas fa-exclamation-triangle"></i> 기존 데이터: <strong>${Number(data.existingRows).toLocaleString()}행</strong> 존재</div>`;
+            html += `<div class="check-row" style="font-size:11px;color:#a5b4fc;margin-left:24px;">REPLACE 모드: 기존 데이터 삭제 후 새로 적재 &nbsp;|&nbsp; APPEND 모드: 기존 데이터에 추가</div>`;
+        } else {
+            html += `<div class="check-row check-ok"><i class="fas fa-check-circle"></i> 기존 데이터: 없음 (신규 적재)</div>`;
+        }
+
+        if (data.recentJobs && data.recentJobs.length > 0) {
+            const last = data.recentJobs[0];
+            const statusKo = { success: '성공', failed: '실패', running: '실행중', pending: '대기중', cancelled: '취소' };
+            html += `<div class="check-row" style="margin-top:6px;"><i class="fas fa-history" style="color:#818cf8;"></i> 최근 작업: #${last.id} — ${statusKo[last.status] || last.status} (${last.total_rows?.toLocaleString() || 0}행)</div>`;
+        }
+
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = `<div class="check-row" style="color:#fca5a5;"><i class="fas fa-times-circle"></i> 확인 실패: ${e.message}</div>`;
+    }
+}
+
+// ============================================================
+// Execute
+// ============================================================
+async function executeJob() {
+    const cmonth = document.getElementById('inputCmonth').value;
+    const mode = document.getElementById('inputMode').value;
+
+    if (!cmonth || cmonth.length !== 6) {
+        alert('입력년월을 YYYYMM 형식으로 입력하세요.');
+        return;
+    }
+
+    const year = cmonth.substring(0, 4);
+    const month = cmonth.substring(4, 6);
+    const modeKo = { replace: 'REPLACE (기존 삭제 후 INSERT)', append: 'APPEND (추가 INSERT)', 'dry-run': 'DRY RUN (RFC만, DB 변경 없음)' };
+
+    if (!confirm(`${year}년 ${month}월 데이터를 동기화합니다.\n\n실행모드: ${modeKo[mode]}\n\n계속하시겠습니까?`)) return;
+
+    const btn = document.getElementById('btnExecute');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...';
+
+    try {
+        const res = await fetch('/api/batch/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cmonth, mode }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.error || '실행 실패');
+        }
+
+        // 실행 시작 알림
+        const checkEl = document.getElementById('checkResult');
+        checkEl.innerHTML = `
+            <div class="check-row check-ok"><i class="fas fa-check-circle"></i> 작업 #${data.jobId} 시작됨!</div>
+            <div class="check-row" style="font-size:11px;color:#a5b4fc;margin-left:24px;">작업 이력에서 진행 상황을 확인하세요. (자동 새로고침 중...)</div>
+        `;
+        checkEl.classList.add('show');
+
+        // 폴링 시작 (3초마다 새로고침)
+        startPolling();
+
+        // 즉시 목록 새로고침
+        await loadJobs();
+        await loadStats();
+    } catch(e) {
+        alert('실행 실패: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> 실행';
+    }
+}
+
+// ============================================================
+// Polling (running 작업 감지)
+// ============================================================
+function startPolling() {
+    stopPolling();
+    pollingTimer = setInterval(async () => {
+        await loadJobs();
+        await loadStats();
+        // running 작업이 없으면 폴링 중지
+        const tbody = document.getElementById('jobTableBody');
+        if (!tbody.innerHTML.includes('status-running')) {
+            stopPolling();
+        }
+    }, 3000);
+}
+
+function stopPolling() {
+    if (pollingTimer) {
+        clearInterval(pollingTimer);
+        pollingTimer = null;
+    }
+}
+
+// ============================================================
+// Stats
+// ============================================================
+async function loadStats() {
+    try {
+        const res = await fetch('/api/batch/stats');
+        const d = await res.json();
+        document.getElementById('statDbRows').textContent = Number(d.totalDbRows).toLocaleString();
+        document.getElementById('statSuccess').textContent = d.successJobs;
+        document.getElementById('statFailed').textContent = d.failedJobs;
+        document.getElementById('statTotal').textContent = d.totalJobs;
+
+        // 월별 데이터 바 차트
+        renderMonthlyBar(d.monthlyData || []);
+    } catch(e) {
+        console.error('Stats load failed:', e);
+    }
+}
+
+function renderMonthlyBar(data) {
+    const barEl = document.getElementById('monthBar');
+    const labelEl = document.getElementById('monthLabels');
+    const infoEl = document.getElementById('monthlyInfo');
+
+    if (!data || data.length === 0) {
+        barEl.innerHTML = '<div style="color:#94a3b8;font-size:12px;padding:20px;text-align:center;width:100%;">적재된 데이터가 없습니다.</div>';
+        labelEl.innerHTML = '';
+        infoEl.textContent = '';
+        return;
+    }
+
+    // 정렬 (오래된 것부터)
+    data.sort((a, b) => a.CALMONTH.localeCompare(b.CALMONTH));
+    const maxCnt = Math.max(...data.map(d => d.cnt));
+    infoEl.textContent = `${data.length}개월 (총 ${data.reduce((s, d) => s + d.cnt, 0).toLocaleString()}행)`;
+
+    barEl.innerHTML = data.map(d => {
+        const pct = maxCnt > 0 ? (d.cnt / maxCnt * 100) : 0;
+        const minH = 6;
+        const height = Math.max(pct * 0.54 + minH, minH); // scale to 60px max
+        return `<div class="month-col" style="height:${height}px;" title="${d.CALMONTH}: ${d.cnt.toLocaleString()}행">
+                    <span class="month-tooltip">${d.CALMONTH}<br>${Number(d.cnt).toLocaleString()}행</span>
+                </div>`;
+    }).join('');
+
+    labelEl.innerHTML = data.map(d => {
+        const m = d.CALMONTH.substring(4);
+        return `<span>${d.CALMONTH.substring(2, 4)}/${m}</span>`;
+    }).join('');
+}
+
+// ============================================================
+// Job list
+// ============================================================
+async function loadJobs() {
+    try {
+        const res = await fetch('/api/batch/jobs?limit=50');
+        const jobs = await res.json();
+        renderJobs(jobs);
+
+        // running 작업 있으면 자동 폴링
+        if (jobs.some(j => j.status === 'running') && !pollingTimer) {
+            startPolling();
+        }
+    } catch(e) {
+        document.getElementById('jobTableBody').innerHTML = `<tr><td colspan="10" style="text-align:center;padding:40px;color:#dc2626;"><i class="fas fa-exclamation-triangle mr-2"></i>로딩 실패</td></tr>`;
+    }
+}
+
+function renderJobs(jobs) {
+    const tbody = document.getElementById('jobTableBody');
+    document.getElementById('jobCount').textContent = `(${jobs.length}건)`;
+
+    if (jobs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:60px;color:#94a3b8;"><i class="fas fa-inbox mr-2" style="font-size:24px;"></i><br><br>실행된 작업이 없습니다.<br><span style="font-size:11px;">위에서 입력년월을 입력하고 [실행] 버튼을 눌러주세요.</span></td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = jobs.map(j => {
+        const statusMap = {
+            success: '<span class="status-badge status-success"><i class="fas fa-check"></i> 성공</span>',
+            failed: '<span class="status-badge status-failed"><i class="fas fa-times"></i> 실패</span>',
+            running: '<span class="status-badge status-running"><i class="fas fa-sync-alt fa-spin"></i> 실행중</span>',
+            pending: '<span class="status-badge status-pending"><i class="fas fa-clock"></i> 대기</span>',
+            cancelled: '<span class="status-badge status-cancelled"><i class="fas fa-ban"></i> 취소</span>',
+        };
+        const modeMap = {
+            replace: '<span class="mode-badge mode-replace">REPLACE</span>',
+            append: '<span class="mode-badge mode-append">APPEND</span>',
+            'dry-run': '<span class="mode-badge mode-dry-run">DRY RUN</span>',
+        };
+
+        const elapsed = j.elapsed_sec != null
+            ? (j.elapsed_sec >= 60 ? Math.floor(j.elapsed_sec/60) + '분 ' + (j.elapsed_sec%60) + '초' : j.elapsed_sec + '초')
+            : '-';
+
+        const createdAt = j.created_at ? new Date(j.created_at).toLocaleString('ko-KR', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '-';
+
+        const cmonthDisplay = j.cmonth ? j.cmonth.substring(0,4) + '년 ' + j.cmonth.substring(4) + '월' : '-';
+
+        return `
+        <tr onclick="viewJobLog(${j.id})">
+            <td class="mono" style="font-weight:600;color:#4f46e5;">#${j.id}</td>
+            <td style="font-weight:600;">${cmonthDisplay}</td>
+            <td>${modeMap[j.mode] || j.mode}</td>
+            <td>${statusMap[j.status] || j.status}</td>
+            <td class="mono" style="text-align:right;">${j.total_rows ? Number(j.total_rows).toLocaleString() : '-'}</td>
+            <td class="mono" style="text-align:right;">${j.inserted_rows ? Number(j.inserted_rows).toLocaleString() : '-'}</td>
+            <td style="text-align:center;font-size:12px;color:#64748b;">${elapsed}</td>
+            <td style="font-size:12px;">${j.created_by || '-'}</td>
+            <td style="font-size:12px;color:#64748b;">${createdAt}</td>
+            <td style="text-align:center;">
+                <button onclick="event.stopPropagation();viewJobLog(${j.id})" style="padding:4px 10px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;font-size:11px;color:#4f46e5;cursor:pointer;font-family:inherit;" onmouseover="this.style.background='#eef2ff'" onmouseout="this.style.background='#fff'">
+                    <i class="fas fa-terminal"></i>
+                </button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+// ============================================================
+// Log Modal
+// ============================================================
+async function viewJobLog(jobId) {
+    const modal = document.getElementById('logModal');
+    modal.classList.add('active');
+
+    document.getElementById('logModalTitle').textContent = `작업 #${jobId} 상세`;
+    document.getElementById('logContent').textContent = '로그를 불러오는 중...';
+    document.getElementById('logDetailCards').innerHTML = '';
+    document.getElementById('logErrorMsg').style.display = 'none';
+
+    try {
+        const res = await fetch('/api/batch/jobs/' + jobId);
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.error);
+
+        // Status badge
+        const statusMap = {
+            success: '<span class="status-badge status-success"><i class="fas fa-check"></i> 성공</span>',
+            failed: '<span class="status-badge status-failed"><i class="fas fa-times"></i> 실패</span>',
+            running: '<span class="status-badge status-running"><i class="fas fa-sync-alt fa-spin"></i> 실행중</span>',
+            pending: '<span class="status-badge status-pending"><i class="fas fa-clock"></i> 대기</span>',
+        };
+        document.getElementById('logModalStatus').innerHTML = statusMap[job.status] || job.status;
+
+        // Detail cards
+        const cmonthDisplay = job.cmonth ? job.cmonth.substring(0,4) + '.' + job.cmonth.substring(4) : '-';
+        const elapsed = job.started_at && job.finished_at
+            ? Math.round((new Date(job.finished_at) - new Date(job.started_at)) / 1000) + '초'
+            : (job.started_at ? '진행중...' : '-');
+
+        document.getElementById('logDetailCards').innerHTML = `
+            <div style="background:#f8fafc;border-radius:8px;padding:10px 14px;text-align:center;">
+                <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:600;">입력년월</div>
+                <div style="font-size:16px;font-weight:700;color:#1e293b;margin-top:2px;">${cmonthDisplay}</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:8px;padding:10px 14px;text-align:center;">
+                <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:600;">T_DATA</div>
+                <div style="font-size:16px;font-weight:700;color:#4f46e5;margin-top:2px;">${(job.total_rows || 0).toLocaleString()}</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:8px;padding:10px 14px;text-align:center;">
+                <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:600;">INSERT</div>
+                <div style="font-size:16px;font-weight:700;color:#16a34a;margin-top:2px;">${(job.inserted_rows || 0).toLocaleString()}</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:8px;padding:10px 14px;text-align:center;">
+                <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:600;">소요시간</div>
+                <div style="font-size:16px;font-weight:700;color:#475569;margin-top:2px;">${elapsed}</div>
+            </div>
+        `;
+
+        // Error message
+        if (job.error_message) {
+            document.getElementById('logErrorMsg').style.display = 'block';
+            document.getElementById('logErrorText').textContent = job.error_message;
+        }
+
+        // Log text with syntax highlighting
+        const logText = job.log_text || '(로그 없음)';
+        document.getElementById('logContent').innerHTML = highlightLog(logText);
+
+    } catch(e) {
+        document.getElementById('logContent').textContent = '로그 조회 실패: ' + e.message;
+    }
+}
+
+function highlightLog(text) {
+    return text
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\[ERROR\].*$/gm, '<span class="log-error">$&</span>')
+        .replace(/오류|실패|FAIL|Error/gm, '<span class="log-error">$&</span>')
+        .replace(/완료|성공|OK|SUCCESS/gm, '<span class="log-success">$&</span>')
+        .replace(/\[INFO\]|\[RFC\]|\[DB\]/gm, '<span class="log-info">$&</span>')
+        .replace(/\[WARN\]|경고/gm, '<span class="log-warn">$&</span>');
+}
+
+function closeLogModal() {
+    document.getElementById('logModal').classList.remove('active');
+}
+
+// ============================================================
+// Logout
+// ============================================================
+async function doLogout() {
+    if (!confirm('로그아웃 하시겠습니까?')) return;
+    try { await fetch('/api/logout', { method: 'POST' }); } catch(e) {}
+    window.location.href = '/login';
+}
+
+// Init
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
