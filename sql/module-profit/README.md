@@ -41,7 +41,7 @@ sql/module-profit/
 | 4 | `profit_metric_synonym` | Metric 동의어 (지표당 N개 자연어 표현) | `MetricSynonym` |
 | 5 | `profit_join_condition` | JOIN 조건 사전 (테이블 간 연결 조건) | `JoinCondition` |
 | 6 | `profit_nl_query_history` | 자연어 질의 이력 (질문→SQL→결과→피드백) | `NlQueryHistory` |
-| 7 | `profit_batch_status` | 배치 실행 상태 (SAP 마감/적재/검증 추적) | `BatchStatus` |
+| 7 | `batch_jobs` | 배치 작업 이력 (Node.js와 Spring Boot 공유) | `BatchStatus` |
 | 8 | `profit_mapping_inbox` | 매핑 인박스 (미매핑 표현 수집→관리자 검수) | `MappingInbox` |
 
 ### ER 관계도 (핵심)
@@ -51,7 +51,7 @@ profit_ontology_column  1 ─── N  profit_ontology_synonym
 profit_metric           1 ─── N  profit_metric_synonym
 
 profit_nl_query_history  (독립, core_user 참조는 EntityManager 네이티브 쿼리)
-profit_batch_status      (독립)
+batch_jobs               (독립, Node.js nlq-server와 공유)
 profit_join_condition    (독립)
 profit_mapping_inbox     (독립, UK: UNMAPPED_TERM + TERM_TYPE)
 ```
@@ -94,7 +94,7 @@ SELECT 'join_condition',           COUNT(*)         FROM profit_join_condition
 UNION ALL
 SELECT 'nl_query_history',        COUNT(*)         FROM profit_nl_query_history
 UNION ALL
-SELECT 'batch_status',            COUNT(*)         FROM profit_batch_status
+SELECT 'batch_jobs',              COUNT(*)         FROM batch_jobs
 UNION ALL
 SELECT 'mapping_inbox',           COUNT(*)         FROM profit_mapping_inbox;
 ```

@@ -21,4 +21,11 @@ public class SapRfcSyncRequest {
     @Pattern(regexp = "^(replace|append|dry-run)$",
              message = "mode는 replace, append, dry-run 중 하나여야 합니다")
     private String mode = "replace";
+
+    /**
+     * Node.js batch_jobs 레코드 ID (선택)
+     * - Node.js가 이미 batch_jobs에 INSERT한 경우 해당 ID 전달
+     * - 전달 시 Spring Boot가 새 레코드를 만들지 않고 기존 레코드를 업데이트
+     */
+    private Long jobId;
 }

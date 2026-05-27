@@ -6,47 +6,75 @@ import lombok.Getter;
 
 import java.time.LocalDateTime;
 
+/**
+ * 배치 작업 이력 응답 DTO
+ * - batch_jobs 테이블과 1:1 대응
+ */
 @Getter
 @Builder
 public class BatchStatusResponse {
 
-    private Long batchId;
-    private String batchName;
-    private String batchType;
-    private String sourceSystem;
-    private String targetTable;
+    private Long id;
+    private String jobType;
+    private String cmonth;
+    private String mode;
     private String status;
-    private Long totalRows;
-    private Long processedRows;
-    private Long errorRows;
-    private Integer periodYear;
-    private Integer periodMonth;
-    private String errorMessage;
     private LocalDateTime startedAt;
-    private LocalDateTime completedAt;
-    private Long executionTimeMs;
+    private LocalDateTime finishedAt;
+    private Integer totalRows;
+    private Integer insertedRows;
+    private Integer deletedRows;
+    private String errorMessage;
+    private String logText;
     private String createdBy;
     private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
+
+    /** 실행 시간 (초) — Node.js elapsed_sec와 동일 */
+    private Long elapsedSec;
 
     public static BatchStatusResponse from(BatchStatus entity) {
+        Long elapsed = null;
+        if (entity.getStartedAt() != null) {
+            LocalDateTime end = entity.getFinishedAt() != null
+                    ? entity.getFinishedAt() : LocalDateTime.now();
+            elapsed = java.time.Duration.between(entity.getStartedAt(), end).getSeconds();
+        }
+
         return BatchStatusResponse.builder()
-                .batchId(entity.getBatchId())
-                .batchName(entity.getBatchName())
-                .batchType(entity.getBatchType())
-                .sourceSystem(entity.getSourceSystem())
-                .targetTable(entity.getTargetTable())
+                .id(entity.getId())
+                .jobType(entity.getJobType())
+                .cmonth(entity.getCmonth())
+                .mode(entity.getMode())
                 .status(entity.getStatus())
-                .totalRows(entity.getTotalRows())
-                .processedRows(entity.getProcessedRows())
-                .errorRows(entity.getErrorRows())
-                .periodYear(entity.getPeriodYear())
-                .periodMonth(entity.getPeriodMonth())
-                .errorMessage(entity.getErrorMessage())
                 .startedAt(entity.getStartedAt())
-                .completedAt(entity.getCompletedAt())
-                .executionTimeMs(entity.getExecutionTimeMs())
+                .finishedAt(entity.getFinishedAt())
+                .totalRows(entity.getTotalRows())
+                .insertedRows(entity.getInsertedRows())
+                .deletedRows(entity.getDeletedRows())
+                .errorMessage(entity.getErrorMessage())
+                .logText(entity.getLogText())
                 .createdBy(entity.getCreatedBy())
                 .createdAt(entity.getCreatedAt())
+                .updatedAt(entity.getUpdatedAt())
+                .elapsedSec(elapsed)
                 .build();
+    }
+
+    // ── Node.js 폴링 호환용 alias getter ──
+
+    /** Node.js가 batchId로 참조 */
+    public Long getBatchId() {
+        return this.id;
+    }
+
+    /** Node.js가 processedRows로 참조 */
+    public Integer getProcessedRows() {
+        return this.insertedRows;
+    }
+
+    /** Node.js가 errorRows로 참조 (batch_jobs에는 없으므로 항상 0) */
+    public Integer getErrorRows() {
+        return 0;
     }
 }

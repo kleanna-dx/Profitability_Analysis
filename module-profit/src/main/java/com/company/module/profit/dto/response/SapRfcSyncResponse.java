@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 @Builder
 public class SapRfcSyncResponse {
 
-    /** 배치 작업 ID */
+    /** 배치 작업 ID (batch_jobs.id) */
     private Long batchId;
 
     /** 입력년월 */
@@ -22,7 +22,7 @@ public class SapRfcSyncResponse {
     /** 실행 모드 */
     private String mode;
 
-    /** 상태 (PENDING → RUNNING → COMPLETED / FAILED) */
+    /** 상태 (pending -> running -> success / failed) */
     private String status;
 
     /** 메시지 */
@@ -36,7 +36,7 @@ public class SapRfcSyncResponse {
 
     public static SapRfcSyncResponse fromBatch(BatchStatus batch, String cmonth, String mode, Long existingCount) {
         return SapRfcSyncResponse.builder()
-                .batchId(batch.getBatchId())
+                .batchId(batch.getId())
                 .cmonth(cmonth)
                 .mode(mode)
                 .status(batch.getStatus())

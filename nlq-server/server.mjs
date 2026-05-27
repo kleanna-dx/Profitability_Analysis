@@ -3666,10 +3666,10 @@ async function executeBatchJob(jobId, cmonth, mode) {
     const apiUrl = `${springBaseUrl}/profit-api/sap-rfc/execute`;
     addLog(`── SAP RFC 실행 요청 ──`);
     addLog(`API 호출: POST ${apiUrl}`);
-    addLog(`요청 데이터: { cmonth: "${cmonth}", mode: "${mode}" }`);
+    addLog(`요청 데이터: { cmonth: "${cmonth}", mode: "${mode}", jobId: ${jobId} }`);
     await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
 
-    // Spring Boot API 호출 (fetch)
+    // Spring Boot API 호출 (fetch) — jobId를 전달하여 같은 batch_jobs 레코드 사용
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 1800000); // 30분 타임아웃
 
@@ -3680,7 +3680,7 @@ async function executeBatchJob(jobId, cmonth, mode) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ cmonth, mode }),
+        body: JSON.stringify({ cmonth, mode, jobId }),
         signal: controller.signal,
       });
     } catch (fetchErr) {
@@ -3707,8 +3707,9 @@ async function executeBatchJob(jobId, cmonth, mode) {
     }
 
     // Spring Boot가 비동기 실행 중이므로, 배치 상태를 폴링하여 추적
-    const springBatchId = responseData.data?.batchId || responseData.batchId;
-    addLog(`Spring Boot 배치 등록 완료 (Spring batchId: ${springBatchId})`);
+    // jobId를 전달했으므로 Spring Boot는 같은 batch_jobs 레코드를 사용
+    const springBatchId = responseData.data?.batchId || responseData.batchId || jobId;
+    addLog(`Spring Boot 배치 등록 완료 (batchId: ${springBatchId})`);
     addLog(`비동기 실행 중... Spring Boot에서 SAP RFC 호출 → DB INSERT 진행`);
 
     // Spring Boot 배치 완료를 폴링 (5초 간격, 최대 30분)
@@ -3730,9 +3731,9 @@ async function executeBatchJob(jobId, cmonth, mode) {
           await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
         }
 
-        if (springStatus === 'COMPLETED' || springStatus === 'COMPLETED_WITH_ERRORS') {
+        if (springStatus === 'success' || springStatus === 'COMPLETED' || springStatus === 'COMPLETED_WITH_ERRORS') {
           const totalRows = pollData.data?.totalRows || 0;
-          const processedRows = pollData.data?.processedRows || 0;
+          const processedRows = pollData.data?.processedRows || pollData.data?.insertedRows || 0;
           const errorRows = pollData.data?.errorRows || 0;
 
           addLog(`Spring Boot 배치 완료!`);
@@ -3748,11 +3749,11 @@ async function executeBatchJob(jobId, cmonth, mode) {
           completed = true;
           break;
 
-        } else if (springStatus === 'FAILED') {
+        } else if (springStatus === 'failed' || springStatus === 'FAILED') {
           const errMsg = pollData.data?.errorMessage || '알 수 없는 오류';
           throw new Error(`Spring Boot 배치 실패: ${errMsg}`);
         }
-        // PENDING, RUNNING → 계속 폴링
+        // pending, running → 계속 폴링
       } catch (pollErr) {
         if (pollErr.message.includes('Spring Boot 배치 실패')) throw pollErr;
         // 네트워크 오류는 무시하고 재시도
