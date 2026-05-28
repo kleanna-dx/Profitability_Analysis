@@ -286,11 +286,16 @@ public class SapRfcSyncService {
             appendBatchLog(batchId, String.format("  [RFC-5] 필드 수: %d개/행", totalFieldCount));
 
             // 필드명 → 인덱스 매핑 (DB 컬럼만)
+            // JCo Table에서 필드명은 getRecordMetaData().getName(int)로 가져와야 함
+            Object metaData = tDataTable.getClass()
+                    .getMethod("getRecordMetaData").invoke(tDataTable);
+            java.lang.reflect.Method getNameMethod = metaData.getClass()
+                    .getMethod("getName", int.class);
+
             Set<String> dbColumnSet = new HashSet<>(DB_COLUMNS);
             Map<String, Integer> fieldIndexMap = new LinkedHashMap<>();
             for (int j = 0; j < totalFieldCount; j++) {
-                String fname = (String) tDataTable.getClass()
-                        .getMethod("getName", int.class).invoke(tDataTable, j);
+                String fname = (String) getNameMethod.invoke(metaData, j);
                 if (dbColumnSet.contains(fname)) {
                     fieldIndexMap.put(fname, j);
                 }
