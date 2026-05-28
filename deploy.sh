@@ -23,6 +23,11 @@
 #   --start       모든 서비스 시작
 #   --build-java  module-profit JAR만 빌드 (서비스 재시작 안 함)
 #   --java-only   module-profit만 빌드 + 재시작
+#
+# 자동 업데이트:
+#   이 스크립트는 /data/analytics/deploy.sh에 복사해서 실행합니다.
+#   실행 시 자동으로 git pull → deploy.sh 변경 감지 → 자기 자신 업데이트 후
+#   새 버전으로 재실행합니다. (--restart, --status 등 비배포 옵션은 제외)
 # ============================================================
 
 set -e
@@ -46,6 +51,9 @@ SPRING_BOOT_PORT=18093
 NGINX_PORT=18083
 NODEJS_PORT=3000
 
+# 셀프 업데이트 플래그 (재실행 시 무한 루프 방지)
+_SELF_UPDATED=${_SELF_UPDATED:-0}
+
 # ── 색상 ──
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -65,6 +73,74 @@ print_header() {
     echo "  NLQ 수익성분석 서비스 배포"
     echo "  $(date '+%Y-%m-%d %H:%M:%S')"
     echo "============================================"
+    echo ""
+}
+
+# ── 셀프 업데이트 (git pull + deploy.sh 자동 갱신) ──
+# /data/analytics/deploy.sh 에서 실행될 때, 소스를 pull한 뒤
+# repo의 deploy.sh가 변경되었으면 자기 자신을 덮어쓰고 재실행한다.
+self_update() {
+    # 이미 셀프 업데이트를 거친 재실행이면 스킵
+    if [ "${_SELF_UPDATED}" = "1" ]; then
+        return 0
+    fi
+
+    # Git 저장소 확인
+    if [ ! -d "${SOURCE_DIR}/.git" ]; then
+        log_warn "Git 저장소 없음 (${SOURCE_DIR}). 셀프 업데이트 건너뜀."
+        return 0
+    fi
+
+    log_info "소스 업데이트 확인 중 (git pull)..."
+    cd "${SOURCE_DIR}"
+
+    # 현재 브랜치
+    local branch=$(git rev-parse --abbrev-ref HEAD)
+
+    # 로컬 변경사항 stash
+    if [ -n "$(git status --porcelain)" ]; then
+        log_warn "로컬 변경사항이 있습니다. stash 처리합니다."
+        git stash
+    fi
+
+    # pull 전 deploy.sh 해시
+    local before_hash=""
+    if [ -f "${SOURCE_DIR}/deploy.sh" ]; then
+        before_hash=$(md5sum "${SOURCE_DIR}/deploy.sh" | cut -d' ' -f1)
+    fi
+
+    # git pull
+    local before=$(git rev-parse --short HEAD)
+    git pull origin "${branch}"
+    local after=$(git rev-parse --short HEAD)
+
+    if [ "${before}" = "${after}" ]; then
+        log_info "변경사항 없음 (${after})"
+    else
+        log_ok "소스 업데이트: ${before} -> ${after}"
+        git log --oneline "${before}..${after}" | head -10
+    fi
+
+    # pull 후 deploy.sh 해시 비교
+    local after_hash=""
+    if [ -f "${SOURCE_DIR}/deploy.sh" ]; then
+        after_hash=$(md5sum "${SOURCE_DIR}/deploy.sh" | cut -d' ' -f1)
+    fi
+
+    # deploy.sh가 변경되었으면 자기 자신을 갱신하고 재실행
+    local running_script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    if [ -n "${after_hash}" ] && [ "${before_hash}" != "${after_hash}" ]; then
+        log_warn "deploy.sh가 변경되었습니다. 새 버전으로 교체 후 재실행합니다."
+        cp "${SOURCE_DIR}/deploy.sh" "${running_script}"
+        log_ok "deploy.sh 업데이트 완료: ${running_script}"
+        # 환경변수로 플래그 전달하여 재실행
+        export _SELF_UPDATED=1
+        exec bash "${running_script}" "$@"
+    fi
+
+    # deploy.sh는 안 바뀌었지만 다른 소스가 바뀌었을 수 있음
+    # update_source() 중복 호출 방지를 위해 플래그 설정
+    export _SOURCE_ALREADY_PULLED=1
     echo ""
 }
 
@@ -201,7 +277,13 @@ check_status() {
 }
 
 # ── 소스 업데이트 (git pull) ──
+# self_update()에서 이미 pull했으면 중복 실행하지 않음
 update_source() {
+    if [ "${_SOURCE_ALREADY_PULLED:-0}" = "1" ]; then
+        log_info "소스 이미 최신 (self_update에서 pull 완료)"
+        return 0
+    fi
+
     log_info "GitHub 소스 업데이트 중..."
 
     if [ ! -d "${SOURCE_DIR}/.git" ]; then
@@ -483,6 +565,7 @@ wait_healthy() {
 # ── 전체 배포 ──
 deploy_full() {
     print_header
+    self_update "$@"
     log_info "전체 배포 시작 (Node.js + Spring Boot)"
     echo ""
 
@@ -501,6 +584,7 @@ deploy_full() {
 # ── 빠른 배포 (npm install + gradle 빌드 생략) ──
 deploy_quick() {
     print_header
+    self_update "$@"
     log_info "빠른 배포 시작 (npm install + gradle 빌드 생략)"
     echo ""
 
@@ -517,6 +601,7 @@ deploy_quick() {
 # ── Java만 빌드 + 재시작 ──
 deploy_java_only() {
     print_header
+    self_update "$@"
     log_info "module-profit (Spring Boot) 배포 시작"
     echo ""
 
@@ -588,8 +673,10 @@ case "${1:-}" in
         ;;
     --build-java)
         print_header
+        self_update "$@"
         log_info "module-profit JAR 빌드만 실행"
         echo ""
+        update_source
         build_java
         # 빌드 후 app 디렉토리에 복사
         if [ -f "${PROFIT_SOURCE_DIR}/build/libs/${PROFIT_JAR_NAME}" ]; then
