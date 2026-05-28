@@ -467,51 +467,57 @@ public class SapRfcSyncService {
 
     // ================================================================
     // 배치 상태 관리 (batch_jobs 테이블)
+    // ── JPA self-invocation 트랜잭션 문제 방지를 위해 JdbcTemplate 직접 SQL 사용 ──
     // ================================================================
 
-    @Transactional
     protected void startBatch(Long batchId) {
-        batchStatusRepository.findById(batchId).ifPresent(batch -> {
-            batch.start();
-            batch.appendLog("작업 시작...");
-            log.info("[Batch] 작업 {} 시작", batchId);
-        });
+        String ts = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
+        jdbcTemplate.update(
+                "UPDATE batch_jobs SET status='running', started_at=NOW(), " +
+                "log_text=CONCAT(IFNULL(log_text,''), ?), updated_at=NOW() WHERE id=?",
+                "[" + ts + "] 작업 시작...\n", batchId);
+        log.info("[Batch] 작업 {} 시작", batchId);
     }
 
     /**
      * batch_jobs.log_text에 로그 한 줄 추가 (타임스탬프 포함)
      * + 서버 로그파일(slf4j)에도 동시 출력
      */
-    @Transactional
     protected void appendBatchLog(Long batchId, String message) {
         // 서버 로그파일에 출력 (journalctl / logback으로 확인 가능)
         log.info("[Batch:{}] {}", batchId, message);
 
-        batchStatusRepository.findById(batchId).ifPresent(batch -> {
-            String ts = java.time.LocalDateTime.now()
-                    .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
-            batch.appendLog("[" + ts + "] " + message);
-        });
+        String ts = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
+        jdbcTemplate.update(
+                "UPDATE batch_jobs SET log_text=CONCAT(IFNULL(log_text,''), ?), updated_at=NOW() WHERE id=?",
+                "[" + ts + "] " + message + "\n", batchId);
     }
 
-    @Transactional
     protected void completeBatch(Long batchId, int totalRows, int insertedRows, int deletedRows) {
-        batchStatusRepository.findById(batchId).ifPresent(batch -> {
-            batch.complete(totalRows, insertedRows, deletedRows);
-            batch.appendLog(String.format("작업 완료: T_DATA=%d행, INSERT=%d행, DELETE=%d행",
-                    totalRows, insertedRows, deletedRows));
-            log.info("[Batch] 작업 {} 완료: T_DATA={}행, INSERT={}행, DELETE={}행",
-                    batchId, totalRows, insertedRows, deletedRows);
-        });
+        String ts = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
+        String logMsg = String.format("[%s] 작업 완료: T_DATA=%d행, INSERT=%d행, DELETE=%d행\n",
+                ts, totalRows, insertedRows, deletedRows);
+        jdbcTemplate.update(
+                "UPDATE batch_jobs SET status='success', finished_at=NOW(), " +
+                "total_rows=?, inserted_rows=?, deleted_rows=?, " +
+                "log_text=CONCAT(IFNULL(log_text,''), ?), updated_at=NOW() WHERE id=?",
+                totalRows, insertedRows, deletedRows, logMsg, batchId);
+        log.info("[Batch] 작업 {} 완료: T_DATA={}행, INSERT={}행, DELETE={}행",
+                batchId, totalRows, insertedRows, deletedRows);
     }
 
-    @Transactional
     protected void failBatch(Long batchId, String errorMessage) {
-        batchStatusRepository.findById(batchId).ifPresent(batch -> {
-            batch.fail(errorMessage);
-            batch.appendLog("작업 실패: " + errorMessage);
-            log.error("[Batch] 작업 {} 실패: {}", batchId, errorMessage);
-        });
+        String ts = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
+        String logMsg = String.format("[%s] 작업 실패: %s\n", ts, errorMessage);
+        jdbcTemplate.update(
+                "UPDATE batch_jobs SET status='failed', finished_at=NOW(), " +
+                "error_message=?, log_text=CONCAT(IFNULL(log_text,''), ?), updated_at=NOW() WHERE id=?",
+                errorMessage, logMsg, batchId);
+        log.error("[Batch] 작업 {} 실패: {}", batchId, errorMessage);
     }
 
     // ================================================================
