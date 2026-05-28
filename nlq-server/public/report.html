@@ -379,31 +379,9 @@
     </div>
     <div class="sidebar-divider"></div>
 
-    <!-- Menu Items -->
-    <nav class="py-2">
-        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-comments"></i><span>자연어 질의</span>
-        </a>
-        <a href="/builder.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
-        </a>
-        <a href="/report" class="sidebar-menu-item active" style="text-decoration:none;">
-            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
-        </a>
-        <a href="/learning.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
-            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
-        </a>
-        <a href="/admin.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
-            <i class="fas fa-users-cog"></i><span>권한 관리</span>
-        </a>
-        <!-- [숨김] 데이터 업로드 기능 일시 비활성화
-        <a href="/upload.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
-            <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
-        </a>
-        -->
-        <a href="/batch.html" class="sidebar-menu-item admin-menu-item" style="text-decoration:none;display:none;">
-            <i class="fas fa-sync-alt"></i><span>배치 관리</span>
-        </a>
+    <!-- Menu Items (RBAC 동적 렌더링) -->
+    <nav id="sidebarMenu" class="py-2">
+        <!-- /api/me에서 menus 로드 후 동적 렌더링 -->
     </nav>
 
     <div class="sidebar-divider"></div>
@@ -601,9 +579,16 @@
     let chartInstances = {};
     let currentFile = null;
 
-    // 관리자 메뉴 표시
+    // RBAC: 동적 사이드바 메뉴 렌더링
     fetch('/api/me').then(r=>r.json()).then(me=>{
-        if(me.loggedIn && me.role==='admin') document.querySelectorAll('.admin-menu-item').forEach(el=>{ el.style.display=''; el.style.display='flex'; });
+        if(!me.loggedIn) return;
+        const nav = document.getElementById('sidebarMenu');
+        if(nav && me.menus && me.menus.length > 0) {
+            nav.innerHTML = me.menus.map(m => {
+                const isActive = m.menu_url === '/report';
+                return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive?' active':''}" style="text-decoration:none;"><i class="${m.icon_class||'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
+            }).join('');
+        }
     }).catch(()=>{});
     window.addEventListener('DOMContentLoaded', loadMonths);
 

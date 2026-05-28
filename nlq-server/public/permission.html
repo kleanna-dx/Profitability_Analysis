@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>권한 관리 - 수익성분석 AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
+        *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
+        body{margin:0;background:#f1f5f9;display:flex;height:100vh;overflow:hidden;}
+
+        /* Sidebar */
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;}
+        .sidebar-overlay.active{display:block;}
+        .sidebar{position:fixed;top:0;left:-300px;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
+        .sidebar.open{left:0;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,.1);margin:0 16px;}
+        .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:10px 24px;color:#c7d2fe;cursor:pointer;transition:all .15s;text-decoration:none;}
+        .sidebar-menu-item:hover,.sidebar-menu-item.active{background:rgba(255,255,255,.1);color:#fff;}
+
+        /* Main layout */
+        .main-wrapper{display:flex;flex-direction:column;flex:1;overflow:hidden;}
+        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+        .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        .content-area{flex:1;overflow-y:auto;padding:24px;}
+
+        /* Card */
+        .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);border:1px solid #e5e7eb;overflow:hidden;margin-bottom:20px;}
+        .card-header{padding:16px 20px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px;color:#1e293b;}
+        .card-body{padding:20px;}
+
+        /* Stat cards */
+        .stat-card{background:#fff;border-radius:12px;padding:18px 20px;border:1px solid #e5e7eb;display:flex;align-items:center;gap:14px;transition:all .2s;}
+        .stat-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.06);transform:translateY(-1px);}
+        .stat-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
+        .stat-num{font-size:26px;font-weight:800;color:#1e293b;line-height:1;}
+        .stat-label{font-size:12px;color:#94a3b8;margin-top:3px;font-weight:500;}
+
+        /* Tabs */
+        .tab-bar{display:flex;gap:0;border-bottom:2px solid #e5e7eb;margin-bottom:20px;}
+        .tab-item{padding:12px 24px;font-size:14px;font-weight:600;color:#94a3b8;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s;}
+        .tab-item:hover{color:#4f46e5;}
+        .tab-item.active{color:#4f46e5;border-bottom-color:#4f46e5;}
+        .tab-panel{display:none;}
+        .tab-panel.active{display:block;}
+
+        /* Role list */
+        .role-card{border:2px solid #e5e7eb;border-radius:12px;padding:16px 20px;cursor:pointer;transition:all .2s;position:relative;margin-bottom:12px;}
+        .role-card:hover{border-color:#818cf8;background:#fafbff;}
+        .role-card.selected{border-color:#4f46e5;background:#eef2ff;box-shadow:0 0 0 3px rgba(79,70,229,.1);}
+        .role-card .role-code{font-size:11px;color:#94a3b8;font-family:'Fira Code',monospace;background:#f1f5f9;padding:2px 8px;border-radius:4px;display:inline-block;margin-bottom:4px;}
+        .role-card .role-name{font-size:16px;font-weight:700;color:#1e293b;}
+        .role-card .role-desc{font-size:12px;color:#64748b;margin-top:2px;}
+        .role-card .role-count{position:absolute;top:12px;right:16px;background:#eef2ff;color:#4f46e5;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px;}
+
+        /* Menu checkbox list */
+        .menu-check-item{display:flex;align-items:center;gap:14px;padding:14px 18px;border:1px solid #f1f5f9;border-radius:10px;transition:all .15s;margin-bottom:8px;}
+        .menu-check-item:hover{background:#fafbff;border-color:#e0e7ff;}
+        .menu-check-item.checked{background:#eef2ff;border-color:#c7d2fe;}
+        .menu-check-item input[type="checkbox"]{width:18px;height:18px;accent-color:#4f46e5;cursor:pointer;flex-shrink:0;}
+        .menu-check-item .menu-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+        .menu-check-item .menu-name{font-weight:600;font-size:14px;color:#1e293b;}
+        .menu-check-item .menu-url{font-size:11px;color:#94a3b8;font-family:'Fira Code',monospace;}
+
+        /* User table */
+        table{width:100%;border-collapse:collapse;font-size:13px;}
+        thead th{background:#f8fafc;padding:11px 14px;text-align:left;font-weight:600;color:#64748b;border-bottom:2px solid #e5e7eb;white-space:nowrap;font-size:12px;text-transform:uppercase;letter-spacing:.3px;}
+        tbody td{padding:10px 14px;border-bottom:1px solid #f1f5f9;color:#334155;vertical-align:middle;}
+        tbody tr{transition:background .1s;}
+        tbody tr:hover{background:#fafbff;}
+        .uid-code{font-family:'Fira Code','Consolas',monospace;font-size:12px;background:#f1f5f9;padding:3px 8px;border-radius:6px;color:#475569;font-weight:500;white-space:nowrap;}
+        .nowrap{white-space:nowrap;}
+        select.inline-select{padding:4px 8px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;font-family:inherit;cursor:pointer;background:#fff;transition:all .15s;}
+        select.inline-select:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
+        .search-box{padding:8px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;width:220px;font-family:inherit;transition:all .15s;}
+        .search-box:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
+        .filter-select{padding:7px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;font-family:inherit;cursor:pointer;background:#fff;transition:all .15s;}
+        .filter-select:focus{outline:none;border-color:#818cf8;}
+
+        /* Domain badge */
+        .domain-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;}
+        .domain-ps{background:#dbeafe;color:#1d4ed8;}
+        .domain-hl{background:#fef3c7;color:#b45309;}
+        .domain-mgmt{background:#ede9fe;color:#6d28d9;}
+        .domain-all{background:linear-gradient(135deg,#dbeafe,#fef3c7,#ede9fe);color:#1e293b;border:1px solid #d1d5db;}
+        .domain-none{background:#f1f5f9;color:#94a3b8;}
+
+        /* Toggle switch */
+        .toggle-wrap{display:flex;align-items:center;gap:8px;}
+        .toggle{position:relative;width:40px;height:22px;cursor:pointer;flex-shrink:0;}
+        .toggle input{opacity:0;width:0;height:0;position:absolute;}
+        .toggle .slider{position:absolute;inset:0;background:#d1d5db;border-radius:12px;transition:all .25s;}
+        .toggle .slider::before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:all .25s;box-shadow:0 1px 3px rgba(0,0,0,.15);}
+        .toggle input:checked+.slider{background:#22c55e;}
+        .toggle input:checked+.slider::before{transform:translateX(18px);}
+        .toggle-label{font-size:11px;font-weight:600;min-width:36px;}
+
+        /* Buttons */
+        .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;border:none;font-family:inherit;}
+        .btn-primary{background:#4f46e5;color:#fff;}
+        .btn-primary:hover{background:#4338ca;}
+        .btn-primary:disabled{background:#a5b4fc;cursor:not-allowed;}
+        .btn-outline{background:#fff;color:#4f46e5;border:1px solid #c7d2fe;}
+        .btn-outline:hover{background:#eef2ff;}
+        .btn-danger{background:#fff;color:#dc2626;border:1px solid #fecaca;}
+        .btn-danger:hover{background:#fef2f2;}
+        .btn-sm{padding:5px 12px;font-size:12px;border-radius:6px;}
+
+
+
+        /* Toast */
+        .toast{position:fixed;top:20px;right:20px;padding:14px 24px;border-radius:10px;font-size:13px;font-weight:600;z-index:9999;transform:translateX(120%);transition:transform .3s ease;display:flex;align-items:center;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);}
+        .toast.show{transform:translateX(0);}
+        .toast-success{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;}
+        .toast-error{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;}
+
+        /* Modal */
+        .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;display:none;align-items:center;justify-content:center;}
+        .modal-overlay.active{display:flex;}
+        .modal{background:#fff;border-radius:16px;padding:28px;width:420px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.15);}
+        .modal h3{font-size:18px;font-weight:700;color:#1e293b;margin:0 0 20px 0;}
+        .modal label{display:block;font-size:12px;font-weight:600;color:#64748b;margin-bottom:4px;margin-top:14px;}
+        .modal input,.modal textarea{width:100%;padding:10px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;transition:all .15s;}
+        .modal input:focus,.modal textarea:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
+        .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px;}
+    </style>
+</head>
+<body>
+
+<!-- SIDEBAR (will be dynamically rendered) -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav id="sidebarMenu" class="py-2">
+        <!-- RBAC: 동적으로 렌더링됨 -->
+    </nav>
+    <div class="sidebar-divider"></div>
+</aside>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<!-- Add Role Modal -->
+<div id="addRoleModal" class="modal-overlay">
+    <div class="modal">
+        <h3><i class="fas fa-plus-circle text-indigo-500 mr-2"></i>새 역할 추가</h3>
+        <label>역할 코드 <span style="color:#dc2626;">*</span></label>
+        <input type="text" id="newRoleCode" placeholder="예: manager, viewer (영문 소문자)" maxlength="30">
+        <label>역할 이름 <span style="color:#dc2626;">*</span></label>
+        <input type="text" id="newRoleName" placeholder="예: 부서 관리자" maxlength="100">
+        <label>설명</label>
+        <textarea id="newRoleDesc" rows="2" placeholder="역할에 대한 간단한 설명"></textarea>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeAddRoleModal()">취소</button>
+            <button class="btn btn-primary" onclick="submitAddRole()"><i class="fas fa-check"></i>추가</button>
+        </div>
+    </div>
+</div>
+
+<!-- MAIN -->
+<div class="main-wrapper">
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
+        <h1 class="text-sm font-bold text-gray-800">
+            <i class="fas fa-shield-alt text-indigo-500 mr-1"></i>권한 관리
+        </h1>
+        <span class="text-xs text-gray-400 ml-2">역할·메뉴·사용자 통합 권한 관리</span>
+        <div class="ml-auto flex items-center gap-2">
+            <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
+        </div>
+    </div>
+
+    <div class="content-area">
+        <!-- Stats -->
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-5">
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#eef2ff;color:#4f46e5;"><i class="fas fa-user-tag"></i></div>
+                <div>
+                    <div class="stat-num" id="statRoles">-</div>
+                    <div class="stat-label">전체 역할</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef3c7;color:#d97706;"><i class="fas fa-bars"></i></div>
+                <div>
+                    <div class="stat-num" id="statMenus">-</div>
+                    <div class="stat-label">전체 메뉴</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#dcfce7;color:#16a34a;"><i class="fas fa-link"></i></div>
+                <div>
+                    <div class="stat-num" id="statMappings">-</div>
+                    <div class="stat-label">역할-메뉴 매핑</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#ecfdf5;color:#16a34a;"><i class="fas fa-user-check"></i></div>
+                <div>
+                    <div class="stat-num" id="statActive">-</div>
+                    <div class="stat-label">활성 사용자</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef2f2;color:#dc2626;"><i class="fas fa-users"></i></div>
+                <div>
+                    <div class="stat-num" id="statUsers">-</div>
+                    <div class="stat-label">전체 사용자</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tab-bar">
+            <div class="tab-item active" data-tab="roleMenu" onclick="switchTab('roleMenu')">
+                <i class="fas fa-shield-alt mr-1"></i>역할-메뉴 매핑
+            </div>
+            <div class="tab-item" data-tab="userRole" onclick="switchTab('userRole')">
+                <i class="fas fa-user-cog mr-1"></i>사용자-역할 배정
+            </div>
+        </div>
+
+        <!-- Tab 1: Role-Menu Mapping -->
+        <div id="tab-roleMenu" class="tab-panel active">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                <!-- Left: Role List -->
+                <div>
+                    <div class="card">
+                        <div class="card-header">
+                            <i class="fas fa-user-tag text-indigo-500"></i>
+                            <span>역할 목록</span>
+                            <div class="ml-auto">
+                                <button class="btn btn-outline btn-sm" onclick="openAddRoleModal()"><i class="fas fa-plus"></i>추가</button>
+                            </div>
+                        </div>
+                        <div class="card-body" id="roleList" style="max-height:500px;overflow-y:auto;">
+                            <div style="text-align:center;padding:30px;color:#94a3b8;"><i class="fas fa-spinner fa-spin mr-2"></i>로딩 중...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Menu checkboxes for selected role -->
+                <div class="lg:col-span-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <i class="fas fa-list-check text-indigo-500"></i>
+                            <span id="menuPanelTitle">메뉴 권한 설정</span>
+                            <span id="menuPanelSub" style="font-size:12px;color:#94a3b8;font-weight:400;"></span>
+                            <div class="ml-auto flex items-center gap-2" id="menuActions" style="display:none;">
+                                <button class="btn btn-outline btn-sm" onclick="toggleAllMenus(true)"><i class="fas fa-check-double"></i>전체 선택</button>
+                                <button class="btn btn-outline btn-sm" onclick="toggleAllMenus(false)"><i class="fas fa-times"></i>전체 해제</button>
+                                <button class="btn btn-primary btn-sm" id="saveMenuBtn" onclick="saveMenuMapping()"><i class="fas fa-save"></i>저장</button>
+                            </div>
+                        </div>
+                        <div class="card-body" id="menuCheckList">
+                            <div style="text-align:center;padding:40px;color:#94a3b8;">
+                                <i class="fas fa-arrow-left" style="font-size:24px;margin-bottom:12px;display:block;"></i>
+                                왼쪽에서 역할을 선택하세요
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab 2: User-Role Assignment + Domain + Active -->
+        <div id="tab-userRole" class="tab-panel">
+            <div class="card">
+                <div class="card-header" style="flex-wrap:wrap;gap:8px;">
+                    <i class="fas fa-user-cog text-indigo-500"></i>
+                    <span>사용자 관리</span>
+                    <span id="userRoleCount" style="font-size:12px;color:#94a3b8;font-weight:400;"></span>
+                    <div class="ml-auto flex items-center gap-3" style="flex-wrap:wrap;">
+                        <input type="text" id="userSearch" class="search-box" placeholder="이름 또는 ID로 검색..." oninput="filterUserTable()">
+                        <select id="filterRole" class="filter-select" onchange="filterUserTable()">
+                            <option value="">전체 역할</option>
+                        </select>
+                        <select id="filterDomain" class="filter-select" onchange="filterUserTable()">
+                            <option value="">전체 영역</option>
+                        </select>
+                        <select id="filterActive" class="filter-select" onchange="filterUserTable()">
+                            <option value="">전체 상태</option>
+                            <option value="1">활성</option>
+                            <option value="0">비활성</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="min-width:120px;">ID</th>
+                                <th style="min-width:80px;">이름</th>
+                                <th style="min-width:100px;">소속</th>
+                                <th style="width:150px;">역할</th>
+                                <th style="width:130px;">학습관리 도메인</th>
+                                <th style="width:100px;">상태</th>
+                            </tr>
+                        </thead>
+                        <tbody id="userRoleBody">
+                            <tr><td colspan="6" style="text-align:center;padding:40px;color:#94a3b8;"><i class="fas fa-spinner fa-spin mr-2"></i>로딩 중...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// Sidebar
+// ============================================================
+function openSidebar() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebarOverlay').classList.add('active');
+}
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('active');
+}
+
+// ============================================================
+// RBAC: Dynamic sidebar rendering
+// ============================================================
+async function renderDynamicSidebar() {
+    try {
+        const res = await fetch('/api/me');
+        const me = await res.json();
+        if (!me.loggedIn) return;
+        const nav = document.getElementById('sidebarMenu');
+        if (!me.menus || me.menus.length === 0) {
+            nav.innerHTML = '<div style="padding:12px 24px;color:#94a3b8;font-size:12px;">메뉴 없음</div>';
+            return;
+        }
+        const currentPage = '/permission.html';
+        nav.innerHTML = me.menus.map(m => {
+            const isActive = m.menu_url === currentPage ? ' active' : '';
+            if (m.menu_url === '/' || m.menu_url === '/index.html') {
+                return `<a href="/" class="sidebar-menu-item${isActive}" style="text-decoration:none;"><i class="${m.icon_class}"></i><span>${m.menu_name}</span></a>`;
+            }
+            return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive}" style="text-decoration:none;"><i class="${m.icon_class}"></i><span>${m.menu_name}</span></a>`;
+        }).join('');
+    } catch(e) { console.error('[Sidebar] 렌더링 실패:', e); }
+}
+
+// ============================================================
+// Toast notification
+// ============================================================
+function showToast(msg, type = 'success') {
+    const t = document.getElementById('toast');
+    t.className = `toast toast-${type}`;
+    t.innerHTML = `<i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i>${msg}`;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ============================================================
+// Tabs
+// ============================================================
+function switchTab(tabId) {
+    document.querySelectorAll('.tab-item').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tabId));
+    if (tabId === 'userRole' && allUsers.length === 0) loadUsers();
+}
+
+// ============================================================
+// Data
+// ============================================================
+let allRoles = [];
+let allMenus = [];
+let allUsers = [];
+let domainList = [];
+let selectedRoleId = null;
+
+async function init() {
+    // 권한 체크
+    try {
+        const r = await fetch('/api/me');
+        const me = await r.json();
+        if (!me.loggedIn) { window.location.href = '/login'; return; }
+        if (me.role !== 'admin') { window.location.href = '/?denied=1'; return; }
+    } catch(e) { window.location.href = '/login'; return; }
+
+    await renderDynamicSidebar();
+    await Promise.all([loadRoles(), loadMenus(), loadDomains()]);
+    updateStats();
+}
+
+async function loadRoles() {
+    try {
+        const res = await fetch('/api/admin/roles');
+        allRoles = await res.json();
+        renderRoleList();
+    } catch(e) {
+        document.getElementById('roleList').innerHTML = `<div style="color:#dc2626;padding:20px;text-align:center;">로딩 실패</div>`;
+    }
+}
+
+async function loadMenus() {
+    try {
+        const res = await fetch('/api/admin/menus');
+        allMenus = await res.json();
+    } catch(e) { allMenus = []; }
+}
+
+async function loadDomains() {
+    try {
+        const res = await fetch('/api/domains');
+        domainList = await res.json();
+        // 도메인 필터 드롭다운 채우기
+        const sel = document.getElementById('filterDomain');
+        sel.innerHTML = '<option value="">전체 영역</option>' + domainList.map(d =>
+            `<option value="${d.domain_code}">${d.domain_name} (${d.domain_code})</option>`
+        ).join('');
+    } catch(e) { domainList = []; }
+}
+
+async function loadUsers() {
+    try {
+        const res = await fetch('/api/admin/users');
+        allUsers = await res.json();
+        // 역할 필터 드롭다운 채우기
+        const filterRole = document.getElementById('filterRole');
+        filterRole.innerHTML = '<option value="">전체 역할</option>' + allRoles.map(r =>
+            `<option value="${r.role_code}">${r.role_name} (${r.role_code})</option>`
+        ).join('');
+        renderUserTable(allUsers);
+    } catch(e) {
+        document.getElementById('userRoleBody').innerHTML = `<tr><td colspan="6" style="text-align:center;padding:40px;color:#dc2626;">로딩 실패</td></tr>`;
+    }
+}
+
+function updateStats() {
+    document.getElementById('statRoles').textContent = allRoles.length;
+    document.getElementById('statMenus').textContent = allMenus.length;
+    // mappings count will be updated when roles are loaded
+    let totalMappings = 0;
+    allRoles.forEach(r => { if (r._menuCount !== undefined) totalMappings += r._menuCount; });
+    document.getElementById('statMappings').textContent = totalMappings || '-';
+    document.getElementById('statUsers').textContent = allUsers.length || '-';
+    document.getElementById('statActive').textContent = allUsers.filter(u => u.is_active).length || '-';
+}
+
+// ============================================================
+// Role List
+// ============================================================
+function renderRoleList() {
+    const container = document.getElementById('roleList');
+    if (allRoles.length === 0) {
+        container.innerHTML = '<div style="text-align:center;padding:30px;color:#94a3b8;">역할이 없습니다.</div>';
+        return;
+    }
+    container.innerHTML = allRoles.map(r => {
+        const sel = selectedRoleId === r.id ? ' selected' : '';
+        const countBadge = r._menuCount !== undefined ? r._menuCount : '';
+        return `
+        <div class="role-card${sel}" onclick="selectRole(${r.id})" id="roleCard-${r.id}">
+            <span class="role-code">${r.role_code}</span>
+            ${countBadge !== '' ? `<span class="role-count"><i class="fas fa-bars" style="font-size:9px;margin-right:3px;"></i>${countBadge}</span>` : ''}
+            <div class="role-name">${r.role_name}</div>
+            <div class="role-desc">${r.description || ''}</div>
+            ${!['admin','user'].includes(r.role_code) ? `<button class="btn btn-danger btn-sm" style="position:absolute;bottom:12px;right:16px;padding:3px 10px;font-size:11px;" onclick="event.stopPropagation();deleteRole(${r.id},'${r.role_name}')"><i class="fas fa-trash-alt"></i></button>` : ''}
+        </div>`;
+    }).join('');
+}
+
+async function selectRole(roleId) {
+    selectedRoleId = roleId;
+    // 선택 UI 업데이트
+    document.querySelectorAll('.role-card').forEach(c => c.classList.remove('selected'));
+    const card = document.getElementById('roleCard-' + roleId);
+    if (card) card.classList.add('selected');
+
+    const role = allRoles.find(r => r.id === roleId);
+    document.getElementById('menuPanelTitle').textContent = `메뉴 권한 설정`;
+    document.getElementById('menuPanelSub').textContent = role ? `— ${role.role_name} (${role.role_code})` : '';
+    document.getElementById('menuActions').style.display = 'flex';
+
+    // 메뉴 매핑 조회
+    try {
+        const res = await fetch(`/api/admin/roles/${roleId}/menus`);
+        const menuData = await res.json();
+        renderMenuCheckList(menuData);
+    } catch(e) {
+        document.getElementById('menuCheckList').innerHTML = '<div style="color:#dc2626;padding:20px;text-align:center;">로딩 실패</div>';
+    }
+}
+
+const menuColors = [
+    {bg:'#eef2ff',color:'#4f46e5'}, {bg:'#fef3c7',color:'#d97706'}, {bg:'#dcfce7',color:'#16a34a'},
+    {bg:'#fef2f2',color:'#dc2626'}, {bg:'#e0f2fe',color:'#0284c7'}, {bg:'#fae8ff',color:'#a21caf'},
+    {bg:'#ecfdf5',color:'#047857'}, {bg:'#fff7ed',color:'#c2410c'},
+];
+
+function renderMenuCheckList(menuData) {
+    const container = document.getElementById('menuCheckList');
+    container.innerHTML = menuData.map((m, i) => {
+        const c = menuColors[i % menuColors.length];
+        const checked = m.is_mapped ? 'checked' : '';
+        const checkedClass = m.is_mapped ? ' checked' : '';
+        return `
+        <div class="menu-check-item${checkedClass}" id="menuItem-${m.menu_id}" onclick="toggleMenuCheck(${m.menu_id})">
+            <input type="checkbox" ${checked} data-menu-id="${m.menu_id}" onclick="event.stopPropagation();toggleMenuCheck(${m.menu_id})">
+            <div class="menu-icon" style="background:${c.bg};color:${c.color};"><i class="${m.icon_class || 'fas fa-file'}"></i></div>
+            <div>
+                <div class="menu-name">${m.menu_name}</div>
+                <div class="menu-url">${m.menu_url}</div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function toggleMenuCheck(menuId) {
+    const cb = document.querySelector(`input[data-menu-id="${menuId}"]`);
+    if (!cb) return;
+    cb.checked = !cb.checked;
+    const item = document.getElementById('menuItem-' + menuId);
+    if (item) item.classList.toggle('checked', cb.checked);
+}
+
+function toggleAllMenus(state) {
+    document.querySelectorAll('#menuCheckList input[type="checkbox"]').forEach(cb => {
+        cb.checked = state;
+        const item = cb.closest('.menu-check-item');
+        if (item) item.classList.toggle('checked', state);
+    });
+}
+
+async function saveMenuMapping() {
+    if (!selectedRoleId) return;
+    const menuIds = [];
+    document.querySelectorAll('#menuCheckList input[type="checkbox"]:checked').forEach(cb => {
+        menuIds.push(parseInt(cb.dataset.menuId));
+    });
+    const btn = document.getElementById('saveMenuBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>저장 중...';
+    try {
+        const res = await fetch(`/api/admin/roles/${selectedRoleId}/menus`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ menu_ids: menuIds }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '저장 실패');
+        showToast(`메뉴 권한이 저장되었습니다. (${menuIds.length}개 메뉴)`);
+        // 역할의 메뉴 수 업데이트
+        const role = allRoles.find(r => r.id === selectedRoleId);
+        if (role) role._menuCount = menuIds.length;
+        renderRoleList();
+        // 재선택
+        const selCard = document.getElementById('roleCard-' + selectedRoleId);
+        if (selCard) selCard.classList.add('selected');
+        updateStats();
+    } catch(e) {
+        showToast('저장 실패: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-save"></i>저장';
+    }
+}
+
+// ============================================================
+// Role CRUD
+// ============================================================
+function openAddRoleModal() {
+    document.getElementById('addRoleModal').classList.add('active');
+    document.getElementById('newRoleCode').value = '';
+    document.getElementById('newRoleName').value = '';
+    document.getElementById('newRoleDesc').value = '';
+    document.getElementById('newRoleCode').focus();
+}
+function closeAddRoleModal() {
+    document.getElementById('addRoleModal').classList.remove('active');
+}
+
+async function submitAddRole() {
+    const code = document.getElementById('newRoleCode').value.trim();
+    const name = document.getElementById('newRoleName').value.trim();
+    const desc = document.getElementById('newRoleDesc').value.trim();
+    if (!code || !name) { showToast('역할 코드와 이름은 필수입니다.', 'error'); return; }
+    if (!/^[a-z][a-z0-9_]*$/.test(code)) { showToast('역할 코드는 영문 소문자, 숫자, _만 사용 가능합니다.', 'error'); return; }
+    try {
+        const res = await fetch('/api/admin/roles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role_code: code, role_name: name, description: desc }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '생성 실패');
+        showToast(`역할 "${name}" 이(가) 추가되었습니다.`);
+        closeAddRoleModal();
+        await loadRoles();
+        updateStats();
+    } catch(e) {
+        showToast('추가 실패: ' + e.message, 'error');
+    }
+}
+
+async function deleteRole(roleId, roleName) {
+    if (!confirm(`"${roleName}" 역할을 삭제하시겠습니까?\n이 역할에 배정된 사용자가 있으면 삭제할 수 없습니다.`)) return;
+    try {
+        const res = await fetch(`/api/admin/roles/${roleId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '삭제 실패');
+        showToast(`역할이 삭제되었습니다.`);
+        if (selectedRoleId === roleId) {
+            selectedRoleId = null;
+            document.getElementById('menuCheckList').innerHTML = '<div style="text-align:center;padding:40px;color:#94a3b8;"><i class="fas fa-arrow-left" style="font-size:24px;margin-bottom:12px;display:block;"></i>왼쪽에서 역할을 선택하세요</div>';
+            document.getElementById('menuActions').style.display = 'none';
+            document.getElementById('menuPanelSub').textContent = '';
+        }
+        await loadRoles();
+        updateStats();
+    } catch(e) {
+        showToast('삭제 실패: ' + e.message, 'error');
+    }
+}
+
+// ============================================================
+// User-Role Assignment
+// ============================================================
+function renderUserTable(users) {
+    const tbody = document.getElementById('userRoleBody');
+    document.getElementById('userRoleCount').textContent = `(${users.length}명)`;
+    if (users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:#94a3b8;">사용자가 없습니다.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = users.map(u => {
+        const roleOptions = allRoles.map(r => {
+            const selected = u.role_id === r.id ? 'selected' : '';
+            return `<option value="${r.id}" ${selected}>${r.role_name} (${r.role_code})</option>`;
+        }).join('');
+
+        // 도메인 드롭다운 (미지정 / PS / HL / MGMT)
+        const domainOptions = domainList.map(d => {
+            const selected = u.domain_code === d.domain_code ? 'selected' : '';
+            return `<option value="${d.domain_code}" ${selected}>${d.domain_code}</option>`;
+        }).join('');
+
+        return `
+        <tr style="${!u.is_active ? 'opacity:0.5;' : ''}">
+            <td><span class="uid-code">${u.user_id}</span></td>
+            <td class="nowrap" style="font-weight:600;color:#1e293b;">${u.name || '-'}</td>
+            <td class="nowrap" style="font-size:12px;">${u.group_name || '-'}</td>
+            <td>
+                <select class="inline-select" onchange="changeUserRole('${u.user_id}', this.value)" style="font-weight:600;">
+                    ${roleOptions}
+                </select>
+            </td>
+            <td>
+                <select class="inline-select" onchange="changeUserField('${u.user_id}', 'domain_code', this.value)">
+                    <option value="" ${!u.domain_code ? 'selected' : ''}>${u.role_code === 'admin' ? '전체' : '미지정'}</option>
+                    ${domainOptions}
+                </select>
+            </td>
+            <td>
+                <div class="toggle-wrap">
+                    <label class="toggle" title="${u.is_active ? '클릭하면 비활성화' : '클릭하면 활성화'}">
+                        <input type="checkbox" ${u.is_active ? 'checked' : ''} onchange="changeUserField('${u.user_id}', 'is_active', this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                    <span class="toggle-label" style="color:${u.is_active ? '#16a34a' : '#991b1b'};">${u.is_active ? '활성' : '비활성'}</span>
+                </div>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+async function changeUserRole(userId, roleId) {
+    try {
+        const res = await fetch(`/api/admin/users/${userId}/role`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role_id: parseInt(roleId) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '변경 실패');
+        showToast(`${userId}의 역할이 변경되었습니다.`);
+        // 로컬 데이터 갱신
+        const u = allUsers.find(x => x.user_id === userId);
+        if (u) {
+            u.role_id = parseInt(roleId);
+            const role = allRoles.find(r => r.id === parseInt(roleId));
+            if (role) { u.role_code = role.role_code; u.role_name = role.role_name; }
+        }
+        filterUserTable();
+    } catch(e) {
+        showToast('변경 실패: ' + e.message, 'error');
+        await loadUsers();
+    }
+}
+
+async function changeUserField(userId, field, value) {
+    try {
+        const body = {};
+        body[field] = value;
+        const res = await fetch(`/api/admin/users/${userId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '수정 실패');
+        const fieldNames = { domain_code: '학습관리 도메인', is_active: '활성 상태' };
+        showToast(`${userId}의 ${fieldNames[field] || field}이(가) 변경되었습니다.`);
+        // 로컬 데이터 갱신
+        const u = allUsers.find(x => x.user_id === userId);
+        if (u) u[field] = value;
+        filterUserTable();
+        updateStats();
+    } catch(e) {
+        showToast('수정 실패: ' + e.message, 'error');
+        await loadUsers();
+    }
+}
+
+function filterUserTable() {
+    const search = document.getElementById('userSearch').value.toLowerCase().trim();
+    const roleFilter = document.getElementById('filterRole').value;
+    const domainFilter = document.getElementById('filterDomain').value;
+    const activeFilter = document.getElementById('filterActive').value;
+    let filtered = allUsers;
+    if (search) filtered = filtered.filter(u => (u.user_id||'').toLowerCase().includes(search) || (u.name||'').toLowerCase().includes(search));
+    if (roleFilter) filtered = filtered.filter(u => u.role_code === roleFilter);
+    if (domainFilter) filtered = filtered.filter(u => u.domain_code === domainFilter);
+    if (activeFilter !== '') filtered = filtered.filter(u => String(u.is_active ? 1 : 0) === activeFilter);
+    renderUserTable(filtered);
+}
+
+// ============================================================
+// Init: load role menu counts
+// ============================================================
+async function loadRoleMenuCounts() {
+    for (const role of allRoles) {
+        try {
+            const res = await fetch(`/api/admin/roles/${role.id}/menus`);
+            const data = await res.json();
+            role._menuCount = data.filter(m => m.is_mapped).length;
+        } catch(e) { role._menuCount = 0; }
+    }
+    renderRoleList();
+    updateStats();
+}
+
+// ============================================================
+// Logout
+// ============================================================
+async function doLogout() {
+    if (!confirm('로그아웃 하시겠습니까?')) return;
+    try { await fetch('/api/logout', { method: 'POST' }); } catch(e) {}
+    window.location.href = '/login';
+}
+
+// ============================================================
+// Boot
+// ============================================================
+window.addEventListener('DOMContentLoaded', async () => {
+    await init();
+    await loadRoleMenuCounts();
+});
+</script>
+</body>
+</html>

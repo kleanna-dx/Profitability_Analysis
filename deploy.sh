@@ -94,7 +94,9 @@ User=root
 WorkingDirectory=/data/analytics/app
 ExecStart=/usr/bin/java \\
     -Djava.library.path=/data/analytics/source/module-profit/libs \\
-    -Xms256m -Xmx512m \\
+    -Xms512m -Xmx2g \\
+    -XX:+UseG1GC \\
+    -XX:MaxGCPauseMillis=200 \\
     -jar /data/analytics/app/module-profit.jar \\
     --spring.config.location=file:/data/analytics/source/module-profit/src/main/resources/application.yml
 ExecStop=/bin/kill -TERM \$MAINPID

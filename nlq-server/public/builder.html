@@ -498,30 +498,8 @@
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>
     <div class="sidebar-divider"></div>
-    <nav class="py-2">
-        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-comments"></i><span>자연어 질의</span>
-        </a>
-        <a href="/builder.html" class="sidebar-menu-item active" style="text-decoration:none;">
-            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
-        </a>
-        <a href="/report" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
-        </a>
-        <a href="/learning.html" class="sidebar-menu-item admin-only" style="text-decoration:none;">
-            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
-        </a>
-        <a href="/admin.html" class="sidebar-menu-item admin-only" style="text-decoration:none;">
-            <i class="fas fa-users-cog"></i><span>권한 관리</span>
-        </a>
-        <!-- [숨김] 데이터 업로드 기능 일시 비활성화
-        <a href="/upload.html" class="sidebar-menu-item admin-only" style="text-decoration:none;">
-            <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
-        </a>
-        -->
-        <a href="/batch.html" class="sidebar-menu-item admin-only" style="text-decoration:none;">
-            <i class="fas fa-sync-alt"></i><span>배치 관리</span>
-        </a>
+    <nav id="sidebarMenu" class="py-2">
+        <!-- RBAC 동적 렌더링 -->
     </nav>
     <div class="sidebar-divider"></div>
     <div class="px-5 py-3">
@@ -795,14 +773,23 @@ async function initDomainAndRole(){
     try{
         const r=await fetch('/api/me');const me=await r.json();if(!me.loggedIn)return;
         currentUserRole=me.role||'user';currentDomain=me.active_domain||me.domain_code||'PS';
+        // RBAC: 동적 사이드바 메뉴 렌더링
+        const nav=document.getElementById('sidebarMenu');
+        if(nav && me.menus && me.menus.length>0){
+            const cp=window.location.pathname;
+            nav.innerHTML=me.menus.map(m=>{
+                const isActive=m.menu_url==='/builder.html';
+                return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive?' active':''}" style="text-decoration:none;"><i class="${m.icon_class||'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
+            }).join('');
+        }
         if(currentUserRole==='admin'){
-            document.querySelectorAll('.admin-only').forEach(el=>el.classList.remove('admin-only'));
-            const sel=document.getElementById('domainSelect');sel.style.display='';
-            document.getElementById('domainIndicator').style.display='none';
-            try{const dr=await fetch('/api/domains');const doms=await dr.json();sel.innerHTML=doms.map(d=>`<option value="${d.domain_code}" ${d.domain_code===currentDomain?'selected':''}>${d.domain_name} (${d.domain_code})</option>`).join('');}catch(e){}
+            const sel=document.getElementById('domainSelect');if(sel){sel.style.display='';sel.classList.remove('admin-only');}
+            const di=document.getElementById('domainIndicator');if(di)di.style.display='none';
+            try{const dr=await fetch('/api/domains');const doms=await dr.json();if(sel)sel.innerHTML=doms.map(d=>`<option value="${d.domain_code}" ${d.domain_code===currentDomain?'selected':''}>${d.domain_name} (${d.domain_code})</option>`).join('');}catch(e){}
         }else{
-            document.getElementById('domainIndicator').style.display='flex';
-            document.getElementById('domainLabel').textContent=currentDomain;
+            const di=document.getElementById('domainIndicator');if(di)di.style.display='flex';
+            const dl=document.getElementById('domainLabel');if(dl)dl.textContent=currentDomain;
+            const ds=document.getElementById('domainSelect');if(ds)ds.style.display='none';
         }
     }catch(e){}
 }

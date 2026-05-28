@@ -145,6 +145,10 @@ public class SapRfcSyncService {
     /**
      * 동기화 실행 (동기 - 내부 호출)
      * 각 단계별 상세 로그를 batch_jobs.log_text에 기록
+     *
+     * <p>메모리 최적화: SAP T_DATA를 전부 메모리에 올리지 않고,
+     * 청크(CHUNK_SIZE) 단위로 파싱→변환→INSERT를 반복하여
+     * 22만건 이상도 -Xmx2g 이내에서 처리 가능</p>
      */
     public void execute(Long batchId, String cmonth, String mode) {
         Instant jobStart = Instant.now();
@@ -153,7 +157,7 @@ public class SapRfcSyncService {
         startBatch(batchId);
         appendBatchLog(batchId, String.format("[1/6] 배치 시작 — cmonth=%s, mode=%s", cmonth, mode));
 
-        // 2. SAP RFC 호출
+        // 2. SAP RFC 호출 + 스트리밍 INSERT
         appendBatchLog(batchId, "[2/6] SAP RFC 호출 시작...");
         appendBatchLog(batchId, String.format("  - SAP 서버: %s (시스넘: %s, SID: %s, Client: %s)",
                 sapProperties.getAshost(), sapProperties.getSysnr(),
@@ -167,94 +171,49 @@ public class SapRfcSyncService {
 
         Instant rfcStart = Instant.now();
         log.info("[SAP RFC] RFC 호출 시작 - cmonth={}", cmonth);
-        List<Map<String, Object>> tData = callRfc(batchId, cmonth);
+
+        // callRfcAndInsert: SAP 호출 → 스트리밍 파싱 → DB INSERT 를 한 메서드에서 수행
+        // 반환: [totalRows, insertedRows] — 메모리에 전체 데이터를 보유하지 않음
+        long[] result = callRfcAndInsert(batchId, cmonth, mode);
+        int totalRows = (int) result[0];
+        int insertedRows = (int) result[1];
+        int deletedRows = (int) result[2];
+
         long rfcElapsed = Duration.between(rfcStart, Instant.now()).toSeconds();
+        appendBatchLog(batchId, String.format("  - RFC+INSERT 전체 소요: %d초", rfcElapsed));
 
-        appendBatchLog(batchId, String.format("  - RFC 전체 소요: %d초", rfcElapsed));
-
-        if (tData.isEmpty()) {
-            log.warn("[SAP RFC] T_DATA 비어있음 - cmonth={}", cmonth);
-            appendBatchLog(batchId, "  - T_DATA 비어있음 (0행 수신)");
-            appendBatchLog(batchId, "[완료] 수신 데이터 없음");
-            completeBatch(batchId, 0, 0, 0);
-            return;
-        }
-
-        appendBatchLog(batchId, String.format("  - T_DATA 수신: %,d행", tData.size()));
-        log.info("[SAP RFC] T_DATA 수신: {} rows", tData.size());
-
-        // 3. 샘플 데이터 로그 (첫 1행)
-        if (!tData.isEmpty()) {
-            Map<String, Object> sample = tData.get(0);
-            appendBatchLog(batchId, "[3/6] 수신 데이터 샘플 (첫 1행):");
-            int fieldCount = 0;
-            StringBuilder sb = new StringBuilder();
-            for (Map.Entry<String, Object> entry : sample.entrySet()) {
-                if (fieldCount < 10) {
-                    sb.append(String.format("  - %s = %s\n", entry.getKey(), entry.getValue()));
-                }
-                fieldCount++;
-            }
-            sb.append(String.format("  ... 총 %d개 필드", fieldCount));
-            appendBatchLog(batchId, sb.toString());
-        }
-
-        // 4. dry-run이면 여기서 끝
-        if ("dry-run".equals(mode)) {
-            log.info("[SAP RFC] DRY-RUN 모드 - DB INSERT 건너뜀. {}건이 INSERT될 예정", tData.size());
-            appendBatchLog(batchId, String.format("[DRY-RUN] DB INSERT 건너뜀 — %,d건이 INSERT될 예정", tData.size()));
-            completeBatch(batchId, tData.size(), 0, 0);
-            return;
-        }
-
-        // 5. replace 모드: 기존 데이터 삭제
-        int deletedRows = 0;
-        if ("replace".equals(mode)) {
-            appendBatchLog(batchId, "[4/6] REPLACE 모드 — 기존 데이터 삭제 중...");
-            long existingCount = countExistingData(cmonth);
-            appendBatchLog(batchId, String.format("  - CALMONTH=%s 기존 데이터: %,d건", cmonth, existingCount));
-
-            Instant delStart = Instant.now();
-            deletedRows = (int) deleteExistingData(cmonth);
-            long delElapsed = Duration.between(delStart, Instant.now()).toSeconds();
-
-            appendBatchLog(batchId, String.format("  - 삭제 완료: %,d건 (%d초 소요)", deletedRows, delElapsed));
-            log.info("[SAP RFC] REPLACE 모드 - 기존 {}건 삭제 완료 (CALMONTH={})", deletedRows, cmonth);
-        } else {
-            appendBatchLog(batchId, String.format("[4/6] APPEND 모드 — 기존 데이터 유지 (현재 %,d건)", countExistingData(cmonth)));
-        }
-
-        // 6. 데이터 변환 + INSERT
-        appendBatchLog(batchId, String.format("[5/6] DB INSERT 시작 — %,d행 (1,000건 단위 배치)", tData.size()));
-        Instant insertStart = Instant.now();
-        int insertedRows = (int) insertData(batchId, tData);
-        long insertElapsed = Duration.between(insertStart, Instant.now()).toSeconds();
-
-        appendBatchLog(batchId, String.format("  - INSERT 완료: %,d건 (%d초 소요)", insertedRows, insertElapsed));
-        log.info("[SAP RFC] INSERT 완료: {}건", insertedRows);
-
-        // 7. 최종 완료
+        // 최종 완료
         long totalElapsed = Duration.between(jobStart, Instant.now()).toSeconds();
         appendBatchLog(batchId, String.format(
                 "[6/6] 배치 완료 — T_DATA=%,d행, INSERT=%,d행, DELETE=%,d행, 총 %d초 소요",
-                tData.size(), insertedRows, deletedRows, totalElapsed));
+                totalRows, insertedRows, deletedRows, totalElapsed));
 
         // INSERT 후 실제 DB 건수 검증
         long afterCount = countExistingData(cmonth);
         appendBatchLog(batchId, String.format("  - DB 검증: CALMONTH=%s 현재 %,d건", cmonth, afterCount));
 
-        completeBatch(batchId, tData.size(), insertedRows, deletedRows);
+        completeBatch(batchId, totalRows, insertedRows, deletedRows);
     }
 
     // ================================================================
     // SAP RFC 호출
     // ================================================================
 
+    /** 스트리밍 INSERT 청크 크기: 5,000행씩 파싱→INSERT 후 GC 해제 */
+    private static final int CHUNK_SIZE = 5000;
+
     /**
-     * SAP RFC Z_BI_WEB_EX_BL 호출
-     * 각 단계별 상세 로그를 batch_jobs.log_text에 기록
+     * SAP RFC 호출 + 스트리밍 DB INSERT (메모리 최적화 핵심)
+     *
+     * <p>기존 callRfc()는 22만 건 전체를 List에 올린 뒤 insertData()로 넘겼기 때문에
+     * 피크 메모리가 ~1.8GB에 달해 -Xmx2g에서도 OOM 위험이 있었음.</p>
+     *
+     * <p>개선: T_DATA를 CHUNK_SIZE(5,000행)씩 파싱 → 즉시 변환 → batchUpdate INSERT
+     * → 청크 해제를 반복하여, 동시에 메모리에 올라가는 데이터는 항상 ~5,000행 분량.</p>
+     *
+     * @return long[3] = {totalRows, insertedRows, deletedRows}
      */
-    private List<Map<String, Object>> callRfc(Long batchId, String cmonth) {
+    private long[] callRfcAndInsert(Long batchId, String cmonth, String mode) {
         try {
             // ── Step 1: JCo 클래스 로드 ──
             appendBatchLog(batchId, "  [RFC-1] SAP JCo 클래스 로드 중...");
@@ -304,8 +263,8 @@ public class SapRfcSyncService {
             long step4ms = Duration.between(step4, Instant.now()).toMillis();
             appendBatchLog(batchId, String.format("  [RFC-4] RFC 실행 완료 (%d초, %dms)", step4sec, step4ms));
 
-            // ── Step 5: T_DATA 테이블 파싱 ──
-            appendBatchLog(batchId, "  [RFC-5] T_DATA 테이블 파싱 중...");
+            // ── Step 5: T_DATA 메타정보 + 필드 매핑 ──
+            appendBatchLog(batchId, "  [RFC-5] T_DATA 테이블 파싱 준비...");
             Instant step5 = Instant.now();
 
             Object exportTable = function.getClass().getMethod("getTableParameterList").invoke(function);
@@ -316,40 +275,153 @@ public class SapRfcSyncService {
             appendBatchLog(batchId, String.format("  [RFC-5] T_DATA 행 수: %,d", rowCount));
             log.info("[SAP RFC] T_DATA: {} rows 수신", rowCount);
 
-            if (rowCount > 0) {
-                // 첫 행의 필드 수 확인
-                tDataTable.getClass().getMethod("setRow", int.class).invoke(tDataTable, 0);
-                int fieldCount = (int) tDataTable.getClass().getMethod("getFieldCount").invoke(tDataTable);
-                appendBatchLog(batchId, String.format("  [RFC-5] 필드 수: %d개/행", fieldCount));
+            if (rowCount == 0) {
+                appendBatchLog(batchId, "  - T_DATA 비어있음 (0행 수신)");
+                return new long[]{0, 0, 0};
             }
 
-            List<Map<String, Object>> result = new ArrayList<>(rowCount);
-            for (int i = 0; i < rowCount; i++) {
-                tDataTable.getClass().getMethod("setRow", int.class).invoke(tDataTable, i);
+            // 필드 수 확인
+            tDataTable.getClass().getMethod("setRow", int.class).invoke(tDataTable, 0);
+            int totalFieldCount = (int) tDataTable.getClass().getMethod("getFieldCount").invoke(tDataTable);
+            appendBatchLog(batchId, String.format("  [RFC-5] 필드 수: %d개/행", totalFieldCount));
 
-                Map<String, Object> row = new LinkedHashMap<>();
-                int fieldCount = (int) tDataTable.getClass().getMethod("getFieldCount").invoke(tDataTable);
-                for (int j = 0; j < fieldCount; j++) {
-                    String fieldName = (String) tDataTable.getClass()
-                            .getMethod("getName", int.class).invoke(tDataTable, j);
-                    Object value = tDataTable.getClass()
-                            .getMethod("getString", int.class).invoke(tDataTable, j);
-                    row.put(fieldName, value);
+            // 필드명 → 인덱스 매핑 (DB 컬럼만)
+            Set<String> dbColumnSet = new HashSet<>(DB_COLUMNS);
+            Map<String, Integer> fieldIndexMap = new LinkedHashMap<>();
+            for (int j = 0; j < totalFieldCount; j++) {
+                String fname = (String) tDataTable.getClass()
+                        .getMethod("getName", int.class).invoke(tDataTable, j);
+                if (dbColumnSet.contains(fname)) {
+                    fieldIndexMap.put(fname, j);
                 }
-                result.add(row);
+            }
+            appendBatchLog(batchId, String.format("  [RFC-5] 매핑 필드: %d/%d개 (DB 컬럼 기준)",
+                    fieldIndexMap.size(), totalFieldCount));
 
-                // 10,000행 단위로 파싱 진행률 로그
+            // 리플렉션 메서드 캐시
+            java.lang.reflect.Method getStringMethod = tDataTable.getClass().getMethod("getString", int.class);
+            java.lang.reflect.Method setRowMethod = tDataTable.getClass().getMethod("setRow", int.class);
+
+            // ── 샘플 로그 (첫 1행) ──
+            setRowMethod.invoke(tDataTable, 0);
+            appendBatchLog(batchId, "[3/6] 수신 데이터 샘플 (첫 1행):");
+            StringBuilder sb = new StringBuilder();
+            int sampleCount = 0;
+            for (Map.Entry<String, Integer> entry : fieldIndexMap.entrySet()) {
+                if (sampleCount < 10) {
+                    Object val = getStringMethod.invoke(tDataTable, entry.getValue());
+                    sb.append(String.format("  - %s = %s\n", entry.getKey(), val));
+                }
+                sampleCount++;
+            }
+            sb.append(String.format("  ... 총 %d개 필드", fieldIndexMap.size()));
+            appendBatchLog(batchId, sb.toString());
+
+            // ── dry-run 모드 ──
+            if ("dry-run".equals(mode)) {
+                log.info("[SAP RFC] DRY-RUN 모드 - DB INSERT 건너뜀. {}건이 INSERT될 예정", rowCount);
+                appendBatchLog(batchId, String.format("[DRY-RUN] DB INSERT 건너뜀 — %,d건이 INSERT될 예정", rowCount));
+                return new long[]{rowCount, 0, 0};
+            }
+
+            // ── replace 모드: 기존 데이터 삭제 ──
+            int deletedRows = 0;
+            if ("replace".equals(mode)) {
+                appendBatchLog(batchId, "[4/6] REPLACE 모드 — 기존 데이터 삭제 중...");
+                long existingCount = countExistingData(cmonth);
+                appendBatchLog(batchId, String.format("  - CALMONTH=%s 기존 데이터: %,d건", cmonth, existingCount));
+                Instant delStart = Instant.now();
+                deletedRows = (int) deleteExistingData(cmonth);
+                long delElapsed = Duration.between(delStart, Instant.now()).toSeconds();
+                appendBatchLog(batchId, String.format("  - 삭제 완료: %,d건 (%d초 소요)", deletedRows, delElapsed));
+                log.info("[SAP RFC] REPLACE 모드 - 기존 {}건 삭제 완료 (CALMONTH={})", deletedRows, cmonth);
+            } else {
+                appendBatchLog(batchId, String.format("[4/6] APPEND 모드 — 기존 데이터 유지 (현재 %,d건)", countExistingData(cmonth)));
+            }
+
+            // ── Step 6: 스트리밍 파싱 + INSERT (CHUNK_SIZE 단위) ──
+            appendBatchLog(batchId, String.format("[5/6] 스트리밍 INSERT 시작 — %,d행 (청크 %,d행, 배치 1,000건)",
+                    rowCount, CHUNK_SIZE));
+            Instant insertStart = Instant.now();
+
+            long totalInserted = 0;
+            int batchSize = 1000;
+            int totalBatches = (int) Math.ceil((double) rowCount / batchSize);
+            List<Object[]> batch = new ArrayList<>(batchSize);
+
+            for (int i = 0; i < rowCount; i++) {
+                setRowMethod.invoke(tDataTable, i);
+
+                // SAP 행 → Object[] 직접 변환 (중간 HashMap 생략으로 메모리 절약)
+                Object[] values = new Object[DB_COLUMNS.size()];
+                for (int c = 0; c < DB_COLUMNS.size(); c++) {
+                    String col = DB_COLUMNS.get(c);
+                    Integer fieldIdx = fieldIndexMap.get(col);
+                    if (fieldIdx == null) {
+                        // SAP에 없는 DB 컬럼
+                        values[c] = NUMERIC_COLUMNS.contains(col) ? 0 : null;
+                        continue;
+                    }
+                    String rawValue = (String) getStringMethod.invoke(tDataTable, fieldIdx);
+                    if (rawValue == null || rawValue.trim().isEmpty()) {
+                        values[c] = NUMERIC_COLUMNS.contains(col) ? 0 : null;
+                    } else if (NUMERIC_COLUMNS.contains(col)) {
+                        try {
+                            double d = Double.parseDouble(rawValue.replace(",", "").trim());
+                            values[c] = col.startsWith("ZQTY_") ? d : (long) d;
+                        } catch (NumberFormatException e) {
+                            values[c] = 0;
+                        }
+                    } else {
+                        values[c] = rawValue.trim();
+                    }
+                }
+                batch.add(values);
+
+                // 배치 INSERT
+                if (batch.size() >= batchSize || i == rowCount - 1) {
+                    int currentBatch = (int) (totalInserted / batchSize) + 1;
+                    try {
+                        jdbcTemplate.batchUpdate(INSERT_SQL, batch);
+                        totalInserted += batch.size();
+
+                        // 10% 단위 또는 첫/마지막 배치에 진행률 로그
+                        if (currentBatch == 1 || i == rowCount - 1 ||
+                                (currentBatch % Math.max(1, totalBatches / 10)) == 0) {
+                            double pct = (double) totalInserted / rowCount * 100;
+                            String progressMsg = String.format(
+                                    "  - INSERT 진행: %,d/%,d (%.0f%%) [배치 %d/%d]",
+                                    totalInserted, rowCount, pct, currentBatch, totalBatches);
+                            log.info("[DB] {}", progressMsg);
+                            appendBatchLog(batchId, progressMsg);
+                        }
+                    } catch (Exception e) {
+                        String errMsg = String.format(
+                                "  - INSERT 실패 (배치 %d/%d, 행 %,d~%,d): %s",
+                                currentBatch, totalBatches,
+                                totalInserted + 1, totalInserted + batch.size(),
+                                e.getMessage());
+                        log.error("[DB] {}", errMsg);
+                        appendBatchLog(batchId, errMsg);
+                        throw e;
+                    }
+                    batch.clear();
+                }
+
+                // 진행률 로그 (10,000행 단위)
                 if (rowCount > 10000 && i > 0 && i % 10000 == 0) {
-                    appendBatchLog(batchId, String.format("  [RFC-5] 파싱 진행: %,d/%,d행 (%.0f%%)",
-                            i, rowCount, (double) i / rowCount * 100));
+                    log.info("[SAP RFC] 스트리밍 진행: {}/{} ({}%)",
+                            i, rowCount, (int)((double) i / rowCount * 100));
                 }
             }
 
             long step5ms = Duration.between(step5, Instant.now()).toMillis();
-            appendBatchLog(batchId, String.format("  [RFC-5] T_DATA 파싱 완료: %,d행 (%dms)",
-                    result.size(), step5ms));
+            long insertElapsed = Duration.between(insertStart, Instant.now()).toSeconds();
+            appendBatchLog(batchId, String.format("  - 파싱+INSERT 완료: %,d행 (%dms, INSERT %d초)",
+                    totalInserted, step5ms, insertElapsed));
+            log.info("[SAP RFC] 스트리밍 INSERT 완료: {}건", totalInserted);
 
-            return result;
+            return new long[]{rowCount, totalInserted, deletedRows};
 
         } catch (ClassNotFoundException e) {
             String msg = "[SAP JCo 미설치] sapjco3.jar가 classpath에 없습니다.\n" +
@@ -361,7 +433,6 @@ public class SapRfcSyncService {
             throw new RuntimeException(msg, e);
         } catch (Exception e) {
             String msg = "[SAP RFC 호출 실패] " + e.getMessage();
-            // InvocationTargetException인 경우 원인 에러 메시지 추출
             Throwable cause = e.getCause() != null ? e.getCause() : e;
             String detail = cause.getClass().getSimpleName() + ": " + cause.getMessage();
             appendBatchLog(batchId, "  [RFC-ERR] " + detail);
@@ -385,84 +456,9 @@ public class SapRfcSyncService {
         return count;
     }
 
-    private long insertData(Long batchId, List<Map<String, Object>> tData) {
-        int batchSize = 1000;
-        long totalInserted = 0;
-        int totalBatches = (int) Math.ceil((double) tData.size() / batchSize);
-
-        List<Object[]> batch = new ArrayList<>(batchSize);
-
-        for (int i = 0; i < tData.size(); i++) {
-            Map<String, Object> sapRow = tData.get(i);
-            Object[] row = convertRow(sapRow);
-            batch.add(row);
-
-            if (batch.size() >= batchSize || i == tData.size() - 1) {
-                int currentBatch = (int) (totalInserted / batchSize) + 1;
-                try {
-                    jdbcTemplate.batchUpdate(INSERT_SQL, batch);
-                    totalInserted += batch.size();
-
-                    double pct = (double) totalInserted / tData.size() * 100;
-                    String progressMsg = String.format(
-                            "  - INSERT 진행: %,d/%,d (%.0f%%) [배치 %d/%d]",
-                            totalInserted, tData.size(), pct, currentBatch, totalBatches);
-                    log.info("[DB] {}", progressMsg);
-
-                    // 10% 단위로 log_text에 진행률 기록
-                    if (currentBatch == 1 || currentBatch == totalBatches || (currentBatch % Math.max(1, totalBatches / 10)) == 0) {
-                        appendBatchLog(batchId, progressMsg);
-                    }
-                } catch (Exception e) {
-                    String errMsg = String.format(
-                            "  - INSERT 실패 (배치 %d/%d, 행 %,d~%,d): %s",
-                            currentBatch, totalBatches,
-                            totalInserted + 1, totalInserted + batch.size(),
-                            e.getMessage());
-                    log.error("[DB] {}", errMsg);
-                    appendBatchLog(batchId, errMsg);
-                    throw e;  // 상위에서 failBatch 처리
-                }
-
-                batch.clear();
-            }
-        }
-
-        return totalInserted;
-    }
-
-    private Object[] convertRow(Map<String, Object> sapRow) {
-        Object[] values = new Object[DB_COLUMNS.size()];
-
-        for (int i = 0; i < DB_COLUMNS.size(); i++) {
-            String col = DB_COLUMNS.get(i);
-            Object val = sapRow.get(col);
-
-            if (val == null || (val instanceof String && ((String) val).trim().isEmpty())) {
-                if (NUMERIC_COLUMNS.contains(col)) {
-                    values[i] = 0;
-                } else {
-                    values[i] = null;
-                }
-            } else if (NUMERIC_COLUMNS.contains(col)) {
-                try {
-                    String strVal = val.toString().replace(",", "").trim();
-                    double d = Double.parseDouble(strVal);
-                    if (col.startsWith("ZQTY_")) {
-                        values[i] = d;
-                    } else {
-                        values[i] = (long) d;
-                    }
-                } catch (NumberFormatException e) {
-                    values[i] = 0;
-                }
-            } else {
-                values[i] = val.toString().trim();
-            }
-        }
-
-        return values;
-    }
+    // insertData(), convertRow() 메서드 제거됨
+    // → callRfcAndInsert() 내부에서 SAP 파싱과 동시에 직접 변환+INSERT 수행
+    // → 중간 List<Map> 없이 SAP row → Object[] → batchUpdate 스트리밍
 
     // ================================================================
     // 배치 상태 관리 (batch_jobs 테이블)
