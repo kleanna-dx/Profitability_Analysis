@@ -68,56 +68,24 @@ print_header() {
     echo ""
 }
 
-# ── module-profit systemd 서비스 설치/업데이트 ──
+# ── module-profit systemd 서비스 확인 ──
+# 서비스 파일은 /etc/systemd/system/module-profit.service 에서 직접 관리
+# deploy.sh에서는 존재 여부만 확인
 ensure_profit_service() {
     local service_file="/etc/systemd/system/module-profit.service"
-    local service_version="v2-port18093"
 
-    # 서비스 파일이 있고 버전 태그도 있으면 스킵
-    if [ -f "${service_file}" ] && grep -q "${service_version}" "${service_file}" 2>/dev/null; then
-        return 0
+    if [ ! -f "${service_file}" ]; then
+        log_error "module-profit 서비스 파일이 없습니다: ${service_file}"
+        log_error "서비스 파일을 먼저 생성해주세요."
+        exit 1
     fi
 
-    log_info "module-profit systemd 서비스 파일 생성 중..."
-
-    sudo tee "${service_file}" > /dev/null << UNIT
-# ${service_version}
-[Unit]
-Description=Module-Profit Spring Boot Application (port ${SPRING_BOOT_PORT})
-Documentation=https://github.com/kleanna-dx/Profitability_Analysis
-After=network.target mariadb.service
-Wants=mariadb.service
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/data/analytics/app
-ExecStart=/usr/bin/java \\
-    -Djava.library.path=/data/analytics/source/module-profit/libs \\
-    -Xms512m -Xmx2g \\
-    -XX:+UseG1GC \\
-    -XX:MaxGCPauseMillis=200 \\
-    -jar /data/analytics/app/module-profit.jar \\
-    --spring.config.location=file:/data/analytics/source/module-profit/src/main/resources/application.yml
-ExecStop=/bin/kill -TERM \$MAINPID
-Restart=on-failure
-RestartSec=10
-SuccessExitStatus=143
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=module-profit
-
-# 환경 변수
-Environment=JAVA_HOME=/usr/lib/jvm/java-17
-Environment=LANG=ko_KR.UTF-8
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable module-profit
-    log_ok "module-profit 서비스 등록 완료 (port ${SPRING_BOOT_PORT})"
+    # enable 되어있는지만 확인
+    if ! systemctl is-enabled --quiet module-profit 2>/dev/null; then
+        sudo systemctl daemon-reload
+        sudo systemctl enable module-profit
+        log_ok "module-profit 서비스 enable 완료"
+    fi
 }
 
 # ── 서비스 상태 확인 ──
