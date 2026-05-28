@@ -74,7 +74,9 @@ app.post('/api/login', async (req, res) => {
   }
   try {
     const [rows] = await pool.query(
-      'SELECT user_id, password, name, role, is_active FROM users WHERE user_id = ?',
+      `SELECT u.user_id, u.password, u.name, u.role_id, u.is_active, COALESCE(r.role_code, 'user') AS role_code
+       FROM users u LEFT JOIN roles r ON r.id = u.role_id
+       WHERE u.user_id = ?`,
       [username]
     );
     if (rows.length === 0) {
@@ -91,7 +93,7 @@ app.post('/api/login', async (req, res) => {
     let domainCode = null;
     try {
       const [uRow] = await pool.query('SELECT domain_code FROM users WHERE user_id=?', [user.user_id]);
-      if (user.role === 'admin') {
+      if (user.role_code === 'admin') {
         // admin: DB에 명시적으로 지정된 경우만 사용, 아니면 null (전체 영역)
         domainCode = uRow[0]?.domain_code || null;
       } else {
@@ -104,11 +106,11 @@ app.post('/api/login', async (req, res) => {
     } catch(e) { console.error('[Login] domain 해석 실패:', e.message); }
 
     req.session.user = {
-      id: user.user_id, name: user.name, role: user.role,
+      id: user.user_id, name: user.name, role: user.role_code,
       domain_code: domainCode, active_domain: domainCode || 'PS',
       loginAt: new Date().toISOString(),
     };
-    return res.json({ success: true, user: user.user_id, name: user.name, role: user.role, domain_code: domainCode });
+    return res.json({ success: true, user: user.user_id, name: user.name, role: user.role_code, domain_code: domainCode });
   } catch (err) {
     console.error('[Login] DB 조회 오류:', err.message);
     return res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
@@ -170,15 +172,26 @@ app.post('/api/login/sendEncData', async (req, res) => {
     }
 
     // users 테이블에서 해당 사용자 조회 (없으면 자동 생성)
-    let [userRows] = await pool.query('SELECT user_id, name, role, is_active FROM users WHERE user_id = ?', [userId]);
+    let [userRows] = await pool.query(
+      `SELECT u.user_id, u.name, u.role_id, u.is_active, COALESCE(r.role_code, 'user') AS role_code
+       FROM users u LEFT JOIN roles r ON r.id = u.role_id
+       WHERE u.user_id = ?`, [userId]);
     if (userRows.length === 0) {
-      // SSO 사용자 자동 생성
+      // SSO 사용자 자동 생성 (RBAC: role_id 설정)
+      let defaultRoleId = null;
+      try {
+        const [rr] = await pool.query("SELECT id FROM roles WHERE role_code='user' LIMIT 1");
+        if (rr.length > 0) defaultRoleId = rr[0].id;
+      } catch(e) {}
       await pool.query(
-        'INSERT INTO users (user_id, name, role, is_active, sso_yn) VALUES (?, ?, ?, 1, 1)',
-        [userId, ssoData?.body?.sproId || userId, 'user']
+        'INSERT INTO users (user_id, name, role_id, is_active, sso_yn) VALUES (?, ?, ?, 1, 1)',
+        [userId, ssoData?.body?.sproId || userId, defaultRoleId]
       );
       console.log(`[SSO] 신규 사용자 자동 생성: ${userId}`);
-      [userRows] = await pool.query('SELECT user_id, name, role, is_active FROM users WHERE user_id = ?', [userId]);
+      [userRows] = await pool.query(
+        `SELECT u.user_id, u.name, u.role_id, u.is_active, COALESCE(r.role_code, 'user') AS role_code
+         FROM users u LEFT JOIN roles r ON r.id = u.role_id
+         WHERE u.user_id = ?`, [userId]);
     }
     const ssoUser = userRows[0];
     if (!ssoUser.is_active) {
@@ -190,7 +203,7 @@ app.post('/api/login/sendEncData', async (req, res) => {
     let domainCode = null;
     try {
       const [uDom] = await pool.query('SELECT domain_code FROM users WHERE user_id=?', [userId]);
-      if (ssoUser.role === 'admin') {
+      if (ssoUser.role_code === 'admin') {
         domainCode = uDom[0]?.domain_code || null;
       } else {
         domainCode = uDom[0]?.domain_code || await resolveDomainByOrg(userId);
@@ -204,7 +217,7 @@ app.post('/api/login/sendEncData', async (req, res) => {
     req.session.user = {
       id: userId,
       name: ssoUser.name,
-      role: ssoUser.role,
+      role: ssoUser.role_code,
       domain_code: domainCode,
       active_domain: domainCode || 'PS',
       loginAt: new Date().toISOString(),
@@ -374,22 +387,60 @@ async function buildOrgPath(groupId) {
 app.get('/api/me', async (req, res) => {
   if (req.session && req.session.user) {
     const u = req.session.user;
+
+    // DB에서 최신 role, domain_code 조회 → 세션 동기화 (권한관리에서 변경 즉시 반영)
+    let roleCode = u.role || 'user';
+    let latestDomainCode = u.domain_code;
+    try {
+      const [freshRow] = await pool.query(
+        `SELECT u.domain_code, COALESCE(r.role_code, 'user') AS role_code
+         FROM users u LEFT JOIN roles r ON r.id = u.role_id
+         WHERE u.user_id = ?`, [u.id]
+      );
+      if (freshRow.length > 0) {
+        roleCode = freshRow[0].role_code || 'user';
+        latestDomainCode = freshRow[0].domain_code || null;
+        // 세션 동기화 (다음 요청부터 즉시 반영)
+        u.role = roleCode;
+        u.domain_code = latestDomainCode;
+        // domain_code가 지정되면 active_domain도 강제 동기화
+        if (latestDomainCode) {
+          u.active_domain = latestDomainCode;
+        }
+      }
+    } catch (e) { console.error('[/api/me] DB 동기화 실패:', e.message); }
+
+    // RBAC: 사용자의 허용 메뉴 목록 조회 (폴백 내장)
+    let allowedMenus = [];
+    try {
+      allowedMenus = await getUserAllowedMenus(u.id);
+    } catch (e) {
+      console.error('[RBAC] /api/me 메뉴 조회 실패:', e.message);
+      allowedMenus = getDefaultMenusByRole(roleCode);
+    }
+    if (!allowedMenus || allowedMenus.length === 0) {
+      allowedMenus = getDefaultMenusByRole(roleCode);
+    }
+
     return res.json({
       loggedIn: true,
       user: u.id,
       name: u.name,
-      role: u.role,
-      domain_code: u.domain_code || null,
-      active_domain: u.active_domain || u.domain_code || null,
+      role: roleCode,
+      domain_code: latestDomainCode || null,
+      active_domain: u.active_domain || latestDomainCode || null,
+      menus: allowedMenus,
     });
   }
   return res.json({ loggedIn: false });
 });
 
-// 관리자 도메인 전환 API
+// 도메인 전환 API (domain_code가 null=전체인 사용자만 전환 가능)
 app.post('/api/me/domain', (req, res) => {
   if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
-  if (req.session.user.role !== 'admin') return res.status(403).json({ error: '관리자만 가능' });
+  const u = req.session.user;
+  // domain_code가 지정된 사용자는 전환 불가 (이미 고정)
+  if (u.domain_code) return res.status(403).json({ error: '도메인이 고정되어 전환할 수 없습니다.' });
   const { domain_code } = req.body;
   if (!domain_code) return res.status(400).json({ error: 'domain_code 필수' });
   req.session.user.active_domain = domain_code;
@@ -411,18 +462,28 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// 현재 세션의 active_domain 가져오기 (일반사용자: domain_code 고정, 관리자: active_domain)
-function getActiveDomain(req) {
+// 현재 세션의 active_domain 가져오기 (DB 최신 domain_code 반영)
+// domain_code 지정됨 → 해당 도메인 고정, domain_code null(전체) → active_domain 사용
+async function getActiveDomain(req) {
   const u = req.session?.user;
   if (!u) return null;
-  if (u.role === 'admin') return u.active_domain || u.domain_code || 'PS';
-  return u.domain_code || 'PS';
+  // DB에서 최신 domain_code 반영 (권한관리에서 변경 시 즉시 적용)
+  try {
+    const [row] = await pool.query('SELECT domain_code FROM users WHERE user_id = ?', [u.id]);
+    if (row.length > 0) {
+      const dbDomain = row[0].domain_code || null;
+      u.domain_code = dbDomain;
+      if (dbDomain) u.active_domain = dbDomain;
+    }
+  } catch(e) { /* 실패 시 세션 값 사용 */ }
+  if (u.domain_code) return u.domain_code; // 도메인 고정
+  return u.active_domain || 'PS'; // 전체 → active_domain (기본 PS)
 }
 
 // ============================================================
 // 인증 미들웨어 — 로그인하지 않으면 /login으로 리다이렉트
 // ============================================================
-app.use((req, res, next) => {
+app.use(async (req, res, next) => {
   // 인증이 필요 없는 경로
   const publicPaths = ['/login', '/login.html', '/api/login', '/api/login/sendEncData', '/api/logout', '/api/me'];
   if (publicPaths.some(p => req.path === p)) return next();
@@ -433,10 +494,25 @@ app.use((req, res, next) => {
   // CDN 등 외부 스크립트 요청은 해당 없음 (express에서 처리 안 함)
 
   if (req.session && req.session.user) {
-    // 관리자 전용 페이지 접근 차단 (일반 사용자)
-    const adminOnlyPages = ['/learning.html', '/admin.html', '/upload.html', '/batch.html'];
-    if (adminOnlyPages.includes(req.path) && req.session.user.role !== 'admin') {
-      return res.redirect('/');
+    // RBAC: 메뉴 권한 체크 — HTML 페이지 요청 시 허용 여부 확인
+    const menuPages = ['/builder.html', '/report', '/learning.html',
+                       '/permission.html', '/batch.html', '/upload.html'];
+    const checkPath = req.path === '/index.html' ? '/' : req.path;
+    if (menuPages.includes(checkPath)) {
+      try {
+        const allowed = await isMenuAllowed(req.session.user.id, checkPath);
+        if (!allowed) {
+          // HTML 요청이면 접근 차단 페이지 또는 메인으로 리다이렉트
+          return res.redirect('/?denied=1');
+        }
+      } catch (e) {
+        console.error('[RBAC] 접근 권한 체크 실패:', e.message);
+        // 체크 실패 시 기존 admin 방식으로 폴백
+        const adminOnlyPages = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
+        if (adminOnlyPages.includes(req.path) && req.session.user.role !== 'admin') {
+          return res.redirect('/');
+        }
+      }
     }
     return next();
   }
@@ -477,7 +553,8 @@ app.get('/api/users', verifyApiKey, async (req, res) => {
       params.push(parseInt(req.query.is_active));
     }
     if (req.query.role) {
-      whereParts.push('role = ?');
+      // role 문자열 → role_id 서브쿼리로 필터
+      whereParts.push('role_id = (SELECT id FROM roles WHERE role_code = ? LIMIT 1)');
       params.push(req.query.role);
     }
     if (req.query.group_name) {
@@ -576,9 +653,23 @@ app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
         if (existing.length > 0) {
           // 이미 존재하지만 비활성화 상태 → 재활성화
           if (!existing[0].is_active) {
+            // role_id 결정: 외부에서 role 지정 시 roles 테이블에서 매핑
+            let reactivateRoleId = null;
+            if (u.role) {
+              try {
+                const [rr] = await conn.query('SELECT id FROM roles WHERE role_code=?', [u.role]);
+                if (rr.length > 0) reactivateRoleId = rr[0].id;
+              } catch(e) {}
+            }
+            if (!reactivateRoleId) {
+              try {
+                const [rr] = await conn.query("SELECT id FROM roles WHERE role_code='user' LIMIT 1");
+                if (rr.length > 0) reactivateRoleId = rr[0].id;
+              } catch(e) {}
+            }
             await conn.query(
-              `UPDATE users SET name=?, email=?, group_name=?, group_id=?, parent_group_id=?, tenant_id=?, phone=?, position=?, role=?, is_active=1, sso_yn=1, updated_at=NOW() WHERE user_id=?`,
-              [u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, u.role || 'user', u.userId]
+              `UPDATE users SET name=?, email=?, group_name=?, group_id=?, parent_group_id=?, tenant_id=?, phone=?, position=?, role_id=?, is_active=1, sso_yn=1, updated_at=NOW() WHERE user_id=?`,
+              [u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, reactivateRoleId, u.userId]
             );
             results.push({ userId: u.userId, status: 'success', message: 'reactivated (기존 비활성 계정 재활성화)' });
             successCount++;
@@ -589,9 +680,23 @@ app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
           continue;
         }
 
+        // role_id 결정
+        let newRoleId = null;
+        if (u.role) {
+          try {
+            const [rr] = await conn.query('SELECT id FROM roles WHERE role_code=?', [u.role]);
+            if (rr.length > 0) newRoleId = rr[0].id;
+          } catch(e) {}
+        }
+        if (!newRoleId) {
+          try {
+            const [rr] = await conn.query("SELECT id FROM roles WHERE role_code='user' LIMIT 1");
+            if (rr.length > 0) newRoleId = rr[0].id;
+          } catch(e) {}
+        }
         await conn.query(
-          `INSERT INTO users (user_id, name, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role, is_active, sso_yn) VALUES (?,?,?,?,?,?,?,?,?,?,1,1)`,
-          [u.userId, u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, u.role || 'user']
+          `INSERT INTO users (user_id, name, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role_id, is_active, sso_yn) VALUES (?,?,?,?,?,?,?,?,?,?,1,1)`,
+          [u.userId, u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, newRoleId]
         );
         results.push({ userId: u.userId, status: 'success', message: 'created' });
         successCount++;
@@ -667,7 +772,13 @@ app.put('/api/users/bulk', verifyApiKey, async (req, res) => {
         if (u.tenantId !== undefined)       { updates.push('tenant_id=?');       vals.push(u.tenantId); }
         if (u.phone !== undefined)      { updates.push('phone=?');      vals.push(u.phone); }
         if (u.position !== undefined)   { updates.push('position=?');   vals.push(u.position); }
-        if (u.role !== undefined)       { updates.push('role=?');       vals.push(u.role); }
+        if (u.role !== undefined) {
+          // role 문자열 → role_id로 변환
+          try {
+            const [rr] = await conn.query('SELECT id FROM roles WHERE role_code=?', [u.role]);
+            if (rr.length > 0) { updates.push('role_id=?'); vals.push(rr[0].id); }
+          } catch(e) {}
+        }
 
         if (updates.length === 0) {
           results.push({ userId: u.userId, status: 'fail', message: '수정할 필드가 없습니다.' });
@@ -1437,7 +1548,7 @@ app.post('/api/nlq', async (req, res) => {
   if (!query || !query.trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.' });
   }
-  const activeDomain = getActiveDomain(req);
+  const activeDomain = await getActiveDomain(req);
 
   try {
     console.log(`[NLQ] 질의: ${query}`);
@@ -1826,7 +1937,7 @@ app.get('/api/suggestions', (req, res) => {
 // ============================================================
 // 전체 목록 (동의어 포함, domain 필터)
 app.get('/api/ontology', requireAdmin, async (req, res) => {
-  const dc = req.query.domain_code || getActiveDomain(req);
+  const dc = req.query.domain_code || await getActiveDomain(req);
   try {
     const [columns] = await pool.query(
       `SELECT c.*, GROUP_CONCAT(s.id, ':::', s.synonym_text ORDER BY s.id SEPARATOR '|||') AS synonyms
@@ -1848,7 +1959,7 @@ app.get('/api/ontology', requireAdmin, async (req, res) => {
 // 추가
 app.post('/api/ontology', requireAdmin, async (req, res) => {
   const { column_name, table_name, description, data_type } = req.body;
-  const dc = req.body.domain_code || getActiveDomain(req);
+  const dc = req.body.domain_code || await getActiveDomain(req);
   if (!column_name) return res.status(400).json({ error: 'column_name 필수' });
   try {
     const [r] = await pool.query(
@@ -2263,7 +2374,7 @@ app.get('/api/ontology/upload-excel/template', (req, res) => {
 // 학습관리 API: Metric (계산 지표) — 관리자 전용 + domain 필터
 // ============================================================
 app.get('/api/metric', requireAdmin, async (req, res) => {
-  const dc = req.query.domain_code || getActiveDomain(req);
+  const dc = req.query.domain_code || await getActiveDomain(req);
   try {
     const [metrics] = await pool.query(
       `SELECT m.*, GROUP_CONCAT(s.id, ':::', s.synonym_text ORDER BY s.id SEPARATOR '|||') AS synonyms
@@ -2284,7 +2395,7 @@ app.get('/api/metric', requireAdmin, async (req, res) => {
 
 app.post('/api/metric', requireAdmin, async (req, res) => {
   const { metric_code, aggregation, formula, table_name, description } = req.body;
-  const dc = req.body.domain_code || getActiveDomain(req);
+  const dc = req.body.domain_code || await getActiveDomain(req);
   if (!metric_code || !formula) return res.status(400).json({ error: 'metric_code, formula 필수' });
   try {
     const [r] = await pool.query(
@@ -2337,7 +2448,7 @@ app.delete('/api/metric/synonym/:synId', requireAdmin, async (req, res) => {
 // 학습관리 API: JOIN (조인 조건) — 관리자 전용 + domain 필터
 // ============================================================
 app.get('/api/join', requireAdmin, async (req, res) => {
-  const dc = req.query.domain_code || getActiveDomain(req);
+  const dc = req.query.domain_code || await getActiveDomain(req);
   try {
     const [rows] = await pool.query('SELECT * FROM join_condition WHERE domain_code = ? ORDER BY id', [dc]);
     res.json(rows);
@@ -2346,7 +2457,7 @@ app.get('/api/join', requireAdmin, async (req, res) => {
 
 app.post('/api/join', requireAdmin, async (req, res) => {
   const { left_column, left_table, right_column, right_table, join_type, operator, description } = req.body;
-  const dc = req.body.domain_code || getActiveDomain(req);
+  const dc = req.body.domain_code || await getActiveDomain(req);
   if (!left_column || !left_table || !right_column || !right_table)
     return res.status(400).json({ error: '필수 필드 누락' });
   try {
@@ -2381,7 +2492,7 @@ app.delete('/api/join/:id', requireAdmin, async (req, res) => {
 // ============================================================
 // 전체 조회 (컬럼별 그룹핑, domain 필터)
 app.get('/api/code-mapping', requireAdmin, async (req, res) => {
-  const dc = req.query.domain_code || getActiveDomain(req);
+  const dc = req.query.domain_code || await getActiveDomain(req);
   try {
     const [rows] = await pool.query('SELECT * FROM code_mapping WHERE domain_code = ? OR domain_code IS NULL ORDER BY column_name, code_value', [dc]);
     res.json(rows);
@@ -2390,7 +2501,7 @@ app.get('/api/code-mapping', requireAdmin, async (req, res) => {
 
 // 컬럼별 조회
 app.get('/api/code-mapping/column/:colName', requireAdmin, async (req, res) => {
-  const dc = req.query.domain_code || getActiveDomain(req);
+  const dc = req.query.domain_code || await getActiveDomain(req);
   try {
     const [rows] = await pool.query(
       'SELECT * FROM code_mapping WHERE column_name=? AND (domain_code = ? OR domain_code IS NULL) ORDER BY code_value',
@@ -2403,7 +2514,7 @@ app.get('/api/code-mapping/column/:colName', requireAdmin, async (req, res) => {
 // 추가
 app.post('/api/code-mapping', requireAdmin, async (req, res) => {
   const { column_name, column_name_nm, code_value, display_name, table_name, description } = req.body;
-  const dc = req.body.domain_code || getActiveDomain(req);
+  const dc = req.body.domain_code || await getActiveDomain(req);
   if (!column_name || !code_value || !display_name)
     return res.status(400).json({ error: 'column_name, code_value, display_name 필수' });
   try {
@@ -2475,7 +2586,7 @@ app.post('/api/code-mapping/apply', requireAdmin, async (req, res) => {
 
 // 고유 컬럼명 목록 조회 (드롭다운용)
 app.get('/api/code-mapping/columns', requireAdmin, async (req, res) => {
-  const dc = req.query.domain_code || getActiveDomain(req);
+  const dc = req.query.domain_code || await getActiveDomain(req);
   try {
     const [rows] = await pool.query(
       'SELECT column_name, column_name_nm, COUNT(*) AS cnt FROM code_mapping WHERE domain_code = ? OR domain_code IS NULL GROUP BY column_name, column_name_nm ORDER BY column_name', [dc]
@@ -2490,7 +2601,7 @@ app.get('/api/code-mapping/columns', requireAdmin, async (req, res) => {
 // 피드백 저장
 app.post('/api/feedback', async (req, res) => {
   const { query_text, original_sql, corrected_sql, feedback_type } = req.body;
-  const dc = getActiveDomain(req);
+  const dc = await getActiveDomain(req);
   if (!query_text || !original_sql || !feedback_type)
     return res.status(400).json({ error: 'query_text, original_sql, feedback_type 필수' });
   if (!['correct', 'corrected'].includes(feedback_type))
@@ -2540,7 +2651,7 @@ app.post('/api/execute-sql', async (req, res) => {
 
 // 피드백 목록 조회 (domain 필터)
 app.get('/api/feedback', async (req, res) => {
-  const dc = getActiveDomain(req);
+  const dc = await getActiveDomain(req);
   try {
     const [rows] = await pool.query(
       'SELECT * FROM sql_feedback WHERE domain_code = ? OR domain_code IS NULL ORDER BY created_at DESC LIMIT 100', [dc]
@@ -2561,7 +2672,7 @@ app.delete('/api/feedback/:id', async (req, res) => {
 // 학습관리 API: 통계
 // ============================================================
 app.get('/api/learning/stats', requireAdmin, async (req, res) => {
-  const dc = req.query.domain_code || getActiveDomain(req);
+  const dc = req.query.domain_code || await getActiveDomain(req);
   try {
     const [o] = await pool.query('SELECT COUNT(*) AS cnt FROM ontology_column WHERE domain_code = ?', [dc]);
     const [os] = await pool.query('SELECT COUNT(*) AS cnt FROM ontology_synonym s JOIN ontology_column c ON s.column_id=c.id WHERE c.domain_code = ?', [dc]);
@@ -2772,7 +2883,7 @@ app.get('/api/builder/columns', async (req, res) => {
     `);
 
     // 2. Ontology 컬럼 정보 조회 (설명 보강, domain 필터)
-    const dc = getActiveDomain(req);
+    const dc = await getActiveDomain(req);
     const [ontoCols] = await pool.query(`SELECT column_name, description, data_type FROM ontology_column WHERE domain_code = ?`, [dc]);
     const ontoMap = {};
     for (const o of ontoCols) {
@@ -3342,14 +3453,151 @@ app.delete('/api/builder/history', async (req, res) => {
 // ============================================================
 
 // ============================================================
+// RBAC 관리 API — 역할/메뉴/매핑 관리 (관리자 전용)
+// ============================================================
+
+// --- 역할(Role) CRUD ---
+// 전체 역할 목록 조회
+app.get('/api/admin/roles', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM roles ORDER BY sort_order, id');
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 역할 생성
+app.post('/api/admin/roles', requireAdmin, async (req, res) => {
+  const { role_code, role_name, description, sort_order } = req.body;
+  if (!role_code || !role_name) return res.status(400).json({ error: 'role_code, role_name은 필수입니다.' });
+  try {
+    const [result] = await pool.query(
+      'INSERT INTO roles (role_code, role_name, description, sort_order) VALUES (?, ?, ?, ?)',
+      [role_code, role_name, description || null, sort_order || 0]
+    );
+    res.json({ success: true, id: result.insertId });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: '이미 존재하는 역할 코드입니다.' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 역할 수정
+app.put('/api/admin/roles/:id', requireAdmin, async (req, res) => {
+  const { role_name, description, sort_order, is_active } = req.body;
+  const updates = [], vals = [];
+  if (role_name !== undefined) { updates.push('role_name=?'); vals.push(role_name); }
+  if (description !== undefined) { updates.push('description=?'); vals.push(description); }
+  if (sort_order !== undefined) { updates.push('sort_order=?'); vals.push(sort_order); }
+  if (is_active !== undefined) { updates.push('is_active=?'); vals.push(is_active ? 1 : 0); }
+  if (updates.length === 0) return res.status(400).json({ error: '수정할 필드가 없습니다.' });
+  vals.push(req.params.id);
+  try {
+    await pool.query(`UPDATE roles SET ${updates.join(', ')} WHERE id=?`, vals);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 역할 삭제 (admin, user 기본 역할은 삭제 방지)
+app.delete('/api/admin/roles/:id', requireAdmin, async (req, res) => {
+  try {
+    const [role] = await pool.query('SELECT role_code FROM roles WHERE id=?', [req.params.id]);
+    if (role.length > 0 && ['admin', 'user'].includes(role[0].role_code)) {
+      return res.status(400).json({ error: '기본 역할(admin, user)은 삭제할 수 없습니다.' });
+    }
+    // 이 역할을 가진 사용자가 있는지 확인
+    const [userCheck] = await pool.query('SELECT COUNT(*) AS cnt FROM users WHERE role_id=?', [req.params.id]);
+    if (userCheck[0].cnt > 0) {
+      return res.status(400).json({ error: `이 역할을 사용 중인 사용자가 ${userCheck[0].cnt}명 있습니다. 먼저 사용자의 역할을 변경해주세요.` });
+    }
+    await pool.query('DELETE FROM roles WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --- 메뉴(Menu) 목록 조회 ---
+app.get('/api/admin/menus', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM menus WHERE is_active = 1 ORDER BY sort_order, id');
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --- 역할-메뉴 매핑 관리 ---
+// 특정 역할의 메뉴 매핑 조회
+app.get('/api/admin/roles/:roleId/menus', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT m.id AS menu_id, m.menu_code, m.menu_name, m.menu_url, m.icon_class, m.sort_order,
+             IF(rm.id IS NOT NULL, 1, 0) AS is_mapped
+      FROM menus m
+      LEFT JOIN role_menus rm ON rm.menu_id = m.id AND rm.role_id = ?
+      WHERE m.is_active = 1
+      ORDER BY m.sort_order, m.id
+    `, [req.params.roleId]);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 특정 역할의 메뉴 매핑 저장 (전체 교체 방식)
+app.put('/api/admin/roles/:roleId/menus', requireAdmin, async (req, res) => {
+  const { menu_ids } = req.body; // [1, 2, 3, ...]
+  if (!Array.isArray(menu_ids)) return res.status(400).json({ error: 'menu_ids 배열이 필요합니다.' });
+  const roleId = parseInt(req.params.roleId);
+  try {
+    // 역할 존재 확인
+    const [roleCheck] = await pool.query('SELECT id, role_code FROM roles WHERE id=?', [roleId]);
+    if (roleCheck.length === 0) return res.status(404).json({ error: '역할을 찾을 수 없습니다.' });
+
+    // 트랜잭션으로 기존 매핑 삭제 → 새 매핑 삽입
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query('DELETE FROM role_menus WHERE role_id = ?', [roleId]);
+      if (menu_ids.length > 0) {
+        const values = menu_ids.map(mid => [roleId, parseInt(mid)]);
+        await conn.query('INSERT INTO role_menus (role_id, menu_id) VALUES ?', [values]);
+      }
+      await conn.commit();
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    } finally {
+      conn.release();
+    }
+    console.log(`[RBAC] 역할(${roleCheck[0].role_code}) 메뉴 매핑 갱신: ${menu_ids.length}개 메뉴`);
+    res.json({ success: true, mapped_count: menu_ids.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --- 사용자 역할(role_id) 변경 API ---
+app.put('/api/admin/users/:userId/role', requireAdmin, async (req, res) => {
+  const { role_id } = req.body;
+  if (!role_id) return res.status(400).json({ error: 'role_id가 필요합니다.' });
+  try {
+    // 역할 존재 확인 + role_code 가져오기
+    const [roleRow] = await pool.query('SELECT id, role_code FROM roles WHERE id=?', [role_id]);
+    if (roleRow.length === 0) return res.status(404).json({ error: '역할을 찾을 수 없습니다.' });
+    // users 테이블 업데이트 (role_id만 변경 — role 컬럼 제거됨)
+    await pool.query(
+      'UPDATE users SET role_id=?, updated_at=NOW() WHERE user_id=?',
+      [role_id, req.params.userId]
+    );
+    res.json({ success: true, role_code: roleRow[0].role_code });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
 // 관리자 전용 API: 사용자 권한 관리
 // ============================================================
-// 전체 사용자 목록 (조직도 경로 포함)
+// 전체 사용자 목록 (조직도 경로 포함 + RBAC role_id)
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT u.id, u.user_id, u.name, u.group_name, u.group_id, u.role, u.domain_code, u.is_active
-       FROM users u ORDER BY u.id`
+      `SELECT u.id, u.user_id, u.name, u.group_name, u.group_id, u.role_id, u.domain_code, u.is_active,
+              COALESCE(r.role_code, 'user') AS role_code, r.role_name
+       FROM users u
+       LEFT JOIN roles r ON r.id = u.role_id
+       ORDER BY u.id`
     );
     // 각 사용자의 조직도 경로 구성
     const result = [];
@@ -3364,12 +3612,21 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 사용자 권한/도메인/활성 수정
+// 사용자 권한/도메인/활성 수정 (role 변경 시 role_id도 동기화)
 app.put('/api/admin/users/:userId', requireAdmin, async (req, res) => {
-  const { role, domain_code, is_active } = req.body;
+  const { role, role_id, domain_code, is_active } = req.body;
   const updates = [];
   const vals = [];
-  if (role !== undefined) { updates.push('role=?'); vals.push(role); }
+  if (role_id !== undefined) {
+    // RBAC role_id 변경
+    updates.push('role_id=?'); vals.push(role_id);
+  } else if (role !== undefined) {
+    // role 문자열 → role_id로 변환
+    try {
+      const [rr] = await pool.query('SELECT id FROM roles WHERE role_code=?', [role]);
+      if (rr.length > 0) { updates.push('role_id=?'); vals.push(rr[0].id); }
+    } catch(e) {}
+  }
   if (domain_code !== undefined) { updates.push('domain_code=?'); vals.push(domain_code); }
   if (is_active !== undefined) { updates.push('is_active=?'); vals.push(is_active ? 1 : 0); }
   if (updates.length === 0) return res.status(400).json({ error: '수정할 필드가 없습니다.' });
@@ -3478,6 +3735,299 @@ app.get('/report', (req, res) => {
 // ============================================================
 // 배치관리 API: SAP RFC → bw_profitability_data 동기화 작업 관리
 // ============================================================
+
+// ============================================================
+// RBAC 테이블 자동 생성 + 시드 데이터
+// ============================================================
+async function ensureRbacTables() {
+  try {
+    // 1) roles 테이블
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS roles (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        role_code VARCHAR(30) NOT NULL UNIQUE COMMENT '역할 코드 (예: admin, user, PS 등)',
+        role_name VARCHAR(100) NOT NULL COMMENT '역할 표시명',
+        description VARCHAR(255) NULL COMMENT '역할 설명',
+        sort_order INT DEFAULT 0 COMMENT '정렬순서',
+        is_active TINYINT DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_roles_code (role_code),
+        INDEX idx_roles_active (is_active)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RBAC 역할 테이블'
+    `);
+
+    // 2) menus 테이블
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS menus (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        menu_code VARCHAR(50) NOT NULL UNIQUE COMMENT '메뉴 코드 (URL path)',
+        menu_name VARCHAR(100) NOT NULL COMMENT '메뉴 표시명',
+        menu_url VARCHAR(200) NOT NULL COMMENT '메뉴 URL (예: /index.html)',
+        icon_class VARCHAR(100) NULL COMMENT 'Font Awesome 아이콘 클래스',
+        sort_order INT DEFAULT 0 COMMENT '정렬순서',
+        is_active TINYINT DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_menus_code (menu_code),
+        INDEX idx_menus_active (is_active)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RBAC 메뉴 테이블'
+    `);
+
+    // 3) role_menus 매핑 테이블
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS role_menus (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        role_id INT NOT NULL,
+        menu_id INT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_role_menu (role_id, menu_id),
+        INDEX idx_rm_role (role_id),
+        INDEX idx_rm_menu (menu_id),
+        CONSTRAINT fk_rm_role FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+        CONSTRAINT fk_rm_menu FOREIGN KEY (menu_id) REFERENCES menus(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RBAC 역할-메뉴 매핑'
+    `);
+
+    // 4) users 테이블에 role_id 컬럼 추가 (없으면)
+    const [cols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'role_id'`
+    );
+    if (cols.length === 0) {
+      await pool.query(`ALTER TABLE users ADD COLUMN role_id INT NULL COMMENT 'RBAC 역할 FK' AFTER role`);
+      console.log('[RBAC] users.role_id 컬럼 추가 완료');
+    }
+
+    // 5) 시드 데이터 — 역할이 비어있을 때만 삽입
+    const [roleCount] = await pool.query('SELECT COUNT(*) AS cnt FROM roles');
+    if (roleCount[0].cnt === 0) {
+      await pool.query(`
+        INSERT INTO roles (role_code, role_name, description, sort_order) VALUES
+        ('admin', '관리자', '전체 메뉴 접근 가능한 시스템 관리자', 1),
+        ('user', '일반 사용자', '기본 메뉴만 접근 가능', 2)
+      `);
+      console.log('[RBAC] 기본 역할(admin, user) 시드 데이터 삽입');
+    }
+
+    // 6) 시드 데이터 — 메뉴가 비어있을 때만 삽입
+    const [menuCount] = await pool.query('SELECT COUNT(*) AS cnt FROM menus');
+    if (menuCount[0].cnt === 0) {
+      await pool.query(`
+        INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order) VALUES
+        ('nlq',       '자연어 질의',          '/',               'fas fa-comments',          1),
+        ('builder',   '비주얼 쿼리 빌더',    '/builder.html',   'fas fa-th-large',          2),
+        ('report',    'PPT 분석 장표 생성',   '/report',         'fas fa-file-powerpoint',   3),
+        ('learning',  '학습 관리',            '/learning.html',  'fas fa-graduation-cap',    4),
+        ('permission','권한 관리',           '/permission.html','fas fa-shield-alt',        5),
+        ('batch',     '배치 관리',            '/batch.html',     'fas fa-sync-alt',          6)
+      `);
+      console.log('[RBAC] 기본 메뉴 시드 데이터 삽입');
+    }
+
+    // 7) 시드 데이터 — role_menus 매핑이 비어있을 때만 삽입
+    const [rmCount] = await pool.query('SELECT COUNT(*) AS cnt FROM role_menus');
+    if (rmCount[0].cnt === 0) {
+      // admin → 모든 메뉴
+      await pool.query(`
+        INSERT INTO role_menus (role_id, menu_id)
+        SELECT r.id, m.id FROM roles r CROSS JOIN menus m WHERE r.role_code = 'admin'
+      `);
+      // user → 기본 메뉴만 (nlq, builder, report)
+      await pool.query(`
+        INSERT INTO role_menus (role_id, menu_id)
+        SELECT r.id, m.id FROM roles r CROSS JOIN menus m
+        WHERE r.role_code = 'user' AND m.menu_code IN ('nlq', 'builder', 'report')
+      `);
+      console.log('[RBAC] 기본 역할-메뉴 매핑 시드 데이터 삽입');
+    }
+
+    // 8) role_id가 NULL인 사용자 → 기본 'user' 역할로 강제 매핑
+    const [nullRoleUsers] = await pool.query('SELECT COUNT(*) AS cnt FROM users WHERE role_id IS NULL');
+    if (nullRoleUsers[0].cnt > 0) {
+      // 먼저 role 값이 roles.role_code와 매칭되는 것 매핑
+      await pool.query(`
+        UPDATE users u
+        JOIN roles r ON r.role_code = u.role
+        SET u.role_id = r.id
+        WHERE u.role_id IS NULL AND u.role IS NOT NULL
+      `);
+      // 그래도 남은 NULL (role 값이 roles에 없는 경우) → 'user' 역할로 강제 배정
+      const [stillNull] = await pool.query('SELECT COUNT(*) AS cnt FROM users WHERE role_id IS NULL');
+      if (stillNull[0].cnt > 0) {
+        const [userRole] = await pool.query("SELECT id FROM roles WHERE role_code='user' LIMIT 1");
+        if (userRole.length > 0) {
+          await pool.query('UPDATE users SET role_id = ? WHERE role_id IS NULL', [userRole[0].id]);
+          console.log(`[RBAC] ${stillNull[0].cnt}명 레거시 사용자 → 'user' 역할로 강제 매핑`);
+        }
+      }
+      console.log(`[RBAC] ${nullRoleUsers[0].cnt}명 사용자 role_id 마이그레이션 완료`);
+    }
+
+    // 9) admin.html 메뉴 → permission.html에 통합되어 제거
+    try {
+      const [adminMenu] = await pool.query("SELECT id FROM menus WHERE menu_code = 'admin'");
+      if (adminMenu.length > 0) {
+        const menuId = adminMenu[0].id;
+        await pool.query('DELETE FROM role_menus WHERE menu_id = ?', [menuId]);
+        await pool.query('DELETE FROM menus WHERE id = ?', [menuId]);
+        console.log('[RBAC] admin 메뉴(사용자 관리) 제거 → permission.html(권한 관리)로 통합');
+      }
+      // permission 메뉴 이름 업데이트
+      await pool.query("UPDATE menus SET menu_name = '권한 관리' WHERE menu_code = 'permission' AND menu_name != '권한 관리'");
+    } catch(e) { /* ignore — not critical */ }
+
+    // 10) users.role 레거시 컬럼 제거 (role_id로 완전 전환)
+    try {
+      const [roleCol] = await pool.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'role'`
+      );
+      if (roleCol.length > 0) {
+        await pool.query('ALTER TABLE users DROP COLUMN role');
+        console.log('[RBAC] users.role 레거시 컬럼 제거 완료 (role_id로 전환)');
+      }
+    } catch(e) { console.error('[RBAC] role 컬럼 제거 실패 (무시):', e.message); }
+
+    console.log('[RBAC] RBAC 테이블 및 시드 데이터 준비 완료');
+  } catch (e) {
+    console.error('[RBAC] 테이블 생성/시드 실패:', e.message);
+  }
+}
+
+// ── RBAC 기본 메뉴 (폴백용) ──
+// RBAC 테이블이 아직 준비 안 됐거나, role_id가 NULL인 경우 role_code로 폴백
+const DEFAULT_MENUS_ALL = [
+  { menu_code:'nlq',       menu_name:'자연어 질의',        menu_url:'/',               icon_class:'fas fa-comments',        sort_order:1 },
+  { menu_code:'builder',   menu_name:'비주얼 쿼리 빌더',  menu_url:'/builder.html',   icon_class:'fas fa-th-large',        sort_order:2 },
+  { menu_code:'report',    menu_name:'PPT 분석 장표 생성', menu_url:'/report',         icon_class:'fas fa-file-powerpoint', sort_order:3 },
+  { menu_code:'learning',  menu_name:'학습 관리',          menu_url:'/learning.html',  icon_class:'fas fa-graduation-cap',  sort_order:4 },
+  { menu_code:'permission',menu_name:'권한 관리',           menu_url:'/permission.html',icon_class:'fas fa-shield-alt',      sort_order:5 },
+  { menu_code:'batch',     menu_name:'배치 관리',          menu_url:'/batch.html',     icon_class:'fas fa-sync-alt',        sort_order:6 },
+];
+const DEFAULT_MENUS_USER = DEFAULT_MENUS_ALL.filter(m => ['nlq','builder','report'].includes(m.menu_code));
+
+/**
+ * role 값에 따른 기본 메뉴 폴백
+ */
+function getDefaultMenusByRole(role) {
+  return role === 'admin' ? DEFAULT_MENUS_ALL : DEFAULT_MENUS_USER;
+}
+
+/**
+ * 사용자의 역할에 매핑된 허용 메뉴 목록 조회
+ * RBAC 테이블/role_id가 없으면 기존 role 값으로 폴백
+ * @returns {Array} [{menu_code, menu_name, menu_url, icon_class, sort_order}]
+ */
+async function getUserAllowedMenus(userId) {
+  try {
+    // 먼저 role_id 확인
+    const [userRow] = await pool.query(
+      `SELECT u.role_id, COALESCE(r.role_code, 'user') AS role_code
+       FROM users u LEFT JOIN roles r ON r.id = u.role_id
+       WHERE u.user_id = ?`, [userId]);
+    if (userRow.length === 0) return DEFAULT_MENUS_USER;
+
+    const user = userRow[0];
+
+    // role_id가 NULL이면 기본 메뉴 폴백
+    if (!user.role_id) {
+      console.log(`[RBAC] ${userId}: role_id NULL → role_code='${user.role_code}' 기본 메뉴 폴백`);
+      return getDefaultMenusByRole(user.role_code);
+    }
+
+    const [rows] = await pool.query(`
+      SELECT m.menu_code, m.menu_name, m.menu_url, m.icon_class, m.sort_order
+      FROM roles r
+      JOIN role_menus rm ON rm.role_id = r.id
+      JOIN menus m ON m.id = rm.menu_id AND m.is_active = 1
+      WHERE r.id = ? AND r.is_active = 1
+      ORDER BY m.sort_order
+    `, [user.role_id]);
+
+    // RBAC 매핑이 0건이면 (role_menus 시드 안 됨) role_code로 폴백
+    if (rows.length === 0) {
+      console.log(`[RBAC] ${userId}: role_id=${user.role_id} 매핑 0건 → role_code='${user.role_code}' 기본 메뉴 폴백`);
+      return getDefaultMenusByRole(user.role_code);
+    }
+
+    return rows;
+  } catch (e) {
+    console.error('[RBAC] getUserAllowedMenus 실패:', e.message);
+    // 테이블 자체가 없는 등 오류 → 기본 메뉴 폴백
+    try {
+      const [u] = await pool.query(
+        `SELECT COALESCE(r.role_code, 'user') AS role_code
+         FROM users u LEFT JOIN roles r ON r.id = u.role_id
+         WHERE u.user_id = ?`, [userId]);
+      return getDefaultMenusByRole(u.length > 0 ? u[0].role_code : 'user');
+    } catch (e2) {
+      return DEFAULT_MENUS_USER;
+    }
+  }
+}
+
+/**
+ * URL path가 사용자에게 허용된 메뉴인지 확인
+ * RBAC 실패 시 기존 admin/user 방식으로 폴백
+ */
+async function isMenuAllowed(userId, urlPath) {
+  try {
+    const normalizedPath = urlPath === '/index.html' ? '/' : urlPath;
+
+    // 먼저 role_id 확인
+    const [userRow] = await pool.query(
+      `SELECT u.role_id, COALESCE(r.role_code, 'user') AS role_code
+       FROM users u LEFT JOIN roles r ON r.id = u.role_id
+       WHERE u.user_id = ?`, [userId]);
+    if (userRow.length === 0) return false;
+
+    const user = userRow[0];
+
+    // role_id NULL → 기존 방식 폴백
+    if (!user.role_id) {
+      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
+      if (adminOnly.includes(normalizedPath)) return user.role_code === 'admin';
+      return true; // 기본 페이지는 모두 허용
+    }
+
+    const [rows] = await pool.query(`
+      SELECT COUNT(*) AS cnt
+      FROM roles r
+      JOIN role_menus rm ON rm.role_id = r.id
+      JOIN menus m ON m.id = rm.menu_id AND m.is_active = 1
+      WHERE r.id = ? AND r.is_active = 1 AND m.menu_url = ?
+    `, [user.role_id, normalizedPath]);
+
+    if (rows[0].cnt > 0) return true;
+
+    // role_menus에 매핑이 없을 수도 → 기존 방식 추가 체크
+    const [totalMappings] = await pool.query('SELECT COUNT(*) AS cnt FROM role_menus WHERE role_id = ?', [user.role_id]);
+    if (totalMappings[0].cnt === 0) {
+      // 매핑이 아예 없으면 시드 전 상태 → 기존 방식
+      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
+      if (adminOnly.includes(normalizedPath)) return user.role_code === 'admin';
+      return true;
+    }
+
+    return false;
+  } catch (e) {
+    console.error('[RBAC] isMenuAllowed 실패:', e.message);
+    // 테이블 없음 등 → 기존 방식 폴백
+    try {
+      const [u] = await pool.query(
+        `SELECT COALESCE(r.role_code, 'user') AS role_code
+         FROM users u LEFT JOIN roles r ON r.id = u.role_id
+         WHERE u.user_id = ?`, [userId]);
+      if (u.length === 0) return false;
+      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
+      if (adminOnly.includes(urlPath)) return u[0].role_code === 'admin';
+      return true;
+    } catch (e2) {
+      return true; // 최종 폴백: 접근 허용 (서비스 중단 방지)
+    }
+  }
+}
 
 /**
  * 서버 시작 시 batch_jobs 테이블 자동 생성
@@ -3909,6 +4459,9 @@ app.listen(PORT, '0.0.0.0', async () => {
 
   // 배치관리 테이블 자동 생성
   await ensureBatchJobsTable();
+
+  // RBAC 테이블 자동 생성 + 시드 데이터
+  await ensureRbacTables();
 
   // 서버 시작 시 RAG 인덱스 자동 빌드 (비동기, 서버 응답에 영향 없음)
   try {

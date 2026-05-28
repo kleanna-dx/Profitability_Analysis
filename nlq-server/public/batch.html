@@ -138,30 +138,8 @@
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>
     <div class="sidebar-divider"></div>
-    <nav class="py-2">
-        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-comments"></i><span>자연어 질의</span>
-        </a>
-        <a href="/builder.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
-        </a>
-        <a href="/report" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
-        </a>
-        <a href="/learning.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
-        </a>
-        <a href="/admin.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-users-cog"></i><span>권한 관리</span>
-        </a>
-        <!-- [숨김] 데이터 업로드 기능 일시 비활성화
-        <a href="/upload.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
-        </a>
-        -->
-        <a href="/batch.html" class="sidebar-menu-item active" style="text-decoration:none;">
-            <i class="fas fa-sync-alt"></i><span>배치 관리</span>
-        </a>
+    <nav id="sidebarMenu" class="py-2">
+        <!-- RBAC 동적 렌더링 -->
     </nav>
     <div class="sidebar-divider"></div>
 </aside>
@@ -342,7 +320,17 @@ async function init() {
         const r = await fetch('/api/me');
         const me = await r.json();
         if (!me.loggedIn) { window.location.href = '/login'; return; }
-        if (me.role !== 'admin') { window.location.href = '/'; return; }
+        // RBAC: 메뉴 권한 체크 (서버에서도 체크하지만 클라이언트에서도 체크)
+        const hasBatch = me.menus && me.menus.some(m => m.menu_url === '/batch.html');
+        if (!hasBatch && me.role !== 'admin') { window.location.href = '/?denied=1'; return; }
+        // RBAC: 동적 사이드바 메뉴 렌더링
+        const nav = document.getElementById('sidebarMenu');
+        if (nav && me.menus && me.menus.length > 0) {
+            nav.innerHTML = me.menus.map(m => {
+                const isActive = m.menu_url === '/batch.html';
+                return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive ? ' active' : ''}" style="text-decoration:none;"><i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
+            }).join('');
+        }
     } catch(e) { window.location.href = '/login'; return; }
 
     await loadStats();
