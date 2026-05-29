@@ -70,12 +70,14 @@
         .check-warn{color:#fbbf24;}
         .check-ok{color:#34d399;}
 
-        /* Table */
-        table{width:100%;border-collapse:collapse;font-size:13px;}
-        thead th{background:#f8fafc;padding:11px 14px;text-align:left;font-weight:600;color:#64748b;border-bottom:2px solid #e5e7eb;white-space:nowrap;font-size:12px;text-transform:uppercase;letter-spacing:.3px;}
-        tbody td{padding:10px 14px;border-bottom:1px solid #f1f5f9;color:#334155;vertical-align:middle;}
+        /* Table — 참조 디자인: 세로/가로 border로 컬럼 명확 구분 */
+        table{width:100%;border-collapse:collapse;font-size:13px;border:1px solid #d1d5db;}
+        thead th{background:#f0f3f8;padding:10px 12px;text-align:center;font-weight:600;color:#374151;border:1px solid #d1d5db;white-space:nowrap;font-size:12px;letter-spacing:0;}
+        tbody td{padding:9px 12px;border:1px solid #e5e7eb;color:#334155;vertical-align:middle;}
         tbody tr{transition:background .1s;cursor:pointer;}
-        tbody tr:hover{background:#fafbff;}
+        tbody tr:hover{background:#f5f7ff;}
+        tbody tr:nth-child(even){background:#fafbfc;}
+        tbody tr:nth-child(even):hover{background:#f5f7ff;}
 
         /* Status badges */
         .status-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.3px;}
@@ -253,16 +255,16 @@
                 <table>
                     <thead>
                         <tr>
-                            <th style="width:60px;">ID</th>
+                            <th style="width:50px;">No</th>
                             <th>입력년월</th>
                             <th>실행모드</th>
                             <th>상태</th>
-                            <th>T_DATA 행수</th>
-                            <th>INSERT 행수</th>
+                            <th>처리건수<br><span style="font-size:10px;font-weight:400;color:#94a3b8;">(T_DATA)</span></th>
+                            <th>적재건수<br><span style="font-size:10px;font-weight:400;color:#94a3b8;">(INSERT)</span></th>
                             <th>소요시간</th>
                             <th>실행자</th>
                             <th>실행시각</th>
-                            <th style="width:80px;">로그</th>
+                            <th style="width:70px;">로그</th>
                         </tr>
                     </thead>
                     <tbody id="jobTableBody">
@@ -558,7 +560,7 @@ function renderJobs(jobs) {
         return;
     }
 
-    tbody.innerHTML = jobs.map(j => {
+    tbody.innerHTML = jobs.map((j, idx) => {
         const statusMap = {
             success: '<span class="status-badge status-success"><i class="fas fa-check"></i> 성공</span>',
             failed: '<span class="status-badge status-failed"><i class="fas fa-times"></i> 실패</span>',
@@ -582,17 +584,17 @@ function renderJobs(jobs) {
 
         return `
         <tr onclick="viewJobLog(${j.id})">
-            <td class="mono" style="font-weight:600;color:#4f46e5;">#${j.id}</td>
-            <td style="font-weight:600;">${cmonthDisplay}</td>
-            <td>${modeMap[j.mode] || j.mode}</td>
-            <td>${statusMap[j.status] || j.status}</td>
-            <td class="mono" style="text-align:right;">${j.total_rows ? Number(j.total_rows).toLocaleString() : '-'}</td>
-            <td class="mono" style="text-align:right;">${j.inserted_rows ? Number(j.inserted_rows).toLocaleString() : '-'}</td>
+            <td style="text-align:center;font-weight:500;color:#6b7280;">${idx + 1}</td>
+            <td style="text-align:center;font-weight:600;">${cmonthDisplay}</td>
+            <td style="text-align:center;">${modeMap[j.mode] || j.mode}</td>
+            <td style="text-align:center;">${statusMap[j.status] || j.status}</td>
+            <td class="mono" style="text-align:right;font-weight:600;color:#4f46e5;">${j.total_rows != null ? Number(j.total_rows).toLocaleString() : '-'}</td>
+            <td class="mono" style="text-align:right;font-weight:600;color:#16a34a;">${j.inserted_rows != null ? Number(j.inserted_rows).toLocaleString() : '-'}</td>
             <td style="text-align:center;font-size:12px;color:#64748b;">${elapsed}</td>
-            <td style="font-size:12px;">${j.created_by || '-'}</td>
-            <td style="font-size:12px;color:#64748b;">${createdAt}</td>
+            <td style="text-align:center;font-size:12px;">${j.created_by || '-'}</td>
+            <td style="text-align:center;font-size:12px;color:#64748b;">${createdAt}</td>
             <td style="text-align:center;">
-                <button onclick="event.stopPropagation();viewJobLog(${j.id})" style="padding:4px 10px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;font-size:11px;color:#4f46e5;cursor:pointer;font-family:inherit;" onmouseover="this.style.background='#eef2ff'" onmouseout="this.style.background='#fff'">
+                <button onclick="event.stopPropagation();viewJobLog(${j.id})" style="padding:4px 10px;border:1px solid #d1d5db;border-radius:4px;background:#fff;font-size:11px;color:#4f46e5;cursor:pointer;font-family:inherit;" onmouseover="this.style.background='#eef2ff'" onmouseout="this.style.background='#fff'">
                     <i class="fas fa-terminal"></i>
                 </button>
             </td>
