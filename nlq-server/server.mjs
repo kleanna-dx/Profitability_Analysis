@@ -1544,7 +1544,7 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
 // API: 자연어 질의 실행
 // ============================================================
 app.post('/api/nlq', async (req, res) => {
-  const { query, conversationContext } = req.body;
+  const { query, conversationContext, session_id } = req.body;
   if (!query || !query.trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.' });
   }
@@ -1810,7 +1810,7 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
     const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null)
+    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null)
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
     return res.json(result);
@@ -1820,7 +1820,7 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
 
     // 실패 이력도 저장
     const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, null, null, null, null, 0, 0, 'FAILED', msg)
+    saveHistory(nlqUserId, query, null, null, null, null, null, 0, 0, 'FAILED', msg, session_id || null)
       .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
     return res.status(500).json({ error: msg, query });
@@ -1830,21 +1830,21 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
 // ============================================================
 // 이력 저장 헬퍼 함수
 // ============================================================
-async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg) {
+async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId) {
   // result_data는 최대 100행만 저장 (DB 용량 절약)
   const trimmedData = resultData ? JSON.stringify(resultData.slice(0, 100)) : null;
   const configJson = chartConfig ? JSON.stringify(chartConfig) : null;
   await pool.query(
-    `INSERT INTO nl_query_history (user_id, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [userId || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg]
+    `INSERT INTO nl_query_history (user_id, session_id, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId || null, sessionId || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg]
   );
 
-  // 사용자별 최대 50개 유지
+  // 사용자별 최대 200건 유지
   if (userId) {
     await pool.query(
       `DELETE FROM nl_query_history WHERE user_id = ? AND id NOT IN (
-         SELECT id FROM (SELECT id FROM nl_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50) AS tmp
+         SELECT id FROM (SELECT id FROM nl_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 200) AS tmp
        )`,
       [userId, userId]
     );
@@ -1858,33 +1858,72 @@ app.get('/api/history', async (req, res) => {
   try {
     const userId = req.session?.user?.id || null;
     console.log('[GET /api/history] session user:', JSON.stringify(req.session?.user), '→ userId:', userId);
-    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
 
-    // 로그인하지 않은 사용자에게는 빈 배열 반환 (데이터 유출 방지)
     if (!userId) {
       console.log('[GET /api/history] userId is null/undefined → returning empty array');
       return res.json([]);
     }
 
+    // 세션 단위로 그룹핑하여 반환
     const [rows] = await pool.query(
-      `SELECT id, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message, created_at
-       FROM nl_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
-      [userId, limit]
+      `SELECT
+         COALESCE(session_id, CONCAT('legacy_', id)) AS session_key,
+         MIN(id) AS first_id,
+         MIN(query_text) AS first_query,
+         (SELECT q2.query_text FROM nl_query_history q2 WHERE q2.user_id = ? AND COALESCE(q2.session_id, CONCAT('legacy_', q2.id)) = COALESCE(h.session_id, CONCAT('legacy_', h.id)) ORDER BY q2.created_at ASC LIMIT 1) AS title_query,
+         MAX(created_at) AS last_time,
+         COUNT(*) AS query_count,
+         SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS success_count,
+         SUM(row_count) AS total_rows,
+         session_id
+       FROM nl_query_history h
+       WHERE user_id = ?
+       GROUP BY COALESCE(session_id, CONCAT('legacy_', id))
+       ORDER BY last_time DESC
+       LIMIT ?`,
+      [userId, userId, limit]
     );
-    console.log('[GET /api/history] userId:', userId, '→ rows returned:', rows.length);
-    const result = rows.map(r => ({
-      ...r,
-      chart_config: r.chart_config ? JSON.parse(r.chart_config) : null,
-      result_data: r.result_data ? JSON.parse(r.result_data) : null,
-    }));
-    res.json(result);
+    console.log('[GET /api/history] userId:', userId, '→ sessions returned:', rows.length);
+    res.json(rows);
   } catch (err) {
     console.error('[GET /api/history] error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 이력 단건 조회 (결과 데이터 포함, 본인 이력만)
+// 세션 전체 이력 조회 (세션 내 모든 질문+결과 반환)
+app.get('/api/history/session/:sessionId', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const sessionId = req.params.sessionId;
+
+    let rows;
+    if (sessionId.startsWith('legacy_')) {
+      const id = parseInt(sessionId.replace('legacy_', ''));
+      [rows] = await pool.query(
+        'SELECT * FROM nl_query_history WHERE id=? AND user_id=? ORDER BY created_at ASC',
+        [id, userId]
+      );
+    } else {
+      [rows] = await pool.query(
+        'SELECT * FROM nl_query_history WHERE session_id=? AND user_id=? ORDER BY created_at ASC',
+        [sessionId, userId]
+      );
+    }
+
+    if (rows.length === 0) return res.status(404).json({ error: '이력을 찾을 수 없습니다.' });
+    const result = rows.map(r => ({
+      ...r,
+      chart_config: r.chart_config ? JSON.parse(r.chart_config) : null,
+      result_data: r.result_data ? JSON.parse(r.result_data) : null,
+    }));
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 이력 단건 조회 (하위 호환용)
 app.get('/api/history/:id', async (req, res) => {
   try {
     const userId = req.session?.user?.id || null;
@@ -1898,12 +1937,21 @@ app.get('/api/history/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 이력 삭제 (본인 이력만)
+// 이력 삭제 — 세션 단위 또는 단건 (본인 이력만)
 app.delete('/api/history/:id', async (req, res) => {
   try {
     const userId = req.session?.user?.id || null;
     if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
-    await pool.query('DELETE FROM nl_query_history WHERE id=? AND user_id=?', [req.params.id, userId]);
+    const param = req.params.id;
+
+    if (param.startsWith('legacy_')) {
+      const id = parseInt(param.replace('legacy_', ''));
+      await pool.query('DELETE FROM nl_query_history WHERE id=? AND user_id=?', [id, userId]);
+    } else if (param.includes('-') && param.length > 20) {
+      await pool.query('DELETE FROM nl_query_history WHERE session_id=? AND user_id=?', [param, userId]);
+    } else {
+      await pool.query('DELETE FROM nl_query_history WHERE id=? AND user_id=?', [param, userId]);
+    }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -4719,7 +4767,18 @@ async function ensureBookmarkShareTables() {
       console.log('[Migration] nl_query_history에 user_id 컬럼 추가 완료');
     }
 
-    // 4) shared_queries 테이블 생성 (없으면)
+    // 4) nl_query_history에 session_id 컨럼 추가 (없으면) — 채팅 세션 단위 그룹핑용
+    const [nlSessionCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nl_query_history' AND COLUMN_NAME = 'session_id'`
+    );
+    if (nlSessionCols.length === 0) {
+      await pool.query(`ALTER TABLE nl_query_history ADD COLUMN session_id varchar(36) DEFAULT NULL COMMENT '채팅 세션 ID (UUID)' AFTER user_id`);
+      await pool.query(`ALTER TABLE nl_query_history ADD INDEX idx_nl_session_id (user_id, session_id)`);
+      console.log('[Migration] nl_query_history에 session_id 컨럼 추가 완료');
+    }
+
+    // 5) shared_queries 테이블 생성 (없으면)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS shared_queries (
         id              INT AUTO_INCREMENT PRIMARY KEY,
