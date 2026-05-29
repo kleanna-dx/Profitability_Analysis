@@ -2908,7 +2908,7 @@ app.get('/api/builder/columns', async (req, res) => {
     const [dbCols] = await pool.query(`
       SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT
       FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data'
+      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data'
       ORDER BY ORDINAL_POSITION
     `);
 
@@ -2972,7 +2972,7 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
     // 화이트리스트 검증
     const [check] = await pool.query(`
       SELECT COLUMN_NAME FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data' AND COLUMN_NAME = ?
+      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data' AND COLUMN_NAME = ?
     `, [columnName]);
     if (check.length === 0) {
       return res.status(404).json({ error: `존재하지 않는 컬럼: ${columnName}` });
@@ -3021,7 +3021,7 @@ app.post('/api/builder/query', async (req, res) => {
     // 화이트리스트: DB 실제 컬럼명 검증
     const [validColRows] = await pool.query(`
       SELECT COLUMN_NAME FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data'
+      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data'
     `);
     const validCols = new Set(validColRows.map(r => r.COLUMN_NAME));
 
@@ -3088,7 +3088,7 @@ app.post('/api/builder/query', async (req, res) => {
       try {
         const [typeRows] = await pool.query(`
           SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA='company_board' AND TABLE_NAME='bw_profitability_data'
+          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data'
         `);
         numericColSet = new Set(typeRows.filter(r => numericTypes.has(r.DATA_TYPE.toLowerCase())).map(r => r.COLUMN_NAME));
       } catch(e) { /* fallback: 빈 set */ }
@@ -4766,7 +4766,7 @@ app.listen(PORT, '0.0.0.0', async () => {
     // rag_embeddings 테이블 존재 확인
     const [tables] = await pool.query(
       `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.TABLES 
-       WHERE TABLE_SCHEMA = 'company_board' AND TABLE_NAME = 'rag_embeddings'`
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'rag_embeddings'`
     );
     if (tables[0].cnt === 0) {
       console.log('[RAG] rag_embeddings 테이블이 없습니다. 생성합니다...');
