@@ -71,7 +71,7 @@
         .domain-btn.locked{opacity:0.5;cursor:not-allowed;}
         .domain-btn.locked.active{opacity:1;}
         .domain-lock-icon{font-size:10px;margin-left:2px;color:#fbbf24;}
-        .domain-info-banner{background:linear-gradient(135deg,#eef2ff,#e0e7ff);border:1px solid #c7d2fe;border-radius:10px;padding:10px 16px;margin:0 24px 0;font-size:12px;color:#4338ca;display:flex;align-items:center;gap:8px;animation:fadeInDown .4s ease;}
+        .domain-info-banner{background:linear-gradient(135deg,#eef2ff,#e0e7ff);border:1px solid #c7d2fe;border-radius:10px;padding:6px 14px;font-size:13px;font-weight:700;color:#4338ca;display:flex;align-items:center;gap:6px;animation:fadeInDown .4s ease;white-space:nowrap;max-width:480px;overflow:hidden;text-overflow:ellipsis;}
         @keyframes fadeInDown{from{opacity:0;transform:translateY(-10px);}to{opacity:1;transform:translateY(0);}}
         .domain-force-overlay{position:fixed;inset:0;z-index:2000;background:rgba(15,23,42,0.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;animation:fadeIn .3s ease;}
         @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
@@ -573,6 +573,7 @@
 
         <!-- 도메인 선택 (모든 사용자) -->
         <div id="domainSelectorBar" class="domain-selector-bar" style="display:none;"></div>
+        <div id="domainInfoBanner" class="domain-info-banner" style="display:none;"><i class="fas fa-info-circle" style="color:#6366f1;"></i><span id="domainInfoText"></span></div>
         <div style="flex:1;"></div>
 
         <div class="status-pill">
@@ -601,7 +602,6 @@
             <i class="fas fa-sign-out-alt"></i><span class="hidden sm:inline">로그아웃</span>
         </button>
     </div>
-    <div id="domainInfoBanner" class="domain-info-banner" style="display:none;"><i class="fas fa-info-circle"></i><span id="domainInfoText"></span></div>
     <div id="domainForceOverlay" class="domain-force-overlay" style="display:none;">
         <div class="domain-force-card">
             <div style="font-size:40px;margin-bottom:16px;">🔍</div>
@@ -763,9 +763,9 @@ function updateDomainInfoBanner() {
     const text = document.getElementById('domainInfoText');
     if (!banner || !text) return;
     const label = domainsList.find(d => d.domain_code === currentDomain)?.domain_name || currentDomain;
-    text.textContent = `현재 분석 영역은 ${label} (${currentDomain})입니다. 분석 영역에 따라 조회 가능한 필드, 산식, 학습 데이터가 달라집니다.`;
+    text.textContent = `${label} (${currentDomain}) 기준 — 필드·산식·학습 데이터가 달라집니다`;
     banner.style.display = 'flex';
-    setTimeout(() => { banner.style.display = 'none'; }, 5000);
+    setTimeout(() => { banner.style.display = 'none'; }, 8000);
 }
 
 function showDomainForceOverlay() {

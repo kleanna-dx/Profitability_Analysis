@@ -11,6 +11,7 @@ import fs from 'fs';
 import multer from 'multer';
 import XLSX from 'xlsx-js-style';
 import session from 'express-session';
+import expressMySQLSession from 'express-mysql-session';
 import crypto from 'crypto';
 import {
   buildRagIndex,
@@ -27,10 +28,34 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ============================================================
-// 세션 설정
+// 세션 설정 (MariaDB 영구 저장소 — PM2 재시작 시에도 세션 유지)
 // ============================================================
+const MySQLStore = expressMySQLSession(session);
+const sessionStoreOptions = {
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '3306'),
+  user: process.env.DB_USER || 'company',
+  password: process.env.DB_PASSWORD || 'company1234!',
+  database: process.env.DB_NAME || 'company_board',
+  charset: 'utf8mb4',
+  clearExpired: true,
+  checkExpirationInterval: 15 * 60 * 1000, // 15분마다 만료 세션 정리
+  expiration: 24 * 60 * 60 * 1000, // 24시간
+  createDatabaseTable: true,
+  schema: {
+    tableName: 'sessions',
+    columnNames: {
+      session_id: 'session_id',
+      expires: 'expires',
+      data: 'data'
+    }
+  }
+};
+const sessionStore = new MySQLStore(sessionStoreOptions);
 app.use(session({
-  secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
+  key: 'nlq_session',
+  secret: process.env.SESSION_SECRET || 'kleannara-nlq-fallback-secret-2026',
+  store: sessionStore,
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -3053,7 +3078,7 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
 // POST /api/builder/query - 쿼리 빌더 실행
 app.post('/api/builder/query', async (req, res) => {
   const { fields, conditions, group_by, order_by, order_dir, limit: limitStr, prompt,
-          date_start, date_end, compare_yoy, compare_mom, compare_dims } = req.body;
+          date_start, date_end, compare_yoy, compare_mom, compare_dims, history_id } = req.body;
 
   console.log(`[Builder] 요청: fields=${fields?.length}, compare_mom=${compare_mom}, compare_yoy=${compare_yoy}, date=${date_start}~${date_end}, compare_dims=${JSON.stringify(compare_dims)}`);
 
@@ -3398,11 +3423,13 @@ app.post('/api/builder/query', async (req, res) => {
 
     // 히스토리 자동 저장 (비동기, 실패해도 응답에 영향 없음)
     const histUserId = req.session?.user?.id || null;
-    saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, sql, clean.length, 0, 'SUCCESS', null)
-      .catch(e => console.error('[Builder History] 저장 실패:', e.message));
+    const activeDomain = await getActiveDomain(req);
+    const savedId = saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, sql, clean.length, 0, 'SUCCESS', null, history_id || null, activeDomain)
+      .catch(e => { console.error('[Builder History] 저장 실패:', e.message); return null; });
 
     // 비교모드일 때 compare_info 포함
-    const responseObj = { success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart };
+    const hid = await savedId;
+    const responseObj = { success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart, history_id: hid || null };
     if (hasCompare && measureFields.length > 0) {
       // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
       const allDimAliases = fields.filter(f => {
@@ -3426,7 +3453,8 @@ app.post('/api/builder/query', async (req, res) => {
     console.error('[Builder] query error:', err.message);
     // 실패 이력도 저장
     const histUserId = req.session?.user?.id || null;
-    saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, null, 0, 0, 'FAILED', err.message)
+    const activeDomain = await getActiveDomain(req);
+    saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, null, 0, 0, 'FAILED', err.message, null, activeDomain)
       .catch(e => console.error('[Builder History] 실패이력 저장 실패:', e.message));
     res.status(500).json({ error: `DB 오류: ${err.message}`, sql: '' });
   }
@@ -3445,7 +3473,7 @@ function builderSuggestChart(cols, rowCount) {
 // ============================================================
 // 빌더 히스토리 저장 헬퍼 함수
 // ============================================================
-async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, orderDir, limitVal, prompt, sql, rowCount, execTime, status, errorMsg) {
+async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, orderDir, limitVal, prompt, sql, rowCount, execTime, status, errorMsg, existingHistoryId, domainCode) {
   // 제목 자동 생성: 필드 alias 기반 (alias에 이미 집계함수가 포함되어 있으므로 그대로 사용)
   const fieldLabels = (fields || []).map(f => f.alias || f.column);
   let title = fieldLabels.slice(0, 3).join(', ');
@@ -3456,9 +3484,43 @@ async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, 
   }
   if (!title) title = 'Untitled Query';
 
-  await pool.query(
-    `INSERT INTO builder_query_history (user_id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  // 기존 이력 ID가 전달된 경우 → UPDATE (재실행 시 중복 방지)
+  if (existingHistoryId) {
+    const [existing] = await pool.query(
+      'SELECT id FROM builder_query_history WHERE id = ? AND user_id = ?',
+      [existingHistoryId, userId]
+    );
+    if (existing.length > 0) {
+      await pool.query(
+        `UPDATE builder_query_history SET title=?, fields_json=?, conditions_json=?, group_by_json=?, order_by=?, order_dir=?, limit_val=?, prompt=?, generated_sql=?, row_count=?, execution_time_ms=?, status=?, error_message=?, domain_code=?, created_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`,
+        [
+          title.substring(0, 200),
+          JSON.stringify(fields || []),
+          JSON.stringify(conditions || []),
+          JSON.stringify(groupBy || []),
+          orderBy || null,
+          orderDir || 'DESC',
+          parseInt(limitVal) || 1000,
+          prompt || null,
+          sql || null,
+          rowCount || 0,
+          execTime || 0,
+          status,
+          errorMsg || null,
+          domainCode || null,
+          existingHistoryId,
+          userId,
+        ]
+      );
+      console.log(`[Builder History] 기존 이력 업데이트 완료: id=${existingHistoryId}`);
+      return existingHistoryId;
+    }
+  }
+
+  // 새 이력 INSERT
+  const [insertResult] = await pool.query(
+    `INSERT INTO builder_query_history (user_id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, domain_code)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId || null,
       title.substring(0, 200),
@@ -3474,8 +3536,11 @@ async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, 
       execTime || 0,
       status,
       errorMsg || null,
+      domainCode || null,
     ]
   );
+  const newId = insertResult.insertId;
+  console.log(`[Builder History] 새 이력 저장: id=${newId}`);
 
   // 사용자별 최대 50개 유지: 초과분 삭제
   if (userId) {
@@ -3492,6 +3557,7 @@ async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, 
        )`
     );
   }
+  return newId;
 }
 
 // ============================================================
@@ -3514,7 +3580,7 @@ app.get('/api/builder/history', async (req, res) => {
     if (tab === 'bookmarked') {
       // 즐겨찾기 탭: 본인의 북마크된 이력만
       [rows] = await pool.query(
-        `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, is_bookmarked, created_at
+        `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, is_bookmarked, domain_code, created_at
          FROM builder_query_history WHERE user_id = ? AND is_bookmarked = 1 ORDER BY created_at DESC LIMIT ?`,
         [userId, limit]
       );
@@ -3532,7 +3598,7 @@ app.get('/api/builder/history', async (req, res) => {
     } else {
       // 최근이력 탭: 본인의 이력만 (user_id 기반 엄격 필터)
       [rows] = await pool.query(
-        `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, is_bookmarked, created_at
+        `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, is_bookmarked, domain_code, created_at
          FROM builder_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
         [userId, limit]
       );
@@ -3555,15 +3621,20 @@ app.get('/api/builder/history', async (req, res) => {
 app.get('/api/builder/history/:id', async (req, res) => {
   try {
     const userId = req.session?.user?.id || null;
+    console.log(`[GET /api/builder/history/${req.params.id}] userId=${userId}`);
     if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
     const [rows] = await pool.query('SELECT * FROM builder_query_history WHERE id=? AND user_id=?', [req.params.id, userId]);
+    console.log(`[GET /api/builder/history/${req.params.id}] rows found: ${rows.length}`);
     if (rows.length === 0) return res.status(404).json({ error: '이력을 찾을 수 없습니다.' });
     const r = rows[0];
     r.fields_json = r.fields_json ? JSON.parse(r.fields_json) : [];
     r.conditions_json = r.conditions_json ? JSON.parse(r.conditions_json) : [];
     r.group_by_json = r.group_by_json ? JSON.parse(r.group_by_json) : [];
     res.json(r);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error(`[GET /api/builder/history/${req.params.id}] error:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/builder/history/:id', async (req, res) => {
@@ -4757,6 +4828,16 @@ async function ensureBookmarkShareTables() {
       await pool.query(`ALTER TABLE builder_query_history ADD COLUMN is_bookmarked tinyint(1) NOT NULL DEFAULT 0 COMMENT '북마크 여부' AFTER error_message`);
       await pool.query(`ALTER TABLE builder_query_history ADD INDEX idx_bookmark (user_id, is_bookmarked)`);
       console.log('[Migration] builder_query_history에 is_bookmarked 컬럼 추가 완료');
+    }
+
+    // 2-1) builder_query_history에 domain_code 컬럼 추가 (없으면) — 도메인 배지 표시용
+    const [bldDomainCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'builder_query_history' AND COLUMN_NAME = 'domain_code'`
+    );
+    if (bldDomainCols.length === 0) {
+      await pool.query(`ALTER TABLE builder_query_history ADD COLUMN domain_code varchar(20) DEFAULT NULL COMMENT '분석 영역 도메인 코드' AFTER is_bookmarked`);
+      console.log('[Migration] builder_query_history에 domain_code 컬럼 추가 완료');
     }
 
     // 3) nl_query_history에 user_id 컬럼 추가 (없으면)

@@ -46,7 +46,7 @@
         .domain-btn.active{background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;box-shadow:0 2px 8px rgba(79,70,229,0.3);}
         .domain-btn.locked{opacity:0.5;cursor:not-allowed;}.domain-btn.locked.active{opacity:1;}
         .domain-lock-icon{font-size:10px;margin-left:2px;color:#fbbf24;}
-        .domain-info-banner{background:linear-gradient(135deg,#eef2ff,#e0e7ff);border:1px solid #c7d2fe;border-radius:10px;padding:10px 16px;margin:0 16px 12px;font-size:12px;color:#4338ca;display:flex;align-items:center;gap:8px;animation:fadeInDown .4s ease;}
+        .domain-info-banner{background:linear-gradient(135deg,#eef2ff,#e0e7ff);border:1px solid #c7d2fe;border-radius:10px;padding:6px 14px;font-size:13px;font-weight:700;color:#4338ca;display:flex;align-items:center;gap:6px;animation:fadeInDown .4s ease;white-space:nowrap;max-width:480px;overflow:hidden;text-overflow:ellipsis;}
         @keyframes fadeInDown{from{opacity:0;transform:translateY(-10px);}to{opacity:1;transform:translateY(0);}}
         .domain-force-overlay{position:fixed;inset:0;z-index:2000;background:rgba(15,23,42,0.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;animation:fadeIn .3s ease;}
         @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
@@ -59,6 +59,10 @@
         .domain-force-btn:hover{border-color:#6366f1;background:#eef2ff;color:#4f46e5;transform:translateY(-2px);box-shadow:0 4px 12px rgba(99,102,241,0.15);}
         .domain-force-btn.sparkle{animation:sparkle 1.5s ease-in-out infinite;}
         @keyframes sparkle{0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,0);}50%{box-shadow:0 0 20px 4px rgba(99,102,241,0.3);}}
+        .new-builder-btn{display:flex;align-items:center;justify-content:center;gap:7px;width:calc(100% - 24px);margin:0 12px 8px;padding:9px 0;background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;border:none;border-radius:10px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .2s ease;box-shadow:0 2px 8px rgba(79,70,229,0.25);white-space:nowrap;}
+        .new-builder-btn:hover{background:linear-gradient(135deg,#4338ca,#4f46e5);box-shadow:0 4px 12px rgba(79,70,229,0.35);transform:translateY(-1px);}
+        .new-builder-btn:active{transform:translateY(0);box-shadow:0 2px 6px rgba(79,70,229,0.2);}
+        .new-builder-btn i{font-size:11px;}
 
         /* ===== Main Layout ===== */
         .container { max-width:1440px; margin:0 auto; padding:20px 16px; }
@@ -686,6 +690,9 @@
             <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>쿼리 이력</p>
             <span id="historyClearBtn" class="history-clear-btn" onclick="clearAllBuilderHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
         </div>
+        <button class="new-builder-btn" onclick="newQueryBuilder()" title="현재 쿼리빌더를 초기화하고 새로 시작합니다">
+            <i class="fas fa-plus"></i> 새 쿼리빌더
+        </button>
         <div class="history-tabs">
             <div class="history-tab active" data-tab="recent" onclick="switchHistoryTab('recent')"><i class="fas fa-clock" style="margin-right:3px;"></i>최근</div>
             <div class="history-tab" data-tab="bookmarked" onclick="switchHistoryTab('bookmarked')"><i class="fas fa-star" style="margin-right:3px;"></i>즐겨찾기</div>
@@ -732,11 +739,11 @@
         <span style="font-size:0.75rem;color:#94a3b8;">필드 선택 → 조건 설정 → 데이터 조회</span>
     </div>
     <div id="domainSelectorBar" class="domain-selector-bar" style="display:none;"></div>
+    <div id="domainInfoBanner" class="domain-info-banner" style="display:none;"><i class="fas fa-info-circle" style="color:#6366f1;"></i><span id="domainInfoText"></span></div>
     <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-left:auto;margin-right:8px;display:none;"></div>
     <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
 </div>
 
-<div id="domainInfoBanner" class="domain-info-banner" style="display:none;"><i class="fas fa-info-circle"></i><span id="domainInfoText"></span></div>
 <div id="domainForceOverlay" class="domain-force-overlay" style="display:none;">
     <div class="domain-force-card">
         <div style="font-size:40px;margin-bottom:16px;">🔍</div>
@@ -958,6 +965,7 @@ let chartInstance = null;
 let valuesCache = {};
 let lastResultColumns = [];
 let lastResultRows = [];
+let loadedHistoryId = null; // 기존 이력 클릭 시 설정 → 재실행 시 UPDATE 용
 
 // 날짜 조건 상태
 let compareYoY = false;
@@ -1013,8 +1021,8 @@ function updateDomainInfoBanner(){
     const banner=document.getElementById('domainInfoBanner'),text=document.getElementById('domainInfoText');
     if(!banner||!text)return;
     const label=domainsList.find(d=>d.domain_code===currentDomain)?.domain_name||currentDomain;
-    text.textContent=`현재 분석 영역은 ${label} (${currentDomain})입니다. 분석 영역에 따라 필드 목록과 산식 기준이 달라집니다.`;
-    banner.style.display='flex';setTimeout(()=>{banner.style.display='none';},5000);
+    text.textContent=`${label} (${currentDomain}) 기준 — 필드·산식 기준이 달라집니다`;
+    banner.style.display='flex';setTimeout(()=>{banner.style.display='none';},8000);
 }
 function showDomainForceOverlay(){
     const overlay=document.getElementById('domainForceOverlay'),btnsEl=document.getElementById('domainForceBtns');
@@ -1031,7 +1039,9 @@ async function selectForceDomain(dc){
 function onBuilderDomainClick(dc){
     if(dc===currentDomain)return;
     if(builderDomainLocked){
-        alert(`현재 비주얼 쿼리 빌더는 ${domainsList.find(d=>d.domain_code===currentDomain)?.domain_name||currentDomain} (${currentDomain}) 기준으로 구성되어 있습니다.\n분석 영역을 변경하려면 필드를 초기화해주세요.`);
+        const curLabel=domainsList.find(d=>d.domain_code===currentDomain)?.domain_name||currentDomain;
+        const newLabel=domainsList.find(d=>d.domain_code===dc)?.domain_name||dc;
+        alert(`현재 쿼리빌더는 ${curLabel} (${currentDomain}) 기준으로 구성되어 있습니다.\n\n${newLabel} (${dc})(으)로 변경하려면 좌측 사이드바의 "새 쿼리빌더" 버튼을 눌러주세요.`);
         return;
     }
     switchDomain(dc);
@@ -1042,6 +1052,59 @@ async function switchDomain(dc){
         currentDomain=dc;renderDomainSelectorBar();updateDomainInfoBanner();loadColumns();
     }catch(e){}
 }
+
+// ─── 새 쿼리빌더 (전체 초기화 + 도메인 잠금 해제) ───
+function newQueryBuilder(){
+    // 1) 필드 초기화
+    selectedFields = [];
+    renderSelectedFields();
+    updateOrderByOptions();
+
+    // 2) 조건 초기화
+    conditions = [];
+    renderConditions();
+
+    // 3) 비교 기준 DIM 초기화
+    compareDimSelections = {};
+    updateCompareDimPanel();
+
+    // 4) 프롬프트 초기화
+    const promptEl = document.getElementById('promptInput');
+    if(promptEl) promptEl.value = '';
+
+    // 5) 날짜 비교 옵션 초기화
+    compareYoY = false; compareMoM = false;
+    const yoyEl = document.getElementById('yoyToggle');
+    const momEl = document.getElementById('momToggle');
+    if(yoyEl) yoyEl.checked = false;
+    if(momEl) momEl.checked = false;
+
+    // 6) 결과 영역 초기화
+    lastResultColumns = []; lastResultRows = [];
+    const resultsSection = document.getElementById('resultsSection');
+    if(resultsSection) resultsSection.classList.remove('active');
+    const sqlPreview = document.getElementById('sqlPreview');
+    if(sqlPreview) sqlPreview.classList.remove('active');
+    const errorBox = document.getElementById('errorBox');
+    if(errorBox) errorBox.classList.remove('active');
+
+    // 7) 차트 초기화
+    if(chartInstance){ chartInstance.destroy(); chartInstance = null; }
+
+    // 8) 도메인 잠금 해제 + 이력 ID 초기화
+    builderDomainLocked = false;
+    loadedHistoryId = null;
+    renderDomainSelectorBar();
+
+    // 9) 정렬/제한 초기화
+    const orderBy = document.getElementById('orderBySelect');
+    if(orderBy) orderBy.value = '';
+    const orderDir = document.getElementById('orderDirSelect');
+    if(orderDir) orderDir.value = 'DESC';
+    const limitSel = document.getElementById('limitSelect');
+    if(limitSel) limitSel.value = '1000';
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
     await initDomainAndRole();
     initDateSelectors();
@@ -1666,6 +1729,7 @@ async function executeQuery() {
         compare_dims: (compareYoY || compareMoM)
             ? Object.keys(compareDimSelections).filter(k => compareDimSelections[k])
             : [],
+        history_id: loadedHistoryId || null,
     };
 
     try {
@@ -1678,6 +1742,9 @@ async function executeQuery() {
         document.getElementById('loading').classList.remove('active');
 
         if (data.error) { showError(data.error, data.sql); return; }
+
+        // 서버가 반환한 history_id 저장 (다음 재실행 시 UPDATE 용)
+        if (data.history_id) loadedHistoryId = data.history_id;
 
         if (data.sql) {
             document.getElementById('sqlPreviewText').innerHTML = highlightSQL(data.sql);
@@ -2033,11 +2100,14 @@ function renderBuilderHistory(items) {
             const starCls = item.is_bookmarked ? 'bookmarked' : '';
             const starIcon = item.is_bookmarked ? 'fa-star' : 'fa-star';
             const starStyle = item.is_bookmarked ? 'fas' : 'far';
+            // 도메인 배지
+            const dc = item.domain_code;
+            const domainBadge = dc ? `<span style="display:inline-block;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};">[${dc}]</span>` : '';
             html += `
                 <div class="history-item" data-id="${item.id}" onclick="restoreBuilderHistory(${item.id})">
                     <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
                     <div class="history-item-text">
-                        <div class="history-item-query">${escHistHtml(item.title)}</div>
+                        <div class="history-item-query">${domainBadge}${escHistHtml(item.title)}</div>
                         <div class="history-item-meta">${meta}</div>
                     </div>
                     <div class="history-item-actions">
@@ -2073,6 +2143,19 @@ function escHistHtml(s) {
     const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
 }
 
+// --- 이력 복원 시 도메인 전환 + 잠금 (자연어 질의와 동일 패턴) ---
+async function switchDomainForHistory(domainCode) {
+    if (!domainCode) return; // domain_code 없는 레거시 이력은 현재 도메인 유지
+    if (domainCode !== currentDomain) {
+        // 도메인이 다르면 전환 + 필드 목록 새로고침
+        currentDomain = domainCode;
+        await fetch('/api/me/domain', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:domainCode})}).catch(()=>{});
+        await loadColumns(); // 새 도메인의 필드 목록 로드 (await로 완료 대기)
+    }
+    builderDomainLocked = true;
+    renderDomainSelectorBar();
+}
+
 // --- 이력 복원 (최근이력/즐겨찾기) ---
 async function restoreBuilderHistory(id) {
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
@@ -2082,7 +2165,13 @@ async function restoreBuilderHistory(id) {
     try {
         const res = await fetch('/api/builder/history/' + id);
         const item = await res.json();
-        if (item.error) { alert('이력을 불러올 수 없습니다.'); return; }
+        if (item.error) {
+            if (res.status === 401) { alert('세션이 만료되었습니다. 페이지를 새로고침해주세요.'); location.reload(); return; }
+            alert('이력을 불러올 수 없습니다: ' + item.error); return;
+        }
+        loadedHistoryId = id; // 기존 이력 → 재실행 시 UPDATE
+        // 이력의 도메인으로 전환 + 잠금 (자연어 질의와 동일)
+        await switchDomainForHistory(item.domain_code);
         applyHistoryToBuilder(item);
     } catch(e) {
         alert('이력 불러오기 오류: ' + e.message);
@@ -2098,7 +2187,13 @@ async function restoreSharedHistory(id) {
     try {
         const res = await fetch('/api/builder/shared/' + id);
         const item = await res.json();
-        if (item.error) { alert('공유 이력을 불러올 수 없습니다.'); return; }
+        if (item.error) {
+            if (res.status === 401) { alert('세션이 만료되었습니다. 페이지를 새로고침해주세요.'); location.reload(); return; }
+            alert('공유 이력을 불러올 수 없습니다: ' + item.error); return;
+        }
+        loadedHistoryId = null; // 공유 이력 → 재실행 시 새 이력 생성
+        // 공유 이력도 도메인 전환 + 잠금
+        await switchDomainForHistory(item.domain_code);
         applyHistoryToBuilder(item);
         // 읽음 처리 후 뱃지 업데이트
         loadUnreadSharedCount();
@@ -2112,6 +2207,8 @@ async function restoreSharedHistory(id) {
 
 // --- 공통 복원 로직 ---
 function applyHistoryToBuilder(item) {
+    // 0. 이력 ID는 호출자가 설정 (restoreBuilderHistory → set, restoreSharedHistory → null)
+
     // 1. 필드 복원
     selectedFields = (item.fields_json || []).map(f => ({
         column: f.column,
