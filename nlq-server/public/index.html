@@ -960,6 +960,12 @@ async function sendQuery(query) {
     if (isLoading) return;
     isLoading = true;
 
+    // 첫 질문 시 도메인 고정 — 같은 세션 안에서 도메인 변경 차단
+    if (!sessionDomainLocked) {
+        sessionDomainLocked = true;
+        renderDomainSelectorBar();
+    }
+
     const btn = document.getElementById('sendBtn');
     btn.disabled = true;
 
@@ -1887,6 +1893,8 @@ async function clearAllHistory() {
 function startNewChat() {
     chatSessionId = crypto.randomUUID();
     conversationContext = [];
+    sessionDomainLocked = false;
+    renderDomainSelectorBar();
     const chatArea = document.getElementById('chatArea');
     const welcome = document.getElementById('welcomeSection');
     chatArea.innerHTML = '';
