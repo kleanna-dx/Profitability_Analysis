@@ -13,6 +13,7 @@
     "crypto": "^1.0.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-mysql-session": "^3.0.3",
     "express-session": "^1.19.0",
     "hono": "^4.12.12",
     "js-yaml": "^4.1.1",
