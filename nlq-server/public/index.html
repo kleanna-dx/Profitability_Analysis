@@ -513,6 +513,13 @@
 
     <div class="sidebar-divider"></div>
 
+    <!-- New Chat Button -->
+    <div style="padding:0 16px 8px;">
+        <button onclick="startNewChat();closeSidebar();" style="width:100%;padding:8px 12px;background:rgba(99,102,241,0.2);border:1px solid rgba(99,102,241,0.3);border-radius:8px;color:#c7d2fe;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all .15s;" onmouseover="this.style.background='rgba(99,102,241,0.35)'" onmouseout="this.style.background='rgba(99,102,241,0.2)'">
+            <i class="fas fa-plus"></i> 새 채팅
+        </button>
+    </div>
+
     <!-- Recent History -->
     <div>
         <div class="history-header">
@@ -637,6 +644,7 @@ let msgCounter = 0;
 // 최근 5턴만 유지 (토큰 절약)
 let conversationContext = [];
 let historyCache = []; // 이력 캐시
+let chatSessionId = crypto.randomUUID();
 
 const SUGGESTIONS = [
     '손익센터별 총매출 합계',
@@ -694,7 +702,7 @@ async function initDomainAndRole() {
             nav.innerHTML = me.menus.map(m => {
                 const isActive = (m.menu_url === '/') ? (currentPath === '/' || currentPath === '/index.html') : (currentPath === m.menu_url);
                 if (m.menu_url === '/') {
-                    return `<div class="sidebar-menu-item${isActive ? ' active' : ''}" onclick="closeSidebar()">
+                    return `<div class="sidebar-menu-item${isActive ? ' active' : ''}" onclick="startNewChat();closeSidebar()">
                         <i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span>
                     </div>`;
                 }
@@ -948,7 +956,7 @@ async function sendQuery(query) {
         const res = await fetch('/api/nlq', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, conversationContext }),
+            body: JSON.stringify({ query, conversationContext, session_id: chatSessionId }),
             signal: controller.signal,
         });
         clearTimeout(timeoutId);
@@ -1700,21 +1708,25 @@ function renderHistoryList(items) {
     }
     let html = '';
     items.forEach(item => {
-        const isSuccess = item.status === 'SUCCESS';
-        const icon = isSuccess ? 'fa-check' : 'fa-times';
-        const iconCls = isSuccess ? 'success' : 'failed';
-        const time = formatHistoryTime(item.created_at);
-        const meta = isSuccess
-            ? `${item.row_count}행 · ${item.execution_time_ms}ms · ${time}`
-            : `실패 · ${time}`;
+        const sessionKey = item.session_key || ('legacy_' + item.first_id);
+        const qCount = item.query_count || 1;
+        const title = item.title_query || item.first_query || '(제목 없음)';
+        const time = formatHistoryTime(item.last_time);
+        const isAllSuccess = item.success_count == qCount;
+        const icon = isAllSuccess ? 'fa-comments' : 'fa-exclamation-circle';
+        const iconCls = isAllSuccess ? 'success' : 'failed';
+        const isCurrentSession = item.session_id === chatSessionId;
+        const activeCls = isCurrentSession ? ' active' : '';
+        const countBadge = qCount > 1 ? `<span style="display:inline-block;background:rgba(99,102,241,0.2);color:#a5b4fc;font-size:9px;padding:1px 5px;border-radius:8px;margin-left:4px;">${qCount}개 질문</span>` : '';
+        const meta = `${time}${countBadge}`;
         html += `
-            <div class="history-item" data-id="${item.id}" onclick="restoreHistory(${item.id})">
+            <div class="history-item${activeCls}" data-session="${esc(sessionKey)}" onclick="restoreSession('${esc(sessionKey)}')">
                 <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
                 <div class="history-item-text">
-                    <div class="history-item-query">${esc(item.query_text)}</div>
+                    <div class="history-item-query">${esc(title)}</div>
                     <div class="history-item-meta">${meta}</div>
                 </div>
-                <div class="history-item-del" onclick="event.stopPropagation();deleteHistory(${item.id})" title="삭제">
+                <div class="history-item-del" onclick="event.stopPropagation();deleteSession('${esc(sessionKey)}')" title="삭제">
                     <i class="fas fa-times"></i>
                 </div>
             </div>`;
@@ -1734,45 +1746,57 @@ function formatHistoryTime(dateStr) {
     return (d.getMonth()+1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
 }
 
-async function restoreHistory(id) {
-    // 사이드바에서 active 표시
+async function restoreSession(sessionKey) {
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
-    const target = document.querySelector(`.history-item[data-id="${id}"]`);
+    const target = document.querySelector(`.history-item[data-session="${sessionKey}"]`);
     if (target) target.classList.add('active');
 
     try {
-        const res = await fetch('/api/history/' + id);
-        const item = await res.json();
-        if (item.error) { alert('이력을 불러올 수 없습니다.'); return; }
+        const res = await fetch('/api/history/session/' + encodeURIComponent(sessionKey));
+        const items = await res.json();
+        if (items.error || !Array.isArray(items) || items.length === 0) {
+            alert('이력을 불러올 수 없습니다.');
+            return;
+        }
 
-        // Welcome 숨기기
         const welcome = document.getElementById('welcomeSection');
         if (welcome) welcome.style.display = 'none';
 
         const chatArea = document.getElementById('chatArea');
+        const welcomeEl = chatArea.querySelector('#welcomeSection');
+        chatArea.innerHTML = '';
+        if (welcomeEl) chatArea.appendChild(welcomeEl);
 
-        // 사용자 메시지 표시
-        const userMsg = document.createElement('div');
-        userMsg.className = 'msg-user fade-in';
-        userMsg.textContent = item.query_text;
-        chatArea.appendChild(userMsg);
+        conversationContext = [];
 
-        if (item.status === 'SUCCESS') {
-            // 성공 이력 → 결과 표시
-            appendBotMessage({
-                query: item.query_text,
-                sql: item.generated_sql,
-                explanation: item.explanation,
-                chartType: item.chart_type,
-                chartConfig: item.chart_config || {},
-                data: item.result_data || [],
-                rowCount: item.row_count,
-                executionTimeMs: item.execution_time_ms,
-            });
-        } else {
-            // 실패 이력
-            appendErrorMessage(item.error_message || '실행 실패');
+        if (!sessionKey.startsWith('legacy_') && items[0].session_id) {
+            chatSessionId = items[0].session_id;
         }
+
+        items.forEach(item => {
+            const userMsg = document.createElement('div');
+            userMsg.className = 'msg-user fade-in';
+            userMsg.textContent = item.query_text;
+            chatArea.appendChild(userMsg);
+
+            if (item.status === 'SUCCESS') {
+                appendBotMessage({
+                    query: item.query_text,
+                    sql: item.generated_sql,
+                    explanation: item.explanation,
+                    chartType: item.chart_type,
+                    chartConfig: item.chart_config || {},
+                    data: item.result_data || [],
+                    rowCount: item.row_count,
+                    executionTimeMs: item.execution_time_ms,
+                });
+                conversationContext.push({ query: item.query_text, sql: item.generated_sql });
+            } else {
+                appendErrorMessage(item.error_message || '실행 실패');
+            }
+        });
+
+        if (conversationContext.length > 5) conversationContext = conversationContext.slice(-5);
 
         closeSidebar();
         scrollToBottom();
@@ -1781,12 +1805,20 @@ async function restoreHistory(id) {
     }
 }
 
-async function deleteHistory(id) {
-    if (!confirm('이 이력을 삭제하시겠습니까?')) return;
+async function restoreHistory(id) {
+    return restoreSession('legacy_' + id);
+}
+
+async function deleteSession(sessionKey) {
+    if (!confirm('이 대화 이력을 삭제하시겠습니까?')) return;
     try {
-        await fetch('/api/history/' + id, { method: 'DELETE' });
+        await fetch('/api/history/' + encodeURIComponent(sessionKey), { method: 'DELETE' });
         await loadHistory();
     } catch(e) { alert('삭제 실패: ' + e.message); }
+}
+
+async function deleteHistory(id) {
+    return deleteSession('legacy_' + id);
 }
 
 async function clearAllHistory() {
@@ -1795,6 +1827,25 @@ async function clearAllHistory() {
         await fetch('/api/history', { method: 'DELETE' });
         await loadHistory();
     } catch(e) { alert('삭제 실패: ' + e.message); }
+}
+
+function startNewChat() {
+    chatSessionId = crypto.randomUUID();
+    conversationContext = [];
+    const chatArea = document.getElementById('chatArea');
+    const welcome = document.getElementById('welcomeSection');
+    chatArea.innerHTML = '';
+    if (welcome) {
+        welcome.style.display = '';
+        chatArea.appendChild(welcome);
+    } else {
+        chatArea.innerHTML = `<div id="welcomeSection" class="welcome-section">
+            <div class="welcome-icon"><i class="fas fa-robot"></i></div>
+            <h2 style="margin:0 0 8px;">무엇이든 물어보세요</h2>
+            <p style="color:#94a3b8;font-size:13px;">자연어로 데이터를 조회하고 분석할 수 있습니다</p>
+        </div>`;
+    }
+    document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
 }
 </script>
 </body>
