@@ -181,7 +181,8 @@
             <p class="text-xs text-gray-400">엑셀 파일을 업로드하여 DB에 데이터를 적재합니다</p>
         </div>
     </div>
-    <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;margin-left:auto;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
+    <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-left:auto;margin-right:8px;display:none;"></div>
+    <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
 </div>
 
 <!-- Main Content -->
@@ -428,6 +429,13 @@
 <script>
 // ===== State =====
 let previewData = null; // API preview 응답 저장
+
+// ===== 사용자 정보 표시 =====
+fetch('/api/me').then(r=>r.json()).then(me=>{
+    if(!me.loggedIn) return;
+    const uid = document.getElementById('userInfoDisplay');
+    if(uid && me.name){uid.innerHTML=`<strong style="font-size:13px;color:#1e293b;">${me.name}님</strong><br><span style="font-size:11px;color:#6b7280;font-weight:700;">(${me.user})</span>`;uid.style.display='';}
+}).catch(()=>{});
 
 // ===== Sidebar =====
 function openSidebar() {
