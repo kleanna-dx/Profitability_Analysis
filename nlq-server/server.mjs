@@ -3474,7 +3474,7 @@ app.get('/api/builder/history', async (req, res) => {
                 s.memo, s.is_read, s.from_user_id, u.name AS from_user_name, s.created_at,
                 0 AS row_count, 0 AS execution_time_ms, 'SUCCESS' AS status, NULL AS error_message, 0 AS is_bookmarked
          FROM shared_queries s
-         LEFT JOIN users u ON u.user_id = s.from_user_id
+         LEFT JOIN users u ON u.user_id COLLATE utf8mb4_unicode_ci = s.from_user_id
          WHERE s.to_user_id = ? ORDER BY s.created_at DESC LIMIT ?`,
         [userId, limit]
       );
@@ -3624,7 +3624,7 @@ app.get('/api/builder/shared/:id', async (req, res) => {
     const userId = req.session?.user?.id;
     if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
     const [rows] = await pool.query(
-      `SELECT s.*, u.name AS from_user_name FROM shared_queries s LEFT JOIN users u ON u.user_id = s.from_user_id WHERE s.id=? AND s.to_user_id=?`,
+      `SELECT s.*, u.name AS from_user_name FROM shared_queries s LEFT JOIN users u ON u.user_id COLLATE utf8mb4_unicode_ci = s.from_user_id WHERE s.id=? AND s.to_user_id=?`,
       [req.params.id, userId]
     );
     if (rows.length === 0) return res.status(404).json({ error: '공유 이력을 찾을 수 없습니다.' });
