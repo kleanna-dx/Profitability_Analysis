@@ -576,30 +576,19 @@ async function initLearningDomain() {
             }).join('');
         }
 
-        // domain_code 기반 도메인 결정 (역할 무관)
-        // domain_code가 지정됨 → 해당 영역 고정, null(전체) → 전체 전환 가능
-        const userDomainCode = me.domain_code; // null=전체, 'PS'/'HL'/'MGMT'=고정
-        currentDomain = me.active_domain || userDomainCode || 'PS';
+        // 모든 사용자가 도메인 전환 가능 (기본값은 사용자 domain_code)
+        currentDomain = me.active_domain || me.domain_code || 'PS';
+        isDomainLocked = false; // 학습관리는 모든 사용자 자유 전환
 
         try {
             const dr = await fetch('/api/domains');
             domainsList = await dr.json();
         } catch(e) { domainsList = [{domain_code:'PS',domain_name:'페이퍼솔루션사업부'}]; }
 
-        // domain_code가 지정된 사용자는 해당 영역 고정, null이면 전체 자유 전환
-        if (userDomainCode && userDomainCode !== '' && domainsList.some(d => d.domain_code === userDomainCode)) {
-            isDomainLocked = true;
-            currentDomain = userDomainCode;
-        } else {
-            isDomainLocked = false;
-        }
-
         renderDomainBanner();
 
-        // 전체(domain_code=null)인 경우에만 서버에 active_domain 동기화
-        if (!isDomainLocked) {
-            try { await fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:currentDomain}) }); } catch(e) {}
-        }
+        // 서버에 active_domain 동기화
+        try { await fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:currentDomain}) }); } catch(e) {}
     } catch(e) { console.error(e); }
 }
 

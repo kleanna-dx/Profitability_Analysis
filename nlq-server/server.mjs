@@ -403,8 +403,8 @@ app.get('/api/me', async (req, res) => {
         // 세션 동기화 (다음 요청부터 즉시 반영)
         u.role = roleCode;
         u.domain_code = latestDomainCode;
-        // domain_code가 지정되면 active_domain도 강제 동기화
-        if (latestDomainCode) {
+        // active_domain이 아직 설정되지 않은 경우에만 domain_code로 초기화
+        if (!u.active_domain && latestDomainCode) {
           u.active_domain = latestDomainCode;
         }
       }
@@ -435,12 +435,9 @@ app.get('/api/me', async (req, res) => {
   return res.json({ loggedIn: false });
 });
 
-// 도메인 전환 API (domain_code가 null=전체인 사용자만 전환 가능)
+// 도메인 전환 API (모든 사용자가 분석 영역 전환 가능)
 app.post('/api/me/domain', (req, res) => {
   if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
-  const u = req.session.user;
-  // domain_code가 지정된 사용자는 전환 불가 (이미 고정)
-  if (u.domain_code) return res.status(403).json({ error: '도메인이 고정되어 전환할 수 없습니다.' });
   const { domain_code } = req.body;
   if (!domain_code) return res.status(400).json({ error: 'domain_code 필수' });
   req.session.user.active_domain = domain_code;
@@ -462,22 +459,27 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// 현재 세션의 active_domain 가져오기 (DB 최신 domain_code 반영)
-// domain_code 지정됨 → 해당 도메인 고정, domain_code null(전체) → active_domain 사용
+// 현재 세션의 active_domain 가져오기
+// active_domain(사용자가 명시적으로 선택한 도메인)을 최우선 사용
+// active_domain이 없으면 DB domain_code → 기본 'PS' 순서
 async function getActiveDomain(req) {
   const u = req.session?.user;
   if (!u) return null;
+  // 사용자가 명시적으로 선택한 active_domain이 있으면 우선 사용
+  if (u.active_domain) return u.active_domain;
   // DB에서 최신 domain_code 반영 (권한관리에서 변경 시 즉시 적용)
   try {
     const [row] = await pool.query('SELECT domain_code FROM users WHERE user_id = ?', [u.id]);
     if (row.length > 0) {
       const dbDomain = row[0].domain_code || null;
       u.domain_code = dbDomain;
-      if (dbDomain) u.active_domain = dbDomain;
+      if (dbDomain) {
+        u.active_domain = dbDomain;
+        return dbDomain;
+      }
     }
   } catch(e) { /* 실패 시 세션 값 사용 */ }
-  if (u.domain_code) return u.domain_code; // 도메인 고정
-  return u.active_domain || 'PS'; // 전체 → active_domain (기본 PS)
+  return 'PS'; // 기본값
 }
 
 // ============================================================
@@ -1810,7 +1812,7 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
     const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null)
+    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain)
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
     return res.json(result);
@@ -1820,7 +1822,7 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
 
     // 실패 이력도 저장
     const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, null, null, null, null, null, 0, 0, 'FAILED', msg, session_id || null)
+    saveHistory(nlqUserId, query, null, null, null, null, null, 0, 0, 'FAILED', msg, session_id || null, activeDomain)
       .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
     return res.status(500).json({ error: msg, query });
@@ -1830,14 +1832,14 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
 // ============================================================
 // 이력 저장 헬퍼 함수
 // ============================================================
-async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId) {
+async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId, domainCode) {
   // result_data는 최대 100행만 저장 (DB 용량 절약)
   const trimmedData = resultData ? JSON.stringify(resultData.slice(0, 100)) : null;
   const configJson = chartConfig ? JSON.stringify(chartConfig) : null;
   await pool.query(
-    `INSERT INTO nl_query_history (user_id, session_id, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [userId || null, sessionId || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg]
+    `INSERT INTO nl_query_history (user_id, session_id, domain_code, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId || null, sessionId || null, domainCode || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg]
   );
 
   // 사용자별 최대 200건 유지
@@ -1865,7 +1867,7 @@ app.get('/api/history', async (req, res) => {
       return res.json([]);
     }
 
-    // 세션 단위로 그룹핑하여 반환
+    // 세션 단위로 그룹핑하여 반환 (domain_code 포함 — 배지 표시용)
     const [rows] = await pool.query(
       `SELECT
          COALESCE(session_id, CONCAT('legacy_', id)) AS session_key,
@@ -1876,7 +1878,8 @@ app.get('/api/history', async (req, res) => {
          COUNT(*) AS query_count,
          SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS success_count,
          SUM(row_count) AS total_rows,
-         session_id
+         session_id,
+         MAX(domain_code) AS domain_code
        FROM nl_query_history h
        WHERE user_id = ?
        GROUP BY COALESCE(session_id, CONCAT('legacy_', id))
@@ -4776,6 +4779,17 @@ async function ensureBookmarkShareTables() {
       await pool.query(`ALTER TABLE nl_query_history ADD COLUMN session_id varchar(36) DEFAULT NULL COMMENT '채팅 세션 ID (UUID)' AFTER user_id`);
       await pool.query(`ALTER TABLE nl_query_history ADD INDEX idx_nl_session_id (user_id, session_id)`);
       console.log('[Migration] nl_query_history에 session_id 컨럼 추가 완료');
+    }
+
+    // 5-1) nl_query_history에 domain_code 컨럼 추가 (없으면) — 도메인별 이력 분리 및 배지 표시용
+    const [nlDomainCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nl_query_history' AND COLUMN_NAME = 'domain_code'`
+    );
+    if (nlDomainCols.length === 0) {
+      await pool.query(`ALTER TABLE nl_query_history ADD COLUMN domain_code varchar(20) DEFAULT NULL COMMENT '분석 영역 도메인 코드' AFTER session_id`);
+      await pool.query(`ALTER TABLE nl_query_history ADD INDEX idx_nl_domain (user_id, domain_code)`);
+      console.log('[Migration] nl_query_history에 domain_code 컨럼 추가 완료');
     }
 
     // 5) shared_queries 테이블 생성 (없으면)
