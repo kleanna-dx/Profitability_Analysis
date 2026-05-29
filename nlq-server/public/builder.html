@@ -364,6 +364,152 @@
             text-align:center;padding:20px 16px;color:#818cf8;font-size:12px;opacity:0.6;
         }
 
+        /* History Tabs */
+        .history-tabs{display:flex;gap:2px;padding:0 12px 6px;background:transparent;}
+        .history-tab{
+            flex:1;text-align:center;padding:6px 4px;font-size:11px;font-weight:600;
+            color:#a5b4fc;cursor:pointer;border-radius:6px;transition:all .15s;
+            border:1px solid transparent;position:relative;
+        }
+        .history-tab:hover{background:rgba(255,255,255,0.06);color:#c7d2fe;}
+        .history-tab.active{background:rgba(99,102,241,0.2);color:#e0e7ff;border-color:rgba(99,102,241,0.3);}
+        .history-tab .tab-badge{
+            position:absolute;top:2px;right:6px;background:#ef4444;color:#fff;
+            font-size:9px;width:15px;height:15px;border-radius:50%;
+            display:flex;align-items:center;justify-content:center;line-height:1;
+        }
+
+        /* Bookmark star */
+        .history-item-star{
+            opacity:0;width:20px;height:20px;border-radius:4px;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;
+            color:#fbbf24;font-size:11px;cursor:pointer;transition:all .15s;
+            margin-top:2px;
+        }
+        .history-item:hover .history-item-star{opacity:1;}
+        .history-item-star.bookmarked{opacity:1;color:#f59e0b;}
+        .history-item-star:hover{background:rgba(251,191,36,0.15);}
+
+        /* Share button */
+        .history-item-share{
+            opacity:0;width:20px;height:20px;border-radius:4px;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;
+            color:#60a5fa;font-size:10px;cursor:pointer;transition:all .15s;
+            margin-top:2px;
+        }
+        .history-item:hover .history-item-share{opacity:1;}
+        .history-item-share:hover{background:rgba(96,165,250,0.15);}
+
+        /* Share actions row */
+        .history-item-actions{display:flex;gap:2px;flex-shrink:0;align-items:flex-start;}
+
+        /* Shared item from-user badge */
+        .shared-from-badge{
+            font-size:9px;color:#818cf8;background:rgba(99,102,241,0.15);
+            padding:1px 6px;border-radius:3px;margin-top:2px;display:inline-block;
+        }
+        .unread-dot{
+            width:6px;height:6px;border-radius:50%;background:#ef4444;
+            display:inline-block;margin-right:4px;flex-shrink:0;margin-top:8px;
+        }
+
+        /* Share Modal */
+        .share-modal-overlay{
+            position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);
+            z-index:9999;display:none;align-items:center;justify-content:center;
+        }
+        .share-modal-overlay.active{display:flex;}
+        .share-modal{
+            background:#1e1b4b;border:1px solid rgba(99,102,241,0.3);border-radius:16px;
+            padding:24px;width:440px;max-width:92vw;max-height:85vh;overflow:hidden;
+            box-shadow:0 20px 60px rgba(0,0,0,0.3);display:flex;flex-direction:column;
+        }
+        .share-modal h3{color:#e0e7ff;font-size:1rem;margin:0 0 16px;display:flex;align-items:center;gap:8px;}
+        /* 검색 행: input + 검색 버튼 */
+        .share-search-row{
+            display:flex;gap:6px;margin-bottom:8px;
+        }
+        .share-modal-search{
+            flex:1;padding:9px 12px;border-radius:8px;border:1px solid rgba(99,102,241,0.3);
+            background:rgba(30,27,75,0.8);color:#e0e7ff;font-size:13px;outline:none;
+        }
+        .share-modal-search::placeholder{color:#6366f1;opacity:0.6;}
+        .share-modal-search:focus{border-color:#818cf8;}
+        .share-search-btn{
+            padding:0 14px;border-radius:8px;border:1px solid rgba(99,102,241,0.4);
+            background:rgba(99,102,241,0.15);color:#a5b4fc;font-size:13px;
+            cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:5px;
+            white-space:nowrap;
+        }
+        .share-search-btn:hover{background:rgba(99,102,241,0.3);color:#e0e7ff;border-color:#6366f1;}
+        /* 선택된 사용자 칩 영역 */
+        .share-selected-chips{
+            display:flex;flex-wrap:wrap;gap:6px;min-height:0;margin-bottom:8px;
+            transition:all .2s;
+        }
+        .share-selected-chips:empty{display:none;}
+        .share-chip{
+            display:inline-flex;align-items:center;gap:4px;padding:4px 10px 4px 8px;
+            background:rgba(99,102,241,0.25);border:1px solid rgba(99,102,241,0.4);
+            border-radius:20px;font-size:11px;color:#e0e7ff;font-weight:600;
+            animation:chipIn .15s ease;
+        }
+        .share-chip .chip-avatar{
+            width:18px;height:18px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);
+            display:flex;align-items:center;justify-content:center;color:#fff;font-size:9px;font-weight:700;
+        }
+        .share-chip .chip-remove{
+            width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+            cursor:pointer;color:#a5b4fc;font-size:9px;transition:all .12s;margin-left:2px;
+        }
+        .share-chip .chip-remove:hover{background:rgba(239,68,68,0.3);color:#fca5a5;}
+        @keyframes chipIn{from{opacity:0;transform:scale(0.8);}to{opacity:1;transform:scale(1);}}
+        /* 사용자 목록 카운트 헤더 */
+        .share-list-header{
+            display:flex;align-items:center;justify-content:space-between;
+            padding:4px 4px 6px;font-size:10px;color:#818cf8;
+        }
+        .share-list-header .count{font-weight:700;color:#a5b4fc;}
+        .share-user-list{
+            flex:1;overflow-y:auto;max-height:220px;margin-bottom:10px;
+            border:1px solid rgba(99,102,241,0.15);border-radius:10px;
+            padding:4px;
+        }
+        .share-user-list::-webkit-scrollbar{width:4px;}
+        .share-user-list::-webkit-scrollbar-thumb{background:rgba(99,102,241,0.3);border-radius:2px;}
+        .share-user-item{
+            display:flex;align-items:center;gap:10px;padding:8px 10px;
+            border-radius:8px;cursor:pointer;transition:all .15s;border:1px solid transparent;
+        }
+        .share-user-item:hover{background:rgba(255,255,255,0.06);}
+        .share-user-item.selected{background:rgba(99,102,241,0.2);border-color:rgba(99,102,241,0.3);}
+        .share-user-item .user-avatar{
+            width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);
+            display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;flex-shrink:0;
+        }
+        .share-user-item .user-info{flex:1;min-width:0;}
+        .share-user-item .user-name{font-size:12px;color:#e0e7ff;font-weight:600;}
+        .share-user-item .user-dept{font-size:10px;color:#818cf8;margin-top:1px;}
+        .share-user-check{color:#6366f1;font-size:15px;opacity:0;transition:opacity .12s;}
+        .share-user-item.selected .share-user-check{opacity:1;color:#818cf8;}
+        .share-modal-memo{
+            width:100%;padding:8px 12px;border-radius:8px;border:1px solid rgba(99,102,241,0.3);
+            background:rgba(30,27,75,0.8);color:#e0e7ff;font-size:12px;resize:none;height:50px;
+            margin-bottom:12px;outline:none;
+        }
+        .share-modal-memo::placeholder{color:#6366f1;opacity:0.5;}
+        .share-modal-memo:focus{border-color:#6366f1;}
+        .share-modal-footer{display:flex;gap:8px;justify-content:flex-end;}
+        .share-modal-footer button{
+            padding:8px 20px;border-radius:8px;font-size:13px;font-weight:600;
+            cursor:pointer;border:none;transition:all .15s;
+        }
+        .share-modal-footer .btn-cancel{background:rgba(255,255,255,0.1);color:#a5b4fc;}
+        .share-modal-footer .btn-cancel:hover{background:rgba(255,255,255,0.15);}
+        .share-modal-footer .btn-share{background:#6366f1;color:#fff;}
+        .share-modal-footer .btn-share:hover{background:#4f46e5;}
+        .share-modal-footer .btn-share:disabled{opacity:0.5;cursor:not-allowed;}
+
         /* ===== Date Condition Section ===== */
         .date-section {
             background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
@@ -513,17 +659,46 @@
     </div>
     <div class="sidebar-divider"></div>
 
-    <!-- 최근 이력 -->
+    <!-- 최근 이력 / 즐겨찾기 / 보관함 -->
     <div>
         <div class="history-header">
-            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>최근 이력</p>
-            <span class="history-clear-btn" onclick="clearAllBuilderHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
+            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>쿼리 이력</p>
+            <span id="historyClearBtn" class="history-clear-btn" onclick="clearAllBuilderHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
+        </div>
+        <div class="history-tabs">
+            <div class="history-tab active" data-tab="recent" onclick="switchHistoryTab('recent')"><i class="fas fa-clock" style="margin-right:3px;"></i>최근</div>
+            <div class="history-tab" data-tab="bookmarked" onclick="switchHistoryTab('bookmarked')"><i class="fas fa-star" style="margin-right:3px;"></i>즐겨찾기</div>
+            <div class="history-tab" data-tab="shared" onclick="switchHistoryTab('shared')"><i class="fas fa-inbox" style="margin-right:3px;"></i>보관함<span id="sharedBadge" class="tab-badge" style="display:none;">0</span></div>
         </div>
         <div id="historyList" class="history-list">
             <div class="history-empty"><i class="fas fa-inbox"></i><br>아직 실행 이력이 없습니다</div>
         </div>
     </div>
 </aside>
+
+<!-- 공유 모달 -->
+<div id="shareModal" class="share-modal-overlay" onclick="if(event.target===this)closeShareModal()">
+    <div class="share-modal">
+        <h3><i class="fas fa-share-alt" style="color:#6366f1;"></i> 쿼리 공유하기</h3>
+        <div class="share-search-row">
+            <input type="text" class="share-modal-search" id="shareUserSearch" placeholder="이름 또는 ID로 검색..." oninput="filterShareUsers()" onkeydown="if(event.key==='Enter'){event.preventDefault();filterShareUsers();}">
+            <button class="share-search-btn" onclick="filterShareUsers()" title="검색"><i class="fas fa-search"></i> 검색</button>
+        </div>
+        <div class="share-selected-chips" id="shareSelectedChips"></div>
+        <div class="share-list-header">
+            <span><i class="fas fa-users" style="margin-right:4px;"></i>사용자 목록</span>
+            <span id="shareUserCount" class="count"></span>
+        </div>
+        <div class="share-user-list" id="shareUserList">
+            <div style="text-align:center;padding:24px;color:#6366f1;font-size:12px;"><i class="fas fa-spinner fa-spin" style="margin-right:6px;"></i>사용자 로딩 중...</div>
+        </div>
+        <textarea class="share-modal-memo" id="shareMemo" placeholder="메모 (선택사항)"></textarea>
+        <div class="share-modal-footer">
+            <button class="btn-cancel" onclick="closeShareModal()">취소</button>
+            <button class="btn-share" id="shareSubmitBtn" onclick="submitShare()"><i class="fas fa-paper-plane" style="margin-right:5px;"></i>공유하기 (<span id="shareCountLabel">0</span>명)</button>
+        </div>
+    </div>
+</div>
 
 <!-- ========== TOP BAR ========== -->
 <div class="top-bar">
@@ -768,11 +943,12 @@ const CATEGORY_NAMES = {
 const CATEGORY_ORDER = ['period','org','product','trade','quantity','amount','unit','other'];
 
 // ─── Init ────────────────────────────────────
-let currentUserRole='user', currentDomain='PS';
+let currentUserRole='user', currentDomain='PS', currentUserId='';
 async function initDomainAndRole(){
     try{
         const r=await fetch('/api/me');const me=await r.json();if(!me.loggedIn)return;
         currentUserRole=me.role||'user';currentDomain=me.active_domain||me.domain_code||'PS';
+        currentUserId=me.user||'';
         // RBAC: 동적 사이드바 메뉴 렌더링
         const nav=document.getElementById('sidebarMenu');
         if(nav && me.menus && me.menus.length>0){
@@ -1687,47 +1863,125 @@ function switchTab(tab) {
     if (tab === 'chart' && chartInstance) setTimeout(() => chartInstance.resize(), 100);
 }
 
-// ─── Builder History ────────────────────────────
+// ─── Builder History (북마크 / 공유 기능 포함) ─────────────
 let builderHistoryCache = [];
+let currentHistoryTab = 'recent';
+let shareTargetHistoryId = null;
+let shareUserCache = [];
+let shareSelectedUsers = new Set();
+
+// --- 탭 전환 ---
+function switchHistoryTab(tab) {
+    currentHistoryTab = tab;
+    document.querySelectorAll('.history-tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.tab === tab);
+    });
+    // 전체 삭제 버튼은 recent 탭에서만 표시
+    const clearBtn = document.getElementById('historyClearBtn');
+    if (clearBtn) clearBtn.style.display = tab === 'recent' ? '' : 'none';
+    loadBuilderHistory();
+}
 
 async function loadBuilderHistory() {
     try {
-        const res = await fetch('/api/builder/history?limit=50');
+        const res = await fetch(`/api/builder/history?limit=50&tab=${currentHistoryTab}`);
         const data = await res.json();
         builderHistoryCache = data;
         renderBuilderHistory(data);
+        // 안읽은 공유 개수 뱃지 업데이트
+        loadUnreadSharedCount();
     } catch(e) {
         console.error('빌더 이력 로드 실패:', e);
     }
 }
 
+async function loadUnreadSharedCount() {
+    try {
+        const res = await fetch('/api/builder/shared/unread/count');
+        const data = await res.json();
+        const badge = document.getElementById('sharedBadge');
+        if (badge) {
+            if (data.count > 0) {
+                badge.textContent = data.count > 9 ? '9+' : data.count;
+                badge.style.display = 'flex';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+    } catch(e) {}
+}
+
 function renderBuilderHistory(items) {
     const container = document.getElementById('historyList');
     if (!items || items.length === 0) {
-        container.innerHTML = '<div class="history-empty"><i class="fas fa-inbox"></i><br>아직 실행 이력이 없습니다</div>';
+        const emptyMsg = currentHistoryTab === 'bookmarked' ? '즐겨찾기한 이력이 없습니다'
+                       : currentHistoryTab === 'shared' ? '공유받은 쿼리가 없습니다'
+                       : '아직 실행 이력이 없습니다';
+        const emptyIcon = currentHistoryTab === 'bookmarked' ? 'fa-star'
+                        : currentHistoryTab === 'shared' ? 'fa-inbox'
+                        : 'fa-inbox';
+        container.innerHTML = `<div class="history-empty"><i class="fas ${emptyIcon}"></i><br>${emptyMsg}</div>`;
         return;
     }
     let html = '';
-    items.forEach(item => {
-        const isSuccess = item.status === 'SUCCESS';
-        const icon = isSuccess ? 'fa-check' : 'fa-times';
-        const iconCls = isSuccess ? 'success' : 'failed';
-        const time = formatHistoryTime(item.created_at);
-        const meta = isSuccess
-            ? `${item.row_count}행 · ${time}`
-            : `실패 · ${time}`;
-        html += `
-            <div class="history-item" data-id="${item.id}" onclick="restoreBuilderHistory(${item.id})">
-                <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
-                <div class="history-item-text">
-                    <div class="history-item-query">${escHistHtml(item.title)}</div>
-                    <div class="history-item-meta">${meta}</div>
-                </div>
-                <div class="history-item-del" onclick="event.stopPropagation();deleteBuilderHistory(${item.id})" title="삭제">
-                    <i class="fas fa-times"></i>
-                </div>
-            </div>`;
-    });
+
+    if (currentHistoryTab === 'shared') {
+        // 보관함 탭 — 공유받은 쿼리 렌더링
+        items.forEach(item => {
+            const time = formatHistoryTime(item.created_at);
+            const fromName = item.from_user_name || item.from_user_id || '?';
+            const unreadDot = item.is_read ? '' : '<span class="unread-dot"></span>';
+            const memoHtml = item.memo ? `<div style="font-size:10px;color:#a5b4fc;margin-top:2px;font-style:italic;">"${escHistHtml(item.memo)}"</div>` : '';
+            html += `
+                <div class="history-item" data-shared-id="${item.id}" onclick="restoreSharedHistory(${item.id})">
+                    ${unreadDot}
+                    <div class="history-item-icon" style="background:rgba(99,102,241,0.15);color:#818cf8;"><i class="fas fa-share-alt"></i></div>
+                    <div class="history-item-text">
+                        <div class="history-item-query">${escHistHtml(item.title)}</div>
+                        <div class="history-item-meta"><span class="shared-from-badge"><i class="fas fa-user" style="margin-right:3px;"></i>${escHistHtml(fromName)}</span> · ${time}</div>
+                        ${memoHtml}
+                    </div>
+                    <div class="history-item-actions">
+                        <div class="history-item-del" onclick="event.stopPropagation();deleteSharedHistory(${item.id})" title="삭제">
+                            <i class="fas fa-times"></i>
+                        </div>
+                    </div>
+                </div>`;
+        });
+    } else {
+        // 최근이력 / 즐겨찾기 탭
+        items.forEach(item => {
+            const isSuccess = item.status === 'SUCCESS';
+            const icon = isSuccess ? 'fa-check' : 'fa-times';
+            const iconCls = isSuccess ? 'success' : 'failed';
+            const time = formatHistoryTime(item.created_at);
+            const meta = isSuccess
+                ? `${item.row_count}행 · ${time}`
+                : `실패 · ${time}`;
+            const starCls = item.is_bookmarked ? 'bookmarked' : '';
+            const starIcon = item.is_bookmarked ? 'fa-star' : 'fa-star';
+            const starStyle = item.is_bookmarked ? 'fas' : 'far';
+            html += `
+                <div class="history-item" data-id="${item.id}" onclick="restoreBuilderHistory(${item.id})">
+                    <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
+                    <div class="history-item-text">
+                        <div class="history-item-query">${escHistHtml(item.title)}</div>
+                        <div class="history-item-meta">${meta}</div>
+                    </div>
+                    <div class="history-item-actions">
+                        <div class="history-item-star ${starCls}" onclick="event.stopPropagation();toggleBookmark(${item.id})" title="즐겨찾기">
+                            <i class="${starStyle} fa-star"></i>
+                        </div>
+                        <div class="history-item-share" onclick="event.stopPropagation();openShareModal(${item.id})" title="공유하기">
+                            <i class="fas fa-share-alt"></i>
+                        </div>
+                        <div class="history-item-del" onclick="event.stopPropagation();deleteBuilderHistory(${item.id})" title="삭제">
+                            <i class="fas fa-times"></i>
+                        </div>
+                    </div>
+                </div>`;
+        });
+    }
     container.innerHTML = html;
 }
 
@@ -1747,8 +2001,8 @@ function escHistHtml(s) {
     const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
 }
 
+// --- 이력 복원 (최근이력/즐겨찾기) ---
 async function restoreBuilderHistory(id) {
-    // 사이드바에서 active 표시
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
     const target = document.querySelector(`.history-item[data-id="${id}"]`);
     if (target) target.classList.add('active');
@@ -1757,77 +2011,253 @@ async function restoreBuilderHistory(id) {
         const res = await fetch('/api/builder/history/' + id);
         const item = await res.json();
         if (item.error) { alert('이력을 불러올 수 없습니다.'); return; }
-
-        // 1. 필드 복원
-        selectedFields = (item.fields_json || []).map(f => ({
-            column: f.column,
-            alias: f.alias || f.column,
-            aggregate: f.aggregate || '',
-            type: (allColumns.find(c => c.name === f.column) || {}).type || 'text',
-        }));
-        renderSelectedFields();
-        updateOrderByOptions();
-
-        // 2. 조건 복원
-        const rawConds = item.conditions_json || [];
-        conditions = rawConds.filter(c => c.column).map(c => ({
-            column: c.column || '',
-            operator: c.operator || '=',
-            value: c.value || '',
-            logic: c.logic || 'AND',
-        }));
-        renderConditions();
-        // 조건 값 컬럼 캐시 로드
-        conditions.forEach((cond, i) => {
-            if (cond.column) loadColumnValues(cond.column, i);
-        });
-
-        // 3. 정렬 복원
-        if (item.order_by) {
-            document.getElementById('orderBySelect').value = item.order_by;
-        } else {
-            document.getElementById('orderBySelect').value = '';
-        }
-        if (item.order_dir) {
-            document.getElementById('orderDirSelect').value = item.order_dir;
-        }
-
-        // 4. LIMIT 복원
-        if (item.limit_val) {
-            const limitSel = document.getElementById('limitSelect');
-            const hasOpt = Array.from(limitSel.options).some(o => o.value == String(item.limit_val));
-            if (hasOpt) limitSel.value = String(item.limit_val);
-        }
-
-        // 5. 프롬프트 복원
-        document.getElementById('promptInput').value = item.prompt || '';
-
-        // 6. SQL 표시
-        if (item.generated_sql) {
-            document.getElementById('sqlPreviewText').innerHTML = highlightSQL(item.generated_sql);
-            document.getElementById('sqlPreview').classList.add('active');
-        } else {
-            document.getElementById('sqlPreview').classList.remove('active');
-        }
-
-        // 7. 결과 초기화 (이전 결과 숨김)
-        document.getElementById('resultsSection').classList.remove('active');
-        document.getElementById('errorBox').classList.remove('active');
-
-        closeSidebar();
-
-        // 상단으로 스크롤
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-
+        applyHistoryToBuilder(item);
     } catch(e) {
         alert('이력 불러오기 오류: ' + e.message);
     }
 }
 
+// --- 공유 이력 복원 (보관함) ---
+async function restoreSharedHistory(id) {
+    document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+    const target = document.querySelector(`.history-item[data-shared-id="${id}"]`);
+    if (target) target.classList.add('active');
+
+    try {
+        const res = await fetch('/api/builder/shared/' + id);
+        const item = await res.json();
+        if (item.error) { alert('공유 이력을 불러올 수 없습니다.'); return; }
+        applyHistoryToBuilder(item);
+        // 읽음 처리 후 뱃지 업데이트
+        loadUnreadSharedCount();
+        // 읽음 표시 제거
+        const dot = target?.querySelector('.unread-dot');
+        if (dot) dot.remove();
+    } catch(e) {
+        alert('이력 불러오기 오류: ' + e.message);
+    }
+}
+
+// --- 공통 복원 로직 ---
+function applyHistoryToBuilder(item) {
+    // 1. 필드 복원
+    selectedFields = (item.fields_json || []).map(f => ({
+        column: f.column,
+        alias: f.alias || f.column,
+        aggregate: f.aggregate || '',
+        type: (allColumns.find(c => c.name === f.column) || {}).type || 'text',
+    }));
+    renderSelectedFields();
+    updateOrderByOptions();
+
+    // 2. 조건 복원
+    const rawConds = item.conditions_json || [];
+    conditions = rawConds.filter(c => c.column).map(c => ({
+        column: c.column || '',
+        operator: c.operator || '=',
+        value: c.value || '',
+        logic: c.logic || 'AND',
+    }));
+    renderConditions();
+    conditions.forEach((cond, i) => {
+        if (cond.column) loadColumnValues(cond.column, i);
+    });
+
+    // 3. 정렬 복원
+    if (item.order_by) {
+        document.getElementById('orderBySelect').value = item.order_by;
+    } else {
+        document.getElementById('orderBySelect').value = '';
+    }
+    if (item.order_dir) {
+        document.getElementById('orderDirSelect').value = item.order_dir;
+    }
+
+    // 4. LIMIT 복원
+    if (item.limit_val) {
+        const limitSel = document.getElementById('limitSelect');
+        const hasOpt = Array.from(limitSel.options).some(o => o.value == String(item.limit_val));
+        if (hasOpt) limitSel.value = String(item.limit_val);
+    }
+
+    // 5. 프롬프트 복원
+    document.getElementById('promptInput').value = item.prompt || '';
+
+    // 6. SQL 표시
+    if (item.generated_sql) {
+        document.getElementById('sqlPreviewText').innerHTML = highlightSQL(item.generated_sql);
+        document.getElementById('sqlPreview').classList.add('active');
+    } else {
+        document.getElementById('sqlPreview').classList.remove('active');
+    }
+
+    // 7. 결과 초기화
+    document.getElementById('resultsSection').classList.remove('active');
+    document.getElementById('errorBox').classList.remove('active');
+
+    closeSidebar();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// --- 북마크 토글 ---
+async function toggleBookmark(id) {
+    try {
+        const res = await fetch(`/api/builder/history/${id}/bookmark`, { method: 'PATCH' });
+        const data = await res.json();
+        if (data.success) {
+            // 캐시 업데이트
+            const item = builderHistoryCache.find(h => h.id === id);
+            if (item) item.is_bookmarked = data.is_bookmarked;
+            renderBuilderHistory(builderHistoryCache);
+        }
+    } catch(e) { alert('북마크 변경 실패: ' + e.message); }
+}
+
+// --- 공유 모달 ---
+async function openShareModal(historyId) {
+    shareTargetHistoryId = historyId;
+    shareSelectedUsers.clear();
+    document.getElementById('shareMemo').value = '';
+    document.getElementById('shareUserSearch').value = '';
+    document.getElementById('shareSelectedChips').innerHTML = '';
+    updateShareCountLabel();
+    document.getElementById('shareModal').classList.add('active');
+    // 전체 사용자 목록 즉시 로드 (q 없이 → 전체)
+    document.getElementById('shareUserList').innerHTML = '<div style="text-align:center;padding:24px;color:#6366f1;font-size:12px;"><i class="fas fa-spinner fa-spin" style="margin-right:6px;"></i>사용자 로딩 중...</div>';
+    await searchShareUsers('');
+    // 포커스를 검색창에
+    setTimeout(() => document.getElementById('shareUserSearch').focus(), 100);
+}
+
+function closeShareModal() {
+    document.getElementById('shareModal').classList.remove('active');
+    shareTargetHistoryId = null;
+}
+
+// 서버 DB에서 LIKE 검색 (q 없으면 전체)
+let shareSearchTimer = null;
+async function searchShareUsers(q) {
+    try {
+        const url = q ? `/api/builder/users?q=${encodeURIComponent(q)}` : '/api/builder/users';
+        const res = await fetch(url);
+        const data = await res.json();
+        shareUserCache = Array.isArray(data) ? data : [];
+    } catch(e) { shareUserCache = []; }
+    renderShareUsers(shareUserCache);
+}
+
+function filterShareUsers() {
+    const q = document.getElementById('shareUserSearch').value.trim();
+    // 디바운스: 타이핑할 때마다 바로 API 호출하지 않고 300ms 대기
+    if (shareSearchTimer) clearTimeout(shareSearchTimer);
+    shareSearchTimer = setTimeout(() => searchShareUsers(q), 300);
+}
+
+function renderShareUsers(users) {
+    const container = document.getElementById('shareUserList');
+    const countEl = document.getElementById('shareUserCount');
+    // 배열이 아니면 빈 배열로 교정
+    if (!Array.isArray(users)) users = [];
+    if (users.length === 0) {
+        container.innerHTML = '<div style="text-align:center;padding:20px;color:#818cf8;font-size:12px;"><i class="fas fa-user-slash" style="margin-right:6px;"></i>검색 결과가 없습니다</div>';
+        if (countEl) countEl.textContent = '0명';
+        return;
+    }
+    if (countEl) countEl.textContent = `${users.length}명`;
+    container.innerHTML = users.map(u => {
+        const sel = shareSelectedUsers.has(u.user_id) ? 'selected' : '';
+        const initials = (u.name || '?').substring(0, 1);
+        const dept = u.group_name || '';
+        return `
+            <div class="share-user-item ${sel}" onclick="toggleShareUser('${u.user_id}')">
+                <div class="user-avatar">${initials}</div>
+                <div class="user-info">
+                    <div class="user-name">${escHistHtml(u.name)} <span style="font-size:10px;color:#818cf8;font-weight:400;">(${escHistHtml(u.user_id)})</span></div>
+                    ${dept ? `<div class="user-dept"><i class="fas fa-building" style="margin-right:3px;font-size:9px;"></i>${escHistHtml(dept)}</div>` : ''}
+                </div>
+                <div class="share-user-check"><i class="fas fa-check-circle"></i></div>
+            </div>`;
+    }).join('');
+}
+
+function renderSelectedChips() {
+    const container = document.getElementById('shareSelectedChips');
+    if (shareSelectedUsers.size === 0) { container.innerHTML = ''; return; }
+    container.innerHTML = [...shareSelectedUsers].map(uid => {
+        const u = shareUserCache.find(x => x.user_id === uid);
+        const name = u ? u.name : uid;
+        const initial = name.substring(0, 1);
+        return `<span class="share-chip">
+            <span class="chip-avatar">${initial}</span>
+            ${escHistHtml(name)}
+            <span class="chip-remove" onclick="event.stopPropagation();toggleShareUser('${uid}')" title="제거"><i class="fas fa-times"></i></span>
+        </span>`;
+    }).join('');
+}
+
+function updateShareCountLabel() {
+    const el = document.getElementById('shareCountLabel');
+    if (el) el.textContent = shareSelectedUsers.size;
+    const btn = document.getElementById('shareSubmitBtn');
+    if (btn) btn.disabled = shareSelectedUsers.size === 0;
+}
+
+function toggleShareUser(userId) {
+    if (shareSelectedUsers.has(userId)) {
+        shareSelectedUsers.delete(userId);
+    } else {
+        shareSelectedUsers.add(userId);
+    }
+    // 선택 칩 업데이트
+    renderSelectedChips();
+    updateShareCountLabel();
+    // 현재 캐시된 목록으로 다시 렌더링 (서버 검색 결과 유지)
+    renderShareUsers(Array.isArray(shareUserCache) ? shareUserCache : []);
+}
+
+async function submitShare() {
+    if (shareSelectedUsers.size === 0) { alert('공유할 사용자를 선택해주세요.'); return; }
+    const memo = document.getElementById('shareMemo').value.trim();
+    const btn = document.getElementById('shareSubmitBtn');
+    btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:5px;"></i>공유 중...';
+    try {
+        const res = await fetch(`/api/builder/history/${shareTargetHistoryId}/share`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to_user_ids: [...shareSelectedUsers], memo: memo || null })
+        });
+        const data = await res.json();
+        if (data.success) {
+            const names = [...shareSelectedUsers].map(uid => {
+                const u = shareUserCache.find(x => x.user_id === uid);
+                return u ? u.name : uid;
+            }).join(', ');
+            closeShareModal();
+            alert(`${names}에게 공유했습니다.`);
+        } else {
+            alert('공유 실패: ' + (data.error || ''));
+        }
+    } catch(e) {
+        alert('공유 실패: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-paper-plane" style="margin-right:5px;"></i>공유하기 (<span id="shareCountLabel">' + shareSelectedUsers.size + '</span>명)';
+    }
+}
+
+// --- 삭제 ---
 async function deleteBuilderHistory(id) {
     if (!confirm('이 이력을 삭제하시겠습니까?')) return;
     try {
         await fetch('/api/builder/history/' + id, { method: 'DELETE' });
+        await loadBuilderHistory();
+    } catch(e) { alert('삭제 실패: ' + e.message); }
+}
+
+async function deleteSharedHistory(id) {
+    if (!confirm('이 공유 이력을 삭제하시겠습니까?')) return;
+    try {
+        await fetch('/api/builder/shared/' + id, { method: 'DELETE' });
         await loadBuilderHistory();
     } catch(e) { alert('삭제 실패: ' + e.message); }
 }
