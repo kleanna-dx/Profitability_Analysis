@@ -58,18 +58,32 @@
         }
         .status-pill .dot{width:7px;height:7px;border-radius:50%;background:#94a3b8;}
         .status-pill .dot.green{background:#22c55e;box-shadow:0 0 5px rgba(34,197,94,0.4);}
-        .domain-indicator{
-            display:flex;align-items:center;gap:6px;
-            font-size:12px;font-weight:600;color:#4f46e5;background:#eef2ff;
-            padding:5px 12px;border-radius:20px;border:1px solid #c7d2fe;
-        }
-        .domain-select{
-            font-size:12px;font-weight:600;color:#4f46e5;background:#eef2ff;
-            padding:4px 8px;border-radius:8px;border:1px solid #c7d2fe;
-            cursor:pointer;outline:none;font-family:inherit;
-        }
+        .domain-indicator{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#4f46e5;background:#eef2ff;padding:5px 12px;border-radius:20px;border:1px solid #c7d2fe;}
+        .domain-select{font-size:12px;font-weight:600;color:#4f46e5;background:#eef2ff;padding:4px 8px;border-radius:8px;border:1px solid #c7d2fe;cursor:pointer;outline:none;font-family:inherit;}
         .domain-select:hover{border-color:#818cf8;}
         .admin-only{display:none;}
+        .domain-selector-bar{display:flex;align-items:center;gap:6px;background:#fff;border:2px solid #c7d2fe;border-radius:12px;padding:4px 6px;position:relative;box-shadow:0 2px 8px rgba(99,102,241,0.1);transition:all .3s ease;}
+        .domain-selector-bar.glow{animation:domainGlow 2s ease-in-out 3;border-color:#818cf8;}
+        @keyframes domainGlow{0%,100%{box-shadow:0 0 4px rgba(99,102,241,0.2);border-color:#c7d2fe;}50%{box-shadow:0 0 16px rgba(99,102,241,0.5),0 0 32px rgba(99,102,241,0.2);border-color:#6366f1;}}
+        .domain-btn{padding:6px 14px;border-radius:8px;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .2s ease;background:transparent;color:#64748b;display:flex;align-items:center;gap:5px;white-space:nowrap;}
+        .domain-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        .domain-btn.active{background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;box-shadow:0 2px 8px rgba(79,70,229,0.3);}
+        .domain-btn.locked{opacity:0.5;cursor:not-allowed;}
+        .domain-btn.locked.active{opacity:1;}
+        .domain-lock-icon{font-size:10px;margin-left:2px;color:#fbbf24;}
+        .domain-info-banner{background:linear-gradient(135deg,#eef2ff,#e0e7ff);border:1px solid #c7d2fe;border-radius:10px;padding:10px 16px;margin:0 24px 0;font-size:12px;color:#4338ca;display:flex;align-items:center;gap:8px;animation:fadeInDown .4s ease;}
+        @keyframes fadeInDown{from{opacity:0;transform:translateY(-10px);}to{opacity:1;transform:translateY(0);}}
+        .domain-force-overlay{position:fixed;inset:0;z-index:2000;background:rgba(15,23,42,0.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;animation:fadeIn .3s ease;}
+        @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
+        .domain-force-card{background:#fff;border-radius:20px;padding:40px 36px;box-shadow:0 20px 60px rgba(0,0,0,0.2);text-align:center;max-width:420px;width:90%;animation:scaleIn .4s ease;}
+        @keyframes scaleIn{from{transform:scale(0.9);opacity:0;}to{transform:scale(1);opacity:1;}}
+        .domain-force-card h2{font-size:20px;font-weight:800;color:#1e293b;margin-bottom:8px;}
+        .domain-force-card p{font-size:13px;color:#64748b;margin-bottom:24px;line-height:1.6;}
+        .domain-force-btns{display:flex;flex-direction:column;gap:10px;}
+        .domain-force-btn{padding:14px 20px;border-radius:12px;border:2px solid #e2e8f0;background:#fff;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .2s ease;display:flex;align-items:center;gap:10px;justify-content:center;}
+        .domain-force-btn:hover{border-color:#6366f1;background:#eef2ff;color:#4f46e5;transform:translateY(-2px);box-shadow:0 4px 12px rgba(99,102,241,0.15);}
+        .domain-force-btn.sparkle{animation:sparkle 1.5s ease-in-out infinite;}
+        @keyframes sparkle{0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,0);}50%{box-shadow:0 0 20px 4px rgba(99,102,241,0.3);}}
 
         /* Chat area */
         .chat-area{
@@ -557,13 +571,8 @@
         </button>
         <h1 class="text-sm font-bold text-gray-800">수익성분석 AI</h1>
 
-        <!-- 도메인 표시/선택 (관리자: 드롭다운, 일반: 텍스트) -->
-        <div id="domainIndicator" class="domain-indicator" style="display:none;">
-            <i class="fas fa-building" style="font-size:11px;"></i>
-            <span id="domainLabel">-</span>
-        </div>
-        <select id="domainSelect" class="domain-select admin-only" style="display:none;" onchange="switchDomain(this.value)">
-        </select>
+        <!-- 도메인 선택 (모든 사용자) -->
+        <div id="domainSelectorBar" class="domain-selector-bar" style="display:none;"></div>
         <div style="flex:1;"></div>
 
         <div class="status-pill">
@@ -591,6 +600,15 @@
            onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';">
             <i class="fas fa-sign-out-alt"></i><span class="hidden sm:inline">로그아웃</span>
         </button>
+    </div>
+    <div id="domainInfoBanner" class="domain-info-banner" style="display:none;"><i class="fas fa-info-circle"></i><span id="domainInfoText"></span></div>
+    <div id="domainForceOverlay" class="domain-force-overlay" style="display:none;">
+        <div class="domain-force-card">
+            <div style="font-size:40px;margin-bottom:16px;">🔍</div>
+            <h2>분석 영역을 선택해주세요</h2>
+            <p>분석 영역에 따라 조회 가능한 필드, 산식, 학습 데이터가 달라집니다.<br>서비스를 사용하려면 먼저 영역을 선택해주세요.</p>
+            <div class="domain-force-btns" id="domainForceBtns"></div>
+        </div>
     </div>
 
     <!-- Chat Area -->
@@ -679,6 +697,10 @@ const SCHEMA_COLUMNS = [
 // ============================================================
 let currentUserRole = 'user';
 let currentDomain = 'PS';
+let userDefaultDomain = null;
+let domainsList = [];
+let sessionDomainLocked = false;
+const domainIcons = { PS:'fa-scroll', HL:'fa-home', MGMT:'fa-briefcase', EXEC:'fa-briefcase' };
 
 async function initDomainAndRole() {
     try {
@@ -686,16 +708,15 @@ async function initDomainAndRole() {
         const me = await res.json();
         if (!me.loggedIn) return;
         currentUserRole = me.role || 'user';
+        userDefaultDomain = me.domain_code || null;
         currentDomain = me.active_domain || me.domain_code || 'PS';
 
-        // 사용자 정보 표시
         const uid = document.getElementById('userInfoDisplay');
         if (uid && me.name) {
             uid.innerHTML = `<strong style="font-size:13px;color:#1e293b;">${me.name}님</strong><br><span style="font-size:11px;color:#6b7280;font-weight:700;">(${me.user})</span>`;
             uid.style.display = '';
         }
 
-        // RBAC: 동적 사이드바 메뉴 렌더링
         const nav = document.getElementById('sidebarMenu');
         if (nav && me.menus && me.menus.length > 0) {
             const currentPath = window.location.pathname;
@@ -712,49 +733,74 @@ async function initDomainAndRole() {
             }).join('');
         }
 
-        // 도메인 드롭다운/텍스트: domain_code 기반 (역할 무관)
-        // domain_code가 null(전체) → 드롭다운 표시, domain_code가 지정됨 → 텍스트 고정
-        const userDomainCode = me.domain_code; // null=전체, 'PS'/'HL'/'MGMT'=고정
-        if (!userDomainCode) {
-            // 전체: 드롭다운 표시
-            const sel = document.getElementById('domainSelect');
-            if (sel) {
-                sel.style.display = '';
-                sel.classList.remove('admin-only');
-                document.getElementById('domainIndicator').style.display = 'none';
-                try {
-                    const dRes = await fetch('/api/domains');
-                    const domains = await dRes.json();
-                    sel.innerHTML = domains.map(d =>
-                        `<option value="${d.domain_code}" ${d.domain_code === currentDomain ? 'selected' : ''}>${d.domain_name} (${d.domain_code})</option>`
-                    ).join('');
-                } catch(e) { sel.innerHTML = `<option>${currentDomain}</option>`; }
-            }
-        } else {
-            // 도메인 고정: 텍스트 표시
-            const di = document.getElementById('domainIndicator');
-            if (di) { di.style.display = 'flex'; document.getElementById('domainLabel').textContent = currentDomain; }
-            const ds = document.getElementById('domainSelect');
-            if (ds) ds.style.display = 'none';
-        }
+        try { const dRes = await fetch('/api/domains'); domainsList = await dRes.json(); } catch(e) { domainsList = [{domain_code:'PS',domain_name:'페이퍼솔루션사업부'},{domain_code:'HL',domain_name:'홈앤리빙사업부'}]; }
 
-        // 접근 거부 메시지 표시
+        if (!userDefaultDomain) { showDomainForceOverlay(); } else { hideDomainForceOverlay(); }
+        renderDomainSelectorBar();
+        updateDomainInfoBanner();
+
         const params = new URLSearchParams(window.location.search);
-        if (params.get('denied') === '1') {
-            window.history.replaceState({}, '', '/');
-            setTimeout(() => alert('접근 권한이 없습니다.'), 300);
-        }
+        if (params.get('denied') === '1') { window.history.replaceState({}, '', '/'); setTimeout(() => alert('접근 권한이 없습니다.'), 300); }
     } catch(e) { console.error('[Domain] init 실패:', e); }
+}
+
+function renderDomainSelectorBar() {
+    const bar = document.getElementById('domainSelectorBar');
+    if (!bar || domainsList.length === 0) return;
+    bar.innerHTML = domainsList.map(d => {
+        const icon = domainIcons[d.domain_code] || 'fa-globe';
+        const isActive = d.domain_code === currentDomain;
+        const lockCls = sessionDomainLocked ? ' locked' : '';
+        const lockIcon = sessionDomainLocked && isActive ? '<i class="fas fa-lock domain-lock-icon"></i>' : '';
+        return `<button class="domain-btn${isActive ? ' active' : ''}${lockCls}" onclick="onDomainBtnClick('${d.domain_code}')" title="${d.domain_name} (${d.domain_code})"><i class="fas ${icon}" style="font-size:11px;"></i>${d.domain_code}${lockIcon}</button>`;
+    }).join('');
+    bar.style.display = 'flex';
+    if (!sessionStorage.getItem('domainGlowShown')) { bar.classList.add('glow'); sessionStorage.setItem('domainGlowShown', '1'); setTimeout(() => bar.classList.remove('glow'), 6500); }
+}
+
+function updateDomainInfoBanner() {
+    const banner = document.getElementById('domainInfoBanner');
+    const text = document.getElementById('domainInfoText');
+    if (!banner || !text) return;
+    const label = domainsList.find(d => d.domain_code === currentDomain)?.domain_name || currentDomain;
+    text.textContent = `현재 분석 영역은 ${label} (${currentDomain})입니다. 분석 영역에 따라 조회 가능한 필드, 산식, 학습 데이터가 달라집니다.`;
+    banner.style.display = 'flex';
+    setTimeout(() => { banner.style.display = 'none'; }, 5000);
+}
+
+function showDomainForceOverlay() {
+    const overlay = document.getElementById('domainForceOverlay');
+    const btnsEl = document.getElementById('domainForceBtns');
+    if (!overlay || !btnsEl) return;
+    btnsEl.innerHTML = domainsList.map(d => {
+        const icon = domainIcons[d.domain_code] || 'fa-globe';
+        return `<button class="domain-force-btn sparkle" onclick="selectForceDomain('${d.domain_code}')"><i class="fas ${icon}"></i>${d.domain_name} (${d.domain_code})</button>`;
+    }).join('');
+    overlay.style.display = 'flex';
+}
+function hideDomainForceOverlay() { const o = document.getElementById('domainForceOverlay'); if (o) o.style.display = 'none'; }
+
+async function selectForceDomain(dc) {
+    currentDomain = dc;
+    await fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:dc}) }).catch(() => {});
+    hideDomainForceOverlay(); renderDomainSelectorBar(); updateDomainInfoBanner();
+}
+
+async function onDomainBtnClick(dc) {
+    if (dc === currentDomain) return;
+    if (sessionDomainLocked) {
+        const label = domainsList.find(d => d.domain_code === dc)?.domain_name || dc;
+        const curLabel = domainsList.find(d => d.domain_code === currentDomain)?.domain_name || currentDomain;
+        alert(`현재 채팅은 ${curLabel} (${currentDomain}) 기준으로 진행 중입니다.\n분석 영역을 변경하면 기존 대화와 데이터 기준이 달라질 수 있습니다.\n\n${label} (${dc})(으)로 변경하려면 새 채팅을 시작해주세요.`);
+        return;
+    }
+    await switchDomain(dc);
 }
 
 async function switchDomain(dc) {
     try {
-        await fetch('/api/me/domain', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ domain_code: dc }),
-        });
-        currentDomain = dc;
+        await fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:dc}) });
+        currentDomain = dc; renderDomainSelectorBar(); updateDomainInfoBanner();
     } catch(e) { console.error('[Domain] switch 실패:', e); }
 }
 
@@ -1718,12 +1764,14 @@ function renderHistoryList(items) {
         const isCurrentSession = item.session_id === chatSessionId;
         const activeCls = isCurrentSession ? ' active' : '';
         const countBadge = qCount > 1 ? `<span style="display:inline-block;background:rgba(99,102,241,0.2);color:#a5b4fc;font-size:9px;padding:1px 5px;border-radius:8px;margin-left:4px;">${qCount}개 질문</span>` : '';
+        const dc = item.domain_code;
+        const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${dc}]</span>` : '';
         const meta = `${time}${countBadge}`;
         html += `
             <div class="history-item${activeCls}" data-session="${esc(sessionKey)}" onclick="restoreSession('${esc(sessionKey)}')">
                 <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
                 <div class="history-item-text">
-                    <div class="history-item-query">${esc(title)}</div>
+                    <div class="history-item-query">${domainBadge}${esc(title)}</div>
                     <div class="history-item-meta">${meta}</div>
                 </div>
                 <div class="history-item-del" onclick="event.stopPropagation();deleteSession('${esc(sessionKey)}')" title="삭제">
@@ -1771,6 +1819,13 @@ async function restoreSession(sessionKey) {
 
         if (!sessionKey.startsWith('legacy_') && items[0].session_id) {
             chatSessionId = items[0].session_id;
+        }
+
+        if (items[0].domain_code) {
+            currentDomain = items[0].domain_code;
+            sessionDomainLocked = true;
+            renderDomainSelectorBar();
+            fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:currentDomain}) }).catch(() => {});
         }
 
         items.forEach(item => {
