@@ -1133,6 +1133,34 @@ const METRIC_DICTIONARY = `
 let ragReady = false;  // RAG 인덱스 빌드 완료 여부
 
 // ============================================================
+// 데이터 기간 컨텍스트 (당월/전월 동적 계산)
+// ============================================================
+/**
+ * DB에서 최신 데이터 기간(CALMONTH) 조회 → 당월/전월 기준 계산
+ * "당월"은 오늘 날짜가 아니라 마감 완료되어 적재된 최신 월을 의미
+ */
+async function getDataDateContext() {
+  try {
+    const [rows] = await pool.query(
+      'SELECT MAX(CALMONTH) AS latest FROM bw_profitability_data'
+    );
+    const latest = rows[0]?.latest || '202604';
+    const y = parseInt(latest.substring(0, 4));
+    const m = parseInt(latest.substring(4, 6));
+    const prevY = m === 1 ? y - 1 : y;
+    const prevM = m === 1 ? 12 : m - 1;
+    const prevMonth = `${prevY}${String(prevM).padStart(2, '0')}`;
+    const latestLabel = `${y}년 ${m}월`;
+    const prevLabel = `${prevY}년 ${prevM}월`;
+    console.log(`[DateCtx] 최신 데이터: ${latest} → 당월=${latestLabel}, 전월=${prevLabel}`);
+    return { latestMonth: latest, prevMonth, latestLabel, prevLabel };
+  } catch (e) {
+    console.error('[DateCtx] 데이터 기간 조회 실패:', e.message);
+    return { latestMonth: '202604', prevMonth: '202603', latestLabel: '2026년 4월', prevLabel: '2026년 3월' };
+  }
+}
+
+// ============================================================
 // System Prompt (RAG 기반 동적 생성)
 // ============================================================
 // 핵심 규칙만 포함한 경량 기본 프롬프트 (RAG 컨텍스트가 동적으로 추가됨)
@@ -1162,13 +1190,18 @@ ZAMT049, ZAMT050, ZAMT051, ZAMT052, ZAMT053, ZAMT054, ZAMT055, ZAMT056,
 ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 
 ■ 컬럼명 선택 우선순위:
-1순위: 동의어 매칭 결과 중 [Metric 산식] 태그가 있으면 해당 산식을 최우선 사용 (단순 컬럼보다 항상 우선!)
-2순위: 동의어 매칭 결과 중 일반 컬럼 매핑이 있으면 사용
+1순위: 동의어 매칭 결과 중 [Ontology 컬럼 매핑]이 있으면 해당 컬럼을 최우선 사용 (Metric보다 항상 우선!)
+  - Ontology로 매핑된 단어는 절대 Metric 산식으로 재해석하지 마세요!
+  - 예) "CAM" → Ontology의 CO_AREA_NM(관리회계 영역명) → GROUP BY / WHERE에 사용
+2순위: 동의어 매칭 결과 중 [Metric 산식]이 있으면 해당 산식 사용 (단순 컬럼보다 우선!)
 3순위: 동의어 매칭이 없으면 위 허용 목록 + TABLE_SCHEMA 설명을 보고 가장 적합한 컬럼을 판단하여 사용
 
 ★ Metric 산식 우선 규칙: 학습관리의 Metric에 계산 산식(formula)이 정의된 지표는 반드시 해당 산식을 사용하세요.
   예) 매출총이익 → SUM(ZAMT035) ✗ → SUM(ZAMT003)-SUM(ZAMT034) ✓ (Metric 산식)
   예) 매출총이익률 → (SUM(ZAMT003)-SUM(ZAMT034))/NULLIF(SUM(ZAMT003),0)*100 ✓
+★ Ontology/Metric 분리 규칙: 동일 단어가 Ontology 동의어와 Metric 동의어 양쪽에 매칭될 수 있는 경우 Ontology를 우선합니다.
+  - Ontology = 차원/분류 컬럼 (GROUP BY, WHERE, SELECT에서 분류 기준으로 사용)
+  - Metric = 계산 지표/산식 (SELECT에서 집계값으로 사용)
 
 ■ 절대 금지 — 컬럼명 창작/조합:
 - 위 허용 목록에 없는 컬럼명을 절대 만들지 마세요
@@ -1221,7 +1254,29 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 - 월 범위 필터: CALMONTH BETWEEN '202401' AND '202412'
 - 일별 추이: GROUP BY CALDAY, ORDER BY CALDAY ASC
 - 월별 추이: GROUP BY CALMONTH, ORDER BY CALMONTH ASC
-- 현재 데이터는 CALMONTH='202604' (2026년 4월) 테스트 데이터 존재
+- 현재 데이터의 최신 마감월은 CALMONTH='__LATEST_MONTH__' (__LATEST_LABEL__) 입니다
+- "이번달", "당월", "현재월", "최근월" → 마감 완료 최신월인 __LATEST_LABEL__ (CALMONTH='__LATEST_MONTH__')로 해석
+- "전월", "지난달" → __PREV_LABEL__ (CALMONTH='__PREV_MONTH__')로 해석
+- ★★★ 사용자가 기간/월을 명시하지 않은 질문은 반드시 당월(마감 최신월) 기준으로만 조회! WHERE CALMONTH = '__LATEST_MONTH__' 추가 필수! ★★★
+- 단, 사용자가 특정 년월을 명시한 경우(예: "2026년 3월")에는 해당 월을 우선 적용
+- 월별/일별 추이 질문은 WHERE 없이 전체 조회 가능
+
+[★★★ 당월/전월/이번달 기간 표시 규칙 — 매우 중요! ★★★]
+사용자가 "이번달", "당월", "전월", "전월대비" 같은 상대적 기간 표현을 사용하면:
+1. SQL 컬럼 별칭(alias)에 반드시 실제 년월을 함께 표시하세요:
+   - "당월" 또는 "이번달" → "당월(__LATEST_LABEL__) 총매출 합계(원)"
+   - "전월" → "전월(__PREV_LABEL__) 총매출 합계(원)"
+   - "전월대비 증감" → "전월대비 증감액(원)" 또는 "전월대비 증감률(%)"
+2. answer 답변 문장에도 실제 년월을 함께 표기:
+   - ✗ "전월 대비 매출 증가 1위는..."
+   - ✓ "전월(__PREV_LABEL__) 대비 당월(__LATEST_LABEL__) 매출 증가 1위는..."
+3. 이 규칙은 SQL 컬럼 alias, answer 답변, explanation 모두에 적용됩니다.
+
+[★★★ 기간 미지정 질문의 기본 조회 범위 — 매우 중요! ★★★]
+사용자가 기간을 명시하지 않은 일반 질문(예: "제품별 매출 TOP 5", "손익센터별 총매출 합계")은:
+- 반드시 WHERE CALMONTH = '__LATEST_MONTH__' 조건을 추가하여 마감 최신월 데이터만 조회
+- 전체 기간 합산이 아님! 기준월 1개월 데이터만 조회!
+- 단, "월별 추이", "기간별", "전체", "모든 월" 등 복수 기간을 암시하는 질문은 예외
 
 [컬럼 최소화 원칙 - 매우 중요!]
 - **질문에서 요청한 항목만 SELECT 하세요. 관련 있어 보이더라도 질문에 없는 항목은 절대 추가하지 마세요.**
@@ -1269,10 +1324,11 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 - answer는 일반 사용자(비개발자)가 바로 이해할 수 있는 친절한 답변이어야 합니다.
 - SQL이나 컬럼명, 기술 용어를 절대 포함하지 마세요.
 - 질문에 대한 핵심 결과를 자연스러운 한국어 문장으로 요약하세요.
+- "당월", "전월", "이번달" 등 상대적 기간 표현 사용 시 반드시 실제 년월을 함께 표기하세요.
 - 예시:
-  - "현재 2026년 2월, 3월, 4월 데이터가 존재합니다."
-  - "브랜드별 판매수량을 내림차순으로 조회했습니다. 깨끗한나라가 가장 많습니다."
-  - "2026년 3월 총매출은 약 152억원입니다."
+  - "__LATEST_LABEL__ 기준 브랜드별 판매수량을 내림차순으로 조회했습니다."
+  - "전월(__PREV_LABEL__) 대비 당월(__LATEST_LABEL__) 매출 증가 1위는 OO제품입니다."
+  - "__LATEST_LABEL__ 총매출은 약 152억원입니다."
 - explanation은 개발자/분석가용 기술 설명으로, SQL 탭에서만 보입니다.
 
 chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(상세 데이터)
@@ -1282,15 +1338,21 @@ chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(
  * 동의어 직접 매칭 (DB 조회 기반)
  * - RAG 임베딩 유사도 검색의 한계 보완
  * - 사용자 질문에 포함된 동의어를 DB에서 직접 찾아 컬럼 매핑 정보 반환
+ * - ★ 도메인별 분리: 선택된 도메인의 Ontology/Metric만 참조 (PS/HL/MGMT 혼용 금지)
+ * - ★ 우선순위: Ontology 정확매칭 > Metric 정확매칭 > 컬럼/지표명 직접매칭 > 설명 매칭
  * @param {string} query - 사용자 질문
+ * @param {string} domainCode - 현재 선택된 도메인 코드 (PS/HL/MGMT)
  * @returns {Promise<Array<{synonym: string, column_name: string, description: string, data_type: string, source: string}>>}
  */
 async function matchSynonymsDirectly(query, domainCode) {
   const matched = [];
-  let filtered = [];  // try 블록 밖에서도 접근 가능하도록 선언
+  let filtered = [];
   const dc = domainCode || 'PS';
+  const queryUpper = query.toUpperCase();
   try {
-    // 1. Ontology 동의어 매칭 (domain_code 필터)
+    // =========================================================
+    // 1단계: Ontology 동의어 정확 매칭 (최우선순위, domain_code 필터)
+    // =========================================================
     const [ontSyns] = await pool.query(
       `SELECT s.synonym_text, c.column_name, c.description, c.data_type
        FROM ontology_synonym s
@@ -1298,18 +1360,22 @@ async function matchSynonymsDirectly(query, domainCode) {
        WHERE c.domain_code = ?`, [dc]
     );
     for (const row of ontSyns) {
-      if (query.includes(row.synonym_text)) {
+      // 대소문자 무시 매칭 (영문 약어 대응: CAM, PC 등)
+      if (query.includes(row.synonym_text) || queryUpper.includes(row.synonym_text.toUpperCase())) {
         matched.push({
           synonym: row.synonym_text,
           column_name: row.column_name,
           description: row.description || '',
           data_type: row.data_type || '',
           source: 'ontology',
+          priority: 1,  // 최우선
         });
       }
     }
 
-    // 2. Metric 동의어 매칭 (domain_code 필터)
+    // =========================================================
+    // 2단계: Metric 동의어 정확 매칭 (domain_code 필터)
+    // =========================================================
     const [metSyns] = await pool.query(
       `SELECT s.synonym_text, m.metric_code, m.aggregation, m.formula, m.description
        FROM metric_synonym s
@@ -1317,24 +1383,26 @@ async function matchSynonymsDirectly(query, domainCode) {
        WHERE m.domain_code = ?`, [dc]
     );
     for (const row of metSyns) {
-      if (query.includes(row.synonym_text)) {
+      if (query.includes(row.synonym_text) || queryUpper.includes(row.synonym_text.toUpperCase())) {
         matched.push({
           synonym: row.synonym_text,
           column_name: `${row.aggregation}(${row.formula})`,
           description: row.description || row.metric_code,
           data_type: 'metric',
           source: 'metric',
+          priority: 2,
         });
       }
     }
 
-    // 3. Ontology 컬럼 설명(description) 자체도 매칭 (domain_code 필터)
+    // =========================================================
+    // 3단계: Ontology 컬럼 설명(description) 매칭 (domain_code 필터)
+    // =========================================================
     const [ontCols] = await pool.query(
       `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != '' AND domain_code = ?`, [dc]
     );
     for (const row of ontCols) {
-      if (row.description.length >= 2 && query.includes(row.description)) {
-        // 이미 synonym으로 매칭된 컬럼은 중복 방지
+      if (row.description.length >= 2 && (query.includes(row.description) || queryUpper.includes(row.description.toUpperCase()))) {
         if (!matched.some(m => m.column_name === row.column_name)) {
           matched.push({
             synonym: row.description,
@@ -1342,25 +1410,57 @@ async function matchSynonymsDirectly(query, domainCode) {
             description: row.description,
             data_type: row.data_type || '',
             source: 'ontology_desc',
+            priority: 3,
           });
         }
       }
     }
 
-    // 4. Metric 산식이 있는 항목은 같은 synonym의 ontology 단순 컬럼을 제거 (Metric 우선)
-    const metricSynonyms = new Set(matched.filter(m => m.source === 'metric').map(m => m.synonym));
+    // =========================================================
+    // 4단계: Metric 설명(description) 매칭 (domain_code 필터)
+    //   예: "마케팅비" → metric.description = "마케팅비합계" → MARKETING_COST
+    // =========================================================
+    const [metDescs] = await pool.query(
+      `SELECT metric_code, aggregation, formula, description FROM metric WHERE domain_code = ? AND description IS NOT NULL AND description != ''`, [dc]
+    );
+    for (const row of metDescs) {
+      // metric.description이 질문에 포함되었거나, 질문이 description을 포함하면 매칭
+      const desc = row.description;
+      if (desc.length >= 2 && (query.includes(desc) || queryUpper.includes(desc.toUpperCase()))) {
+        if (!matched.some(m => m.source === 'metric' && m.description === desc)) {
+          matched.push({
+            synonym: desc,
+            column_name: `${row.aggregation}(${row.formula})`,
+            description: desc,
+            data_type: 'metric',
+            source: 'metric_desc',
+            priority: 4,
+          });
+        }
+      }
+    }
+
+    // =========================================================
+    // 5단계: 충돌 해결 — Ontology 정확매칭이 있으면 같은 단어의 Metric 매칭 제거
+    //   핵심 규칙: Ontology 동의어로 등록된 단어는 LLM이 임의로 Metric으로 해석 금지
+    // =========================================================
+    const ontologySynonyms = new Set(
+      matched.filter(m => m.source === 'ontology' || m.source === 'ontology_desc').map(m => m.synonym.toUpperCase())
+    );
     filtered = matched.filter(m => {
-      if (m.source !== 'metric' && metricSynonyms.has(m.synonym)) {
-        console.log(`[Synonym] Metric 우선: "${m.synonym}" ontology(${m.column_name}) 제거 → Metric 산식 사용`);
+      // Metric 매칭인데 동일 단어가 Ontology에서도 매칭된 경우 → Ontology 우선, Metric 제거
+      if ((m.source === 'metric' || m.source === 'metric_desc') && ontologySynonyms.has(m.synonym.toUpperCase())) {
+        console.log(`[Synonym] Ontology 우선: "${m.synonym}" metric(${m.description}) 제거 → Ontology 컬럼 사용`);
         return false;
       }
       return true;
     });
-    // Metric을 앞쪽에 배치 (우선순위 높음)
-    filtered.sort((a, b) => (a.source === 'metric' ? -1 : 1) - (b.source === 'metric' ? -1 : 1));
+
+    // 우선순위 정렬: Ontology 정확매칭 > Metric 정확매칭 > 설명 매칭
+    filtered.sort((a, b) => (a.priority || 99) - (b.priority || 99));
 
     if (filtered.length > 0) {
-      console.log(`[Synonym] 직접 매칭 ${filtered.length}건: ${filtered.map(m => `"${m.synonym}"→${m.column_name} [${m.source}]`).join(', ')}`);
+      console.log(`[Synonym] 직접 매칭 ${filtered.length}건 (도메인: ${dc}): ${filtered.map(m => `"${m.synonym}"→${m.column_name} [${m.source}]`).join(', ')}`);
     }
   } catch (e) {
     console.error('[Synonym] 직접 매칭 실패:', e.message);
@@ -1384,9 +1484,9 @@ async function buildRAGSystemPrompt(query, domainCode) {
   const synonymMatches = await matchSynonymsDirectly(query, domainCode);
   let synonymContext = '';
   if (synonymMatches.length > 0) {
-    // Metric 산식 매칭과 일반 컬럼 매칭 분리
-    const metricMatches = synonymMatches.filter(m => m.source === 'metric');
-    const columnMatches = synonymMatches.filter(m => m.source !== 'metric');
+    // Metric 산식 매칭과 Ontology 컬럼 매칭 분리
+    const metricMatches = synonymMatches.filter(m => m.source === 'metric' || m.source === 'metric_desc');
+    const columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc');
     
     synonymContext = '\n[★ 동의어 매칭 결과 - 최우선 적용! 아래 매핑을 반드시 SQL에 사용하세요]\n';
     
@@ -1407,13 +1507,17 @@ async function buildRAGSystemPrompt(query, domainCode) {
       synonymContext += '  ✓ 또는: SELECT SUM(ZAMT003)-SUM(ZAMT034) AS 매출총이익  ← 이것도 가능\n';
     }
     if (columnMatches.length > 0) {
-      synonymContext += '\n🔷 [컬럼 매핑]\n';
+      synonymContext += '\n🔷 [Ontology 컬럼 매핑 — 이 단어들은 Metric이 아닌 Ontology 컬럼입니다!]\n';
       for (const m of columnMatches) {
         synonymContext += `- 사용자가 말한 "${m.synonym}" → 컬럼: ${m.column_name} (${m.data_type}) - ${m.description}\n`;
+        synonymContext += `  🚫 "${m.synonym}"을(를) Metric 산식이나 금액 지표로 해석하지 마세요! 이것은 Ontology 컬럼(차원/분류)입니다.\n`;
       }
     }
     synonymContext += '\n위 매핑된 컬럼/산식을 SQL의 SELECT, WHERE, GROUP BY 등에 반드시 사용하세요.\n';
     synonymContext += '🚨 Metric 산식이 있는 항목은 해당 산식을 SQL에 그대로 포함하세요. 단순 컬럼(예: ZAMT035)으로 대체하면 0원 결과가 나옵니다!\n';
+    if (columnMatches.length > 0 && metricMatches.length === 0) {
+      synonymContext += '⚠️ 이 질문에서는 Metric 산식이 매칭되지 않았습니다. Ontology 컬럼 기준의 GROUP BY/WHERE 조회를 수행하세요.\n';
+    }
   }
 
   // ★ Metric 산식이 매칭된 컬럼 목록 수집 (RAG 컨텍스트에서 해당 단순 컬럼 제거용)
@@ -1446,6 +1550,30 @@ async function buildRAGSystemPrompt(query, domainCode) {
         codeMappingTopK: 5,
         ruleTopK: 5,
       });
+      // ★★★ 도메인 필터링: RAG 검색 결과에서 다른 도메인의 ontology/metric 제거
+      if (ragContext.ontology) {
+        const beforeOnt = ragContext.ontology.length;
+        ragContext.ontology = ragContext.ontology.filter(s => {
+          const chunkDomain = s.metadata?.domain_code;
+          return !chunkDomain || chunkDomain === domainCode;
+        });
+        const afterOnt = ragContext.ontology.length;
+        if (beforeOnt !== afterOnt) {
+          console.log(`[RAG] 도메인 필터(ontology): ${beforeOnt} → ${afterOnt}개 (도메인: ${domainCode})`);
+        }
+      }
+      if (ragContext.metric) {
+        const beforeMet = ragContext.metric.length;
+        ragContext.metric = ragContext.metric.filter(s => {
+          const chunkDomain = s.metadata?.domain_code;
+          return !chunkDomain || chunkDomain === domainCode;
+        });
+        const afterMet = ragContext.metric.length;
+        if (beforeMet !== afterMet) {
+          console.log(`[RAG] 도메인 필터(metric): ${beforeMet} → ${afterMet}개 (도메인: ${domainCode})`);
+        }
+      }
+
       // ★ Metric 산식이 있는 컬럼은 RAG 스키마에서 제거 (GPT가 단순 컬럼 선택하는 것 방지)
       if (metricReplacedColumns.size > 0 && ragContext.schema) {
         const before = ragContext.schema.length;
@@ -1476,21 +1604,39 @@ async function buildRAGSystemPrompt(query, domainCode) {
     contextText = await buildFallbackContext(domainCode);
   }
 
+  // ★★★ 도메인 컨텍스트 주입 — LLM이 현재 분석 도메인을 정확히 인지하도록
+  const domainNames = { PS: '생활용품사업부(PS)', HL: '홈앤라이프사업부(HL)', MGMT: '경영관리(MGMT)' };
+  const domainCtx = `\n[★★★ 현재 분석 도메인: ${domainNames[domainCode] || domainCode} ★★★]
+- 현재 선택된 도메인은 "${domainCode}" 입니다.
+- 아래 제공된 동의어 매칭, RAG 컨텍스트, Ontology/Metric 정보는 모두 ${domainCode} 도메인 전용입니다.
+- 다른 도메인(${Object.keys(domainNames).filter(d => d !== domainCode).join('/')})의 Ontology/Metric 정보를 사용하거나 참조하지 마세요.
+- 동의어 매칭에서 특정 단어가 Ontology 컬럼으로 매핑된 경우, 해당 단어를 Metric 산식으로 재해석하지 마세요.
+`;
+
   // RAG 모드에서는 검색된 메타데이터만 사용 (전체 스키마/메트릭 덤프 제거)
   // → GPT가 질문과 무관한 컬럼을 보고 불필요한 컬럼을 추가하는 문제 방지
   let prompt;
   if (ragReady && ragContext) {
-    // RAG 활성: 기본 규칙 + 동의어 매칭 + RAG 검색 컨텍스트
+    // RAG 활성: 기본 규칙 + 도메인 컨텍스트 + 동의어 매칭 + RAG 검색 컨텍스트
     prompt = BASE_SYSTEM_PROMPT
+      + domainCtx
       + synonymContext
       + '\n\n--- RAG 검색 컨텍스트 (이 질문과 관련된 메타데이터만 포함됨) ---\n' + contextText;
   } else {
     // 폴백: 기존 방식 (전체 스키마 + 메트릭 + 폴백 컨텍스트)
-    prompt = BASE_SYSTEM_PROMPT + synonymContext + '\n' + TABLE_SCHEMA + '\n' + METRIC_DICTIONARY
+    prompt = BASE_SYSTEM_PROMPT + domainCtx + synonymContext + '\n' + TABLE_SCHEMA + '\n' + METRIC_DICTIONARY
       + '\n\n--- 컨텍스트 ---\n' + contextText;
   }
 
-  return { prompt, ragContext };
+  // ★ 당월/전월 날짜 컨텍스트 동적 주입 — 플레이스홀더를 실제 년월로 교체
+  const dateCtx = await getDataDateContext();
+  prompt = prompt
+    .replace(/__LATEST_LABEL__/g, dateCtx.latestLabel)
+    .replace(/__PREV_LABEL__/g, dateCtx.prevLabel)
+    .replace(/__LATEST_MONTH__/g, dateCtx.latestMonth)
+    .replace(/__PREV_MONTH__/g, dateCtx.prevMonth);
+
+  return { prompt, ragContext, dateContext: dateCtx };
 }
 
 /**
@@ -1600,6 +1746,7 @@ app.post('/api/nlq', async (req, res) => {
 
     let sql, answer = '', explanation, chartType, chartConfig, analysisRequired = false;
     let ragInfo = null;  // RAG 검색 상세 정보
+    let dateContext = null;  // 당월/전월 날짜 컨텍스트
 
     if (matchedSql) {
       // 학습 데이터 매칭 → AI 호출 없이 직접 사용
@@ -1629,7 +1776,10 @@ app.post('/api/nlq', async (req, res) => {
       }
     } else {
       // 1. RAG 기반 SQL 생성 (질문 관련 메타데이터만 검색하여 프롬프트에 주입)
-      const { prompt: systemPrompt, ragContext } = await buildRAGSystemPrompt(query, activeDomain);
+      const buildResult = await buildRAGSystemPrompt(query, activeDomain);
+      const systemPrompt = buildResult.prompt;
+      const ragContext = buildResult.ragContext;
+      dateContext = buildResult.dateContext;
       console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady})`);
 
       // RAG 검색 상세 정보 수집
@@ -1714,6 +1864,10 @@ app.post('/api/nlq', async (req, res) => {
       const sampleData = rows.slice(0, 20);
       const sampleText = JSON.stringify(sampleData, (k, v) => typeof v === 'bigint' ? Number(v) : v);
 
+      // 날짜 컨텍스트 (dateContext가 없으면 폴백)
+      const dc = dateContext || await getDataDateContext();
+      const dateHint = `[기간 참고] 당월=${dc.latestLabel}, 전월=${dc.prevLabel}. "당월","이번달","전월" 등의 표현에는 반드시 실제 년월을 괄호로 병기하세요. 예: "당월(${dc.latestLabel})", "전월(${dc.prevLabel})"`;
+
       const answerCompletion = await openai.chat.completions.create({
         model: GPT_MODEL,
         messages: [
@@ -1721,6 +1875,7 @@ app.post('/api/nlq', async (req, res) => {
             role: 'user',
             content: `아래 데이터 조회 결과를 보고, 질문에 대한 답변을 1~2문장의 자연스러운 한국어로 작성해주세요.
 SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표현하세요.
+${dateHint}
 
 질문: ${query}
 결과 (${rows.length}행): ${sampleText.substring(0, 600)}`
@@ -1745,15 +1900,18 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
       try {
         console.log(`[NLQ] 분석형 질문 감지 — GPT 텍스트 분석 답변 생성 시작 (데이터 ${rows.length}행)`);
 
+        const dc2 = dateContext || await getDataDateContext();
+        const dateInfo = `[기간 참고] 당월=${dc2.latestLabel}, 전월=${dc2.prevLabel}. "당월","이번달","전월" 등 상대적 기간 표현에는 반드시 실제 년월을 괄호로 병기하세요.`;
+
         let userContent;
         if (rows.length > 0) {
           const dataForAnalysis = rows.slice(0, 50);
           const dataText = JSON.stringify(dataForAnalysis, (key, val) =>
             typeof val === 'bigint' ? Number(val) : val
           , 2);
-          userContent = `[사용자 질문]\n${query}\n\n[실행한 SQL]\n${sql}\n\n[조회된 데이터 (${rows.length}행)]\n${dataText}\n\n위 데이터를 기반으로 질문에 대한 전문적인 분석 답변을 작성해주세요.`;
+          userContent = `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[실행한 SQL]\n${sql}\n\n[조회된 데이터 (${rows.length}행)]\n${dataText}\n\n위 데이터를 기반으로 질문에 대한 전문적인 분석 답변을 작성해주세요.`;
         } else {
-          userContent = `[사용자 질문]\n${query}\n\n[실행한 SQL]\n${sql}\n\n[조회 결과]: 0행 (데이터 없음)\n\nSQL 조회 결과가 0행입니다. 가능한 원인과 함께 질문에 대해 알려진 정보를 바탕으로 답변해주세요.`;
+          userContent = `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[실행한 SQL]\n${sql}\n\n[조회 결과]: 0행 (데이터 없음)\n\nSQL 조회 결과가 0행입니다. 가능한 원인과 함께 질문에 대해 알려진 정보를 바탕으로 답변해주세요.`;
         }
 
         const analysisCompletion = await openai.chat.completions.create({
@@ -1773,6 +1931,7 @@ SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표�
 6. 한국어 답변
 7. 데이터에 없는 내용 추측 금지
 8. 조회 결과 0행: 원인과 대안을 간단히 제안
+9. "당월", "전월", "이번달" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기 (예: "당월(2026년 4월)")
 
 [★ 길이·완결성 규칙 — 반드시 준수]
 - 답변은 500~800자 이내로 핵심만 작성 (장황한 나열·반복 금지)
@@ -2017,6 +2176,23 @@ app.get('/api/status', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ db: 'error', error: err.message });
+  }
+});
+
+// ============================================================
+// API: 데이터 기준월 컨텍스트 (프론트엔드 기준월 안내용)
+// ============================================================
+app.get('/api/data-date-context', async (req, res) => {
+  try {
+    const ctx = await getDataDateContext();
+    res.json({
+      latestMonth: ctx.latestMonth,
+      prevMonth: ctx.prevMonth,
+      latestLabel: ctx.latestLabel,
+      prevLabel: ctx.prevLabel,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

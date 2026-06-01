@@ -368,6 +368,8 @@
         }
         .chip-sm:hover{background:#4f46e5;color:#fff;border-color:#4f46e5;}
 
+
+
         /* Input bar */
         .input-bar{
             flex-shrink:0;background:#fff;border-top:1px solid #e5e7eb;
@@ -584,13 +586,7 @@
             <span id="topAiDot" class="dot"></span>
             <span id="topAiLabel">AI</span>
         </div>
-        <div class="status-pill hidden sm:flex">
-            <span id="topDataLabel">데이터: -</span>
-        </div>
-        <div class="status-pill" id="topRagPill" style="display:none;">
-            <span id="topRagDot" class="dot"></span>
-            <span id="topRagLabel">RAG</span>
-        </div>
+        
         <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
         <button onclick="doLogout()" title="로그아웃" style="
             display:flex;align-items:center;gap:6px;padding:6px 14px;
@@ -621,6 +617,11 @@
             <h2 class="text-xl font-bold text-gray-800 mb-2">무엇이든 물어보세요</h2>
             <p class="text-sm text-gray-500 mb-1">AI가 자사 수익성 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
             <p class="text-sm text-gray-400">질문을 입력하면 분석부터 SQL 생성, 시각화까지 자동으로 처리합니다.</p>
+            <div id="welcomeDateInfo" style="margin-top:16px;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:13px;color:#92400e;display:none;line-height:1.7;">
+                <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
+                현재 데이터 기준월은 <strong id="welcomeLatestLabel"></strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
+                <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
+            </div>
         </div>
     </div>
 
@@ -630,6 +631,8 @@
             <span style="color:#94a3b8;font-size:13.5px;flex-shrink:0;line-height:32px;">예시:</span>
         </div>
     </div>
+
+
 
     <!-- Input Bar -->
     <div class="input-bar">
@@ -663,13 +666,14 @@ let msgCounter = 0;
 let conversationContext = [];
 let historyCache = []; // 이력 캐시
 let chatSessionId = crypto.randomUUID();
+let dataDateContext = null;  // 마감 최신월 컨텍스트 (서버에서 조회)
 
 const SUGGESTIONS = [
     '손익센터별 총매출 합계',
     '플랜트별 매출 상위 10개',
     '제품별 매출 TOP 5',
     '내수 vs 수출 매출 비교',
-    '일별 총매출 추이',
+    '전월대비 매출 증가 TOP 5',
     '브랜드별 판매수량 합계',
     '고객그룹별 매출총이익',
     '영업팀별 영업이익 순위',
@@ -817,7 +821,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('topDbLabel').textContent = 'DB 연결';
         document.getElementById('topAiDot').classList.add('green');
         document.getElementById('topAiLabel').textContent = d.ai;
-        document.getElementById('topDataLabel').textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
+        const topDataEl = document.getElementById('topDataLabel');
+        if (topDataEl) topDataEl.textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
         // Sidebar
         document.getElementById('sideDbDot').style.background = '#22c55e';
         document.getElementById('sideDbLabel').textContent = 'DB 연결됨';
@@ -830,12 +835,14 @@ window.addEventListener('DOMContentLoaded', async () => {
             const ragPill = document.getElementById('topRagPill');
             const ragDot = document.getElementById('topRagDot');
             const ragLabel = document.getElementById('topRagLabel');
-            ragPill.style.display = 'flex';
-            if (d.rag.enabled) {
-                ragDot.classList.add('purple');
-                ragLabel.textContent = 'RAG ' + d.rag.totalChunks + '청크';
-            } else {
-                ragLabel.textContent = 'RAG 대기';
+            if (ragPill) {
+                ragPill.style.display = 'flex';
+                if (d.rag.enabled) {
+                    if (ragDot) ragDot.classList.add('purple');
+                    if (ragLabel) ragLabel.textContent = 'RAG ' + d.rag.totalChunks + '청크';
+                } else {
+                    if (ragLabel) ragLabel.textContent = 'RAG 대기';
+                }
             }
             // 사이드바
             const sideRagRow = document.getElementById('sideRagRow');
@@ -858,6 +865,23 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
     } catch(e) {
         document.getElementById('topDbLabel').textContent = 'DB 오류';
+    }
+
+    // 기준월 컨텍스트 조회 (마감 완료 최신월)
+    try {
+        const dcRes = await fetch('/api/data-date-context');
+        if (dcRes.ok) {
+            dataDateContext = await dcRes.json();
+            // Welcome 영역에 기준월 표시
+            const welcomeDateInfo = document.getElementById('welcomeDateInfo');
+            const welcomeLabel = document.getElementById('welcomeLatestLabel');
+            if (welcomeDateInfo && welcomeLabel) {
+                welcomeLabel.textContent = dataDateContext.latestLabel;
+                welcomeDateInfo.style.display = 'block';
+            }
+        }
+    } catch(e) {
+        console.warn('[DateCtx] 기준월 조회 실패:', e.message);
     }
 
     // Suggestion chips - fixed bar (always visible above input)
@@ -1902,10 +1926,17 @@ function startNewChat() {
         welcome.style.display = '';
         chatArea.appendChild(welcome);
     } else {
+        const dateInfoHtml = dataDateContext
+            ? `<div style="margin-top:16px;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:13px;color:#92400e;line-height:1.7;">
+                <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
+                현재 데이터 기준월은 <strong>${dataDateContext.latestLabel}</strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
+                <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
+               </div>` : '';
         chatArea.innerHTML = `<div id="welcomeSection" class="welcome-section">
             <div class="welcome-icon"><i class="fas fa-robot"></i></div>
             <h2 style="margin:0 0 8px;">무엇이든 물어보세요</h2>
             <p style="color:#94a3b8;font-size:13px;">자연어로 데이터를 조회하고 분석할 수 있습니다</p>
+            ${dateInfoHtml}
         </div>`;
     }
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
