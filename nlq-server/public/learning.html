@@ -231,21 +231,6 @@
 
         </div>
 
-        <!-- RAG 빌드 바 -->
-        <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-bottom:12px;" id="ragBuildBar">
-            <span id="ragStatusText" style="font-size:12px;color:#94a3b8;"></span>
-            <button id="ragBuildBtn" onclick="doRagBuild()" style="
-                display:inline-flex;align-items:center;gap:7px;padding:8px 18px;
-                background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;
-                border:none;border-radius:9px;font-size:13px;font-weight:700;
-                cursor:pointer;transition:all .2s;box-shadow:0 2px 8px rgba(109,40,217,.2);
-                font-family:inherit;
-            " onmouseover="this.style.boxShadow='0 4px 14px rgba(109,40,217,.35)'"
-               onmouseout="this.style.boxShadow='0 2px 8px rgba(109,40,217,.2)'">
-                <i class="fas fa-brain"></i> RAG 인덱스 빌드
-            </button>
-        </div>
-
         <!-- Tabs -->
         <div class="tab-bar" id="tabBar">
             <button class="tab-btn active" data-tab="ontology" onclick="switchMainTab('ontology',this)">
@@ -268,7 +253,15 @@
                         <h2 class="text-sm font-bold text-gray-800">Ontology 관리</h2>
                         <span class="badge badge-blue" id="ontologyCount">0개</span>
                     </div>
-                    <div class="flex gap-2 flex-wrap">
+                    <div class="flex gap-2 flex-wrap items-center">
+                        <span id="ragStatusText" style="font-size:12px;color:#94a3b8;"></span>
+                        <button id="ragBuildBtn" onclick="doRagBuild()" class="btn" style="
+                            background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;
+                            font-weight:700;box-shadow:0 2px 8px rgba(109,40,217,.18);
+                        " onmouseover="this.style.boxShadow='0 4px 14px rgba(109,40,217,.3)'"
+                           onmouseout="this.style.boxShadow='0 2px 8px rgba(109,40,217,.18)'">
+                            <i class="fas fa-save"></i> 저장
+                        </button>
                         <a href="/api/ontology/upload-excel/template" class="btn btn-outline" title="엑셀 양식 다운로드">
                             <i class="fas fa-download"></i> 템플릿
                         </a>
