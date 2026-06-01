@@ -247,6 +247,7 @@ async function searchRelevantMeta(pool, query, options = {}) {
     feedbackTopK = 5,       // 피드백 관련 최대
     codeMappingTopK = 5,    // 코드매핑 관련 최대
     ruleTopK = 3,           // 규칙 관련 최대
+    domainCode = null,      // 도메인 필터 (ontology/metric 청크에 적용)
   } = options;
 
   // 1. 질문 임베딩
@@ -263,7 +264,7 @@ async function searchRelevantMeta(pool, query, options = {}) {
     return { schema: [], ontology: [], metric: [], code_mapping: [], feedback: [], join_condition: [], rule: [] };
   }
 
-  // 3. 코사인 유사도 계산 및 정렬
+  // 3. 코사인 유사도 계산 및 정렬 (도메인 필터링 포함)
   const scored = allChunks.map(chunk => {
     const vec = JSON.parse(chunk.embedding);
     const score = cosineSimilarity(queryEmbedding, vec);
@@ -276,8 +277,15 @@ async function searchRelevantMeta(pool, query, options = {}) {
       score,
       metadata: meta,
     };
-  }).filter(c => c.score >= minScore)
-    .sort((a, b) => b.score - a.score);
+  }).filter(c => {
+    if (c.score < minScore) return false;
+    // ★ 도메인 필터: ontology/metric 청크는 해당 도메인만 허용
+    if (domainCode && (c.type === 'ontology' || c.type === 'metric')) {
+      const chunkDomain = c.metadata?.domain_code;
+      if (chunkDomain && chunkDomain !== domainCode) return false;
+    }
+    return true;
+  }).sort((a, b) => b.score - a.score);
 
   // 4. 카테고리별 Top-K 분류
   const result = {
