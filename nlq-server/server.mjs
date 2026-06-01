@@ -1549,6 +1549,7 @@ async function buildRAGSystemPrompt(query, domainCode) {
         feedbackTopK: 5,
         codeMappingTopK: 5,
         ruleTopK: 5,
+        domainCode: domainCode,  // ★ RAG 검색 단계에서 도메인 필터링
       });
       // ★★★ 도메인 필터링: RAG 검색 결과에서 다른 도메인의 ontology/metric 제거
       if (ragContext.ontology) {
