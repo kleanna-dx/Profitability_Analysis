@@ -84,41 +84,41 @@ async function buildRagIndex(pool) {
     });
   }
 
-  // 2. 온톨로지 청크 — 컬럼 + 동의어 포함
+  // 2. 온톨로지 청크 — 컬럼 + 동의어 포함 (domain_code 포함)
   const [ontRows] = await pool.query(
-    `SELECT c.id, c.column_name, c.table_name, c.description, c.data_type,
+    `SELECT c.id, c.column_name, c.table_name, c.description, c.data_type, c.domain_code,
             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
      FROM ontology_column c
      LEFT JOIN ontology_synonym s ON s.column_id = c.id
      GROUP BY c.id`
   );
   for (const o of ontRows) {
-    let text = `온톨로지 컬럼: ${o.column_name} - ${o.description || ''}`;
+    let text = `온톨로지 컬럼: ${o.column_name} - ${o.description || ''} [도메인:${o.domain_code || 'ALL'}]`;
     if (o.synonyms) text += `. 동의어: ${o.synonyms}`;
     chunks.push({
       type: 'ontology',
       sourceId: o.id,
       text,
-      metadata: { column_name: o.column_name, description: o.description, synonyms: o.synonyms },
+      metadata: { column_name: o.column_name, description: o.description, synonyms: o.synonyms, domain_code: o.domain_code },
     });
   }
 
-  // 3. 메트릭 청크 — 지표 + 수식 + 동의어
+  // 3. 메트릭 청크 — 지표 + 수식 + 동의어 (domain_code 포함)
   const [metRows] = await pool.query(
-    `SELECT m.id, m.metric_code, m.aggregation, m.formula, m.description,
+    `SELECT m.id, m.metric_code, m.aggregation, m.formula, m.description, m.domain_code,
             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
      FROM metric m
      LEFT JOIN metric_synonym s ON s.metric_id = m.id
      GROUP BY m.id`
   );
   for (const m of metRows) {
-    let text = `지표: ${m.description || m.metric_code} = ${m.aggregation}(${m.formula})`;
+    let text = `지표: ${m.description || m.metric_code} = ${m.aggregation}(${m.formula}) [도메인:${m.domain_code || 'ALL'}]`;
     if (m.synonyms) text += `. 동의어: ${m.synonyms}`;
     chunks.push({
       type: 'metric',
       sourceId: m.id,
       text,
-      metadata: { metric_code: m.metric_code, aggregation: m.aggregation, formula: m.formula, description: m.description },
+      metadata: { metric_code: m.metric_code, aggregation: m.aggregation, formula: m.formula, description: m.description, domain_code: m.domain_code },
     });
   }
 
