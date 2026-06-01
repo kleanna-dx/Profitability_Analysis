@@ -68,6 +68,13 @@
         .syn-chip{display:inline-flex;align-items:center;gap:4px;background:#eef2ff;color:#4f46e5;font-size:11px;padding:3px 10px;border-radius:12px;margin:2px;border:1px solid #c7d2fe;transition:all .15s;}
         .syn-chip .syn-del{cursor:pointer;color:#a5b4fc;font-size:10px;margin-left:2px;transition:color .15s;}
         .syn-chip .syn-del:hover{color:#ef4444;}
+        .syn-chip.pending-add{background:#dcfce7;color:#16a34a;border-color:#86efac;animation:pendingPulse 2s infinite;}
+        .syn-chip.pending-del{background:#fef2f2;color:#dc2626;border-color:#fecaca;text-decoration:line-through;opacity:0.6;}
+        @keyframes pendingPulse{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,0.2)}50%{box-shadow:0 0 0 4px rgba(34,197,94,0.1)}}
+        .pending-badge{position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;font-size:10px;font-weight:800;min-width:18px;height:18px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 4px;box-shadow:0 2px 4px rgba(239,68,68,0.3);}
+        .save-btn-wrapper{position:relative;display:inline-block;}
+        .save-btn-glow{animation:saveGlow 1.5s infinite;}
+        @keyframes saveGlow{0%,100%{box-shadow:0 2px 8px rgba(109,40,217,.18)}50%{box-shadow:0 2px 16px rgba(109,40,217,.45)}}
 
         /* Buttons */
         .btn{padding:7px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;border:none;display:inline-flex;align-items:center;gap:6px;}
@@ -106,6 +113,16 @@
         /* Add synonym inline */
         .add-syn-input{border:1px solid #c7d2fe;border-radius:12px;padding:3px 10px;font-size:11px;width:100px;outline:none;background:#f8fafc;}
         .add-syn-input:focus{border-color:#4f46e5;background:#fff;}
+
+        /* Warning modal */
+        .warn-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:300;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s;}
+        .warn-modal-overlay.active{opacity:1;pointer-events:auto;}
+        .warn-modal{background:#fff;border-radius:16px;padding:28px;width:90%;max-width:440px;box-shadow:0 20px 60px rgba(0,0,0,0.2);transform:translateY(20px);transition:transform .2s;text-align:center;}
+        .warn-modal-overlay.active .warn-modal{transform:translateY(0);}
+        .warn-icon{font-size:48px;margin-bottom:12px;}
+        .warn-title{font-size:17px;font-weight:800;color:#dc2626;margin-bottom:10px;}
+        .warn-msg{font-size:14px;color:#475569;line-height:1.6;margin-bottom:20px;}
+        .warn-actions{display:flex;gap:10px;justify-content:center;}
 
         /* Badge */
         .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}
@@ -255,13 +272,16 @@
                     </div>
                     <div class="flex gap-2 flex-wrap items-center">
                         <span id="ragStatusText" style="font-size:12px;color:#94a3b8;"></span>
-                        <button id="ragBuildBtn" onclick="doRagBuild()" class="btn" style="
-                            background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;
-                            font-weight:700;box-shadow:0 2px 8px rgba(109,40,217,.18);
-                        " onmouseover="this.style.boxShadow='0 4px 14px rgba(109,40,217,.3)'"
-                           onmouseout="this.style.boxShadow='0 2px 8px rgba(109,40,217,.18)'">
-                            <i class="fas fa-save"></i> 저장
-                        </button>
+                        <span class="save-btn-wrapper">
+                            <button id="ragBuildBtn" onclick="doRagBuild()" class="btn" style="
+                                background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;
+                                font-weight:700;box-shadow:0 2px 8px rgba(109,40,217,.18);
+                            " onmouseover="this.style.boxShadow='0 4px 14px rgba(109,40,217,.3)'"
+                               onmouseout="if(!this.classList.contains('save-btn-glow'))this.style.boxShadow='0 2px 8px rgba(109,40,217,.18)'">
+                                <i class="fas fa-save"></i> 저장
+                            </button>
+                            <span id="pendingBadge" class="pending-badge" style="display:none;">0</span>
+                        </span>
                         <a href="/api/ontology/upload-excel/template" class="btn btn-outline" title="엑셀 양식 다운로드">
                             <i class="fas fa-download"></i> 템플릿
                         </a>
@@ -472,6 +492,26 @@
 
 
 
+<!-- MODAL: Pending Changes Warning -->
+<div id="pendingWarnModal" class="warn-modal-overlay">
+    <div class="warn-modal">
+        <div class="warn-icon">&#9888;&#65039;</div>
+        <div class="warn-title">저장되지 않은 변경사항</div>
+        <div class="warn-msg">
+            상단에 있는 <strong style="color:#7c3aed;">저장</strong> 버튼을 누르지 않으면<br>
+            등록한 내용이 <strong style="color:#dc2626;">삭제</strong>됩니다.
+        </div>
+        <div class="warn-actions">
+            <button class="btn" style="background:#ef4444;color:#fff;font-weight:700;padding:10px 24px;font-size:13px;" onclick="confirmDiscardPending()">
+                <i class="fas fa-sign-out-alt mr-1"></i> 저장하지 않고 나가기
+            </button>
+            <button class="btn" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;font-weight:700;padding:10px 24px;font-size:13px;" onclick="closePendingWarnModal()">
+                <i class="fas fa-save mr-1"></i> 저장하기
+            </button>
+        </div>
+    </div>
+</div>
+
 <!-- MODAL: Excel Upload -->
 <div id="excelUploadModal" class="modal-overlay">
     <div class="modal modal-xl">
@@ -556,6 +596,16 @@ let metricData = [];
 let joinData = [];
 
 // ============================================================
+// Pending synonym state (memory-only until 저장 clicked)
+// ============================================================
+let pendingOntAdds = [];   // [{colId, text, tempId}]
+let pendingOntDeletes = []; // [synId, ...]
+let pendingMetAdds = [];   // [{metId, text, tempId}]
+let pendingMetDeletes = []; // [synId, ...]
+let _pendingTempId = 0;
+let _pendingNavAction = null; // callback after discard confirm
+
+// ============================================================
 // Init
 // ============================================================
 let currentDomain = 'PS';
@@ -580,7 +630,7 @@ async function initLearningDomain() {
         if (nav && me.menus && me.menus.length > 0) {
             nav.innerHTML = me.menus.map(m => {
                 const isActive = m.menu_url === '/learning.html';
-                return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive ? ' active' : ''}" style="text-decoration:none;"><i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
+                return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive ? ' active' : ''}" style="text-decoration:none;" onclick="return sidebarNavClick(event,'${m.menu_url}')"><i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
             }).join('');
         }
 
@@ -625,7 +675,16 @@ function renderDomainBanner() {
 async function switchDomainTab(dc) {
     if (isDomainLocked) return;
     if (dc === currentDomain) return;
+    if (hasPendingChanges()) {
+        _pendingNavAction = () => { doSwitchDomain(dc); };
+        openPendingWarnModal();
+        return;
+    }
+    await doSwitchDomain(dc);
+}
+async function doSwitchDomain(dc) {
     currentDomain = dc;
+    clearAllPending();
     renderDomainBanner();
     try {
         await fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:dc}) });
@@ -692,16 +751,64 @@ async function doRagBuild() {
     const btn = document.getElementById('ragBuildBtn');
     const txt = document.getElementById('ragStatusText');
     const origHtml = btn.innerHTML;
+    const totalPending = pendingOntAdds.length + pendingOntDeletes.length + pendingMetAdds.length + pendingMetDeletes.length;
+
     btn.disabled = true;
     btn.style.opacity = '0.7';
     btn.style.cursor = 'wait';
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 빌드 중...';
+
+    // Step 1: Batch save pending synonym changes
+    if (totalPending > 0) {
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 동의어 저장 중...';
+        txt.innerHTML = '<span style="color:#f59e0b;">동의어 변경사항 저장 중... (' + totalPending + '건)</span>';
+        let errors = [];
+        // Process ontology deletes
+        for (const synId of pendingOntDeletes) {
+            try { await fetch('/api/ontology/synonym/' + synId, { method: 'DELETE' }); }
+            catch(e) { errors.push('Ont 삭제 #' + synId + ': ' + e.message); }
+        }
+        // Process ontology adds
+        for (const p of pendingOntAdds) {
+            try {
+                await fetch('/api/ontology/' + p.colId + '/synonym', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ synonym_text: p.text })
+                });
+            } catch(e) { errors.push('Ont 추가 "' + p.text + '": ' + e.message); }
+        }
+        // Process metric deletes
+        for (const synId of pendingMetDeletes) {
+            try { await fetch('/api/metric/synonym/' + synId, { method: 'DELETE' }); }
+            catch(e) { errors.push('Met 삭제 #' + synId + ': ' + e.message); }
+        }
+        // Process metric adds
+        for (const p of pendingMetAdds) {
+            try {
+                await fetch('/api/metric/' + p.metId + '/synonym', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ synonym_text: p.text })
+                });
+            } catch(e) { errors.push('Met 추가 "' + p.text + '": ' + e.message); }
+        }
+        if (errors.length > 0) {
+            txt.innerHTML = '<span style="color:#ef4444;">일부 저장 오류: ' + errors.join(', ') + '</span>';
+        }
+        // Clear pending state
+        clearAllPending();
+        // Reload data from DB
+        await loadOntology();
+        await loadMetric();
+        await loadStats();
+    }
+
+    // Step 2: RAG build
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> RAG 빌드 중...';
     txt.innerHTML = '<span style="color:#f59e0b;">임베딩 생성 중... (30초~1분 소요)</span>';
     try {
         const res = await fetch('/api/rag/build', { method: 'POST' });
         const d = await res.json();
         if (d.success) {
-            txt.innerHTML = '<i class="fas fa-check-circle" style="color:#16a34a;margin-right:4px;"></i><span style="color:#16a34a;">빌드 완료! ' + d.totalChunks + '청크</span>';
+            txt.innerHTML = '<i class="fas fa-check-circle" style="color:#16a34a;margin-right:4px;"></i><span style="color:#16a34a;">저장 완료! ' + d.totalChunks + '청크</span>';
             setTimeout(() => loadRagStatus(), 3000);
         } else {
             txt.innerHTML = '<span style="color:#ef4444;">빌드 실패: ' + (d.error || '알 수 없는 오류') + '</span>';
@@ -720,8 +827,20 @@ async function doRagBuild() {
 // Tab switch
 // ============================================================
 function switchMainTab(tab, btn) {
+    if (hasPendingChanges()) {
+        _pendingNavAction = () => {
+            clearAllPending();
+            doSwitchTab(tab, btn);
+        };
+        openPendingWarnModal();
+        return;
+    }
+    doSwitchTab(tab, btn);
+}
+function doSwitchTab(tab, btn) {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
+    if (btn) btn.classList.add('active');
+    else document.querySelector('.tab-btn[data-tab="'+tab+'"]')?.classList.add('active');
     document.querySelectorAll('.panel-content').forEach(p => p.style.display = 'none');
     document.getElementById('panel_' + tab).style.display = 'block';
 }
@@ -731,6 +850,19 @@ function switchMainTab(tab, btn) {
 // ============================================================
 function openSidebar() { document.getElementById('sidebar').classList.add('open'); document.getElementById('sidebarOverlay').classList.add('active'); }
 function closeSidebar() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('sidebarOverlay').classList.remove('active'); }
+function sidebarNavClick(e, url) {
+    // Current page — just close sidebar
+    if (url === '/learning.html') { closeSidebar(); return false; }
+    // Check pending changes
+    if (hasPendingChanges()) {
+        e.preventDefault();
+        closeSidebar();
+        _pendingNavAction = () => { window.location.href = url; };
+        openPendingWarnModal();
+        return false;
+    }
+    return true; // allow normal navigation
+}
 
 // ============================================================
 // Modal helpers
@@ -753,7 +885,18 @@ function renderOntology() {
         tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">등록된 Ontology 컬럼이 없습니다.</td></tr>';
         return;
     }
-    tbody.innerHTML = ontologyData.map((c, i) => `
+    tbody.innerHTML = ontologyData.map((c, i) => {
+        const existingSyns = (c.synonyms||[]).map(s => {
+            const isDel = pendingOntDeletes.includes(s.id);
+            if (isDel) {
+                return `<span class="syn-chip pending-del" title="삭제 예정 (클릭하면 취소)" onclick="undoDelOntSynonym(${s.id})">${esc(s.text)} <i class="fas fa-undo" style="font-size:9px;margin-left:3px;"></i></span>`;
+            }
+            return `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delOntSynonym(${s.id})" title="삭제">&times;</span></span>`;
+        }).join('');
+        const pendingAdds = pendingOntAdds.filter(p => p.colId === c.id).map(p =>
+            `<span class="syn-chip pending-add">${esc(p.text)}<span class="syn-del" onclick="delOntSynonym(${p.tempId + 900001})" title="취소">&times;</span></span>`
+        ).join('');
+        return `
         <tr>
             <td class="text-gray-400">${i+1}</td>
             <td class="mono font-semibold">${esc(c.column_name)}</td>
@@ -762,7 +905,7 @@ function renderOntology() {
             <td><span class="badge badge-blue">${esc(c.data_type || '-')}</span></td>
             <td>
                 <div class="flex flex-wrap items-center gap-1">
-                    ${(c.synonyms||[]).map(s => `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delOntSynonym(${s.id})" title="삭제">&times;</span></span>`).join('')}
+                    ${existingSyns}${pendingAdds}
                     <input class="add-syn-input" placeholder="+ 동의어" onkeydown="if(event.key==='Enter'&&!event.isComposing)addOntSynonym(${c.id},this)" />
                 </div>
             </td>
@@ -772,8 +915,8 @@ function renderOntology() {
                     <button class="btn btn-danger btn-sm" onclick="delOntology(${c.id})" title="삭제"><i class="fas fa-trash"></i></button>
                 </div>
             </td>
-        </tr>
-    `).join('');
+        </tr>`;
+    }).join('');
 }
 
 function openAddOntologyModal() {
@@ -823,20 +966,29 @@ async function delOntology(id) {
     await loadOntology();
     await loadStats();
 }
-async function addOntSynonym(colId, input) {
+function addOntSynonym(colId, input) {
     const text = input.value.trim();
     if (!text) return;
-    await fetch('/api/ontology/' + colId + '/synonym', {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ synonym_text: text })
-    });
+    pendingOntAdds.push({ colId, text, tempId: ++_pendingTempId });
     input.value = '';
-    await loadOntology();
-    await loadStats();
+    renderOntology();
+    updatePendingBadge();
 }
-async function delOntSynonym(synId) {
-    await fetch('/api/ontology/synonym/' + synId, { method: 'DELETE' });
-    await loadOntology();
-    await loadStats();
+function delOntSynonym(synId) {
+    // If synId > 900000, it's a pending-add (fake ID = tempId + 900001)
+    if (synId > 900000) {
+        const actualTempId = synId - 900001;
+        pendingOntAdds = pendingOntAdds.filter(p => p.tempId !== actualTempId);
+    } else {
+        if (!pendingOntDeletes.includes(synId)) pendingOntDeletes.push(synId);
+    }
+    renderOntology();
+    updatePendingBadge();
+}
+function undoDelOntSynonym(synId) {
+    pendingOntDeletes = pendingOntDeletes.filter(id => id !== synId);
+    renderOntology();
+    updatePendingBadge();
 }
 
 // ============================================================
@@ -854,7 +1006,18 @@ function renderMetric() {
         tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 계산지표가 없습니다.</td></tr>';
         return;
     }
-    tbody.innerHTML = metricData.map((m, i) => `
+    tbody.innerHTML = metricData.map((m, i) => {
+        const existingSyns = (m.synonyms||[]).map(s => {
+            const isDel = pendingMetDeletes.includes(s.id);
+            if (isDel) {
+                return `<span class="syn-chip pending-del" title="삭제 예정 (클릭하면 취소)" onclick="undoDelMetSynonym(${s.id})">${esc(s.text)} <i class="fas fa-undo" style="font-size:9px;margin-left:3px;"></i></span>`;
+            }
+            return `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delMetSynonym(${s.id})" title="삭제">&times;</span></span>`;
+        }).join('');
+        const pendingAdds = pendingMetAdds.filter(p => p.metId === m.id).map(p =>
+            `<span class="syn-chip pending-add">${esc(p.text)}<span class="syn-del" onclick="delMetSynonym(${p.tempId + 900001})" title="취소">&times;</span></span>`
+        ).join('');
+        return `
         <tr>
             <td class="text-gray-400">${i+1}</td>
             <td class="mono font-semibold">${esc(m.metric_code)}</td>
@@ -864,7 +1027,7 @@ function renderMetric() {
             <td>${esc(m.description || '')}</td>
             <td>
                 <div class="flex flex-wrap items-center gap-1">
-                    ${(m.synonyms||[]).map(s => `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delMetSynonym(${s.id})" title="삭제">&times;</span></span>`).join('')}
+                    ${existingSyns}${pendingAdds}
                     <input class="add-syn-input" placeholder="+ 동의어" onkeydown="if(event.key==='Enter'&&!event.isComposing)addMetSynonym(${m.id},this)" />
                 </div>
             </td>
@@ -874,8 +1037,8 @@ function renderMetric() {
                     <button class="btn btn-danger btn-sm" onclick="delMetric(${m.id})" title="삭제"><i class="fas fa-trash"></i></button>
                 </div>
             </td>
-        </tr>
-    `).join('');
+        </tr>`;
+    }).join('');
 }
 
 function openAddMetricModal() {
@@ -928,20 +1091,28 @@ async function delMetric(id) {
     await loadMetric();
     await loadStats();
 }
-async function addMetSynonym(metId, input) {
+function addMetSynonym(metId, input) {
     const text = input.value.trim();
     if (!text) return;
-    await fetch('/api/metric/' + metId + '/synonym', {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ synonym_text: text })
-    });
+    pendingMetAdds.push({ metId, text, tempId: ++_pendingTempId });
     input.value = '';
-    await loadMetric();
-    await loadStats();
+    renderMetric();
+    updatePendingBadge();
 }
-async function delMetSynonym(synId) {
-    await fetch('/api/metric/synonym/' + synId, { method: 'DELETE' });
-    await loadMetric();
-    await loadStats();
+function delMetSynonym(synId) {
+    if (synId > 900000) {
+        const actualTempId = synId - 900001;
+        pendingMetAdds = pendingMetAdds.filter(p => p.tempId !== actualTempId);
+    } else {
+        if (!pendingMetDeletes.includes(synId)) pendingMetDeletes.push(synId);
+    }
+    renderMetric();
+    updatePendingBadge();
+}
+function undoDelMetSynonym(synId) {
+    pendingMetDeletes = pendingMetDeletes.filter(id => id !== synId);
+    renderMetric();
+    updatePendingBadge();
 }
 
 // ============================================================
@@ -1265,6 +1436,63 @@ function showResult(result) {
 // Utils
 // ============================================================
 function esc(s) { if (s == null) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+
+// ============================================================
+// Pending changes helpers
+// ============================================================
+function hasPendingChanges() {
+    return pendingOntAdds.length > 0 || pendingOntDeletes.length > 0 || pendingMetAdds.length > 0 || pendingMetDeletes.length > 0;
+}
+function getPendingCount() {
+    return pendingOntAdds.length + pendingOntDeletes.length + pendingMetAdds.length + pendingMetDeletes.length;
+}
+function clearAllPending() {
+    pendingOntAdds = [];
+    pendingOntDeletes = [];
+    pendingMetAdds = [];
+    pendingMetDeletes = [];
+    updatePendingBadge();
+}
+function updatePendingBadge() {
+    const count = getPendingCount();
+    const badge = document.getElementById('pendingBadge');
+    const btn = document.getElementById('ragBuildBtn');
+    if (count > 0) {
+        badge.textContent = count;
+        badge.style.display = 'flex';
+        btn.classList.add('save-btn-glow');
+    } else {
+        badge.style.display = 'none';
+        btn.classList.remove('save-btn-glow');
+    }
+}
+function openPendingWarnModal() {
+    document.getElementById('pendingWarnModal').classList.add('active');
+}
+function closePendingWarnModal() {
+    document.getElementById('pendingWarnModal').classList.remove('active');
+    _pendingNavAction = null;
+}
+function confirmDiscardPending() {
+    document.getElementById('pendingWarnModal').classList.remove('active');
+    clearAllPending();
+    renderOntology();
+    renderMetric();
+    if (_pendingNavAction) {
+        const action = _pendingNavAction;
+        _pendingNavAction = null;
+        action();
+    }
+}
+
+// beforeunload: warn on page leave with pending changes
+window.addEventListener('beforeunload', function(e) {
+    if (hasPendingChanges()) {
+        e.preventDefault();
+        e.returnValue = '저장하지 않은 동의어 변경사항이 있습니다. 페이지를 떠나시겠습니까?';
+        return e.returnValue;
+    }
+});
 </script>
 <script>async function doLogout(){if(!confirm("로그아웃 하시겠습니까?"))return;try{await fetch("/api/logout",{method:"POST"})}catch(e){}window.location.href="/login"}</script>
 </body>
