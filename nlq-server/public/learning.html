@@ -231,6 +231,21 @@
 
         </div>
 
+        <!-- RAG 빌드 바 -->
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-bottom:12px;" id="ragBuildBar">
+            <span id="ragStatusText" style="font-size:12px;color:#94a3b8;"></span>
+            <button id="ragBuildBtn" onclick="doRagBuild()" style="
+                display:inline-flex;align-items:center;gap:7px;padding:8px 18px;
+                background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;
+                border:none;border-radius:9px;font-size:13px;font-weight:700;
+                cursor:pointer;transition:all .2s;box-shadow:0 2px 8px rgba(109,40,217,.2);
+                font-family:inherit;
+            " onmouseover="this.style.boxShadow='0 4px 14px rgba(109,40,217,.35)'"
+               onmouseout="this.style.boxShadow='0 2px 8px rgba(109,40,217,.2)'">
+                <i class="fas fa-brain"></i> RAG 인덱스 빌드
+            </button>
+        </div>
+
         <!-- Tabs -->
         <div class="tab-bar" id="tabBar">
             <button class="tab-btn active" data-tab="ontology" onclick="switchMainTab('ontology',this)">
@@ -642,6 +657,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('sideDbLabel').textContent = 'DB 연결됨';
         document.getElementById('sideDataLabel').textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
     } catch(e) {}
+    // RAG 상태 로드
+    await loadRagStatus();
 });
 
 // ============================================================
@@ -657,6 +674,53 @@ async function loadStats() {
         document.getElementById('statMetSyn').textContent = d.metricSynonyms;
         document.getElementById('statJoin').textContent = d.joins;
     } catch(e) {}
+}
+
+// ============================================================
+// RAG 인덱스 빌드
+// ============================================================
+async function loadRagStatus() {
+    try {
+        const res = await fetch('/api/rag/stats');
+        const d = await res.json();
+        const txt = document.getElementById('ragStatusText');
+        if (d.ragReady) {
+            const total = d.totalChunks || Object.values(d.byType || {}).reduce((a,b) => a+b, 0) || 0;
+            txt.innerHTML = '<i class="fas fa-circle" style="color:#a78bfa;font-size:8px;margin-right:4px;"></i>RAG 활성 · ' + total + '청크';
+            txt.style.color = '#7c3aed';
+        } else {
+            txt.innerHTML = '<i class="fas fa-circle" style="color:#d1d5db;font-size:8px;margin-right:4px;"></i>RAG 미빌드';
+            txt.style.color = '#94a3b8';
+        }
+    } catch(e) {}
+}
+
+async function doRagBuild() {
+    const btn = document.getElementById('ragBuildBtn');
+    const txt = document.getElementById('ragStatusText');
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.style.opacity = '0.7';
+    btn.style.cursor = 'wait';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 빌드 중...';
+    txt.innerHTML = '<span style="color:#f59e0b;">임베딩 생성 중... (30초~1분 소요)</span>';
+    try {
+        const res = await fetch('/api/rag/build', { method: 'POST' });
+        const d = await res.json();
+        if (d.success) {
+            txt.innerHTML = '<i class="fas fa-check-circle" style="color:#16a34a;margin-right:4px;"></i><span style="color:#16a34a;">빌드 완료! ' + d.totalChunks + '청크</span>';
+            setTimeout(() => loadRagStatus(), 3000);
+        } else {
+            txt.innerHTML = '<span style="color:#ef4444;">빌드 실패: ' + (d.error || '알 수 없는 오류') + '</span>';
+        }
+    } catch(e) {
+        txt.innerHTML = '<span style="color:#ef4444;">빌드 실패: ' + e.message + '</span>';
+    } finally {
+        btn.disabled = false;
+        btn.style.opacity = '1';
+        btn.style.cursor = 'pointer';
+        btn.innerHTML = origHtml;
+    }
 }
 
 // ============================================================
