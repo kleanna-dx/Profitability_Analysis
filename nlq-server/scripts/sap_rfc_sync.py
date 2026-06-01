@@ -132,13 +132,44 @@ def call_rfc(cmonth):
 
 
 # ============================================================
+# RFC 컬럼명 → DB 컬럼명 매핑 (key normalizer)
+# ============================================================
+def normalize_rfc_keys(sap_row):
+    """RFC 응답 행의 키를 정규화하여 DB 컬럼명 기준 dict 반환.
+    
+    SAP RFC 응답에서 컬럼명에 '/BIC/' prefix가 붙는 경우가 있음:
+      /BIC/ZKUNN2 → ZKUNN2
+      /BIC/ZJPCODE → ZJPCODE
+    
+    이 함수는 원본 키를 우선 사용하되, /BIC/ prefix가 붙은 키가 있으면
+    prefix를 제거한 키로도 접근할 수 있도록 매핑을 구성함.
+    """
+    normalized = {}
+    for key, val in sap_row.items():
+        # 원본 키 그대로 저장 (원본 우선)
+        normalized[key.upper()] = val
+        # /BIC/ prefix 제거 키도 추가 (원본이 없을 때만)
+        if key.upper().startswith('/BIC/'):
+            clean_key = key.upper().replace('/BIC/', '', 1)
+            if clean_key not in normalized:
+                normalized[clean_key] = val
+    return normalized
+
+
+# ============================================================
 # T_DATA → DB 행 변환
 # ============================================================
 def convert_row(sap_row):
-    """SAP T_DATA 행을 DB INSERT용 tuple로 변환"""
+    """SAP T_DATA 행을 DB INSERT용 tuple로 변환
+    
+    /BIC/ prefix가 붙은 RFC 컬럼명을 자동으로 DB 컬럼명에 매핑함.
+    예: /BIC/ZKUNN2 → ZKUNN2, /BIC/ZJPCODE → ZJPCODE
+    """
+    # RFC 키를 정규화하여 /BIC/ prefix 제거된 키로도 조회 가능하게 함
+    row = normalize_rfc_keys(sap_row)
     values = []
     for col in DB_COLUMNS:
-        val = sap_row.get(col, None)
+        val = row.get(col.upper(), None)
 
         # SAP는 빈 문자열을 사용하므로 변환
         if val is None or (isinstance(val, str) and val.strip() == ''):
@@ -261,11 +292,28 @@ def main():
         sap_cols = list(sample.keys())
         print(f"\n[INFO] T_DATA 컬럼 ({len(sap_cols)}개): {sap_cols[:10]}...")
 
-        # DB 컬럼과 비교
-        sap_set = set(c.upper() for c in sap_cols)
+        # /BIC/ prefix 감지 및 매핑 정보 출력
+        bic_cols = [c for c in sap_cols if c.upper().startswith('/BIC/')]
+        if bic_cols:
+            print(f"[INFO] /BIC/ prefix 감지 ({len(bic_cols)}개) — 자동 매핑 적용:")
+            for bc in bic_cols[:10]:  # 최대 10개만 출력
+                clean = bc.upper().replace('/BIC/', '', 1)
+                matched = '✓ DB 매핑' if clean in set(DB_COLUMNS) else '✗ DB 컬럼 없음'
+                print(f"  {bc} → {clean} ({matched})")
+            if len(bic_cols) > 10:
+                print(f"  ... 외 {len(bic_cols) - 10}개")
+
+        # DB 컬럼과 비교 (/BIC/ prefix 제거 후 비교)
+        sap_set_raw = set(c.upper() for c in sap_cols)
+        sap_set_normalized = set()
+        for c in sap_cols:
+            cu = c.upper()
+            sap_set_normalized.add(cu)
+            if cu.startswith('/BIC/'):
+                sap_set_normalized.add(cu.replace('/BIC/', '', 1))
         db_set = set(DB_COLUMNS)
-        missing_in_sap = db_set - sap_set
-        extra_in_sap = sap_set - db_set
+        missing_in_sap = db_set - sap_set_normalized
+        extra_in_sap = sap_set_raw - db_set
         if missing_in_sap:
             print(f"[WARN] DB에는 있지만 T_DATA에 없는 컬럼: {missing_in_sap}")
         if extra_in_sap:

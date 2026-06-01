@@ -70,6 +70,17 @@
         .syn-chip .syn-del:hover{color:#ef4444;}
         .syn-chip.pending-add{background:#dcfce7;color:#16a34a;border-color:#86efac;animation:pendingPulse 2s infinite;}
         .syn-chip.pending-del{background:#fef2f2;color:#dc2626;border-color:#fecaca;text-decoration:line-through;opacity:0.6;}
+        /* Metric row pending styles */
+        .metric-row-pending-add{background:#f0fdf4 !important;}
+        .metric-row-pending-add td{color:#16a34a;}
+        .metric-row-pending-edit{background:#eff6ff !important;}
+        .metric-row-pending-edit td{color:#2563eb;}
+        .metric-row-pending-del{background:#fef2f2 !important;opacity:0.55;}
+        .metric-row-pending-del td{text-decoration:line-through;color:#dc2626;}
+        .metric-pending-label{display:inline-block;padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700;margin-left:6px;}
+        .metric-pending-label.add{background:#dcfce7;color:#16a34a;border:1px solid #86efac;}
+        .metric-pending-label.edit{background:#dbeafe;color:#2563eb;border:1px solid #93c5fd;}
+        .metric-pending-label.del{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}
         @keyframes pendingPulse{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,0.2)}50%{box-shadow:0 0 0 4px rgba(34,197,94,0.1)}}
         .pending-badge{position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;font-size:10px;font-weight:800;min-width:18px;height:18px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 4px;box-shadow:0 2px 4px rgba(239,68,68,0.3);}
         .save-btn-wrapper{position:relative;display:inline-block;}
@@ -322,7 +333,18 @@
                         <h2 class="text-sm font-bold text-gray-800">Metric 관리</h2>
                         <span class="badge badge-purple" id="metricCount">0개</span>
                     </div>
-                    <div class="flex gap-2">
+                    <div class="flex gap-2 flex-wrap items-center">
+                        <span id="metricRagStatusText" style="font-size:12px;color:#94a3b8;"></span>
+                        <span class="save-btn-wrapper">
+                            <button id="metricRagBuildBtn" onclick="doRagBuild()" class="btn" style="
+                                background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;
+                                font-weight:700;box-shadow:0 2px 8px rgba(109,40,217,.18);
+                            " onmouseover="this.style.boxShadow='0 4px 14px rgba(109,40,217,.3)'"
+                               onmouseout="if(!this.classList.contains('save-btn-glow'))this.style.boxShadow='0 2px 8px rgba(109,40,217,.18)'">
+                                <i class="fas fa-save"></i> 저장
+                            </button>
+                            <span id="metricPendingBadge" class="pending-badge" style="display:none;">0</span>
+                        </span>
                         <button class="btn btn-primary" onclick="openAddMetricModal()">
                             <i class="fas fa-plus"></i> 지표 추가
                         </button>
@@ -600,8 +622,12 @@ let joinData = [];
 // ============================================================
 let pendingOntAdds = [];   // [{colId, text, tempId}]
 let pendingOntDeletes = []; // [synId, ...]
-let pendingMetAdds = [];   // [{metId, text, tempId}]
-let pendingMetDeletes = []; // [synId, ...]
+let pendingMetAdds = [];   // [{metId, text, tempId}]  (synonym)
+let pendingMetDeletes = []; // [synId, ...]  (synonym)
+// Metric 지표 자체 pending (추가/수정/삭제)
+let pendingMetricAdds = [];    // [{tempId, metric_code, aggregation, formula, table_name, description, domain_code}]
+let pendingMetricEdits = [];   // [{id, metric_code, aggregation, formula, table_name, description, domain_code}]
+let pendingMetricDeletes = []; // [metricId, ...]
 let _pendingTempId = 0;
 let _pendingNavAction = null; // callback after discard confirm
 
@@ -735,39 +761,77 @@ async function loadRagStatus() {
     try {
         const res = await fetch('/api/rag/stats');
         const d = await res.json();
+        // Ontology 탭 RAG 상태
         const txt = document.getElementById('ragStatusText');
+        // Metric 탭 RAG 상태
+        const txt2 = document.getElementById('metricRagStatusText');
         if (d.ragReady) {
             const total = d.totalChunks || Object.values(d.byType || {}).reduce((a,b) => a+b, 0) || 0;
-            txt.innerHTML = '<i class="fas fa-circle" style="color:#a78bfa;font-size:8px;margin-right:4px;"></i>RAG 활성 · ' + total + '청크';
-            txt.style.color = '#7c3aed';
+            const html = '<i class="fas fa-circle" style="color:#a78bfa;font-size:8px;margin-right:4px;"></i>RAG 활성 · ' + total + '청크';
+            if (txt) { txt.innerHTML = html; txt.style.color = '#7c3aed'; }
+            if (txt2) { txt2.innerHTML = html; txt2.style.color = '#7c3aed'; }
         } else {
-            txt.innerHTML = '<i class="fas fa-circle" style="color:#d1d5db;font-size:8px;margin-right:4px;"></i>RAG 미빌드';
-            txt.style.color = '#94a3b8';
+            const html = '<i class="fas fa-circle" style="color:#d1d5db;font-size:8px;margin-right:4px;"></i>RAG 미빌드';
+            if (txt) { txt.innerHTML = html; txt.style.color = '#94a3b8'; }
+            if (txt2) { txt2.innerHTML = html; txt2.style.color = '#94a3b8'; }
         }
     } catch(e) {}
 }
 
 async function doRagBuild() {
-    const btn = document.getElementById('ragBuildBtn');
-    const txt = document.getElementById('ragStatusText');
-    const origHtml = btn.innerHTML;
-    const totalPending = pendingOntAdds.length + pendingOntDeletes.length + pendingMetAdds.length + pendingMetDeletes.length;
+    // 두 탭의 저장 버튼 모두 동기화
+    const btns = [document.getElementById('ragBuildBtn'), document.getElementById('metricRagBuildBtn')].filter(Boolean);
+    const txts = [document.getElementById('ragStatusText'), document.getElementById('metricRagStatusText')].filter(Boolean);
+    const origHtmls = btns.map(b => b.innerHTML);
+    const synPending = pendingOntAdds.length + pendingOntDeletes.length + pendingMetAdds.length + pendingMetDeletes.length;
+    const metricPending = pendingMetricAdds.length + pendingMetricEdits.length + pendingMetricDeletes.length;
+    const totalPending = synPending + metricPending;
 
-    btn.disabled = true;
-    btn.style.opacity = '0.7';
-    btn.style.cursor = 'wait';
+    btns.forEach(b => { b.disabled = true; b.style.opacity = '0.7'; b.style.cursor = 'wait'; });
+    function setBtn(html) { btns.forEach(b => { b.innerHTML = html; }); }
+    function setTxt(html) { txts.forEach(t => { t.innerHTML = html; }); }
 
-    // Step 1: Batch save pending synonym changes
-    if (totalPending > 0) {
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 동의어 저장 중...';
-        txt.innerHTML = '<span style="color:#f59e0b;">동의어 변경사항 저장 중... (' + totalPending + '건)</span>';
-        let errors = [];
-        // Process ontology deletes
+    let errors = [];
+
+    // Step 1: Batch save pending metric CRUD (지표 자체 추가/수정/삭제)
+    if (metricPending > 0) {
+        setBtn('<i class="fas fa-spinner fa-spin"></i> 지표 저장 중...');
+        setTxt('<span style="color:#f59e0b;">지표 변경사항 저장 중... (' + metricPending + '건)</span>');
+        // Metric deletes first
+        for (const metId of pendingMetricDeletes) {
+            try { await fetch('/api/metric/' + metId, { method: 'DELETE' }); }
+            catch(e) { errors.push('지표 삭제 #' + metId + ': ' + e.message); }
+        }
+        // Metric adds
+        for (const p of pendingMetricAdds) {
+            try {
+                await fetch('/api/metric', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ metric_code: p.metric_code, aggregation: p.aggregation, formula: p.formula, table_name: p.table_name, description: p.description, domain_code: p.domain_code })
+                });
+            } catch(e) { errors.push('지표 추가 "' + p.metric_code + '": ' + e.message); }
+        }
+        // Metric edits
+        for (const p of pendingMetricEdits) {
+            try {
+                await fetch('/api/metric/' + p.id, {
+                    method: 'PUT', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ metric_code: p.metric_code, aggregation: p.aggregation, formula: p.formula, table_name: p.table_name, description: p.description, domain_code: p.domain_code })
+                });
+            } catch(e) { errors.push('지표 수정 #' + p.id + ': ' + e.message); }
+        }
+    }
+
+    // Step 2: Batch save pending synonym changes (동의어)
+    if (synPending > 0) {
+        setBtn('<i class="fas fa-spinner fa-spin"></i> 동의어 저장 중...');
+        setTxt('<span style="color:#f59e0b;">동의어 변경사항 저장 중... (' + synPending + '건)</span>');
+        // Ontology synonym deletes
         for (const synId of pendingOntDeletes) {
             try { await fetch('/api/ontology/synonym/' + synId, { method: 'DELETE' }); }
             catch(e) { errors.push('Ont 삭제 #' + synId + ': ' + e.message); }
         }
-        // Process ontology adds
+        // Ontology synonym adds
         for (const p of pendingOntAdds) {
             try {
                 await fetch('/api/ontology/' + p.colId + '/synonym', {
@@ -776,12 +840,12 @@ async function doRagBuild() {
                 });
             } catch(e) { errors.push('Ont 추가 "' + p.text + '": ' + e.message); }
         }
-        // Process metric deletes
+        // Metric synonym deletes
         for (const synId of pendingMetDeletes) {
             try { await fetch('/api/metric/synonym/' + synId, { method: 'DELETE' }); }
             catch(e) { errors.push('Met 삭제 #' + synId + ': ' + e.message); }
         }
-        // Process metric adds
+        // Metric synonym adds
         for (const p of pendingMetAdds) {
             try {
                 await fetch('/api/metric/' + p.metId + '/synonym', {
@@ -790,37 +854,38 @@ async function doRagBuild() {
                 });
             } catch(e) { errors.push('Met 추가 "' + p.text + '": ' + e.message); }
         }
-        if (errors.length > 0) {
-            txt.innerHTML = '<span style="color:#ef4444;">일부 저장 오류: ' + errors.join(', ') + '</span>';
-        }
-        // Clear pending state
+    }
+
+    if (errors.length > 0) {
+        setTxt('<span style="color:#ef4444;">일부 저장 오류: ' + errors.join(', ') + '</span>');
+    }
+
+    // Clear all pending state
+    if (totalPending > 0) {
         clearAllPending();
-        // Reload data from DB
         await loadOntology();
         await loadMetric();
         await loadStats();
     }
 
-    // Step 2: RAG build
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> RAG 빌드 중...';
-    txt.innerHTML = '<span style="color:#f59e0b;">임베딩 생성 중... (30초~1분 소요)</span>';
+    // Step 3: RAG build
+    setBtn('<i class="fas fa-spinner fa-spin"></i> RAG 빌드 중...');
+    setTxt('<span style="color:#f59e0b;">임베딩 생성 중... (30초~1분 소요)</span>');
     try {
         const res = await fetch('/api/rag/build', { method: 'POST' });
         const d = await res.json();
         if (d.success) {
-            txt.innerHTML = '<i class="fas fa-check-circle" style="color:#16a34a;margin-right:4px;"></i><span style="color:#16a34a;">저장 완료! ' + d.totalChunks + '청크</span>'
-                + '<br><span style="font-size:11px;color:#6366f1;"><i class="fas fa-lightbulb" style="margin-right:3px;"></i>변경된 동의어를 테스트하려면 자연어질의에서 <b>새 채팅</b>으로 질문해 주세요.</span>';
+            const successHtml = '<i class="fas fa-check-circle" style="color:#16a34a;margin-right:4px;"></i><span style="color:#16a34a;">저장 완료! ' + d.totalChunks + '청크</span>'
+                + '<br><span style="font-size:11px;color:#6366f1;"><i class="fas fa-lightbulb" style="margin-right:3px;"></i>변경사항을 테스트하려면 자연어질의에서 <b>새 채팅</b>으로 질문해 주세요.</span>';
+            setTxt(successHtml);
             setTimeout(() => loadRagStatus(), 5000);
         } else {
-            txt.innerHTML = '<span style="color:#ef4444;">빌드 실패: ' + (d.error || '알 수 없는 오류') + '</span>';
+            setTxt('<span style="color:#ef4444;">빌드 실패: ' + (d.error || '알 수 없는 오류') + '</span>');
         }
     } catch(e) {
-        txt.innerHTML = '<span style="color:#ef4444;">빌드 실패: ' + e.message + '</span>';
+        setTxt('<span style="color:#ef4444;">빌드 실패: ' + e.message + '</span>');
     } finally {
-        btn.disabled = false;
-        btn.style.opacity = '1';
-        btn.style.cursor = 'pointer';
-        btn.innerHTML = origHtml;
+        btns.forEach((b, i) => { b.disabled = false; b.style.opacity = '1'; b.style.cursor = 'pointer'; b.innerHTML = origHtmls[i]; });
     }
 }
 
@@ -1002,42 +1067,72 @@ async function loadMetric() {
 }
 function renderMetric() {
     const tbody = document.getElementById('metricBody');
-    document.getElementById('metricCount').textContent = metricData.length + '개';
-    if (metricData.length === 0) {
+    // 실제 DB 데이터 + pending add 합산
+    const allMetrics = [
+        ...metricData.map(m => ({ ...m, _source: 'db' })),
+        ...pendingMetricAdds.map(p => ({ id: p.tempId, metric_code: p.metric_code, aggregation: p.aggregation, formula: p.formula, table_name: p.table_name, description: p.description, synonyms: [], _source: 'pending_add' }))
+    ];
+    const totalCount = metricData.length + pendingMetricAdds.length - pendingMetricDeletes.length;
+    document.getElementById('metricCount').textContent = (totalCount >= 0 ? totalCount : 0) + '개';
+    if (allMetrics.length === 0) {
         tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 계산지표가 없습니다.</td></tr>';
         return;
     }
-    tbody.innerHTML = metricData.map((m, i) => {
-        const existingSyns = (m.synonyms||[]).map(s => {
-            const isDel = pendingMetDeletes.includes(s.id);
-            if (isDel) {
-                return `<span class="syn-chip pending-del" title="삭제 예정 (클릭하면 취소)" onclick="undoDelMetSynonym(${s.id})">${esc(s.text)} <i class="fas fa-undo" style="font-size:9px;margin-left:3px;"></i></span>`;
-            }
-            return `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delMetSynonym(${s.id})" title="삭제">&times;</span></span>`;
-        }).join('');
-        const pendingAdds = pendingMetAdds.filter(p => p.metId === m.id).map(p =>
-            `<span class="syn-chip pending-add">${esc(p.text)}<span class="syn-del" onclick="delMetSynonym(${p.tempId + 900001})" title="취소">&times;</span></span>`
-        ).join('');
+    let idx = 0;
+    tbody.innerHTML = allMetrics.map((m) => {
+        const isPendingAdd = m._source === 'pending_add';
+        const isPendingDel = !isPendingAdd && pendingMetricDeletes.includes(m.id);
+        const pendingEdit = !isPendingAdd ? pendingMetricEdits.find(p => p.id === m.id) : null;
+        // 표시할 데이터: edit가 있으면 edit 값 사용
+        const display = pendingEdit || m;
+        idx++;
+        // 행 상태 클래스
+        const rowClass = isPendingAdd ? 'metric-row-pending-add' : isPendingDel ? 'metric-row-pending-del' : pendingEdit ? 'metric-row-pending-edit' : '';
+        // 상태 라벨
+        const stateLabel = isPendingAdd ? '<span class="metric-pending-label add">추가 예정</span>'
+            : isPendingDel ? '<span class="metric-pending-label del">삭제 예정</span>'
+            : pendingEdit ? '<span class="metric-pending-label edit">수정됨</span>' : '';
+        // 동의어 (삭제 예정인 행은 동의어 편집 불가)
+        let synHtml = '';
+        if (!isPendingDel) {
+            const existingSyns = (m.synonyms||[]).map(s => {
+                const isDel = pendingMetDeletes.includes(s.id);
+                if (isDel) {
+                    return `<span class="syn-chip pending-del" title="삭제 예정 (클릭하면 취소)" onclick="undoDelMetSynonym(${s.id})">${esc(s.text)} <i class="fas fa-undo" style="font-size:9px;margin-left:3px;"></i></span>`;
+                }
+                return `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delMetSynonym(${s.id})" title="삭제">&times;</span></span>`;
+            }).join('');
+            const pendingAdds = pendingMetAdds.filter(p => p.metId === m.id).map(p =>
+                `<span class="syn-chip pending-add">${esc(p.text)}<span class="syn-del" onclick="delMetSynonym(${p.tempId + 900001})" title="취소">&times;</span></span>`
+            ).join('');
+            const synInput = isPendingAdd ? '' : `<input class="add-syn-input" placeholder="+ 동의어" onkeydown="if(event.key==='Enter'&&!event.isComposing)addMetSynonym(${m.id},this)" />`;
+            synHtml = `<div class="flex flex-wrap items-center gap-1">${existingSyns}${pendingAdds}${synInput}</div>`;
+        } else {
+            synHtml = '<span style="color:#94a3b8;font-size:11px;">삭제 예정</span>';
+        }
+        // 작업 버튼
+        let actionHtml = '';
+        if (isPendingDel) {
+            actionHtml = `<button class="btn btn-outline btn-sm" onclick="undoDelMetric(${m.id})" title="삭제 취소"><i class="fas fa-undo"></i></button>`;
+        } else if (isPendingAdd) {
+            actionHtml = `
+                <button class="btn btn-outline btn-sm" onclick="editMetric(${m.id})" title="수정"><i class="fas fa-pen"></i></button>
+                <button class="btn btn-danger btn-sm" onclick="delMetric(${m.id})" title="취소"><i class="fas fa-times"></i></button>`;
+        } else {
+            actionHtml = `
+                <button class="btn btn-outline btn-sm" onclick="editMetric(${m.id})" title="수정"><i class="fas fa-pen"></i></button>
+                <button class="btn btn-danger btn-sm" onclick="delMetric(${m.id})" title="삭제"><i class="fas fa-trash"></i></button>`;
+        }
         return `
-        <tr>
-            <td class="text-gray-400">${i+1}</td>
-            <td class="mono font-semibold">${esc(m.metric_code)}</td>
-            <td><span class="badge ${m.aggregation==='CALC'?'badge-orange':'badge-green'}">${esc(m.aggregation||'SUM')}</span></td>
-            <td class="mono" style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(m.formula)}">${esc(m.formula)}</td>
-            <td class="text-xs text-gray-500">${esc(m.table_name || '')}</td>
-            <td>${esc(m.description || '')}</td>
-            <td>
-                <div class="flex flex-wrap items-center gap-1">
-                    ${existingSyns}${pendingAdds}
-                    <input class="add-syn-input" placeholder="+ 동의어" onkeydown="if(event.key==='Enter'&&!event.isComposing)addMetSynonym(${m.id},this)" />
-                </div>
-            </td>
-            <td>
-                <div class="flex gap-1">
-                    <button class="btn btn-outline btn-sm" onclick="editMetric(${m.id})" title="수정"><i class="fas fa-pen"></i></button>
-                    <button class="btn btn-danger btn-sm" onclick="delMetric(${m.id})" title="삭제"><i class="fas fa-trash"></i></button>
-                </div>
-            </td>
+        <tr class="${rowClass}">
+            <td class="text-gray-400">${idx}</td>
+            <td class="mono font-semibold">${esc(display.metric_code)}${stateLabel}</td>
+            <td><span class="badge ${display.aggregation==='CALC'?'badge-orange':'badge-green'}">${esc(display.aggregation||'SUM')}</span></td>
+            <td class="mono" style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(display.formula)}">${esc(display.formula)}</td>
+            <td class="text-xs text-gray-500">${esc(display.table_name || '')}</td>
+            <td>${esc(display.description || '')}</td>
+            <td>${synHtml}</td>
+            <td><div class="flex gap-1">${actionHtml}</div></td>
         </tr>`;
     }).join('');
 }
@@ -1053,7 +1148,22 @@ function openAddMetricModal() {
     openModal('metricModal');
 }
 function editMetric(id) {
-    const m = metricData.find(x => x.id === id);
+    // pending add에서 찾기
+    const pa = pendingMetricAdds.find(p => p.tempId === id);
+    if (pa) {
+        document.getElementById('metModalTitle').textContent = '지표 수정 (추가 예정)';
+        document.getElementById('metEditId').value = id;
+        document.getElementById('metCode').value = pa.metric_code;
+        document.getElementById('metAgg').value = pa.aggregation || 'SUM';
+        document.getElementById('metFormula').value = pa.formula;
+        document.getElementById('metTableName').value = pa.table_name || '';
+        document.getElementById('metDesc').value = pa.description || '';
+        openModal('metricModal');
+        return;
+    }
+    // pending edit에서 찾기 (이미 수정한 값 보여주기)
+    const pe = pendingMetricEdits.find(p => p.id === id);
+    const m = pe || metricData.find(x => x.id === id);
     if (!m) return;
     document.getElementById('metModalTitle').textContent = '지표 수정';
     document.getElementById('metEditId').value = id;
@@ -1064,7 +1174,7 @@ function editMetric(id) {
     document.getElementById('metDesc').value = m.description || '';
     openModal('metricModal');
 }
-async function saveMetric() {
+function saveMetric() {
     const editId = document.getElementById('metEditId').value;
     const body = {
         metric_code: document.getElementById('metCode').value.trim(),
@@ -1075,22 +1185,50 @@ async function saveMetric() {
         domain_code: currentDomain,
     };
     if (!body.metric_code || !body.formula) return alert('지표코드와 산식은 필수입니다.');
-    try {
-        if (editId) {
-            await fetch('/api/metric/' + editId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (editId) {
+        // 수정: 기존 pending edit 덮어쓰기 또는 신규 추가
+        const existIdx = pendingMetricEdits.findIndex(p => p.id == editId);
+        if (existIdx >= 0) {
+            pendingMetricEdits[existIdx] = { id: Number(editId), ...body };
         } else {
-            await fetch('/api/metric', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+            // pending add 중인 항목 수정인지 확인
+            const addIdx = pendingMetricAdds.findIndex(p => p.tempId == editId);
+            if (addIdx >= 0) {
+                pendingMetricAdds[addIdx] = { ...pendingMetricAdds[addIdx], ...body };
+            } else {
+                pendingMetricEdits.push({ id: Number(editId), ...body });
+            }
         }
-        closeModal('metricModal');
-        await loadMetric();
-        await loadStats();
-    } catch(e) { alert('저장 실패: ' + e.message); }
+    } else {
+        // 추가
+        pendingMetricAdds.push({ tempId: ++_pendingTempId, ...body });
+    }
+    closeModal('metricModal');
+    renderMetric();
+    updatePendingBadge();
 }
-async function delMetric(id) {
-    if (!confirm('이 지표와 관련 동의어를 삭제하시겠습니까?')) return;
-    await fetch('/api/metric/' + id, { method: 'DELETE' });
-    await loadMetric();
-    await loadStats();
+function delMetric(id) {
+    // pending add인 경우 그냥 제거
+    const addIdx = pendingMetricAdds.findIndex(p => p.tempId === id);
+    if (addIdx >= 0) {
+        pendingMetricAdds.splice(addIdx, 1);
+        // 해당 지표에 달린 synonym pending도 제거
+        pendingMetAdds = pendingMetAdds.filter(p => p.metId !== id);
+        renderMetric();
+        updatePendingBadge();
+        return;
+    }
+    if (!confirm('이 지표와 관련 동의어를 삭제 예정으로 표시합니다.\n상단 저장 버튼을 누르면 실제 삭제됩니다.')) return;
+    if (!pendingMetricDeletes.includes(id)) pendingMetricDeletes.push(id);
+    // 해당 지표의 edit pending도 제거 (삭제 우선)
+    pendingMetricEdits = pendingMetricEdits.filter(p => p.id !== id);
+    renderMetric();
+    updatePendingBadge();
+}
+function undoDelMetric(id) {
+    pendingMetricDeletes = pendingMetricDeletes.filter(x => x !== id);
+    renderMetric();
+    updatePendingBadge();
 }
 function addMetSynonym(metId, input) {
     const text = input.value.trim();
@@ -1442,30 +1580,43 @@ function esc(s) { if (s == null) return ''; const d = document.createElement('di
 // Pending changes helpers
 // ============================================================
 function hasPendingChanges() {
-    return pendingOntAdds.length > 0 || pendingOntDeletes.length > 0 || pendingMetAdds.length > 0 || pendingMetDeletes.length > 0;
+    return pendingOntAdds.length > 0 || pendingOntDeletes.length > 0
+        || pendingMetAdds.length > 0 || pendingMetDeletes.length > 0
+        || pendingMetricAdds.length > 0 || pendingMetricEdits.length > 0 || pendingMetricDeletes.length > 0;
 }
 function getPendingCount() {
-    return pendingOntAdds.length + pendingOntDeletes.length + pendingMetAdds.length + pendingMetDeletes.length;
+    return pendingOntAdds.length + pendingOntDeletes.length
+        + pendingMetAdds.length + pendingMetDeletes.length
+        + pendingMetricAdds.length + pendingMetricEdits.length + pendingMetricDeletes.length;
 }
 function clearAllPending() {
     pendingOntAdds = [];
     pendingOntDeletes = [];
     pendingMetAdds = [];
     pendingMetDeletes = [];
+    pendingMetricAdds = [];
+    pendingMetricEdits = [];
+    pendingMetricDeletes = [];
     updatePendingBadge();
 }
 function updatePendingBadge() {
     const count = getPendingCount();
-    const badge = document.getElementById('pendingBadge');
-    const btn = document.getElementById('ragBuildBtn');
-    if (count > 0) {
-        badge.textContent = count;
-        badge.style.display = 'flex';
-        btn.classList.add('save-btn-glow');
-    } else {
-        badge.style.display = 'none';
-        btn.classList.remove('save-btn-glow');
-    }
+    // Ontology tab badge
+    const badge1 = document.getElementById('pendingBadge');
+    const btn1 = document.getElementById('ragBuildBtn');
+    // Metric tab badge
+    const badge2 = document.getElementById('metricPendingBadge');
+    const btn2 = document.getElementById('metricRagBuildBtn');
+    [badge1, badge2].forEach(badge => {
+        if (!badge) return;
+        if (count > 0) { badge.textContent = count; badge.style.display = 'flex'; }
+        else { badge.style.display = 'none'; }
+    });
+    [btn1, btn2].forEach(btn => {
+        if (!btn) return;
+        if (count > 0) btn.classList.add('save-btn-glow');
+        else btn.classList.remove('save-btn-glow');
+    });
 }
 function openPendingWarnModal() {
     document.getElementById('pendingWarnModal').classList.add('active');
@@ -1490,7 +1641,7 @@ function confirmDiscardPending() {
 window.addEventListener('beforeunload', function(e) {
     if (hasPendingChanges()) {
         e.preventDefault();
-        e.returnValue = '저장하지 않은 동의어 변경사항이 있습니다. 페이지를 떠나시겠습니까?';
+        e.returnValue = '저장하지 않은 변경사항이 있습니다. 페이지를 떠나시겠습니까?';
         return e.returnValue;
     }
 });
