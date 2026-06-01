@@ -808,8 +808,9 @@ async function doRagBuild() {
         const res = await fetch('/api/rag/build', { method: 'POST' });
         const d = await res.json();
         if (d.success) {
-            txt.innerHTML = '<i class="fas fa-check-circle" style="color:#16a34a;margin-right:4px;"></i><span style="color:#16a34a;">저장 완료! ' + d.totalChunks + '청크</span>';
-            setTimeout(() => loadRagStatus(), 3000);
+            txt.innerHTML = '<i class="fas fa-check-circle" style="color:#16a34a;margin-right:4px;"></i><span style="color:#16a34a;">저장 완료! ' + d.totalChunks + '청크</span>'
+                + '<br><span style="font-size:11px;color:#6366f1;"><i class="fas fa-lightbulb" style="margin-right:3px;"></i>변경된 동의어를 테스트하려면 자연어질의에서 <b>새 채팅</b>으로 질문해 주세요.</span>';
+            setTimeout(() => loadRagStatus(), 5000);
         } else {
             txt.innerHTML = '<span style="color:#ef4444;">빌드 실패: ' + (d.error || '알 수 없는 오류') + '</span>';
         }
