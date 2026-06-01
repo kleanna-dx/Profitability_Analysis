@@ -1834,7 +1834,36 @@ app.post('/api/nlq', async (req, res) => {
       try {
         parsed = JSON.parse(raw);
       } catch (e) {
+        // JSON 파싱 실패 — GPT가 텍스트(안내 메시지)를 반환한 경우
+        const rawLower = (raw || '').toLowerCase();
+        if (raw && (raw.includes('등록되어 있지 않') || raw.includes('학습관리') || raw.includes('관리자에게') || raw.includes('정보가 없') || raw.includes('알 수 없'))) {
+          return res.json({
+            success: true,
+            rows: [],
+            rowCount: 0,
+            sql: null,
+            explanation: raw,
+            answer: raw,
+            isUnknownTerm: true,
+          });
+        }
         return res.status(500).json({ error: 'AI 응답 파싱 실패', raw });
+      }
+
+      // ★ GPT가 JSON은 반환했지만 sql이 없고 안내 메시지만 있는 경우
+      if (!parsed.sql && (parsed.explanation || parsed.answer)) {
+        const msg = parsed.explanation || parsed.answer || '';
+        if (msg.includes('등록되어 있지 않') || msg.includes('학습관리') || msg.includes('관리자') || msg.includes('정보가 없') || msg.includes('알 수 없')) {
+          return res.json({
+            success: true,
+            rows: [],
+            rowCount: 0,
+            sql: null,
+            explanation: msg,
+            answer: msg,
+            isUnknownTerm: true,
+          });
+        }
       }
 
       sql = parsed.sql;
@@ -1848,8 +1877,23 @@ app.post('/api/nlq', async (req, res) => {
     }
 
     // 2. SQL 검증
+    if (!sql) {
+      return res.json({
+        success: true, rows: [], rowCount: 0, sql: null,
+        explanation: explanation || '요청하신 내용에 대한 SQL을 생성할 수 없습니다.',
+        answer: explanation || '알 수 없는 용어입니다. 관리자에게 문의하여 학습관리에 해당 용어를 등록해 주세요.',
+        isUnknownTerm: true,
+      });
+    }
     const sqlUpper = sql.toUpperCase().trim();
     if (!sqlUpper.startsWith('SELECT')) {
+      // SQL이 아닌 안내 메시지가 sql 필드에 들어온 경우
+      if (sql.includes('등록되어 있지 않') || sql.includes('학습관리') || sql.includes('관리자') || sql.includes('알 수 없')) {
+        return res.json({
+          success: true, rows: [], rowCount: 0, sql: null,
+          explanation: sql, answer: sql, isUnknownTerm: true,
+        });
+      }
       return res.status(400).json({ error: 'SELECT 쿼리만 허용됩니다.', sql });
     }
     const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'EXEC', 'GRANT', 'REVOKE'];
