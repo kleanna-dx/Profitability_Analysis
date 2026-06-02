@@ -106,8 +106,15 @@
         }
         .field-item .icon.text { background:#6366f1; }
         .field-item .icon.number { background:#7c3aed; }
+        .field-item .icon.metric { background:linear-gradient(135deg,#7c3aed,#a855f7); font-style:italic; }
         .field-item .fname { flex:1; }
         .field-item .fcode { font-size:0.68rem; color:#94a3b8; font-family:'Fira Code',monospace; }
+        .field-item.metric-field { background:#faf5ff; }
+        .field-item.metric-field:hover { background:#f3e8ff; }
+        .field-item .fsyn { display:block; font-size:0.62rem; color:#a78bfa; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:120px; }
+        .field-item .fformula { display:block; font-size:0.58rem; color:#94a3b8; font-family:'Fira Code',monospace; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+        .selected-metric { border-left:3px solid #7c3aed !important; }
+        .metric-formula-badge { display:inline-flex; align-items:center; gap:2px; padding:2px 8px; border-radius:6px; font-size:0.65rem; font-weight:600; background:#f3e8ff; color:#7c3aed; white-space:nowrap; cursor:help; }
 
         /* ===== Right Panel: Builder Area ===== */
         .builder-area { display:flex; flex-direction:column; gap:16px; }
@@ -977,9 +984,9 @@ const RECOMMENDED_COMPARE_DIMS = ['MATERIAL_NM','MATERIAL','DIVISION','PROFIT_CT
 
 const CATEGORY_NAMES = {
     period: '기간', org: '조직/사업부', product: '자재/제품',
-    trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액', other: '기타', system: '시스템'
+    trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액', metric: '계산지표', other: '기타', system: '시스템'
 };
-const CATEGORY_ORDER = ['period','org','product','trade','quantity','amount','unit','other'];
+const CATEGORY_ORDER = ['period','org','product','trade','quantity','amount','metric','unit','other'];
 
 // ─── Init ────────────────────────────────────
 let currentUserRole='user', currentDomain='PS', currentUserId='';
@@ -1114,7 +1121,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 async function loadColumns() {
     try {
-        const res = await fetch('/api/builder/columns');
+        const res = await fetch(`/api/builder/columns?_t=${Date.now()}`);
         const data = await res.json();
         allColumns = data.columns.filter(c => c.category !== 'system');
         renderFieldList(allColumns);
@@ -1136,15 +1143,22 @@ function renderFieldList(cols) {
         // 날짜 필드를 제외한 카운트
         const visibleCols = grouped[cat].filter(c => !DATE_FIELDS.includes(c.name));
         if (visibleCols.length === 0) return;
-        html += `<div class="field-cat-label">${CATEGORY_NAMES[cat] || cat} (${visibleCols.length})</div>`;
+        const catIcon = cat === 'metric' ? '<i class="fas fa-calculator" style="font-size:10px;margin-right:3px;color:#7c3aed;"></i>' : '';
+        html += `<div class="field-cat-label">${catIcon}${CATEGORY_NAMES[cat] || cat} (${visibleCols.length})</div>`;
         visibleCols.forEach(c => {
-            html += `<div class="field-item" draggable="true"
+            const isMetric = c.is_metric;
+            const iconChar = isMetric ? 'ƒ' : (c.type === 'number' ? '#' : 'T');
+            const iconClass = isMetric ? 'metric' : c.type;
+            const synText = (isMetric && c.synonyms && c.synonyms.length > 0) ? `<span class="fsyn">${c.synonyms.join(', ')}</span>` : '';
+            const formulaText = isMetric ? `<span class="fformula" title="${(c.formula||"").replace(/"/g,'&quot;')}">${c.formula}</span>` : '';
+            html += `<div class="field-item${isMetric ? ' metric-field' : ''}" draggable="true"
                 ondragstart="dragStart(event, '${c.name}')"
                 ondblclick="addFieldByClick('${c.name}')"
                 data-name="${c.name}" data-label="${c.label}" data-type="${c.type}">
-                <span class="icon ${c.type}">${c.type === 'number' ? '#' : 'T'}</span>
+                <span class="icon ${iconClass}">${iconChar}</span>
                 <span class="fname">${c.label}</span>
-                <span class="fcode">${c.name}</span>
+                <span class="fcode">${isMetric ? c.metric_code : c.name}</span>
+                ${synText}${formulaText}
             </div>`;
         });
     });
@@ -1153,9 +1167,16 @@ function renderFieldList(cols) {
 
 function filterFields() {
     const q = document.getElementById('fieldSearch').value.toLowerCase();
-    const filtered = allColumns.filter(c =>
-        c.label.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)
-    );
+    const filtered = allColumns.filter(c => {
+        if (c.label.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)) return true;
+        // Metric 동의어 검색
+        if (c.synonyms && Array.isArray(c.synonyms)) {
+            if (c.synonyms.some(s => s.toLowerCase().includes(q))) return true;
+        }
+        // metric_code 검색 (METRIC__LABOR_COST → LABOR_COST)
+        if (c.metric_code && c.metric_code.toLowerCase().includes(q)) return true;
+        return false;
+    });
     renderFieldList(filtered);
 }
 
@@ -1404,7 +1425,12 @@ function addField(colName) {
     if (selectedFields.find(f => f.column === colName && !f.aggregate)) return;
     const col = allColumns.find(c => c.name === colName);
     if (!col) return;
-    selectedFields.push({ column: colName, alias: col.label, aggregate: '', type: col.type });
+    if (col.is_metric) {
+        // Metric 필드: 산식이 이미 포함되어 있으므로 aggregate='METRIC'으로 표시
+        selectedFields.push({ column: colName, alias: col.label || col.metric_code, aggregate: 'METRIC', type: 'number', is_metric: true, formula: col.formula, metric_code: col.metric_code });
+    } else {
+        selectedFields.push({ column: colName, alias: col.label, aggregate: '', type: col.type });
+    }
     if(!builderDomainLocked){builderDomainLocked=true;renderDomainSelectorBar();}
     renderSelectedFields();
     updateOrderByOptions();
@@ -1428,6 +1454,8 @@ function clearFields() {
 }
 
 function setAggregate(idx, agg) {
+    // Metric 필드는 집계함수 변경 불가
+    if (selectedFields[idx].is_metric) return;
     selectedFields[idx].aggregate = agg;
     const col = allColumns.find(c => c.name === selectedFields[idx].column);
     selectedFields[idx].alias = agg ? `${agg}_${col ? col.label : selectedFields[idx].column}` : (col ? col.label : selectedFields[idx].column);
@@ -1529,11 +1557,15 @@ function renderSelectedFields() {
     selectedFields.forEach((f, i) => {
         const col = allColumns.find(c => c.name === f.column);
         const isNum = f.type === 'number';
-        html += `<div class="selected-field" onmousedown="sfMouseDown(event, ${i})">
+        const isMetric = f.is_metric;
+        html += `<div class="selected-field${isMetric ? ' selected-metric' : ''}" onmousedown="sfMouseDown(event, ${i})">
             <span class="drag-handle"><i class="fas fa-grip-vertical"></i></span>
-            <span style="color:${isNum ? '#7c3aed' : '#4f46e5'};font-weight:700;">${isNum ? '#' : 'T'}</span>
-            <span>${col ? col.label : f.column}</span>`;
-        if (isNum) {
+            <span style="color:${isMetric ? '#7c3aed' : (isNum ? '#7c3aed' : '#4f46e5')};font-weight:700;">${isMetric ? '\u0192' : (isNum ? '#' : 'T')}</span>
+            <span>${col ? col.label : (f.metric_code || f.column)}</span>`;
+        if (isMetric) {
+            // Metric: 산식 표시 (수정 불가)
+            html += `<span class="metric-formula-badge" title="${(f.formula||'').replace(/"/g,'&quot;')}"><i class="fas fa-calculator" style="font-size:9px;margin-right:2px;"></i>산식</span>`;
+        } else if (isNum) {
             html += `<select class="agg-select" onchange="setAggregate(${i}, this.value)" onclick="event.stopPropagation()">
                 <option value="" ${f.aggregate===''?'selected':''}>원본</option>
                 <option value="SUM" ${f.aggregate==='SUM'?'selected':''}>SUM</option>
@@ -1704,7 +1736,7 @@ async function executeQuery() {
     document.getElementById('resultsSection').classList.remove('active');
 
     const hasAgg = selectedFields.some(f => f.aggregate);
-    const groupBy = hasAgg ? selectedFields.filter(f => !f.aggregate).map(f => f.column) : [];
+    const groupBy = hasAgg ? selectedFields.filter(f => !f.aggregate && !f.is_metric).map(f => f.column) : [];
 
     // 날짜 조건 수집
     const dateRange = getDateRange();
@@ -1715,7 +1747,7 @@ async function executeQuery() {
     }
 
     const payload = {
-        fields: selectedFields.map(f => ({ column: f.column, aggregate: f.aggregate || '', alias: f.alias || '' })),
+        fields: selectedFields.map(f => ({ column: f.column, aggregate: f.is_metric ? '' : (f.aggregate || ''), alias: f.alias || '' })),
         conditions: conditions.filter(c => c.column).map(c => ({ column: c.column, operator: c.operator, value: c.value, logic: c.logic })),
         group_by: groupBy,
         order_by: document.getElementById('orderBySelect').value,
