@@ -107,12 +107,33 @@
         .field-item .icon.text { background:#6366f1; }
         .field-item .icon.number { background:#7c3aed; }
         .field-item .icon.metric { background:linear-gradient(135deg,#7c3aed,#a855f7); font-style:italic; }
-        .field-item .fname { flex:1; }
-        .field-item .fcode { font-size:0.68rem; color:#94a3b8; font-family:'Fira Code',monospace; }
-        .field-item.metric-field { background:#faf5ff; }
-        .field-item.metric-field:hover { background:#f3e8ff; }
-        .field-item .fsyn { display:block; font-size:0.62rem; color:#a78bfa; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:120px; }
-        .field-item .fformula { display:block; font-size:0.58rem; color:#94a3b8; font-family:'Fira Code',monospace; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+        .field-item .fname { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .field-item .fcode { font-size:0.68rem; color:#94a3b8; font-family:'Fira Code',monospace; flex-shrink:0; }
+
+        /* ── Metric 필드: 두 줄 레이아웃 ── */
+        .field-item.metric-field {
+            display:flex; flex-wrap:wrap; align-items:flex-start;
+            background:#faf5ff; padding:8px 16px 9px; gap:4px 8px;
+            border-left:3px solid #c4b5fd;
+        }
+        .field-item.metric-field:hover { background:#f3e8ff; border-left-color:#7c3aed; }
+        .field-item.metric-field .icon { margin-top:1px; }
+        .field-item.metric-field .metric-line1 {
+            flex:1; min-width:0; display:flex; align-items:center; gap:6px;
+        }
+        .field-item.metric-field .metric-line1 .fname {
+            font-weight:600; flex:0 1 auto; min-width:0;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        }
+        .field-item.metric-field .metric-line1 .fcode {
+            font-size:0.65rem; color:#a78bfa; font-family:'Fira Code',monospace;
+            flex-shrink:0;
+        }
+        .field-item.metric-field .metric-line2 {
+            width:100%; padding-left:30px;
+            font-size:0.68rem; color:#8b8fa3; font-family:'Fira Code',monospace;
+            line-height:1.4; word-break:break-all;
+        }
         .selected-metric { border-left:3px solid #7c3aed !important; }
         .metric-formula-badge { display:inline-flex; align-items:center; gap:2px; padding:2px 8px; border-radius:6px; font-size:0.65rem; font-weight:600; background:#f3e8ff; color:#7c3aed; white-space:nowrap; cursor:help; }
 
@@ -1149,17 +1170,29 @@ function renderFieldList(cols) {
             const isMetric = c.is_metric;
             const iconChar = isMetric ? 'ƒ' : (c.type === 'number' ? '#' : 'T');
             const iconClass = isMetric ? 'metric' : c.type;
-            const synText = (isMetric && c.synonyms && c.synonyms.length > 0) ? `<span class="fsyn">${c.synonyms.join(', ')}</span>` : '';
-            const formulaText = isMetric ? `<span class="fformula" title="${(c.formula||"").replace(/"/g,'&quot;')}">${c.formula}</span>` : '';
-            html += `<div class="field-item${isMetric ? ' metric-field' : ''}" draggable="true"
-                ondragstart="dragStart(event, '${c.name}')"
-                ondblclick="addFieldByClick('${c.name}')"
-                data-name="${c.name}" data-label="${c.label}" data-type="${c.type}">
-                <span class="icon ${iconClass}">${iconChar}</span>
-                <span class="fname">${c.label}</span>
-                <span class="fcode">${isMetric ? c.metric_code : c.name}</span>
-                ${synText}${formulaText}
-            </div>`;
+            if (isMetric) {
+                // Metric: 두 줄 레이아웃 — 1줄: 아이콘+지표명+코드  2줄: 산식
+                html += `<div class="field-item metric-field" draggable="true"
+                    ondragstart="dragStart(event, '${c.name}')"
+                    ondblclick="addFieldByClick('${c.name}')"
+                    data-name="${c.name}" data-label="${c.label}" data-type="${c.type}">
+                    <span class="icon ${iconClass}">${iconChar}</span>
+                    <span class="metric-line1">
+                        <span class="fname">${c.label}</span>
+                        <span class="fcode">${c.metric_code}</span>
+                    </span>
+                    <div class="metric-line2">${c.formula || ''}</div>
+                </div>`;
+            } else {
+                html += `<div class="field-item" draggable="true"
+                    ondragstart="dragStart(event, '${c.name}')"
+                    ondblclick="addFieldByClick('${c.name}')"
+                    data-name="${c.name}" data-label="${c.label}" data-type="${c.type}">
+                    <span class="icon ${iconClass}">${iconChar}</span>
+                    <span class="fname">${c.label}</span>
+                    <span class="fcode">${c.name}</span>
+                </div>`;
+            }
         });
     });
     document.getElementById('fieldList').innerHTML = html;
