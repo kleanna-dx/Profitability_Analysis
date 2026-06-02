@@ -1199,15 +1199,30 @@ function renderFieldList(cols) {
 }
 
 function filterFields() {
-    const q = document.getElementById('fieldSearch').value.toLowerCase();
+    const raw = document.getElementById('fieldSearch').value;
+    const q = raw.toLowerCase();
+    const qNoSpace = q.replace(/\s/g, ''); // 공백 제거 버전
+    if (!q) { renderFieldList(allColumns); return; }
+
+    const match = (text) => {
+        if (!text) return false;
+        const t = text.toLowerCase();
+        return t.includes(q) || t.replace(/\s/g, '').includes(qNoSpace);
+    };
+
     const filtered = allColumns.filter(c => {
-        if (c.label.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)) return true;
-        // Metric 동의어 검색
+        // 1. 컬럼명 (DB 컬럼명 / METRIC__ 이름)
+        if (match(c.name)) return true;
+        // 2. 컬럼 설명 (Ontology description / Metric description)
+        if (match(c.label)) return true;
+        // 3. 동의어 (Ontology 동의어 + Metric 동의어 — 둘 다 synonyms 배열)
         if (c.synonyms && Array.isArray(c.synonyms)) {
-            if (c.synonyms.some(s => s.toLowerCase().includes(q))) return true;
+            if (c.synonyms.some(s => match(s))) return true;
         }
-        // metric_code 검색 (METRIC__LABOR_COST → LABOR_COST)
-        if (c.metric_code && c.metric_code.toLowerCase().includes(q)) return true;
+        // 4. Metric 지표코드 (LABOR_COST 등)
+        if (c.metric_code && match(c.metric_code)) return true;
+        // 5. Metric 산식 내 컬럼명 (SUM(ZAMT012) → ZAMT012)
+        if (c.formula && match(c.formula)) return true;
         return false;
     });
     renderFieldList(filtered);

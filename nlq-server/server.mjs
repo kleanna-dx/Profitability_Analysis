@@ -3217,10 +3217,33 @@ app.get('/api/builder/columns', async (req, res) => {
 
     // 2. Ontology 컬럼 정보 조회 (설명 보강, domain 필터)
     const dc = await getActiveDomain(req);
-    const [ontoCols] = await pool.query(`SELECT column_name, description, data_type FROM ontology_column WHERE domain_code = ?`, [dc]);
+    const [ontoCols] = await pool.query(`SELECT id, column_name, description, data_type FROM ontology_column WHERE domain_code = ?`, [dc]);
     const ontoMap = {};
     for (const o of ontoCols) {
       ontoMap[o.column_name.toUpperCase()] = o;
+    }
+
+    // 2-1. Ontology 동의어 일괄 조회 (도메인 필터 적용됨 — ontology_column이 이미 도메인 필터)
+    const ontoSynonymMap = {}; // { COLUMN_NAME_UPPER: ['동의어1', '동의어2', ...] }
+    const ontoColIds = ontoCols.map(o => o.id).filter(Boolean);
+    if (ontoColIds.length > 0) {
+      try {
+        const [synRows] = await pool.query(
+          `SELECT column_id, synonym_text FROM ontology_synonym WHERE column_id IN (${ontoColIds.map(() => '?').join(',')})`,
+          ontoColIds
+        );
+        // column_id → column_name 역매핑
+        const idToName = {};
+        for (const o of ontoCols) idToName[o.id] = o.column_name.toUpperCase();
+        for (const s of synRows) {
+          const colName = idToName[s.column_id];
+          if (!colName) continue;
+          if (!ontoSynonymMap[colName]) ontoSynonymMap[colName] = [];
+          ontoSynonymMap[colName].push(s.synonym_text);
+        }
+      } catch (synErr) {
+        console.error('[Builder] Ontology synonym 조회 오류 (무시):', synErr.message);
+      }
     }
 
     // 카테고리 분류
@@ -3258,7 +3281,9 @@ app.get('/api/builder/columns', async (req, res) => {
         else if (name.startsWith('ZAMT')) category = 'amount';
       }
 
-      columns.push({ name, label, type: dataType, db_type: ctype, category });
+      // Ontology 동의어 포함
+      const synonyms = ontoSynonymMap[name.toUpperCase()] || [];
+      columns.push({ name, label, type: dataType, db_type: ctype, category, synonyms });
     }
 
     // 3. Metric 계산 지표 조회 (도메인 필터 적용)
