@@ -3261,6 +3261,43 @@ app.get('/api/builder/columns', async (req, res) => {
       columns.push({ name, label, type: dataType, db_type: ctype, category });
     }
 
+    // 3. Metric 계산 지표 조회 (도메인 필터 적용)
+    try {
+      const [metricRows] = await pool.query(
+        `SELECT id, metric_code, aggregation, formula, table_name, description, domain_code FROM metric WHERE domain_code = ?`,
+        [dc]
+      );
+      // 동의어 일괄 조회
+      const metricIds = metricRows.map(m => m.id);
+      let synonymMap = {};
+      if (metricIds.length > 0) {
+        const [synRows] = await pool.query(
+          `SELECT metric_id, synonym_text FROM metric_synonym WHERE metric_id IN (${metricIds.map(() => '?').join(',')})`,
+          metricIds
+        );
+        for (const s of synRows) {
+          if (!synonymMap[s.metric_id]) synonymMap[s.metric_id] = [];
+          synonymMap[s.metric_id].push(s.synonym_text);
+        }
+      }
+      for (const m of metricRows) {
+        columns.push({
+          name: `METRIC__${m.metric_code}`,
+          label: m.description || m.metric_code,
+          type: 'number',
+          db_type: 'metric_formula',
+          category: 'metric',
+          is_metric: true,
+          metric_code: m.metric_code,
+          formula: m.formula,
+          aggregation: m.aggregation || 'CALC',
+          synonyms: synonymMap[m.id] || [],
+        });
+      }
+    } catch (metErr) {
+      console.error('[Builder] metric 조회 오류 (무시):', metErr.message);
+    }
+
     res.json({ columns });
   } catch (err) {
     console.error('[Builder] columns error:', err.message);
@@ -3327,6 +3364,62 @@ app.post('/api/builder/query', async (req, res) => {
       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data'
     `);
     const validCols = new Set(validColRows.map(r => r.COLUMN_NAME));
+
+    // ── Metric 산식 매핑 조회 ──
+    // METRIC__ 접두사가 붙은 필드를 감지하여 DB에서 formula 조회
+    const metricFieldNames = fields.filter(f => f.column && f.column.startsWith('METRIC__')).map(f => f.column.replace('METRIC__', ''));
+    const metricFormulaMap = {}; // { METRIC__LABOR_COST: { formula, aggregation, metric_code } }
+    if (metricFieldNames.length > 0) {
+      try {
+        const dc = await getActiveDomain(req);
+        // 모든 metric 조회 (SUM 타입 산식 해석을 위해 전체 필요)
+        const [allMetricRows] = await pool.query(
+          `SELECT metric_code, formula, aggregation FROM metric WHERE domain_code = ?`, [dc]
+        );
+        const allMetricMap = {};
+        for (const m of allMetricRows) allMetricMap[m.metric_code] = m;
+
+        // SUM 집계 타입의 산식을 SQL로 변환하는 헬퍼
+        const resolveFormula = (formula, aggregation) => {
+          if (aggregation === 'CALC') return formula; // 이미 SUM() 등 포함된 산식
+          // SUM 타입: 산식 내 각 컬럼 참조를 SUM()으로 감싸기
+          // 1. 다른 metric_code 참조를 해당 산식으로 치환 (재귀 방지를 위해 1단계만)
+          let resolved = formula;
+          for (const [code, meta] of Object.entries(allMetricMap)) {
+            if (resolved.includes(code) && code !== formula) {
+              // metric_code 참조를 해당 산식으로 치환 (괄호로 감쌈)
+              const re = new RegExp('\\b' + code + '\\b', 'g');
+              const subFormula = resolveFormula(meta.formula, meta.aggregation);
+              resolved = resolved.replace(re, `(${subFormula})`);
+            }
+          }
+          // 2. 아직 SUM()에 감싸지지 않은 DB 컬럼 참조를 SUM()으로 감싸기
+          // 패턴: 알파벳/언더스코어로 시작하는 단어 (이미 SUM( 등 함수로 감싸진 것은 제외)
+          resolved = resolved.replace(/\b([A-Z][A-Z0-9_]+)\b(?!\s*\()/g, (match) => {
+            // SQL 키워드/함수는 제외
+            if (['SUM','AVG','COUNT','MAX','MIN','NULLIF','COALESCE','CASE','WHEN','THEN','ELSE','END','AND','OR','NOT','NULL','AS'].includes(match)) return match;
+            // 이미 SUM()등으로 감싸져 있으면 스킵 (lookbehind는 위 regex에서 처리)
+            return `SUM(\`${match}\`)`;
+          });
+          return resolved;
+        };
+
+        for (const name of metricFieldNames) {
+          const m = allMetricMap[name];
+          if (m) {
+            const sqlFormula = resolveFormula(m.formula, m.aggregation);
+            metricFormulaMap[`METRIC__${m.metric_code}`] = {
+              formula: sqlFormula,
+              aggregation: m.aggregation || 'CALC',
+              metric_code: m.metric_code,
+            };
+          }
+        }
+        console.log(`[Builder] Metric 산식 매핑: ${JSON.stringify(Object.entries(metricFormulaMap).map(([k,v]) => k + '=' + v.formula))}`);
+      } catch (metErr) {
+        console.error('[Builder] Metric formula 조회 오류:', metErr.message);
+      }
+    }
 
     // ── 헬퍼 함수 ──
     const calcPrevMonth = (ym) => {
@@ -3399,20 +3492,29 @@ app.post('/api/builder/query', async (req, res) => {
 
     for (const f of fields) {
       const col = f.column;
-      if (!validCols.has(col)) return res.status(400).json({ error: `유효하지 않은 컬럼: ${col}` });
+      const isMetric = col.startsWith('METRIC__') && metricFormulaMap[col];
+
+      // Metric 필드는 validCols 검증 스킵 (DB 컬럼이 아닌 계산 산식)
+      if (!isMetric && !validCols.has(col)) return res.status(400).json({ error: `유효하지 않은 컬럼: ${col}` });
       let agg = f.aggregate;
-      const alias = f.alias || col;
+      const alias = f.alias || (isMetric ? metricFormulaMap[col].metric_code : col);
 
-      // ★ 비교 모드: 집계함수 없는 숫자 필드는 자동으로 SUM 적용
-      if (hasCompare && (!agg || agg === '') && numericColSet.has(col)) {
-        agg = 'SUM';
-        console.log(`[Builder] 비교모드 자동 SUM 적용: ${col} (alias: ${alias})`);
-      }
-
-      if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
-        measureFields.push({ col, agg: agg.toUpperCase(), alias });
+      if (isMetric) {
+        // Metric 필드는 항상 measure (산식 자체에 SUM 등이 포함됨)
+        measureFields.push({ col, agg: '__METRIC__', alias, formula: metricFormulaMap[col].formula });
+        console.log(`[Builder] Metric 필드 추가: ${col} → formula: ${metricFormulaMap[col].formula}`);
       } else {
-        dimFields.push({ col, alias });
+        // ★ 비교 모드: 집계함수 없는 숫자 필드는 자동으로 SUM 적용
+        if (hasCompare && (!agg || agg === '') && numericColSet.has(col)) {
+          agg = 'SUM';
+          console.log(`[Builder] 비교모드 자동 SUM 적용: ${col} (alias: ${alias})`);
+        }
+
+        if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
+          measureFields.push({ col, agg: agg.toUpperCase(), alias });
+        } else {
+          dimFields.push({ col, alias });
+        }
       }
     }
 
@@ -3453,7 +3555,12 @@ app.post('/api/builder/query', async (req, res) => {
       const curGroupByCols = [...allDimColsList];
       const curSelectParts = [...allDimColsList];
       measureFields.forEach(m => {
-        curSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_cur\``);
+        if (m.agg === '__METRIC__') {
+          // Metric: 산식 그대로 사용 (SUM 등이 이미 포함됨)
+          curSelectParts.push(`(${m.formula}) AS \`${m.col}_cur\``);
+        } else {
+          curSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_cur\``);
+        }
       });
       const curParams = [curMonth];
       const curUserWhere = buildUserConditions(curParams);
@@ -3466,7 +3573,11 @@ app.post('/api/builder/query', async (req, res) => {
       const prevGroupByCols = [...joinDimColsList];
       const prevSelectParts = [...joinDimColsList];
       measureFields.forEach(m => {
-        prevSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_prev\``);
+        if (m.agg === '__METRIC__') {
+          prevSelectParts.push(`(${m.formula}) AS \`${m.col}_prev\``);
+        } else {
+          prevSelectParts.push(`${m.agg}(\`${m.col}\`) AS \`${m.col}_prev\``);
+        }
       });
       const prevParams = [prevMonth];
       const prevUserWhere = buildUserConditions(prevParams);
@@ -3544,7 +3655,11 @@ app.post('/api/builder/query', async (req, res) => {
         const col = f.column;
         const agg = f.aggregate;
         const alias = f.alias || col;
-        if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
+        const isMetric = col.startsWith('METRIC__') && metricFormulaMap[col];
+        if (isMetric) {
+          // Metric: 산식 그대로 사용 (SUM 등이 이미 포함됨)
+          selectParts.push(`(${metricFormulaMap[col].formula}) AS \`${alias}\``);
+        } else if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
           selectParts.push(`${agg.toUpperCase()}(\`${col}\`) AS \`${alias}\``);
         } else {
           selectParts.push(`\`${col}\` AS \`${alias}\``);
@@ -3571,6 +3686,8 @@ app.post('/api/builder/query', async (req, res) => {
       }
       if (group_by && group_by.length > 0) {
         for (const g of group_by) {
+          // Metric 필드는 GROUP BY에서 제외 (산식이므로)
+          if (g.startsWith('METRIC__')) continue;
           // CALMONTH 중복 방지 (이미 자동 추가된 경우 스킵)
           if (g === 'CALMONTH' && groupParts.includes('`CALMONTH`')) continue;
           // CALDAY는 GROUP BY에서 제외 (월단위 집계 기준)
