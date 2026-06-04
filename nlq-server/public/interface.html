@@ -6,7 +6,6 @@
     <title>인터페이스 관리 - 수익성분석 AI</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
@@ -209,6 +208,16 @@
         .content-area::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
         @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         .fade-in{animation:fadeIn .25s ease-out;}
+
+        /* Monthly data chart (batch.html과 동일 스타일) */
+        .month-bar{display:flex;align-items:flex-end;gap:4px;height:60px;margin-top:8px;}
+        .month-col{flex:1;min-width:0;border-radius:4px 4px 0 0;background:linear-gradient(180deg,#818cf8,#4f46e5);transition:all .2s;position:relative;cursor:pointer;}
+        .month-col:hover{opacity:.85;}
+        .month-col .month-tooltip{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:#1e293b;color:#fff;padding:4px 8px;border-radius:6px;font-size:10px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;}
+        .month-col:hover .month-tooltip{opacity:1;}
+        .month-labels{display:flex;gap:4px;margin-top:4px;}
+        .month-labels span{flex:1;text-align:center;font-size:9px;color:#94a3b8;min-width:0;overflow:hidden;text-overflow:ellipsis;}
+        .month-empty{color:#94a3b8;font-size:12px;padding:20px;text-align:center;width:100%;}
     </style>
 </head>
 <body>
@@ -295,11 +304,16 @@
             </div>
         </div>
 
-        <!-- Monthly chart -->
+        <!-- Monthly data bar (월별 적재 데이터 건수) -->
         <div class="card mb-5">
-            <div class="card-header"><i class="fas fa-chart-line text-indigo-500"></i> 월별 작업 추이 (최근 12개월)</div>
-            <div class="card-body" style="height:220px;">
-                <canvas id="monthlyChart"></canvas>
+            <div class="card-header">
+                <i class="fas fa-chart-bar text-indigo-500"></i>
+                <span>월별 데이터 현황 <span style="font-size:11px;color:#94a3b8;font-weight:400;">(최근 12개월)</span></span>
+                <span id="monthlyInfo" style="font-size:12px;color:#94a3b8;font-weight:400;margin-left:8px;"></span>
+            </div>
+            <div style="padding:16px 20px;">
+                <div class="month-bar" id="monthBar"></div>
+                <div class="month-labels" id="monthLabels"></div>
             </div>
         </div>
 
@@ -665,7 +679,6 @@ async function doLogout(){try{await fetch('/api/logout',{method:'POST',credentia
 // ============================================================
 let masterList=[];
 let scheduleList=[];
-let monthlyChart=null;
 let currentInterface='ALL';
 
 // ============================================================
@@ -721,27 +734,43 @@ async function refreshTopArea(){
   }catch(e){toast('상단 영역 로드 실패: '+e.message,'error');}
 }
 
+// 월별 적재 데이터 건수 바 차트 (batch.html 스타일)
+// items: [{ym:'YYYY-MM', total, success, failed, rows_sum}, ...]  (오래된 → 최신 순)
 function renderMonthlyChart(items){
-  const labels=items.map(x=>x.ym);
-  const success=items.map(x=>Number(x.success||0));
-  const failed=items.map(x=>Number(x.failed||0));
-  const ctx=document.getElementById('monthlyChart').getContext('2d');
-  if(monthlyChart){monthlyChart.destroy();}
-  monthlyChart=new Chart(ctx,{
-    type:'bar',
-    data:{labels,datasets:[
-      {label:'성공',data:success,backgroundColor:'#16a34a',borderRadius:4},
-      {label:'실패',data:failed,backgroundColor:'#dc2626',borderRadius:4},
-    ]},
-    options:{
-      responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{position:'top',labels:{font:{size:11}}}},
-      scales:{
-        x:{stacked:true,ticks:{font:{size:11}}},
-        y:{stacked:true,beginAtZero:true,ticks:{font:{size:11},precision:0}}
-      }
-    }
-  });
+  const barEl   = document.getElementById('monthBar');
+  const labelEl = document.getElementById('monthLabels');
+  const infoEl  = document.getElementById('monthlyInfo');
+
+  if(!items || items.length===0){
+    barEl.innerHTML   = '<div class="month-empty">적재된 데이터가 없습니다.</div>';
+    labelEl.innerHTML = '';
+    infoEl.textContent= '';
+    return;
+  }
+
+  // rows_sum 기준으로 최대값 산출
+  const counts = items.map(x => Number(x.rows_sum||0));
+  const maxCnt = Math.max(...counts, 0);
+  const total  = counts.reduce((s,n)=>s+n, 0);
+  infoEl.textContent = `${items.length}개월 (총 ${total.toLocaleString()}행)`;
+
+  barEl.innerHTML = items.map((x,i)=>{
+    const cnt = counts[i];
+    const pct = maxCnt > 0 ? (cnt / maxCnt * 100) : 0;
+    const minH = 6;
+    const height = Math.max(pct * 0.54 + minH, minH); // 60px 기준
+    return `<div class="month-col" style="height:${height}px;" title="${x.ym}: ${cnt.toLocaleString()}행">
+              <span class="month-tooltip">${x.ym}<br>${cnt.toLocaleString()}행</span>
+            </div>`;
+  }).join('');
+
+  labelEl.innerHTML = items.map(x=>{
+    // 'YYYY-MM' → 'YY/MM'
+    const ym = String(x.ym||'');
+    const yy = ym.length>=4 ? ym.substring(2,4) : '';
+    const mm = ym.length>=7 ? ym.substring(5,7) : '';
+    return `<span>${yy}/${mm}</span>`;
+  }).join('');
 }
 
 function onInterfaceChange(){
