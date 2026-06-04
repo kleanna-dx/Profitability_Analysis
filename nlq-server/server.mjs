@@ -5161,7 +5161,8 @@ app.get('/api/interface/master', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT interface_id, interface_name, sender, receiver, rfc_name,
-              rfc_func_or_url, rfc_param, exec_command, remark,
+              rfc_func_or_url, rfc_param, default_mode, allowed_modes,
+              exec_command, remark,
               is_active, created_by, updated_by, created_at, updated_at
          FROM batch_master
          ORDER BY interface_id ASC`
@@ -5206,6 +5207,8 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
     sender = 'SAP', receiver = 'S&OP',
     rfc_name = null,
     rfc_func_or_url = null, rfc_param = null,
+    default_mode = 'replace',
+    allowed_modes = 'replace,append,dry-run',
     exec_command = null, remark = null, is_active = 1,
   } = req.body || {};
   if (!interface_id || !interface_name) {
@@ -5216,11 +5219,13 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
     await pool.query(
       `INSERT INTO batch_master
          (interface_id, interface_name, sender, receiver, rfc_name,
-          rfc_func_or_url, rfc_param, exec_command, remark,
+          rfc_func_or_url, rfc_param, default_mode, allowed_modes,
+          exec_command, remark,
           is_active, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [interface_id, interface_name, sender, receiver, rfc_name,
-       rfc_func_or_url, rfc_param, exec_command, remark,
+       rfc_func_or_url, rfc_param, default_mode, allowed_modes,
+       exec_command, remark,
        is_active ? 1 : 0, userId, userId]
     );
     res.json({ ok: true, interface_id });
@@ -5236,7 +5241,8 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
 app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
   const {
     interface_name, sender, receiver, rfc_name,
-    rfc_func_or_url, rfc_param, exec_command, remark, is_active,
+    rfc_func_or_url, rfc_param, default_mode, allowed_modes,
+    exec_command, remark, is_active,
   } = req.body || {};
   try {
     const userId = req.session?.user?.user_id || 'admin';
@@ -5248,6 +5254,8 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
               rfc_name        = ?,
               rfc_func_or_url = ?,
               rfc_param       = ?,
+              default_mode    = COALESCE(?, default_mode),
+              allowed_modes   = COALESCE(?, allowed_modes),
               exec_command    = ?,
               remark          = ?,
               is_active       = COALESCE(?, is_active),
@@ -5255,7 +5263,9 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
         WHERE interface_id = ?`,
       [interface_name ?? null, sender ?? null, receiver ?? null,
        rfc_name ?? null,
-       rfc_func_or_url ?? null, rfc_param ?? null, exec_command ?? null, remark ?? null,
+       rfc_func_or_url ?? null, rfc_param ?? null,
+       default_mode ?? null, allowed_modes ?? null,
+       exec_command ?? null, remark ?? null,
        (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
        userId, req.params.id]
     );
@@ -5402,8 +5412,11 @@ app.post('/api/interface/schedule/:id/toggle', requireAdmin, async (req, res) =>
 // 스케줄 수동 실행 (interface_id 만 batch_jobs 에 기록 — 실제 RFC 호출은 추후 연결)
 app.post('/api/interface/schedule/:id/run', requireAdmin, async (req, res) => {
   try {
+    // (1) 스케줄 + 마스터 조회 (RFC 메타 정보 포함)
     const [rows] = await pool.query(
-      `SELECT s.interface_id, m.interface_name, m.is_active
+      `SELECT s.interface_id, m.interface_name, m.is_active,
+              m.rfc_name, m.rfc_func_or_url, m.rfc_param,
+              m.default_mode, m.allowed_modes, m.exec_command
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
         WHERE s.id = ?`,
@@ -5412,20 +5425,50 @@ app.post('/api/interface/schedule/:id/run', requireAdmin, async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: '스케줄을 찾을 수 없습니다.' });
     const sch = rows[0];
 
-    const userId = req.session?.user?.user_id || 'admin';
-    const now = new Date();
-    const cmonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    // (2) 입력값 검증 — body로부터 cmonth + mode 받음 (UI에서 모드 선택 가능)
+    //     cmonth 미지정시 현재 년월, mode 미지정시 batch_master.default_mode
+    let { cmonth, mode } = req.body || {};
 
-    // batch_jobs 에 수동실행 이력 INSERT (job_type = 'INTERFACE_MANUAL')
+    if (!cmonth) {
+      const now = new Date();
+      cmonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    }
+    if (!/^\d{6}$/.test(cmonth)) {
+      return res.status(400).json({ error: '유효하지 않은 년월입니다. YYYYMM 형식이어야 합니다.' });
+    }
+
+    const defaultMode = sch.default_mode || 'replace';
+    const allowed = (sch.allowed_modes || 'replace,append,dry-run').split(',').map(s => s.trim());
+    const execMode = mode || defaultMode;
+    if (!allowed.includes(execMode)) {
+      return res.status(400).json({ error: `유효하지 않은 실행 모드입니다. (허용: ${allowed.join('/')})` });
+    }
+
+    // (3) 중복 실행 차단 — 같은 인터페이스가 이미 running이면 거부
+    const [runningRows] = await pool.query(
+      `SELECT id FROM batch_jobs
+        WHERE interface_id = ? AND status = 'running' LIMIT 1`,
+      [sch.interface_id]
+    );
+    if (runningRows.length > 0) {
+      return res.status(409).json({
+        error: `이미 실행 중인 작업이 있습니다. (job_id=${runningRows[0].id})`,
+        runningJobId: runningRows[0].id,
+      });
+    }
+
+    const userId = req.session?.user?.user_id || req.session?.user?.id || 'admin';
+
+    // (4) batch_jobs에 작업 레코드 생성 — [배치관리]와 동일한 'SAP_RFC_SYNC' 타입
     const [ins] = await pool.query(
       `INSERT INTO batch_jobs
-         (job_type, interface_id, cmonth, mode, status, started_at, created_by)
-       VALUES ('INTERFACE_MANUAL', ?, ?, 'manual', 'running', NOW(), ?)`,
-      [sch.interface_id, cmonth, userId]
+         (job_type, interface_id, cmonth, mode, status, created_by)
+       VALUES ('SAP_RFC_SYNC', ?, ?, ?, 'pending', ?)`,
+      [sch.interface_id, cmonth, execMode, userId]
     );
     const jobId = ins.insertId;
 
-    // 스케줄에도 last_run_at/status = running 표시
+    // (5) 스케줄에도 last_run_at/status = running 표시
     await pool.query(
       `UPDATE batch_schedule
           SET last_run_at = NOW(), last_run_status = 'running', updated_by = ?
@@ -5433,36 +5476,33 @@ app.post('/api/interface/schedule/:id/run', requireAdmin, async (req, res) => {
       [userId, req.params.id]
     );
 
-    // 비동기 실행 시뮬레이션: 실제 RFC 연동 전, 더미 성공 처리
-    setImmediate(async () => {
-      try {
-        await pool.query(
-          `UPDATE batch_jobs
-              SET status = 'success', finished_at = NOW(),
-                  log_text = CONCAT(IFNULL(log_text, ''),
-                                    '[수동실행] interface=', ?, ' user=', ?, ' time=', NOW(), '\n')
-            WHERE id = ?`,
-          [sch.interface_id, userId, jobId]
-        );
+    // (6) 즉시 응답 — 비동기 실행은 별도로 진행
+    res.json({
+      ok: true,
+      job_id: jobId,
+      interface_id: sch.interface_id,
+      rfc_name: sch.rfc_name,
+      cmonth,
+      mode: execMode,
+      message: `인터페이스 실행이 시작되었습니다. (RFC: ${sch.rfc_name || '-'}, MODE: ${execMode.toUpperCase()})`,
+    });
+
+    // (7) Spring Boot 호출 — [배치관리]와 동일한 executeBatchJob 재사용
+    //     SAP RFC 실패시에도 batch_schedule.last_run_status 동기화
+    executeBatchJob(jobId, cmonth, execMode)
+      .then(async () => {
         await pool.query(
           `UPDATE batch_schedule SET last_run_status = 'success' WHERE id = ?`,
           [req.params.id]
-        );
-      } catch (e) {
-        await pool.query(
-          `UPDATE batch_jobs
-              SET status = 'failed', finished_at = NOW(), error_message = ?
-            WHERE id = ?`,
-          [String(e.message || e), jobId]
         ).catch(() => {});
+      })
+      .catch(async (err) => {
+        console.error(`[Interface Run] job ${jobId} 실패:`, err.message);
         await pool.query(
           `UPDATE batch_schedule SET last_run_status = 'failed' WHERE id = ?`,
           [req.params.id]
         ).catch(() => {});
-      }
-    });
-
-    res.json({ ok: true, job_id: jobId, interface_id: sch.interface_id });
+      });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
