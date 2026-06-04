@@ -121,10 +121,25 @@ SET @sql := IF(@col_exists = 0,
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- =====================================================================
--- 3) (SKIP) batch_master 시드 데이터
---    ⚠️ 이 스크립트는 데이터(시드)를 넣지 않습니다.
---    화면(/interface.html)에서 직접 등록한 행만 유지됩니다.
+-- 3) batch_master 기본 인터페이스 시드 (NLP_RFC_001 / NLP_RFC_002)
+--    ⚠️ 운영 DB 가 비어 있을 때만 동작 (NOT EXISTS 가드 — 멱등).
+--    이미 같은 interface_id 가 있으면 건드리지 않음 (UPDATE 안 함).
+--    SNOP_RFC_* 시드는 더 이상 넣지 않습니다.
 -- =====================================================================
+
+-- 3-1) NLP_RFC_001 — 수익성데이터 (Z_BI_WEB_EX_BL)
+INSERT INTO batch_master
+  (interface_id,  interface_name, sender, receiver,    rfc_name,         rfc_func_or_url,                    rfc_param,                                                        default_mode, allowed_modes,            exec_command,   remark,                              is_active, created_by)
+SELECT
+  'NLP_RFC_001', '수익성데이터', 'SAP', 'analytics', 'Z_BI_WEB_EX_BL', 'POST /profit-api/sap-rfc/execute', '{"function":"Z_BI_WEB_EX_BL","params":{"I_CMONTH":"{CMONTH}"}}', 'replace',    'replace,append,dry-run', 'SAP_RFC_SYNC', 'SAP BW 수익성분석 데이터 동기화',     1,          'admin'
+ WHERE NOT EXISTS (SELECT 1 FROM batch_master WHERE interface_id = 'NLP_RFC_001');
+
+-- 3-2) NLP_RFC_002 — 제조원가 (Z_BI_PRE_COST)
+INSERT INTO batch_master
+  (interface_id,  interface_name, sender, receiver,    rfc_name,        rfc_func_or_url,                    rfc_param,                                                       default_mode, allowed_modes,            exec_command,   remark,                                  is_active, created_by)
+SELECT
+  'NLP_RFC_002', '제조원가',     'SAP', 'analytics', 'Z_BI_PRE_COST', 'POST /profit-api/sap-rfc/execute', '{"function":"Z_BI_PRE_COST","params":{"I_CMONTH":"{CMONTH}"}}', 'replace',    'replace,append,dry-run', 'SAP_RFC_SYNC', '제조원가 인터페이스 (월마감 후 실행)',   1,          'admin'
+ WHERE NOT EXISTS (SELECT 1 FROM batch_master WHERE interface_id = 'NLP_RFC_002');
 
 -- =====================================================================
 -- 4) batch_schedule 테이블 생성 (PR #69)
