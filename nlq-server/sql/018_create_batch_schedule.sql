@@ -6,9 +6,12 @@
 CREATE TABLE IF NOT EXISTS batch_schedule (
   id                  INT(11)      NOT NULL AUTO_INCREMENT,
   interface_id        VARCHAR(50)  NOT NULL                  COMMENT '인터페이스 ID (FK → batch_master)',
-  schedule_type       ENUM('daily','monthly','manual') NOT NULL DEFAULT 'daily' COMMENT '수행 주기 (daily=매일, monthly=매월, manual=수동전용)',
-  exec_time           TIME         DEFAULT NULL              COMMENT '수행 시간 (manual 인 경우 NULL)',
+  schedule_type       ENUM('daily','monthly','manual','once') NOT NULL DEFAULT 'daily' COMMENT '수행 주기 (daily/monthly/manual/once)',
+  exec_time           TIME         DEFAULT NULL              COMMENT '수행 시간 (daily/monthly)',
+  exec_datetime       DATETIME     DEFAULT NULL              COMMENT '1회 예약 실행 일시 (once)',
   exec_day_of_month   TINYINT(2)   DEFAULT NULL              COMMENT '월간일 경우 실행일(1~31)',
+  target_cmonth       VARCHAR(6)   DEFAULT NULL              COMMENT '대상년월 YYYYMM (once/manual)',
+  exec_mode           VARCHAR(20)  DEFAULT NULL              COMMENT '실행 모드 replace/append/dry-run (once)',
   is_active           TINYINT(1)   NOT NULL DEFAULT 1        COMMENT '활성 여부',
   last_run_at         DATETIME     DEFAULT NULL              COMMENT '마지막 수행 시각',
   last_run_status     ENUM('success','failed','running','pending') DEFAULT NULL COMMENT '마지막 수행 상태',
@@ -19,8 +22,10 @@ CREATE TABLE IF NOT EXISTS batch_schedule (
   created_at          DATETIME     DEFAULT CURRENT_TIMESTAMP,
   updated_at          DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_batch_schedule_interface (interface_id),
+  -- 같은 인터페이스를 여러 일시로 다중 예약 가능하도록 UNIQUE 가 아닌 일반 INDEX
+  KEY idx_batch_schedule_interface (interface_id),
   KEY idx_batch_schedule_active (is_active),
+  KEY idx_batch_schedule_once_due (schedule_type, is_active, exec_datetime),
   CONSTRAINT fk_batch_schedule_interface
     FOREIGN KEY (interface_id) REFERENCES batch_master(interface_id)
     ON UPDATE CASCADE ON DELETE CASCADE

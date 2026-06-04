@@ -480,6 +480,7 @@
                 <div class="form-row">
                     <label>수행 주기 *</label>
                     <select id="sfType" onchange="onSchedTypeChange()">
+                        <option value="once">1회 예약 (특정 일시에 한 번)</option>
                         <option value="daily">매일 (DAILY)</option>
                         <option value="monthly">매월 (MONTHLY)</option>
                         <option value="manual">직접 실행 — 자동 스케줄 없음</option>
@@ -488,6 +489,29 @@
                 <div class="form-row" id="rowExecTime">
                     <label>수행 시간 (HH:MM)</label>
                     <input id="sfTime" type="time" value="06:00">
+                </div>
+            </div>
+            <!-- once 전용: 실행 일시 + 대상년월 + 실행 모드 -->
+            <div class="form-grid" id="rowOnceFields" style="display:none;">
+                <div class="form-row">
+                    <label>실행 일시 * <span style="color:#94a3b8;font-weight:500;">(예약 일시에 한 번 자동 실행)</span></label>
+                    <input id="sfExecDt" type="datetime-local" step="60">
+                </div>
+                <div class="form-row">
+                    <label>대상 년월 * <span style="color:#94a3b8;font-weight:500;">(YYYYMM, RFC의 CMONTH로 치환)</span></label>
+                    <input id="sfCmonth" type="text" inputmode="numeric" maxlength="6" placeholder="예: 202605" pattern="\d{6}">
+                </div>
+            </div>
+            <div class="form-row" id="rowOnceMode" style="display:none;">
+                <label>실행 모드 *</label>
+                <select id="sfMode"></select>
+            </div>
+            <div class="form-row" id="rowOnceInfo" style="display:none;">
+                <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:12px 14px;font-size:13px;color:#1e40af;line-height:1.6;">
+                    <i class="fas fa-clock" style="color:#3b82f6;"></i>
+                    <strong>1회 예약 모드</strong> — 위 <strong>실행 일시</strong>가 되면 자동으로 한 번 실행됩니다.<br>
+                    같은 인터페이스에 여러 일시를 등록할 수 있습니다 (예: 6/5 07:00 + 6/5 08:00 두 개 등록).<br>
+                    스케줄러는 매 1분마다 확인하며, 실행 후 다시 실행되지 않습니다.
                 </div>
             </div>
             <div class="form-row" id="rowManualInfo" style="display:none;">
@@ -830,6 +854,24 @@ async function delMaster(id){
 // ============================================================
 // TAB 2: Schedule CRUD
 // ============================================================
+// 컬러 뱃지 헬퍼 (수행주기 타입)
+function schedTypeBadge(t){
+  switch(t){
+    case 'once':    return '<span style="background:#dbeafe;color:#1e40af;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">1회 예약</span>';
+    case 'monthly': return '<span style="background:#fce7f3;color:#9d174d;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">MONTHLY</span>';
+    case 'manual':  return '<span style="background:#cffafe;color:#0e7490;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">직접 실행</span>';
+    default:        return '<span style="background:#dcfce7;color:#166534;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">DAILY</span>';
+  }
+}
+// 수행주기 → 사람이 읽는 주기 텍스트
+function schedCycleText(s){
+  switch(s.schedule_type){
+    case 'once':    return s.exec_datetime ? fmt(s.exec_datetime) : '<span style="color:#dc2626;">일시 미설정</span>';
+    case 'monthly': return `매월 ${s.exec_day_of_month||1}일 ${(s.exec_time||'').slice(0,5)}`;
+    case 'manual':  return '<span style="color:#94a3b8;">—</span>';
+    default:        return `매일 ${(s.exec_time||'').slice(0,5)}`;
+  }
+}
 async function loadSchedule(){
   try{
     const j=await api('/api/interface/schedule');
@@ -838,23 +880,18 @@ async function loadSchedule(){
     document.getElementById('schedBody').innerHTML = scheduleList.length===0
       ? `<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:18px;">등록된 스케줄이 없습니다.</td></tr>`
       : scheduleList.map(s=>{
-        const isManual  = s.schedule_type==='manual';
-        const isMonthly = s.schedule_type==='monthly';
-        const cycle = isManual  ? '<span style="color:#94a3b8;">—</span>'
-                    : isMonthly ? `매월 ${s.exec_day_of_month||1}일`
-                    : '매일';
-        const timeStr = isManual ? '' : (s.exec_time||'').slice(0,5);
-        const typeBadge = isManual
-          ? '<span style="background:#cffafe;color:#0e7490;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">직접 실행</span>'
-          : isMonthly
-            ? '<span style="background:#fce7f3;color:#9d174d;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">MONTHLY</span>'
-            : '<span style="background:#dbeafe;color:#1d4ed8;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">DAILY</span>';
+        const isOnce   = s.schedule_type==='once';
+        const isManual = s.schedule_type==='manual';
+        // once 의 경우 대상년월/모드를 비고와 함께 표시
+        const onceMeta = isOnce
+          ? `<span style="color:#475569;font-size:11px;">대상 ${s.target_cmonth||'-'} / 모드 <b style="color:#1e40af;">${s.exec_mode||'-'}</b></span>`
+          : '';
         return `
         <tr>
           <td class="col-mono">${escapeHtml(s.interface_id)}</td>
           <td>${escapeHtml(s.interface_name||'-')}</td>
-          <td style="text-align:center;">${typeBadge}</td>
-          <td style="text-align:center;">${cycle} ${timeStr}</td>
+          <td style="text-align:center;">${schedTypeBadge(s.schedule_type)}</td>
+          <td style="text-align:center;">${schedCycleText(s)}${onceMeta?'<br>'+onceMeta:''}</td>
           <td style="text-align:center;"><span class="status-badge ${s.is_active?'badge-on':'badge-off'}">${s.is_active?'활성':'비활성'}</span></td>
           <td style="text-align:center;">${fmt(s.last_run_at)}</td>
           <td style="text-align:center;">${s.last_run_status?badge(s.last_run_status):'-'}</td>
@@ -862,7 +899,9 @@ async function loadSchedule(){
           <td>${escapeHtml(s.remark||'')}</td>
           <td style="text-align:center;">${escapeHtml(s.created_by||'-')}</td>
           <td style="text-align:center;white-space:nowrap;">
-            <button class="btn btn-success btn-sm" title="수동 실행" onclick="runSched(${s.id})" style="font-weight:600;padding:4px 10px;display:inline-flex;align-items:center;gap:4px;"><i class="fas fa-play" style="font-size:10px;"></i><span>수동실행</span></button>
+            ${isManual
+              ? `<button class="btn btn-success btn-sm" title="수동 실행" onclick="runSched(${s.id})" style="font-weight:600;padding:4px 10px;display:inline-flex;align-items:center;gap:4px;"><i class="fas fa-play" style="font-size:10px;"></i><span>수동실행</span></button>`
+              : ''}
             <button class="btn btn-outline btn-sm" title="수정" onclick="openSchedModal(${s.id})"><i class="fas fa-pen"></i></button>
             <button class="btn btn-warn btn-sm" title="활성/비활성" onclick="toggleSched(${s.id})"><i class="fas fa-toggle-on"></i></button>
             <button class="btn btn-danger btn-sm" title="삭제" onclick="delSched(${s.id})"><i class="fas fa-trash"></i></button>
@@ -877,14 +916,36 @@ let editingSchedId=null;
 let calView={ year:new Date().getFullYear(), month:new Date().getMonth() };
 function onSchedTypeChange(){
   const t=document.getElementById('sfType').value;
+  const isOnce    = t==='once';
   const isMonthly = t==='monthly';
   const isManual  = t==='manual';
-  // monthly만 캘린더 표시
-  document.getElementById('rowDayOfMonth').style.display = isMonthly ? 'flex' : 'none';
-  // manual은 시간 입력도 숨김 + 안내 박스 표시
-  document.getElementById('rowExecTime').style.display   = isManual ? 'none' : 'flex';
-  document.getElementById('rowManualInfo').style.display = isManual ? 'flex' : 'none';
+  const isDaily   = t==='daily';
+  // 표시/숨김 전환
+  document.getElementById('rowExecTime').style.display    = (isDaily || isMonthly) ? 'flex' : 'none';
+  document.getElementById('rowDayOfMonth').style.display  = isMonthly ? 'flex' : 'none';
+  document.getElementById('rowOnceFields').style.display  = isOnce ? 'grid' : 'none';
+  document.getElementById('rowOnceMode').style.display    = isOnce ? 'flex' : 'none';
+  document.getElementById('rowOnceInfo').style.display    = isOnce ? 'flex' : 'none';
+  document.getElementById('rowManualInfo').style.display  = isManual ? 'flex' : 'none';
   if(isMonthly) renderCalendar();
+  if(isOnce) populateOnceModeOptions();
+}
+
+// once 모드에서 마스터의 allowed_modes 기준으로 select 옵션 채움
+function populateOnceModeOptions(){
+  const sel = document.getElementById('sfMode');
+  if(!sel) return;
+  const interfaceId = document.getElementById('sfInterface').value;
+  const master = (typeof masterList!=='undefined') ? masterList.find(m=>m.interface_id===interfaceId) : null;
+  const allowed = ((master && master.allowed_modes) || 'replace,append,dry-run').split(',').map(s=>s.trim());
+  const labelMap = { 'replace':'REPLACE — 기존 데이터 삭제 후 적재',
+                     'append': 'APPEND — 기존 유지 + 추가 적재',
+                     'dry-run':'DRY-RUN — 시뮬레이션 (실제 적재 없음)' };
+  const cur = sel.value;
+  sel.innerHTML = allowed.map(m=>`<option value="${m}">${labelMap[m]||m}</option>`).join('');
+  // 기존 선택값 유지 시도
+  if(cur && allowed.includes(cur)) sel.value = cur;
+  else if(master && master.default_mode && allowed.includes(master.default_mode)) sel.value = master.default_mode;
 }
 function calPrev(){ if(--calView.month<0){calView.month=11;calView.year--;} renderCalendar(); }
 function calNext(){ if(++calView.month>11){calView.month=0;calView.year++;} renderCalendar(); }
@@ -937,24 +998,40 @@ function openSchedModal(id){
   // 인터페이스 옵션 동기화
   const ifSel=document.getElementById('sfInterface');
   ifSel.innerHTML=masterList.map(m=>`<option value="${escapeHtml(m.interface_id)}">${escapeHtml(m.interface_id)} - ${escapeHtml(m.interface_name)}</option>`).join('');
+  // 인터페이스 변경 시 once 모드 select 갱신
+  ifSel.onchange = () => { if(document.getElementById('sfType').value==='once') populateOnceModeOptions(); };
   document.getElementById('schedModalTitle').textContent = id ? '수행 스케줄 수정' : '수행 스케줄 등록';
   // 캘린더 view를 항상 현재 달로 초기화 (사용자가 ◀/▶로 자유 이동)
   const t=new Date(); calView={ year:t.getFullYear(), month:t.getMonth() };
   if(id){
     const s=scheduleList.find(x=>x.id===id);
     if(!s){toast('대상을 찾을 수 없습니다','error');return;}
-    ifSel.value=s.interface_id; ifSel.disabled=true;
+    // 수정 모드에서도 인터페이스 select 는 활성 유지 (다중예약 시 인터페이스 변경 가능)
+    ifSel.value=s.interface_id; ifSel.disabled=false;
     document.getElementById('sfType').value=s.schedule_type||'daily';
     document.getElementById('sfTime').value=(s.exec_time||'06:00:00').slice(0,5);
     document.getElementById('sfDay').value=s.exec_day_of_month||1;
+    // once 필드 채우기: exec_datetime → 'YYYY-MM-DDTHH:MM' 형식으로 변환
+    if(s.exec_datetime){
+      // s.exec_datetime: "2026-06-05T07:00:00.000Z" 또는 "2026-06-05 07:00:00"
+      const dt = String(s.exec_datetime).replace(' ', 'T').slice(0,16);
+      document.getElementById('sfExecDt').value = dt;
+    } else { document.getElementById('sfExecDt').value=''; }
+    document.getElementById('sfCmonth').value = s.target_cmonth || '';
+    populateOnceModeOptions();
+    if(s.exec_mode) document.getElementById('sfMode').value = s.exec_mode;
     document.getElementById('sfRemark').value=s.remark||'';
     document.getElementById('sfActive').checked=!!s.is_active;
   }else{
     ifSel.disabled=false;
-    document.getElementById('sfType').value='daily';
+    document.getElementById('sfType').value='once';   // 신규 등록 기본값을 '1회 예약'으로
     document.getElementById('sfTime').value='06:00';
     document.getElementById('sfDay').value=1;
-    document.getElementById('sfRemark').value='';  // 비고 빈칸 유지 (자동 텍스트 없음)
+    document.getElementById('sfExecDt').value='';
+    // 대상년월 기본값: 이번 달
+    const now=new Date();
+    document.getElementById('sfCmonth').value = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}`;
+    document.getElementById('sfRemark').value='';
     document.getElementById('sfActive').checked=true;
   }
   onSchedTypeChange();
@@ -964,13 +1041,25 @@ function closeSchedModal(){document.getElementById('schedModal').classList.remov
 
 async function saveSched(){
   const type=document.getElementById('sfType').value;
+  const isOnce   = type==='once';
   const isManual = type==='manual';
+  const isMonthly= type==='monthly';
+  // once 입력 검증 (브라우저 단)
+  if(isOnce){
+    const dt = document.getElementById('sfExecDt').value;
+    const cm = document.getElementById('sfCmonth').value.trim();
+    if(!dt){toast('실행 일시를 선택하세요','error');return;}
+    if(!/^\d{6}$/.test(cm)){toast('대상 년월은 YYYYMM 6자리로 입력하세요','error');return;}
+  }
   const body={
     interface_id: document.getElementById('sfInterface').value,
     schedule_type:type,
-    // manual은 시간/일자 모두 null (서버에서도 강제 null 처리)
-    exec_time:    isManual ? null : (document.getElementById('sfTime').value+':00'),
-    exec_day_of_month: type==='monthly' ? Number(document.getElementById('sfDay').value)||1 : null,
+    // 타입별로 필요한 필드만 채우고 나머지는 null
+    exec_time:    (isOnce || isManual) ? null : (document.getElementById('sfTime').value+':00'),
+    exec_day_of_month: isMonthly ? (Number(document.getElementById('sfDay').value)||1) : null,
+    exec_datetime: isOnce ? document.getElementById('sfExecDt').value : null,
+    target_cmonth: isOnce ? document.getElementById('sfCmonth').value.trim() : null,
+    exec_mode:     isOnce ? document.getElementById('sfMode').value : null,
     remark:       document.getElementById('sfRemark').value.trim()||null,
     is_active:    document.getElementById('sfActive').checked?1:0,
   };
