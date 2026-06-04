@@ -5860,7 +5860,16 @@ app.get('/api/interface/history', requireAdmin, async (req, res) => {
   const { interface_id, rfc_name, status, start, end } = req.query;
   const where = [];
   const params = [];
-  if (interface_id && interface_id !== 'ALL') { where.push('j.interface_id = ?'); params.push(interface_id); }
+  // 인터페이스 필터:
+  //   - 'ALL' 또는 미지정 → 전체 (NULL 포함)
+  //   - 특정 ID 지정      → 그 ID + interface_id 가 NULL 인 옛 데이터(매핑 안 된 행) 도 포함
+  //   ※ PR #69 (019_add_interface_management.sql) 이전에 만들어진 batch_jobs 행은
+  //     interface_id 컬럼이 NULL 이므로, 운영자가 화면에서 인터페이스를 선택했을 때
+  //     아무것도 안 보이는 문제를 방지하기 위해 NULL 행도 함께 표시.
+  if (interface_id && interface_id !== 'ALL') {
+    where.push('(j.interface_id = ? OR j.interface_id IS NULL)');
+    params.push(interface_id);
+  }
   if (rfc_name && rfc_name !== 'ALL') { where.push('m.rfc_name = ?'); params.push(rfc_name); }
   if (status && status !== 'ALL') { where.push('j.status = ?'); params.push(status); }
   if (start) { where.push('IFNULL(j.started_at, j.created_at) >= ?'); params.push(start + ' 00:00:00'); }

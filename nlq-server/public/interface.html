@@ -1244,7 +1244,9 @@ async function loadHistory(){
           <td style="text-align:center;">${h.id}</td>
           <td>
             ${h.rfc_name?`<span class="col-mono" style="color:#7c3aed;font-weight:600;">${escapeHtml(h.rfc_name)}</span><br>`:''}
-            <span style="font-size:11.5px;color:#475569;">${escapeHtml(h.interface_id||'-')}${h.interface_name?` <span style="color:#94a3b8;">(${escapeHtml(h.interface_name)})</span>`:''}</span>
+            ${h.interface_id
+              ? `<span style="font-size:11.5px;color:#475569;">${escapeHtml(h.interface_id)}${h.interface_name?` <span style="color:#94a3b8;">(${escapeHtml(h.interface_name)})</span>`:''}</span>`
+              : `<span style="font-size:11.5px;color:#94a3b8;font-style:italic;" title="인터페이스 관리 기능 추가 이전 데이터">(미연결)</span>`}
           </td>
           <td style="text-align:center;">${escapeHtml(h.job_type||'-')}</td>
           <td style="text-align:center;">${escapeHtml(h.mode||'-')}</td>
