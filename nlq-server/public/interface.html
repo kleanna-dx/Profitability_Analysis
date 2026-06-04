@@ -666,6 +666,8 @@ function toast(msg, type='info'){
 }
 function escapeHtml(s){if(s===null||s===undefined)return '';return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function fmt(d){if(!d)return '-';const x=new Date(d);if(isNaN(x))return '-';const p=n=>String(n).padStart(2,'0');return `${x.getFullYear()}-${p(x.getMonth()+1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}`;}
+// fmt 의 초 단위 버전 — 이력관리 탭의 시작/종료에서 사용 (실행 소요시간 가독성 ↑)
+function fmtSec(d){if(!d)return '-';const x=new Date(d);if(isNaN(x))return '-';const p=n=>String(n).padStart(2,'0');return `${x.getFullYear()}-${p(x.getMonth()+1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}:${p(x.getSeconds())}`;}
 function badge(s){const map={success:'성공',failed:'실패',running:'실행중',pending:'대기',cancelled:'취소'};const cls='status-'+(s||'pending');return `<span class="status-badge ${cls}">${map[s]||s||'-'}</span>`;}
 async function api(path, opts={}){
   const r=await fetch(path,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});
@@ -1349,8 +1351,8 @@ async function loadHistory(){
           <td style="text-align:center;">${escapeHtml(h.job_type||'-')}</td>
           <td style="text-align:center;">${escapeHtml(h.mode||'-')}</td>
           <td style="text-align:center;">${badge(h.status)}</td>
-          <td style="text-align:center;">${fmt(h.started_at)}</td>
-          <td style="text-align:center;">${fmt(h.finished_at)}</td>
+          <td style="text-align:center;">${fmtSec(h.started_at)}</td>
+          <td style="text-align:center;">${fmtSec(h.finished_at)}</td>
           <td style="text-align:right;">${Number(h.inserted_rows||0).toLocaleString()}</td>
           <td style="color:#dc2626;font-size:11px;">${escapeHtml((h.error_message||'').slice(0,80))}</td>
           <td style="text-align:center;">${escapeHtml(h.created_by||'-')}</td>
