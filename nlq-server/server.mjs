@@ -5147,6 +5147,462 @@ app.get('/api/batch/stats', requireAdmin, async (req, res) => {
 });
 
 // ============================================================
+// 인터페이스 관리 API (SAP ↔ S&OP)
+//   - batch_master      : 인터페이스 마스터 CRUD
+//   - batch_schedule    : 인터페이스 수행(스케줄) CRUD + 토글/수동실행
+//   - batch_jobs        : 인터페이스 이력 조회 (interface_id 필터)
+//   * 모든 엔드포인트는 admin 권한 필요
+// ============================================================
+
+// ---------- (A) 마스터 CRUD ----------
+
+// 마스터 목록
+app.get('/api/interface/master', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT interface_id, interface_name, sender, receiver,
+              rfc_func_or_url, rfc_param, exec_command, remark,
+              is_active, created_by, updated_by, created_at, updated_at
+         FROM batch_master
+         ORDER BY interface_id ASC`
+    );
+    res.json({ items: rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 마스터 단건
+app.get('/api/interface/master/:id', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM batch_master WHERE interface_id = ?',
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: '인터페이스를 찾을 수 없습니다.' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 마스터 생성
+app.post('/api/interface/master', requireAdmin, async (req, res) => {
+  const {
+    interface_id, interface_name,
+    sender = 'SAP', receiver = 'S&OP',
+    rfc_func_or_url = null, rfc_param = null,
+    exec_command = null, remark = null, is_active = 1,
+  } = req.body || {};
+  if (!interface_id || !interface_name) {
+    return res.status(400).json({ error: 'interface_id, interface_name 필수' });
+  }
+  try {
+    const userId = req.session?.user?.user_id || 'admin';
+    await pool.query(
+      `INSERT INTO batch_master
+         (interface_id, interface_name, sender, receiver,
+          rfc_func_or_url, rfc_param, exec_command, remark,
+          is_active, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [interface_id, interface_name, sender, receiver,
+       rfc_func_or_url, rfc_param, exec_command, remark,
+       is_active ? 1 : 0, userId, userId]
+    );
+    res.json({ ok: true, interface_id });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: '이미 존재하는 interface_id 입니다.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 마스터 수정
+app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
+  const {
+    interface_name, sender, receiver,
+    rfc_func_or_url, rfc_param, exec_command, remark, is_active,
+  } = req.body || {};
+  try {
+    const userId = req.session?.user?.user_id || 'admin';
+    const [r] = await pool.query(
+      `UPDATE batch_master
+          SET interface_name  = COALESCE(?, interface_name),
+              sender          = COALESCE(?, sender),
+              receiver        = COALESCE(?, receiver),
+              rfc_func_or_url = ?,
+              rfc_param       = ?,
+              exec_command    = ?,
+              remark          = ?,
+              is_active       = COALESCE(?, is_active),
+              updated_by      = ?
+        WHERE interface_id = ?`,
+      [interface_name ?? null, sender ?? null, receiver ?? null,
+       rfc_func_or_url ?? null, rfc_param ?? null, exec_command ?? null, remark ?? null,
+       (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
+       userId, req.params.id]
+    );
+    if (!r.affectedRows) return res.status(404).json({ error: '인터페이스를 찾을 수 없습니다.' });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 마스터 삭제 (스케줄/이력은 FK CASCADE 또는 interface_id NULL 유지)
+app.delete('/api/interface/master/:id', requireAdmin, async (req, res) => {
+  try {
+    const [r] = await pool.query('DELETE FROM batch_master WHERE interface_id = ?', [req.params.id]);
+    if (!r.affectedRows) return res.status(404).json({ error: '인터페이스를 찾을 수 없습니다.' });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---------- (B) 스케줄 CRUD ----------
+
+// 스케줄 목록 (마스터 JOIN)
+app.get('/api/interface/schedule', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT s.id, s.interface_id, m.interface_name,
+              s.schedule_type, s.exec_time, s.exec_day_of_month,
+              s.is_active, s.last_run_at, s.last_run_status, s.next_run_at,
+              s.remark, s.created_by, s.created_at, s.updated_at
+         FROM batch_schedule s
+         LEFT JOIN batch_master m ON m.interface_id = s.interface_id
+        ORDER BY s.interface_id ASC`
+    );
+    res.json({ items: rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 스케줄 단건
+app.get('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT s.*, m.interface_name
+         FROM batch_schedule s
+         LEFT JOIN batch_master m ON m.interface_id = s.interface_id
+        WHERE s.id = ?`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: '스케줄을 찾을 수 없습니다.' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 스케줄 생성
+app.post('/api/interface/schedule', requireAdmin, async (req, res) => {
+  const {
+    interface_id,
+    schedule_type = 'daily',
+    exec_time = '06:00:00',
+    exec_day_of_month = null,
+    is_active = 1,
+    remark = null,
+  } = req.body || {};
+  if (!interface_id) return res.status(400).json({ error: 'interface_id 필수' });
+  if (!['daily', 'monthly'].includes(schedule_type)) {
+    return res.status(400).json({ error: "schedule_type 은 'daily' 또는 'monthly' 이어야 합니다." });
+  }
+  try {
+    const userId = req.session?.user?.user_id || 'admin';
+    const [r] = await pool.query(
+      `INSERT INTO batch_schedule
+         (interface_id, schedule_type, exec_time, exec_day_of_month,
+          is_active, remark, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [interface_id, schedule_type, exec_time,
+       schedule_type === 'monthly' ? (exec_day_of_month ?? 1) : null,
+       is_active ? 1 : 0, remark, userId, userId]
+    );
+    res.json({ ok: true, id: r.insertId });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: '해당 interface_id 의 스케줄이 이미 존재합니다.' });
+    }
+    if (err.code === 'ER_NO_REFERENCED_ROW_2') {
+      return res.status(400).json({ error: '존재하지 않는 interface_id 입니다.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 스케줄 수정
+app.put('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
+  const {
+    schedule_type, exec_time, exec_day_of_month,
+    is_active, remark,
+  } = req.body || {};
+  if (schedule_type && !['daily', 'monthly'].includes(schedule_type)) {
+    return res.status(400).json({ error: "schedule_type 은 'daily' 또는 'monthly' 이어야 합니다." });
+  }
+  try {
+    const userId = req.session?.user?.user_id || 'admin';
+    const [r] = await pool.query(
+      `UPDATE batch_schedule
+          SET schedule_type     = COALESCE(?, schedule_type),
+              exec_time         = COALESCE(?, exec_time),
+              exec_day_of_month = ?,
+              is_active         = COALESCE(?, is_active),
+              remark            = ?,
+              updated_by        = ?
+        WHERE id = ?`,
+      [schedule_type ?? null, exec_time ?? null,
+       exec_day_of_month ?? null,
+       (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
+       remark ?? null, userId, req.params.id]
+    );
+    if (!r.affectedRows) return res.status(404).json({ error: '스케줄을 찾을 수 없습니다.' });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 스케줄 삭제
+app.delete('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
+  try {
+    const [r] = await pool.query('DELETE FROM batch_schedule WHERE id = ?', [req.params.id]);
+    if (!r.affectedRows) return res.status(404).json({ error: '스케줄을 찾을 수 없습니다.' });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 스케줄 활성/비활성 토글
+app.post('/api/interface/schedule/:id/toggle', requireAdmin, async (req, res) => {
+  try {
+    const userId = req.session?.user?.user_id || 'admin';
+    const [r] = await pool.query(
+      `UPDATE batch_schedule
+          SET is_active = IF(is_active = 1, 0, 1),
+              updated_by = ?
+        WHERE id = ?`,
+      [userId, req.params.id]
+    );
+    if (!r.affectedRows) return res.status(404).json({ error: '스케줄을 찾을 수 없습니다.' });
+    const [rows] = await pool.query('SELECT is_active FROM batch_schedule WHERE id = ?', [req.params.id]);
+    res.json({ ok: true, is_active: rows[0]?.is_active });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 스케줄 수동 실행 (interface_id 만 batch_jobs 에 기록 — 실제 RFC 호출은 추후 연결)
+app.post('/api/interface/schedule/:id/run', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT s.interface_id, m.interface_name, m.is_active
+         FROM batch_schedule s
+         LEFT JOIN batch_master m ON m.interface_id = s.interface_id
+        WHERE s.id = ?`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: '스케줄을 찾을 수 없습니다.' });
+    const sch = rows[0];
+
+    const userId = req.session?.user?.user_id || 'admin';
+    const now = new Date();
+    const cmonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    // batch_jobs 에 수동실행 이력 INSERT (job_type = 'INTERFACE_MANUAL')
+    const [ins] = await pool.query(
+      `INSERT INTO batch_jobs
+         (job_type, interface_id, cmonth, mode, status, started_at, created_by)
+       VALUES ('INTERFACE_MANUAL', ?, ?, 'manual', 'running', NOW(), ?)`,
+      [sch.interface_id, cmonth, userId]
+    );
+    const jobId = ins.insertId;
+
+    // 스케줄에도 last_run_at/status = running 표시
+    await pool.query(
+      `UPDATE batch_schedule
+          SET last_run_at = NOW(), last_run_status = 'running', updated_by = ?
+        WHERE id = ?`,
+      [userId, req.params.id]
+    );
+
+    // 비동기 실행 시뮬레이션: 실제 RFC 연동 전, 더미 성공 처리
+    setImmediate(async () => {
+      try {
+        await pool.query(
+          `UPDATE batch_jobs
+              SET status = 'success', finished_at = NOW(),
+                  log_text = CONCAT(IFNULL(log_text, ''),
+                                    '[수동실행] interface=', ?, ' user=', ?, ' time=', NOW(), '\n')
+            WHERE id = ?`,
+          [sch.interface_id, userId, jobId]
+        );
+        await pool.query(
+          `UPDATE batch_schedule SET last_run_status = 'success' WHERE id = ?`,
+          [req.params.id]
+        );
+      } catch (e) {
+        await pool.query(
+          `UPDATE batch_jobs
+              SET status = 'failed', finished_at = NOW(), error_message = ?
+            WHERE id = ?`,
+          [String(e.message || e), jobId]
+        ).catch(() => {});
+        await pool.query(
+          `UPDATE batch_schedule SET last_run_status = 'failed' WHERE id = ?`,
+          [req.params.id]
+        ).catch(() => {});
+      }
+    });
+
+    res.json({ ok: true, job_id: jobId, interface_id: sch.interface_id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---------- (C) 상단 상태(통계) + 월별 ----------
+
+// 인터페이스별 통계 (interface_id 없으면 전체)
+app.get('/api/interface/stats', requireAdmin, async (req, res) => {
+  const interfaceId = (req.query.interface_id || '').trim();
+  const useFilter = interfaceId && interfaceId !== 'ALL';
+  try {
+    const baseWhere = useFilter ? 'WHERE interface_id = ?' : '';
+    const params = useFilter ? [interfaceId] : [];
+
+    const [total]   = await pool.query(`SELECT COUNT(*) AS cnt FROM batch_jobs ${baseWhere}`, params);
+    const [success] = await pool.query(`SELECT COUNT(*) AS cnt FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='success'`, params);
+    const [failed]  = await pool.query(`SELECT COUNT(*) AS cnt FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='failed'`, params);
+    const [running] = await pool.query(`SELECT COUNT(*) AS cnt FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='running'`, params);
+    const [rowsSum] = await pool.query(
+      `SELECT IFNULL(SUM(inserted_rows), 0) AS total_rows FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='success'`,
+      params
+    );
+
+    let interfaceName = '전체';
+    if (useFilter) {
+      const [m] = await pool.query('SELECT interface_name FROM batch_master WHERE interface_id = ?', [interfaceId]);
+      interfaceName = m[0]?.interface_name || interfaceId;
+    }
+
+    res.json({
+      interface_id: useFilter ? interfaceId : 'ALL',
+      interface_name: interfaceName,
+      total_rows: Number(rowsSum[0].total_rows) || 0,
+      total_jobs: total[0].cnt,
+      success_jobs: success[0].cnt,
+      failed_jobs: failed[0].cnt,
+      running_jobs: running[0].cnt,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 월별 데이터 (최근 12개월, started_at 기준)
+app.get('/api/interface/monthly', requireAdmin, async (req, res) => {
+  const interfaceId = (req.query.interface_id || '').trim();
+  const useFilter = interfaceId && interfaceId !== 'ALL';
+  try {
+    const where = useFilter ? 'WHERE interface_id = ?' : '';
+    const params = useFilter ? [interfaceId] : [];
+    const [rows] = await pool.query(
+      `SELECT DATE_FORMAT(IFNULL(started_at, created_at), '%Y-%m') AS ym,
+              COUNT(*) AS total,
+              SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
+              SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END) AS failed,
+              IFNULL(SUM(inserted_rows), 0) AS rows_sum
+         FROM batch_jobs
+         ${where}
+        GROUP BY ym
+        ORDER BY ym DESC
+        LIMIT 12`,
+      params
+    );
+    // 오래된 → 최신 순으로 정렬해서 반환
+    res.json({ items: rows.reverse() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---------- (D) 이력 조회 + 재수행 ----------
+
+// 이력 목록 (filter: interface_id / status / start / end)
+app.get('/api/interface/history', requireAdmin, async (req, res) => {
+  const { interface_id, status, start, end } = req.query;
+  const where = [];
+  const params = [];
+  if (interface_id && interface_id !== 'ALL') { where.push('j.interface_id = ?'); params.push(interface_id); }
+  if (status && status !== 'ALL') { where.push('j.status = ?'); params.push(status); }
+  if (start) { where.push('IFNULL(j.started_at, j.created_at) >= ?'); params.push(start + ' 00:00:00'); }
+  if (end)   { where.push('IFNULL(j.started_at, j.created_at) <= ?'); params.push(end + ' 23:59:59'); }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+  try {
+    const [rows] = await pool.query(
+      `SELECT j.id, j.job_type, j.interface_id, m.interface_name,
+              j.cmonth, j.mode, j.status,
+              j.started_at, j.finished_at,
+              j.total_rows, j.inserted_rows, j.deleted_rows,
+              j.error_message, j.created_by, j.created_at
+         FROM batch_jobs j
+         LEFT JOIN batch_master m ON m.interface_id = j.interface_id
+         ${whereSql}
+        ORDER BY j.id DESC
+        LIMIT ?`,
+      [...params, limit]
+    );
+    res.json({ items: rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 이력 단건 (로그 포함)
+app.get('/api/interface/history/:jobId', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT j.*, m.interface_name
+         FROM batch_jobs j
+         LEFT JOIN batch_master m ON m.interface_id = j.interface_id
+        WHERE j.id = ?`,
+      [req.params.jobId]
+    );
+    if (!rows.length) return res.status(404).json({ error: '이력을 찾을 수 없습니다.' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 이력 재수행 (failed 만 허용)
+app.post('/api/interface/history/:jobId/rerun', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, interface_id, cmonth, status FROM batch_jobs WHERE id = ?`,
+      [req.params.jobId]
+    );
+    if (!rows.length) return res.status(404).json({ error: '이력을 찾을 수 없습니다.' });
+    const src = rows[0];
+    if (src.status !== 'failed') {
+      return res.status(400).json({ error: '실패 상태의 작업만 재수행할 수 있습니다.' });
+    }
+    if (!src.interface_id) {
+      return res.status(400).json({ error: '인터페이스 ID 가 없는 이력입니다.' });
+    }
+
+    const userId = req.session?.user?.user_id || 'admin';
+    const [ins] = await pool.query(
+      `INSERT INTO batch_jobs
+         (job_type, interface_id, cmonth, mode, status, started_at, created_by)
+       VALUES ('INTERFACE_RERUN', ?, ?, 'rerun', 'running', NOW(), ?)`,
+      [src.interface_id, src.cmonth, userId]
+    );
+    const newJobId = ins.insertId;
+
+    // 비동기: 더미 성공 처리 (실제 RFC 호출은 추후 연결)
+    setImmediate(async () => {
+      try {
+        await pool.query(
+          `UPDATE batch_jobs
+              SET status='success', finished_at=NOW(),
+                  log_text = CONCAT(IFNULL(log_text, ''),
+                                    '[재수행] src_job=', ?, ' interface=', ?, ' user=', ?, ' time=', NOW(), '\n')
+            WHERE id = ?`,
+          [src.id, src.interface_id, userId, newJobId]
+        );
+      } catch (e) {
+        await pool.query(
+          `UPDATE batch_jobs SET status='failed', finished_at=NOW(), error_message=? WHERE id=?`,
+          [String(e.message || e), newJobId]
+        ).catch(() => {});
+      }
+    });
+
+    res.json({ ok: true, new_job_id: newJobId });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
 app.get('/{*splat}', (req, res) => {
   // API 경로는 SPA fallback에서 제외 (404 반환)
   if (req.path.startsWith('/api/')) {

@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>인터페이스 관리 - 수익성분석 AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
+        *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
+        body{margin:0;background:#f1f5f9;display:flex;height:100vh;overflow:hidden;}
+
+        /* Sidebar */
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;}
+        .sidebar-overlay.active{display:block;}
+        .sidebar{position:fixed;top:0;left:-300px;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
+        .sidebar.open{left:0;}
+        .sidebar-divider{height:1px;background:rgba(255,255,255,.1);margin:0 16px;}
+        .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:10px 24px;color:#c7d2fe;cursor:pointer;transition:all .15s;text-decoration:none;}
+        .sidebar-menu-item:hover,.sidebar-menu-item.active{background:rgba(255,255,255,.1);color:#fff;}
+
+        /* Main */
+        .main-wrapper{display:flex;flex-direction:column;flex:1;overflow:hidden;}
+        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+        .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;color:#475569;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        .content-area{flex:1;overflow-y:auto;padding:20px 24px 32px;}
+
+        /* Top status */
+        .status-panel{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 100%);border-radius:16px;padding:22px 26px;color:#fff;margin-bottom:18px;position:relative;overflow:hidden;}
+        .status-panel::before{content:'';position:absolute;top:-60px;right:-60px;width:200px;height:200px;background:rgba(99,102,241,.15);border-radius:50%;}
+        .status-panel::after{content:'';position:absolute;bottom:-40px;left:-40px;width:150px;height:150px;background:rgba(129,140,248,.1);border-radius:50%;}
+        .status-panel > *{position:relative;z-index:1;}
+        .status-title{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;margin-bottom:6px;}
+        .status-desc{font-size:12px;color:#c7d2fe;margin-bottom:16px;}
+        .status-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+        .status-row label{font-size:12px;color:#a5b4fc;font-weight:600;letter-spacing:.3px;}
+        .status-select{padding:8px 14px;border:2px solid rgba(255,255,255,.2);border-radius:10px;background:rgba(255,255,255,.1);color:#fff;font-size:13px;font-family:inherit;cursor:pointer;min-width:280px;}
+        .status-select option{background:#1e1b4b;color:#fff;}
+        .status-select:focus{outline:none;border-color:#818cf8;}
+
+        /* Stat cards */
+        .stat-card{background:#fff;border-radius:12px;padding:16px 18px;border:1px solid #e5e7eb;display:flex;align-items:center;gap:12px;transition:all .2s;}
+        .stat-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.06);transform:translateY(-1px);}
+        .stat-icon{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0;}
+        .stat-info{flex:1;min-width:0;}
+        .stat-num{font-size:22px;font-weight:800;color:#1e293b;line-height:1;word-break:break-all;}
+        .stat-label{font-size:11px;color:#94a3b8;margin-top:3px;font-weight:500;}
+        .stat-sub{font-size:13px;font-weight:700;color:#1e293b;line-height:1.3;word-break:break-all;}
+
+        /* Card */
+        .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);border:1px solid #e5e7eb;overflow:hidden;}
+        .card-header{padding:14px 18px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:10px;font-weight:600;font-size:14px;color:#1e293b;}
+        .card-body{padding:16px 18px;}
+
+        /* Tabs */
+        .tab-bar{display:flex;gap:2px;background:#fff;border:1px solid #e5e7eb;border-radius:12px 12px 0 0;border-bottom:none;padding:6px 6px 0 6px;}
+        .tab-btn{flex:0 0 auto;padding:10px 20px;border:none;background:transparent;color:#64748b;font-size:13px;font-weight:600;cursor:pointer;border-radius:8px 8px 0 0;font-family:inherit;display:flex;align-items:center;gap:7px;border-bottom:3px solid transparent;}
+        .tab-btn:hover{color:#4f46e5;background:#f8fafc;}
+        .tab-btn.active{color:#4f46e5;background:#eef2ff;border-bottom-color:#4f46e5;}
+        .tab-panel{background:#fff;border:1px solid #e5e7eb;border-radius:0 12px 12px 12px;padding:16px 18px;}
+
+        /* Table */
+        table.it-table{width:100%;border-collapse:collapse;font-size:12.5px;border:1px solid #d1d5db;}
+        table.it-table thead th{background:#f0f3f8;padding:9px 10px;text-align:center;font-weight:600;color:#374151;border:1px solid #d1d5db;white-space:nowrap;font-size:12px;}
+        table.it-table tbody td{padding:8px 10px;border:1px solid #e5e7eb;color:#334155;vertical-align:middle;}
+        table.it-table tbody tr{transition:background .1s;}
+        table.it-table tbody tr:hover{background:#f5f7ff;}
+        table.it-table tbody tr:nth-child(even){background:#fafbfc;}
+        table.it-table tbody tr:nth-child(even):hover{background:#f5f7ff;}
+        .col-mono{font-family:'Fira Code','Consolas',monospace;font-size:11.5px;color:#4338ca;}
+
+        /* Status badges */
+        .status-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;}
+        .status-success{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;}
+        .status-failed{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}
+        .status-running{background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;}
+        .status-pending{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;}
+        .badge-on{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;}
+        .badge-off{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;}
+
+        /* Buttons */
+        .btn{padding:6px 12px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:inherit;display:inline-flex;align-items:center;gap:5px;transition:all .15s;}
+        .btn-primary{background:#4f46e5;color:#fff;}
+        .btn-primary:hover{background:#4338ca;}
+        .btn-success{background:#16a34a;color:#fff;}
+        .btn-success:hover{background:#15803d;}
+        .btn-warn{background:#f59e0b;color:#fff;}
+        .btn-warn:hover{background:#d97706;}
+        .btn-danger{background:#dc2626;color:#fff;}
+        .btn-danger:hover{background:#b91c1c;}
+        .btn-outline{background:#fff;color:#475569;border:1px solid #cbd5e1;}
+        .btn-outline:hover{background:#f8fafc;color:#4f46e5;border-color:#a5b4fc;}
+        .btn-sm{padding:4px 9px;font-size:11px;}
+
+        /* Filter row */
+        .filter-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;}
+        .filter-row label{font-size:12px;color:#64748b;font-weight:600;}
+        .filter-row select,.filter-row input{padding:6px 10px;border:1px solid #cbd5e1;border-radius:7px;font-size:12px;font-family:inherit;background:#fff;color:#1e293b;}
+        .filter-row select:focus,.filter-row input:focus{outline:none;border-color:#818cf8;}
+
+        /* Modal */
+        .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s;}
+        .modal-overlay.active{opacity:1;pointer-events:auto;}
+        .modal{background:#fff;border-radius:14px;width:92%;max-width:640px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.2);transform:translateY(20px);transition:transform .2s;}
+        .modal-overlay.active .modal{transform:translateY(0);}
+        .modal-header{padding:16px 22px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;color:#1e293b;}
+        .modal-body{flex:1;overflow-y:auto;padding:18px 22px;}
+        .modal-footer{padding:14px 22px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;}
+        .form-row{display:flex;flex-direction:column;gap:5px;margin-bottom:14px;}
+        .form-row label{font-size:12px;color:#475569;font-weight:600;}
+        .form-row input,.form-row select,.form-row textarea{padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;font-family:inherit;color:#1e293b;background:#fff;}
+        .form-row input:focus,.form-row select:focus,.form-row textarea:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(129,140,248,.18);}
+        .form-row.readonly input{background:#f1f5f9;color:#64748b;}
+        .form-row textarea{resize:vertical;min-height:60px;}
+        .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+
+        /* Toast */
+        .toast{position:fixed;top:18px;right:18px;background:#1e293b;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:300;opacity:0;transform:translateY(-10px);transition:all .2s;box-shadow:0 6px 18px rgba(0,0,0,.2);}
+        .toast.show{opacity:1;transform:translateY(0);}
+        .toast.success{background:#16a34a;}
+        .toast.error{background:#dc2626;}
+
+        .content-area::-webkit-scrollbar{width:6px;}
+        .content-area::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .fade-in{animation:fadeIn .25s ease-out;}
+    </style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav id="sidebarMenu" class="py-2"><!-- RBAC dynamic --></nav>
+    <div class="sidebar-divider"></div>
+</aside>
+
+<!-- MAIN -->
+<div class="main-wrapper">
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
+        <h1 class="text-sm font-bold text-gray-800">
+            <i class="fas fa-exchange-alt text-indigo-500 mr-1"></i>인터페이스 관리
+        </h1>
+        <span class="text-xs text-gray-400 ml-2">SAP ↔ S&amp;OP 인터페이스</span>
+        <div class="ml-auto flex items-center gap-2">
+            <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
+            <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
+        </div>
+    </div>
+
+    <div class="content-area">
+
+        <!-- 상단 상태 영역 (항상 표시) -->
+        <div class="status-panel">
+            <div class="status-title"><i class="fas fa-satellite-dish"></i> 인터페이스 상태</div>
+            <div class="status-desc">선택한 인터페이스의 운영 현황을 실시간으로 확인합니다.</div>
+            <div class="status-row">
+                <label for="interfaceSelect">인터페이스 선택</label>
+                <select id="interfaceSelect" class="status-select" onchange="onInterfaceChange()">
+                    <option value="ALL">전체</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#eef2ff;color:#4f46e5;"><i class="fas fa-tag"></i></div>
+                <div class="stat-info">
+                    <div class="stat-sub" id="stName">전체</div>
+                    <div class="stat-label">선택된 인터페이스</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#f5f3ff;color:#7c3aed;"><i class="fas fa-database"></i></div>
+                <div class="stat-info">
+                    <div class="stat-num" id="stTotalRows">0</div>
+                    <div class="stat-label">전체 데이터 수</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#dcfce7;color:#16a34a;"><i class="fas fa-circle-check"></i></div>
+                <div class="stat-info">
+                    <div class="stat-num" id="stSuccess">0</div>
+                    <div class="stat-label">성공 건수</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef2f2;color:#dc2626;"><i class="fas fa-circle-xmark"></i></div>
+                <div class="stat-info">
+                    <div class="stat-num" id="stFailed">0</div>
+                    <div class="stat-label">실패 건수</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef3c7;color:#d97706;"><i class="fas fa-list-check"></i></div>
+                <div class="stat-info">
+                    <div class="stat-num" id="stTotalJobs">0</div>
+                    <div class="stat-label">전체 작업 수</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Monthly chart -->
+        <div class="card mb-5">
+            <div class="card-header"><i class="fas fa-chart-line text-indigo-500"></i> 월별 작업 추이 (최근 12개월)</div>
+            <div class="card-body" style="height:220px;">
+                <canvas id="monthlyChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tab-bar">
+            <button class="tab-btn active" data-tab="master" onclick="switchTab('master')"><i class="fas fa-list"></i> 인터페이스 마스터 관리</button>
+            <button class="tab-btn" data-tab="schedule" onclick="switchTab('schedule')"><i class="fas fa-clock"></i> 인터페이스 수행관리</button>
+            <button class="tab-btn" data-tab="history" onclick="switchTab('history')"><i class="fas fa-history"></i> 인터페이스 이력관리</button>
+        </div>
+
+        <!-- TAB: master -->
+        <div class="tab-panel fade-in" id="tab-master">
+            <div class="flex items-center justify-between mb-3">
+                <div class="text-sm text-gray-600">총 <strong id="masterCount">0</strong> 건</div>
+                <button class="btn btn-primary btn-sm" onclick="openMasterModal()"><i class="fas fa-plus"></i> 신규 등록</button>
+            </div>
+            <div style="overflow-x:auto;">
+            <table class="it-table">
+                <thead>
+                    <tr>
+                        <th>인터페이스 ID</th>
+                        <th>인터페이스 명</th>
+                        <th>송신</th>
+                        <th>수신</th>
+                        <th>RFC Func. / REST URL</th>
+                        <th>RFC Param</th>
+                        <th>실행명령어</th>
+                        <th>활성</th>
+                        <th>등록자</th>
+                        <th>수정자</th>
+                        <th style="width:110px;">관리</th>
+                    </tr>
+                </thead>
+                <tbody id="masterBody"><tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
+            </table>
+            </div>
+        </div>
+
+        <!-- TAB: schedule -->
+        <div class="tab-panel fade-in" id="tab-schedule" style="display:none;">
+            <div class="flex items-center justify-between mb-3">
+                <div class="text-sm text-gray-600">총 <strong id="schedCount">0</strong> 건</div>
+                <button class="btn btn-primary btn-sm" onclick="openSchedModal()"><i class="fas fa-plus"></i> 신규 등록</button>
+            </div>
+            <div style="overflow-x:auto;">
+            <table class="it-table">
+                <thead>
+                    <tr>
+                        <th>인터페이스 ID</th>
+                        <th>인터페이스 명</th>
+                        <th>수행 주기</th>
+                        <th>수행 시간/간격</th>
+                        <th>활성</th>
+                        <th>마지막 수행</th>
+                        <th>마지막 상태</th>
+                        <th>다음 수행 예정</th>
+                        <th>비고</th>
+                        <th>등록자</th>
+                        <th style="width:200px;">관리</th>
+                    </tr>
+                </thead>
+                <tbody id="schedBody"><tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
+            </table>
+            </div>
+        </div>
+
+        <!-- TAB: history -->
+        <div class="tab-panel fade-in" id="tab-history" style="display:none;">
+            <div class="filter-row">
+                <label>상태</label>
+                <select id="histStatus" onchange="loadHistory()">
+                    <option value="ALL">전체</option>
+                    <option value="success">성공</option>
+                    <option value="failed">실패</option>
+                    <option value="running">실행중</option>
+                    <option value="pending">대기</option>
+                </select>
+                <label>시작일</label>
+                <input type="date" id="histStart">
+                <label>종료일</label>
+                <input type="date" id="histEnd">
+                <button class="btn btn-outline btn-sm" onclick="loadHistory()"><i class="fas fa-search"></i> 조회</button>
+                <button class="btn btn-outline btn-sm" onclick="resetHistFilter()"><i class="fas fa-rotate-left"></i> 초기화</button>
+                <div class="ml-auto text-sm text-gray-600">총 <strong id="histCount">0</strong> 건</div>
+            </div>
+            <div style="overflow-x:auto;">
+            <table class="it-table">
+                <thead>
+                    <tr>
+                        <th style="width:60px;">ID</th>
+                        <th>인터페이스</th>
+                        <th>구분</th>
+                        <th>모드</th>
+                        <th>상태</th>
+                        <th>시작</th>
+                        <th>종료</th>
+                        <th>처리행수</th>
+                        <th>오류 메시지</th>
+                        <th>실행자</th>
+                        <th style="width:100px;">관리</th>
+                    </tr>
+                </thead>
+                <tbody id="histBody"><tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
+            </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Master Modal -->
+<div class="modal-overlay" id="masterModal">
+    <div class="modal">
+        <div class="modal-header"><i class="fas fa-pen text-indigo-500"></i> <span id="masterModalTitle">인터페이스 등록</span></div>
+        <div class="modal-body">
+            <div class="form-grid">
+                <div class="form-row" id="rowMasterId">
+                    <label>인터페이스 ID *</label>
+                    <input id="mfId" placeholder="예: SNOP_RFC_007" maxlength="50">
+                </div>
+                <div class="form-row">
+                    <label>인터페이스 명 *</label>
+                    <input id="mfName" placeholder="예: 자재마스터" maxlength="200">
+                </div>
+                <div class="form-row">
+                    <label>송신</label>
+                    <input id="mfSender" value="SAP" maxlength="50">
+                </div>
+                <div class="form-row">
+                    <label>수신</label>
+                    <input id="mfReceiver" value="S&OP" maxlength="50">
+                </div>
+            </div>
+            <div class="form-row">
+                <label>RFC Func. / REST URL</label>
+                <input id="mfUrl" placeholder="예: /sales-api/sap/rfc/007" maxlength="500">
+            </div>
+            <div class="form-row">
+                <label>RFC Param</label>
+                <input id="mfParam" placeholder="(선택)">
+            </div>
+            <div class="form-row">
+                <label>실행명령어</label>
+                <input id="mfCommand" placeholder="(선택)">
+            </div>
+            <div class="form-row">
+                <label>비고</label>
+                <textarea id="mfRemark"></textarea>
+            </div>
+            <div class="form-row">
+                <label><input type="checkbox" id="mfActive" checked> 활성화</label>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeMasterModal()">취소</button>
+            <button class="btn btn-primary" onclick="saveMaster()"><i class="fas fa-save"></i> 저장</button>
+        </div>
+    </div>
+</div>
+
+<!-- Schedule Modal -->
+<div class="modal-overlay" id="schedModal">
+    <div class="modal">
+        <div class="modal-header"><i class="fas fa-clock text-indigo-500"></i> <span id="schedModalTitle">수행 스케줄 등록</span></div>
+        <div class="modal-body">
+            <div class="form-row">
+                <label>인터페이스 *</label>
+                <select id="sfInterface"></select>
+            </div>
+            <div class="form-grid">
+                <div class="form-row">
+                    <label>수행 주기 *</label>
+                    <select id="sfType" onchange="onSchedTypeChange()">
+                        <option value="daily">매일 (DAILY)</option>
+                        <option value="monthly">매월 (MONTHLY)</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>수행 시간 (HH:MM)</label>
+                    <input id="sfTime" type="time" value="06:00">
+                </div>
+            </div>
+            <div class="form-row" id="rowDayOfMonth" style="display:none;">
+                <label>실행일 (1~31)</label>
+                <input id="sfDay" type="number" min="1" max="31" value="1">
+            </div>
+            <div class="form-row">
+                <label>비고</label>
+                <input id="sfRemark" placeholder="예: 매일 06:00">
+            </div>
+            <div class="form-row">
+                <label><input type="checkbox" id="sfActive" checked> 활성화</label>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeSchedModal()">취소</button>
+            <button class="btn btn-primary" onclick="saveSched()"><i class="fas fa-save"></i> 저장</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ============================================================
+// Common
+// ============================================================
+function openSidebar(){document.getElementById('sidebar').classList.add('open');document.getElementById('sidebarOverlay').classList.add('active');}
+function closeSidebar(){document.getElementById('sidebar').classList.remove('open');document.getElementById('sidebarOverlay').classList.remove('active');}
+function toast(msg, type='info'){
+  const t=document.getElementById('toast'); t.textContent=msg; t.className='toast '+type+' show';
+  clearTimeout(window._tt); window._tt=setTimeout(()=>t.classList.remove('show'),2200);
+}
+function escapeHtml(s){if(s===null||s===undefined)return '';return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fmt(d){if(!d)return '-';const x=new Date(d);if(isNaN(x))return '-';const p=n=>String(n).padStart(2,'0');return `${x.getFullYear()}-${p(x.getMonth()+1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}`;}
+function badge(s){const map={success:'성공',failed:'실패',running:'실행중',pending:'대기',cancelled:'취소'};const cls='status-'+(s||'pending');return `<span class="status-badge ${cls}">${map[s]||s||'-'}</span>`;}
+async function api(path, opts={}){
+  const r=await fetch(path,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});
+  if(r.status===401){window.location.href='/login';return;}
+  const j=await r.json().catch(()=>({error:'invalid json'}));
+  if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+  return j;
+}
+async function doLogout(){try{await fetch('/api/logout',{method:'POST',credentials:'include'});}catch(e){}window.location.href='/login';}
+
+// ============================================================
+// State
+// ============================================================
+let masterList=[];
+let scheduleList=[];
+let monthlyChart=null;
+let currentInterface='ALL';
+
+// ============================================================
+// Init
+// ============================================================
+async function init(){
+  try{
+    const me=await (await fetch('/api/me')).json();
+    if(!me.loggedIn){window.location.href='/login';return;}
+    const uid=document.getElementById('userInfoDisplay');
+    if(uid && me.name){uid.innerHTML=`<strong style="font-size:13px;color:#1e293b;">${me.name}님</strong><br><span style="font-size:11px;color:#6b7280;font-weight:700;">(${me.user})</span>`;uid.style.display='';}
+    const hasInterface=me.menus && me.menus.some(m=>m.menu_url==='/interface.html');
+    if(!hasInterface && me.role!=='admin'){window.location.href='/?denied=1';return;}
+    // 사이드바
+    const nav=document.getElementById('sidebarMenu');
+    if(nav && me.menus){
+      nav.innerHTML=me.menus.map(m=>{
+        const active=m.menu_url==='/interface.html';
+        return `<a href="${m.menu_url}" class="sidebar-menu-item${active?' active':''}"><i class="${m.icon_class||'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
+      }).join('');
+    }
+  }catch(e){window.location.href='/login';return;}
+
+  await loadMaster();        // 인터페이스 옵션 채우기 위해 먼저
+  populateDropdown();
+  // 기본 선택: 첫 활성 인터페이스
+  const firstActive=masterList.find(m=>m.is_active===1);
+  currentInterface=firstActive ? firstActive.interface_id : 'ALL';
+  document.getElementById('interfaceSelect').value=currentInterface;
+
+  await refreshTopArea();
+  await loadSchedule();
+  // 마스터 탭이 기본 활성
+}
+
+// ============================================================
+// Top area refresh (stats + chart)
+// ============================================================
+async function refreshTopArea(){
+  const ifId=currentInterface;
+  try{
+    const [stats, monthly] = await Promise.all([
+      api('/api/interface/stats'+(ifId!=='ALL'?('?interface_id='+encodeURIComponent(ifId)):'')),
+      api('/api/interface/monthly'+(ifId!=='ALL'?('?interface_id='+encodeURIComponent(ifId)):'')),
+    ]);
+    document.getElementById('stName').textContent = stats.interface_name || '전체';
+    document.getElementById('stTotalRows').textContent = Number(stats.total_rows||0).toLocaleString();
+    document.getElementById('stSuccess').textContent = Number(stats.success_jobs||0).toLocaleString();
+    document.getElementById('stFailed').textContent = Number(stats.failed_jobs||0).toLocaleString();
+    document.getElementById('stTotalJobs').textContent = Number(stats.total_jobs||0).toLocaleString();
+    renderMonthlyChart(monthly.items||[]);
+  }catch(e){toast('상단 영역 로드 실패: '+e.message,'error');}
+}
+
+function renderMonthlyChart(items){
+  const labels=items.map(x=>x.ym);
+  const success=items.map(x=>Number(x.success||0));
+  const failed=items.map(x=>Number(x.failed||0));
+  const ctx=document.getElementById('monthlyChart').getContext('2d');
+  if(monthlyChart){monthlyChart.destroy();}
+  monthlyChart=new Chart(ctx,{
+    type:'bar',
+    data:{labels,datasets:[
+      {label:'성공',data:success,backgroundColor:'#16a34a',borderRadius:4},
+      {label:'실패',data:failed,backgroundColor:'#dc2626',borderRadius:4},
+    ]},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{font:{size:11}}}},
+      scales:{
+        x:{stacked:true,ticks:{font:{size:11}}},
+        y:{stacked:true,beginAtZero:true,ticks:{font:{size:11},precision:0}}
+      }
+    }
+  });
+}
+
+function onInterfaceChange(){
+  currentInterface=document.getElementById('interfaceSelect').value || 'ALL';
+  refreshTopArea();
+  // 현재 활성 탭이 history 이면 같이 갱신
+  if(currentTab==='history') loadHistory();
+}
+
+function populateDropdown(){
+  const sel=document.getElementById('interfaceSelect');
+  sel.innerHTML='<option value="ALL">전체</option>'+
+    masterList.map(m=>`<option value="${escapeHtml(m.interface_id)}">${escapeHtml(m.interface_id)} - ${escapeHtml(m.interface_name)}${m.is_active?'':' (비활성)'}</option>`).join('');
+}
+
+// ============================================================
+// Tabs
+// ============================================================
+let currentTab='master';
+function switchTab(t){
+  currentTab=t;
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
+  ['master','schedule','history'].forEach(k=>{
+    document.getElementById('tab-'+k).style.display = (k===t)?'block':'none';
+  });
+  if(t==='master')   loadMaster().then(populateDropdown);
+  if(t==='schedule') loadSchedule();
+  if(t==='history')  loadHistory();
+}
+
+// ============================================================
+// TAB 1: Master CRUD
+// ============================================================
+async function loadMaster(){
+  try{
+    const j=await api('/api/interface/master');
+    masterList=j.items||[];
+    document.getElementById('masterCount').textContent=masterList.length;
+    document.getElementById('masterBody').innerHTML = masterList.length===0
+      ? `<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
+      : masterList.map(m=>`
+        <tr>
+          <td class="col-mono">${escapeHtml(m.interface_id)}</td>
+          <td>${escapeHtml(m.interface_name)}</td>
+          <td style="text-align:center;">${escapeHtml(m.sender)}</td>
+          <td style="text-align:center;">${escapeHtml(m.receiver)}</td>
+          <td class="col-mono">${escapeHtml(m.rfc_func_or_url||'')}</td>
+          <td style="text-align:center;">${escapeHtml(m.rfc_param||'-')}</td>
+          <td class="col-mono">${escapeHtml(m.exec_command||'')}</td>
+          <td style="text-align:center;"><span class="status-badge ${m.is_active?'badge-on':'badge-off'}">${m.is_active?'활성':'비활성'}</span></td>
+          <td style="text-align:center;">${escapeHtml(m.created_by||'-')}</td>
+          <td style="text-align:center;">${escapeHtml(m.updated_by||'-')}</td>
+          <td style="text-align:center;">
+            <button class="btn btn-outline btn-sm" onclick="openMasterModal('${escapeHtml(m.interface_id)}')"><i class="fas fa-pen"></i></button>
+            <button class="btn btn-danger btn-sm" onclick="delMaster('${escapeHtml(m.interface_id)}')"><i class="fas fa-trash"></i></button>
+          </td>
+        </tr>`).join('');
+  }catch(e){toast('마스터 로드 실패: '+e.message,'error');}
+}
+
+let editingMasterId=null;
+function openMasterModal(id){
+  editingMasterId=id||null;
+  document.getElementById('masterModalTitle').textContent = id ? '인터페이스 수정' : '인터페이스 등록';
+  if(id){
+    const m=masterList.find(x=>x.interface_id===id);
+    if(!m){toast('대상을 찾을 수 없습니다','error');return;}
+    document.getElementById('mfId').value=m.interface_id;
+    document.getElementById('mfId').disabled=true;
+    document.getElementById('mfName').value=m.interface_name||'';
+    document.getElementById('mfSender').value=m.sender||'SAP';
+    document.getElementById('mfReceiver').value=m.receiver||'S&OP';
+    document.getElementById('mfUrl').value=m.rfc_func_or_url||'';
+    document.getElementById('mfParam').value=m.rfc_param||'';
+    document.getElementById('mfCommand').value=m.exec_command||'';
+    document.getElementById('mfRemark').value=m.remark||'';
+    document.getElementById('mfActive').checked = !!m.is_active;
+  }else{
+    document.getElementById('mfId').value=''; document.getElementById('mfId').disabled=false;
+    document.getElementById('mfName').value='';
+    document.getElementById('mfSender').value='SAP';
+    document.getElementById('mfReceiver').value='S&OP';
+    document.getElementById('mfUrl').value='';
+    document.getElementById('mfParam').value='';
+    document.getElementById('mfCommand').value='';
+    document.getElementById('mfRemark').value='';
+    document.getElementById('mfActive').checked=true;
+  }
+  document.getElementById('masterModal').classList.add('active');
+}
+function closeMasterModal(){document.getElementById('masterModal').classList.remove('active');}
+
+async function saveMaster(){
+  const body={
+    interface_id:  document.getElementById('mfId').value.trim(),
+    interface_name:document.getElementById('mfName').value.trim(),
+    sender:        document.getElementById('mfSender').value.trim()||'SAP',
+    receiver:      document.getElementById('mfReceiver').value.trim()||'S&OP',
+    rfc_func_or_url:document.getElementById('mfUrl').value.trim()||null,
+    rfc_param:     document.getElementById('mfParam').value.trim()||null,
+    exec_command:  document.getElementById('mfCommand').value.trim()||null,
+    remark:        document.getElementById('mfRemark').value.trim()||null,
+    is_active:     document.getElementById('mfActive').checked?1:0,
+  };
+  if(!body.interface_id || !body.interface_name){toast('인터페이스 ID/명은 필수입니다','error');return;}
+  try{
+    if(editingMasterId){
+      await api('/api/interface/master/'+encodeURIComponent(editingMasterId),{method:'PUT',body:JSON.stringify(body)});
+      toast('수정되었습니다','success');
+    }else{
+      await api('/api/interface/master',{method:'POST',body:JSON.stringify(body)});
+      toast('등록되었습니다','success');
+    }
+    closeMasterModal();
+    await loadMaster(); populateDropdown(); await refreshTopArea();
+  }catch(e){toast('저장 실패: '+e.message,'error');}
+}
+async function delMaster(id){
+  if(!confirm(`[${id}] 인터페이스를 삭제하시겠습니까?\n관련 스케줄/이력의 매핑도 영향을 받습니다.`)) return;
+  try{
+    await api('/api/interface/master/'+encodeURIComponent(id),{method:'DELETE'});
+    toast('삭제되었습니다','success');
+    await loadMaster(); populateDropdown(); await loadSchedule(); await refreshTopArea();
+  }catch(e){toast('삭제 실패: '+e.message,'error');}
+}
+
+// ============================================================
+// TAB 2: Schedule CRUD
+// ============================================================
+async function loadSchedule(){
+  try{
+    const j=await api('/api/interface/schedule');
+    scheduleList=j.items||[];
+    document.getElementById('schedCount').textContent=scheduleList.length;
+    document.getElementById('schedBody').innerHTML = scheduleList.length===0
+      ? `<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:18px;">등록된 스케줄이 없습니다.</td></tr>`
+      : scheduleList.map(s=>{
+        const cycle = s.schedule_type==='monthly'
+          ? `매월 ${s.exec_day_of_month||1}일`
+          : '매일';
+        const timeStr = (s.exec_time||'').slice(0,5);
+        return `
+        <tr>
+          <td class="col-mono">${escapeHtml(s.interface_id)}</td>
+          <td>${escapeHtml(s.interface_name||'-')}</td>
+          <td style="text-align:center;">${s.schedule_type==='monthly'?'MONTHLY':'DAILY'}</td>
+          <td style="text-align:center;">${cycle} ${timeStr}</td>
+          <td style="text-align:center;"><span class="status-badge ${s.is_active?'badge-on':'badge-off'}">${s.is_active?'활성':'비활성'}</span></td>
+          <td style="text-align:center;">${fmt(s.last_run_at)}</td>
+          <td style="text-align:center;">${s.last_run_status?badge(s.last_run_status):'-'}</td>
+          <td style="text-align:center;">${fmt(s.next_run_at)}</td>
+          <td>${escapeHtml(s.remark||'')}</td>
+          <td style="text-align:center;">${escapeHtml(s.created_by||'-')}</td>
+          <td style="text-align:center;white-space:nowrap;">
+            <button class="btn btn-success btn-sm" title="수동 실행" onclick="runSched(${s.id})"><i class="fas fa-play"></i></button>
+            <button class="btn btn-outline btn-sm" title="수정" onclick="openSchedModal(${s.id})"><i class="fas fa-pen"></i></button>
+            <button class="btn btn-warn btn-sm" title="활성/비활성" onclick="toggleSched(${s.id})"><i class="fas fa-toggle-on"></i></button>
+            <button class="btn btn-danger btn-sm" title="삭제" onclick="delSched(${s.id})"><i class="fas fa-trash"></i></button>
+          </td>
+        </tr>`;
+      }).join('');
+  }catch(e){toast('스케줄 로드 실패: '+e.message,'error');}
+}
+
+let editingSchedId=null;
+function onSchedTypeChange(){
+  const isMonthly=document.getElementById('sfType').value==='monthly';
+  document.getElementById('rowDayOfMonth').style.display=isMonthly?'flex':'none';
+}
+function openSchedModal(id){
+  editingSchedId=id||null;
+  // 인터페이스 옵션 동기화
+  const ifSel=document.getElementById('sfInterface');
+  ifSel.innerHTML=masterList.map(m=>`<option value="${escapeHtml(m.interface_id)}">${escapeHtml(m.interface_id)} - ${escapeHtml(m.interface_name)}</option>`).join('');
+  document.getElementById('schedModalTitle').textContent = id ? '수행 스케줄 수정' : '수행 스케줄 등록';
+  if(id){
+    const s=scheduleList.find(x=>x.id===id);
+    if(!s){toast('대상을 찾을 수 없습니다','error');return;}
+    ifSel.value=s.interface_id; ifSel.disabled=true;
+    document.getElementById('sfType').value=s.schedule_type||'daily';
+    document.getElementById('sfTime').value=(s.exec_time||'06:00:00').slice(0,5);
+    document.getElementById('sfDay').value=s.exec_day_of_month||1;
+    document.getElementById('sfRemark').value=s.remark||'';
+    document.getElementById('sfActive').checked=!!s.is_active;
+  }else{
+    ifSel.disabled=false;
+    document.getElementById('sfType').value='daily';
+    document.getElementById('sfTime').value='06:00';
+    document.getElementById('sfDay').value=1;
+    document.getElementById('sfRemark').value='';
+    document.getElementById('sfActive').checked=true;
+  }
+  onSchedTypeChange();
+  document.getElementById('schedModal').classList.add('active');
+}
+function closeSchedModal(){document.getElementById('schedModal').classList.remove('active');}
+
+async function saveSched(){
+  const type=document.getElementById('sfType').value;
+  const body={
+    interface_id: document.getElementById('sfInterface').value,
+    schedule_type:type,
+    exec_time:    document.getElementById('sfTime').value+':00',
+    exec_day_of_month: type==='monthly' ? Number(document.getElementById('sfDay').value)||1 : null,
+    remark:       document.getElementById('sfRemark').value.trim()||null,
+    is_active:    document.getElementById('sfActive').checked?1:0,
+  };
+  if(!body.interface_id){toast('인터페이스를 선택하세요','error');return;}
+  try{
+    if(editingSchedId){
+      await api('/api/interface/schedule/'+editingSchedId,{method:'PUT',body:JSON.stringify(body)});
+      toast('수정되었습니다','success');
+    }else{
+      await api('/api/interface/schedule',{method:'POST',body:JSON.stringify(body)});
+      toast('등록되었습니다','success');
+    }
+    closeSchedModal(); await loadSchedule();
+  }catch(e){toast('저장 실패: '+e.message,'error');}
+}
+async function delSched(id){
+  if(!confirm('해당 스케줄을 삭제하시겠습니까?')) return;
+  try{await api('/api/interface/schedule/'+id,{method:'DELETE'}); toast('삭제되었습니다','success'); await loadSchedule();}
+  catch(e){toast('삭제 실패: '+e.message,'error');}
+}
+async function toggleSched(id){
+  try{
+    const j=await api('/api/interface/schedule/'+id+'/toggle',{method:'POST'});
+    toast(`스케줄이 ${j.is_active?'활성':'비활성'} 되었습니다`,'success');
+    await loadSchedule();
+  }catch(e){toast('상태 변경 실패: '+e.message,'error');}
+}
+async function runSched(id){
+  if(!confirm('이 인터페이스를 지금 수동으로 실행하시겠습니까?')) return;
+  try{
+    const j=await api('/api/interface/schedule/'+id+'/run',{method:'POST'});
+    toast(`수동 실행 시작 (job_id=${j.job_id})`,'success');
+    // 잠시 후 갱신 (백엔드 비동기 완료 반영)
+    setTimeout(async ()=>{
+      await loadSchedule(); await refreshTopArea();
+      if(currentTab==='history') await loadHistory();
+    }, 1200);
+  }catch(e){toast('실행 실패: '+e.message,'error');}
+}
+
+// ============================================================
+// TAB 3: History (read-only + rerun)
+// ============================================================
+function resetHistFilter(){
+  document.getElementById('histStatus').value='ALL';
+  document.getElementById('histStart').value='';
+  document.getElementById('histEnd').value='';
+  loadHistory();
+}
+async function loadHistory(){
+  const qs=new URLSearchParams();
+  if(currentInterface && currentInterface!=='ALL') qs.set('interface_id', currentInterface);
+  const st=document.getElementById('histStatus').value;
+  if(st && st!=='ALL') qs.set('status', st);
+  const s=document.getElementById('histStart').value; if(s) qs.set('start', s);
+  const e=document.getElementById('histEnd').value;   if(e) qs.set('end', e);
+  try{
+    const j=await api('/api/interface/history'+(qs.toString()?'?'+qs.toString():''));
+    const items=j.items||[];
+    document.getElementById('histCount').textContent=items.length;
+    document.getElementById('histBody').innerHTML = items.length===0
+      ? `<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:18px;">이력이 없습니다.</td></tr>`
+      : items.map(h=>`
+        <tr>
+          <td style="text-align:center;">${h.id}</td>
+          <td>${escapeHtml(h.interface_id||'-')}${h.interface_name?` <span style="color:#94a3b8;font-size:11px;">(${escapeHtml(h.interface_name)})</span>`:''}</td>
+          <td style="text-align:center;">${escapeHtml(h.job_type||'-')}</td>
+          <td style="text-align:center;">${escapeHtml(h.mode||'-')}</td>
+          <td style="text-align:center;">${badge(h.status)}</td>
+          <td style="text-align:center;">${fmt(h.started_at)}</td>
+          <td style="text-align:center;">${fmt(h.finished_at)}</td>
+          <td style="text-align:right;">${Number(h.inserted_rows||0).toLocaleString()}</td>
+          <td style="color:#dc2626;font-size:11px;">${escapeHtml((h.error_message||'').slice(0,80))}</td>
+          <td style="text-align:center;">${escapeHtml(h.created_by||'-')}</td>
+          <td style="text-align:center;">
+            ${h.status==='failed' ? `<button class="btn btn-warn btn-sm" onclick="rerunJob(${h.id})"><i class="fas fa-redo"></i> 재수행</button>` : '-'}
+          </td>
+        </tr>`).join('');
+  }catch(e){toast('이력 로드 실패: '+e.message,'error');}
+}
+async function rerunJob(jobId){
+  if(!confirm('해당 실패 작업을 재수행하시겠습니까?')) return;
+  try{
+    const j=await api('/api/interface/history/'+jobId+'/rerun',{method:'POST'});
+    toast(`재수행 시작 (new_job_id=${j.new_job_id})`,'success');
+    setTimeout(async ()=>{await loadHistory(); await refreshTopArea();},1200);
+  }catch(e){toast('재수행 실패: '+e.message,'error');}
+}
+
+// ============================================================
+init();
+</script>
+</body>
+</html>
