@@ -5330,7 +5330,7 @@ app.get('/api/interface/master', requireAdmin, async (req, res) => {
     const [rows] = await pool.query(
       `SELECT interface_id, interface_name, sender, receiver, rfc_name,
               rfc_func_or_url, rfc_param,
-              data_table, data_month_column,
+              IFTBL,
               default_mode, allowed_modes,
               exec_command, remark,
               is_active, created_by, updated_by, created_at, updated_at
@@ -5370,13 +5370,10 @@ app.get('/api/interface/master/:id', requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// data_table / data_month_column 식별자 검증 (SQL Injection 방지)
-function validateDataMapping(data_table, data_month_column) {
-  if (data_table != null && data_table !== '' && !SAFE_IDENT.test(data_table)) {
-    return 'data_table 은 영문/숫자/언더스코어만 허용됩니다.';
-  }
-  if (data_month_column != null && data_month_column !== '' && !SAFE_IDENT.test(data_month_column)) {
-    return 'data_month_column 은 영문/숫자/언더스코어만 허용됩니다.';
+// IFTBL(인터페이스 테이블) 식별자 검증 (SQL Injection 방지)
+function validateIftbl(iftbl) {
+  if (iftbl != null && iftbl !== '' && !SAFE_IDENT.test(iftbl)) {
+    return 'IFTBL(인터페이스 테이블) 은 영문/숫자/언더스코어만 허용됩니다.';
   }
   return null;
 }
@@ -5388,7 +5385,7 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
     sender = 'SAP', receiver = 'S&OP',
     rfc_name = null,
     rfc_func_or_url = null, rfc_param = null,
-    data_table = null, data_month_column = null,
+    IFTBL = null,
     default_mode = 'replace',
     allowed_modes = 'replace,append,dry-run',
     exec_command = null, remark = null, is_active = 1,
@@ -5396,7 +5393,7 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
   if (!interface_id || !interface_name) {
     return res.status(400).json({ error: 'interface_id, interface_name 필수' });
   }
-  const mappingErr = validateDataMapping(data_table, data_month_column);
+  const mappingErr = validateIftbl(IFTBL);
   if (mappingErr) return res.status(400).json({ error: mappingErr });
   try {
     const userId = req.session?.user?.user_id || 'admin';
@@ -5404,14 +5401,14 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
       `INSERT INTO batch_master
          (interface_id, interface_name, sender, receiver, rfc_name,
           rfc_func_or_url, rfc_param,
-          data_table, data_month_column,
+          IFTBL,
           default_mode, allowed_modes,
           exec_command, remark,
           is_active, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [interface_id, interface_name, sender, receiver, rfc_name,
        rfc_func_or_url, rfc_param,
-       data_table || null, data_month_column || null,
+       IFTBL || null,
        default_mode, allowed_modes,
        exec_command, remark,
        is_active ? 1 : 0, userId, userId]
@@ -5430,11 +5427,11 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
   const {
     interface_name, sender, receiver, rfc_name,
     rfc_func_or_url, rfc_param,
-    data_table, data_month_column,
+    IFTBL,
     default_mode, allowed_modes,
     exec_command, remark, is_active,
   } = req.body || {};
-  const mappingErr = validateDataMapping(data_table, data_month_column);
+  const mappingErr = validateIftbl(IFTBL);
   if (mappingErr) return res.status(400).json({ error: mappingErr });
   try {
     const userId = req.session?.user?.user_id || 'admin';
@@ -5446,8 +5443,7 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
               rfc_name          = ?,
               rfc_func_or_url   = ?,
               rfc_param         = ?,
-              data_table        = ?,
-              data_month_column = ?,
+              IFTBL             = ?,
               default_mode      = COALESCE(?, default_mode),
               allowed_modes     = COALESCE(?, allowed_modes),
               exec_command      = ?,
@@ -5458,8 +5454,7 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
       [interface_name ?? null, sender ?? null, receiver ?? null,
        rfc_name ?? null,
        rfc_func_or_url ?? null, rfc_param ?? null,
-       (data_table === undefined || data_table === '') ? null : data_table,
-       (data_month_column === undefined || data_month_column === '') ? null : data_month_column,
+       (IFTBL === undefined || IFTBL === '') ? null : IFTBL,
        default_mode ?? null, allowed_modes ?? null,
        exec_command ?? null, remark ?? null,
        (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
@@ -5858,16 +5853,17 @@ app.get('/api/interface/stats', requireAdmin, async (req, res) => {
 
 // 월별 데이터 (최근 12개월, started_at 기준)
 // 월별 적재 데이터 현황
-//   - 인터페이스별로 batch_master.data_table / data_month_column 매핑을 조회한 뒤,
-//     해당 테이블의 월 단위 행 수를 GROUP BY 로 집계하여 반환한다.
+//   - 인터페이스별로 batch_master.IFTBL(인터페이스 테이블) 매핑을 조회한 뒤,
+//     해당 테이블의 CALMONTH 별 행 수를 GROUP BY 로 집계하여 반환한다.
+//     (월 컬럼은 SAP BW 표준에 따라 CALMONTH 로 고정)
 //   - 응답 포맷: { items: [{CALMONTH:'YYYYMM', cnt:N}, ...] }
 //                (배치관리 화면의 /api/batch/stats monthlyData 와 동일 포맷)
 //   - interface_id 가 'ALL' 또는 빈 값이면 NLP_RFC_001(default: bw_profitability_data)
 //     매핑을 사용한다 (운영 기본 데이터 = 수익성분석).
-//   - 매핑이 없는 인터페이스(data_table 이 NULL) 는 unmapped:true 로 빈 결과 반환.
-//   - 테이블/컬럼명은 SELECT 문에 그대로 보간되므로, [a-zA-Z0-9_] 화이트리스트 검증
-//     필수 (SQL Injection 방지).
+//   - 매핑이 없는 인터페이스(IFTBL 이 NULL) 는 unmapped:true 로 빈 결과 반환.
+//   - IFTBL 값은 SELECT 문에 그대로 보간되므로, [a-zA-Z0-9_] 화이트리스트 검증 필수.
 const SAFE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MONTH_COLUMN = 'CALMONTH';  // SAP BW 표준 월 컬럼 (현재 운영 적재 테이블 공통)
 app.get('/api/interface/monthly', requireAdmin, async (req, res) => {
   const reqInterfaceId = (req.query.interface_id || '').trim();
   const useFilter = reqInterfaceId && reqInterfaceId !== 'ALL';
@@ -5875,29 +5871,29 @@ app.get('/api/interface/monthly', requireAdmin, async (req, res) => {
     // 1) 매핑 조회. ALL 이면 NLP_RFC_001(수익성분석 기본) 의 매핑을 사용.
     const targetId = useFilter ? reqInterfaceId : 'NLP_RFC_001';
     const [mapRows] = await pool.query(
-      'SELECT interface_id, interface_name, data_table, data_month_column FROM batch_master WHERE interface_id = ?',
+      'SELECT interface_id, interface_name, IFTBL FROM batch_master WHERE interface_id = ?',
       [targetId]
     );
     if (!mapRows.length) {
       return res.json({ items: [], unmapped: true, reason: 'interface_not_found', interface_id: targetId });
     }
     const m = mapRows[0];
-    if (!m.data_table || !m.data_month_column) {
+    if (!m.IFTBL) {
       return res.json({
-        items: [], unmapped: true, reason: 'no_data_table_mapping',
+        items: [], unmapped: true, reason: 'no_iftbl_mapping',
         interface_id: m.interface_id, interface_name: m.interface_name,
       });
     }
     // 2) 화이트리스트 검증 (SQL Injection 방지)
-    if (!SAFE_IDENT.test(m.data_table) || !SAFE_IDENT.test(m.data_month_column)) {
-      return res.status(500).json({ error: `data_table/data_month_column 값이 안전한 식별자 형식이 아닙니다 (${m.interface_id}).` });
+    if (!SAFE_IDENT.test(m.IFTBL)) {
+      return res.status(500).json({ error: `IFTBL 값이 안전한 식별자 형식이 아닙니다 (${m.interface_id}).` });
     }
-    // 3) 월별 행수 집계 — 응답 키는 화면 호환성을 위해 항상 'CALMONTH' 로 통일
+    // 3) CALMONTH 별 행수 집계
     const [rows] = await pool.query(
-      `SELECT \`${m.data_month_column}\` AS CALMONTH, COUNT(*) AS cnt
-         FROM \`${m.data_table}\`
-        GROUP BY \`${m.data_month_column}\`
-        ORDER BY \`${m.data_month_column}\` DESC
+      `SELECT ${MONTH_COLUMN} AS CALMONTH, COUNT(*) AS cnt
+         FROM \`${m.IFTBL}\`
+        GROUP BY ${MONTH_COLUMN}
+        ORDER BY ${MONTH_COLUMN} DESC
         LIMIT 12`
     );
     // 오래된 → 최신 순으로 정렬해서 반환
@@ -5905,8 +5901,7 @@ app.get('/api/interface/monthly', requireAdmin, async (req, res) => {
       items: rows.reverse(),
       interface_id: m.interface_id,
       interface_name: m.interface_name,
-      data_table: m.data_table,
-      data_month_column: m.data_month_column,
+      IFTBL: m.IFTBL,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
