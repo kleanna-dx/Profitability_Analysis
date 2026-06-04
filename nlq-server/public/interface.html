@@ -476,17 +476,25 @@
                 <label>인터페이스 *</label>
                 <select id="sfInterface"></select>
             </div>
-            <div class="form-grid">
+            <div class="form-grid" id="schedTypeGrid">
                 <div class="form-row">
                     <label>수행 주기 *</label>
                     <select id="sfType" onchange="onSchedTypeChange()">
                         <option value="daily">매일 (DAILY)</option>
                         <option value="monthly">매월 (MONTHLY)</option>
+                        <option value="manual">직접 실행 (MANUAL) — 자동 스케줄 없음</option>
                     </select>
                 </div>
-                <div class="form-row">
+                <div class="form-row" id="rowExecTime">
                     <label>수행 시간 (HH:MM)</label>
                     <input id="sfTime" type="time" value="06:00">
+                </div>
+            </div>
+            <div class="form-row" id="rowManualInfo" style="display:none;">
+                <div style="background:#ecfeff;border:1px solid #67e8f9;border-radius:8px;padding:12px 14px;font-size:13px;color:#0e7490;line-height:1.6;">
+                    <i class="fas fa-hand-pointer" style="color:#06b6d4;"></i>
+                    <strong>직접 실행 모드</strong> — 자동 스케줄링하지 않습니다.<br>
+                    필요할 때 행 우측의 <span style="background:#10b981;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;">▶ 실행</span> 버튼을 눌러 <strong>년월(YYYYMM)</strong>과 <strong>실행 모드</strong>를 입력하여 수동으로 실행하세요.
                 </div>
             </div>
             <div class="form-row" id="rowDayOfMonth" style="display:none;">
@@ -830,15 +838,22 @@ async function loadSchedule(){
     document.getElementById('schedBody').innerHTML = scheduleList.length===0
       ? `<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:18px;">등록된 스케줄이 없습니다.</td></tr>`
       : scheduleList.map(s=>{
-        const cycle = s.schedule_type==='monthly'
-          ? `매월 ${s.exec_day_of_month||1}일`
-          : '매일';
-        const timeStr = (s.exec_time||'').slice(0,5);
+        const isManual  = s.schedule_type==='manual';
+        const isMonthly = s.schedule_type==='monthly';
+        const cycle = isManual  ? '<span style="color:#94a3b8;">—</span>'
+                    : isMonthly ? `매월 ${s.exec_day_of_month||1}일`
+                    : '매일';
+        const timeStr = isManual ? '' : (s.exec_time||'').slice(0,5);
+        const typeBadge = isManual
+          ? '<span style="background:#cffafe;color:#0e7490;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">MANUAL</span>'
+          : isMonthly
+            ? '<span style="background:#fce7f3;color:#9d174d;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">MONTHLY</span>'
+            : '<span style="background:#dbeafe;color:#1d4ed8;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">DAILY</span>';
         return `
         <tr>
           <td class="col-mono">${escapeHtml(s.interface_id)}</td>
           <td>${escapeHtml(s.interface_name||'-')}</td>
-          <td style="text-align:center;">${s.schedule_type==='monthly'?'MONTHLY':'DAILY'}</td>
+          <td style="text-align:center;">${typeBadge}</td>
           <td style="text-align:center;">${cycle} ${timeStr}</td>
           <td style="text-align:center;"><span class="status-badge ${s.is_active?'badge-on':'badge-off'}">${s.is_active?'활성':'비활성'}</span></td>
           <td style="text-align:center;">${fmt(s.last_run_at)}</td>
@@ -861,8 +876,14 @@ let editingSchedId=null;
 // Calendar state: 보고 있는 연/월(viewYear/viewMonth, month는 0~11), 선택된 day(1~31)
 let calView={ year:new Date().getFullYear(), month:new Date().getMonth() };
 function onSchedTypeChange(){
-  const isMonthly=document.getElementById('sfType').value==='monthly';
-  document.getElementById('rowDayOfMonth').style.display=isMonthly?'flex':'none';
+  const t=document.getElementById('sfType').value;
+  const isMonthly = t==='monthly';
+  const isManual  = t==='manual';
+  // monthly만 캘린더 표시
+  document.getElementById('rowDayOfMonth').style.display = isMonthly ? 'flex' : 'none';
+  // manual은 시간 입력도 숨김 + 안내 박스 표시
+  document.getElementById('rowExecTime').style.display   = isManual ? 'none' : 'flex';
+  document.getElementById('rowManualInfo').style.display = isManual ? 'flex' : 'none';
   if(isMonthly) renderCalendar();
 }
 function calPrev(){ if(--calView.month<0){calView.month=11;calView.year--;} renderCalendar(); }
@@ -943,10 +964,12 @@ function closeSchedModal(){document.getElementById('schedModal').classList.remov
 
 async function saveSched(){
   const type=document.getElementById('sfType').value;
+  const isManual = type==='manual';
   const body={
     interface_id: document.getElementById('sfInterface').value,
     schedule_type:type,
-    exec_time:    document.getElementById('sfTime').value+':00',
+    // manual은 시간/일자 모두 null (서버에서도 강제 null 처리)
+    exec_time:    isManual ? null : (document.getElementById('sfTime').value+':00'),
     exec_day_of_month: type==='monthly' ? Number(document.getElementById('sfDay').value)||1 : null,
     remark:       document.getElementById('sfRemark').value.trim()||null,
     is_active:    document.getElementById('sfActive').checked?1:0,
