@@ -5829,24 +5829,22 @@ app.get('/api/interface/stats', requireAdmin, async (req, res) => {
 });
 
 // 월별 데이터 (최근 12개월, started_at 기준)
+// 월별 적재 데이터 현황
+//   - 배치관리 화면의 "월별 데이터 현황" 과 동일한 데이터 소스를 사용한다.
+//   - bw_profitability_data 테이블의 CALMONTH(YYYYMM) 별 실제 적재된 행 수를 반환.
+//   - 인터페이스 선택과 무관하게 동일한 결과를 제공한다.
+//     (현재 운영에서는 NLP_RFC_001(수익성데이터)만 이 테이블에 적재되며,
+//      향후 다른 적재 테이블이 생기면 batch_master 에 대상 테이블 매핑 컬럼을
+//      추가하는 방식으로 확장 가능.)
+//   - 응답 포맷도 /api/batch/stats 의 monthlyData 와 동일하게 {CALMONTH, cnt} 로 반환.
 app.get('/api/interface/monthly', requireAdmin, async (req, res) => {
-  const interfaceId = (req.query.interface_id || '').trim();
-  const useFilter = interfaceId && interfaceId !== 'ALL';
   try {
-    const where = useFilter ? 'WHERE interface_id = ?' : '';
-    const params = useFilter ? [interfaceId] : [];
     const [rows] = await pool.query(
-      `SELECT DATE_FORMAT(IFNULL(started_at, created_at), '%Y-%m') AS ym,
-              COUNT(*) AS total,
-              SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
-              SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END) AS failed,
-              IFNULL(SUM(inserted_rows), 0) AS rows_sum
-         FROM batch_jobs
-         ${where}
-        GROUP BY ym
-        ORDER BY ym DESC
-        LIMIT 12`,
-      params
+      `SELECT CALMONTH, COUNT(*) AS cnt
+         FROM bw_profitability_data
+        GROUP BY CALMONTH
+        ORDER BY CALMONTH DESC
+        LIMIT 12`
     );
     // 오래된 → 최신 순으로 정렬해서 반환
     res.json({ items: rows.reverse() });
