@@ -723,7 +723,8 @@ async function refreshTopArea(){
   try{
     const [stats, monthly] = await Promise.all([
       api('/api/interface/stats'+(ifId!=='ALL'?('?interface_id='+encodeURIComponent(ifId)):'')),
-      api('/api/interface/monthly'+(ifId!=='ALL'?('?interface_id='+encodeURIComponent(ifId)):'')),
+      // 월별 데이터 현황은 인터페이스 선택과 무관하게 항상 bw_profitability_data 의 CALMONTH 별 행수
+      api('/api/interface/monthly'),
     ]);
     document.getElementById('stName').textContent = stats.interface_name || '전체';
     document.getElementById('stTotalRows').textContent = Number(stats.total_rows||0).toLocaleString();
@@ -734,8 +735,8 @@ async function refreshTopArea(){
   }catch(e){toast('상단 영역 로드 실패: '+e.message,'error');}
 }
 
-// 월별 적재 데이터 건수 바 차트 (batch.html 스타일)
-// items: [{ym:'YYYY-MM', total, success, failed, rows_sum}, ...]  (오래된 → 최신 순)
+// 월별 적재 데이터 건수 바 차트 (batch.html 의 renderMonthlyBar 와 동일 로직)
+// items: [{CALMONTH:'YYYYMM', cnt}, ...]  (오래된 → 최신 순)
 function renderMonthlyChart(items){
   const barEl   = document.getElementById('monthBar');
   const labelEl = document.getElementById('monthLabels');
@@ -748,28 +749,26 @@ function renderMonthlyChart(items){
     return;
   }
 
-  // rows_sum 기준으로 최대값 산출
-  const counts = items.map(x => Number(x.rows_sum||0));
-  const maxCnt = Math.max(...counts, 0);
-  const total  = counts.reduce((s,n)=>s+n, 0);
+  // CALMONTH(YYYYMM) 기준 오래된 것부터 정렬
+  items.sort((a,b) => String(a.CALMONTH||'').localeCompare(String(b.CALMONTH||'')));
+  const maxCnt = Math.max(...items.map(d => Number(d.cnt||0)));
+  const total  = items.reduce((s,d) => s + Number(d.cnt||0), 0);
   infoEl.textContent = `${items.length}개월 (총 ${total.toLocaleString()}행)`;
 
-  barEl.innerHTML = items.map((x,i)=>{
-    const cnt = counts[i];
+  barEl.innerHTML = items.map(d => {
+    const cnt = Number(d.cnt||0);
     const pct = maxCnt > 0 ? (cnt / maxCnt * 100) : 0;
     const minH = 6;
     const height = Math.max(pct * 0.54 + minH, minH); // 60px 기준
-    return `<div class="month-col" style="height:${height}px;" title="${x.ym}: ${cnt.toLocaleString()}행">
-              <span class="month-tooltip">${x.ym}<br>${cnt.toLocaleString()}행</span>
+    return `<div class="month-col" style="height:${height}px;" title="${d.CALMONTH}: ${cnt.toLocaleString()}행">
+              <span class="month-tooltip">${d.CALMONTH}<br>${cnt.toLocaleString()}행</span>
             </div>`;
   }).join('');
 
-  labelEl.innerHTML = items.map(x=>{
-    // 'YYYY-MM' → 'YY/MM'
-    const ym = String(x.ym||'');
-    const yy = ym.length>=4 ? ym.substring(2,4) : '';
-    const mm = ym.length>=7 ? ym.substring(5,7) : '';
-    return `<span>${yy}/${mm}</span>`;
+  labelEl.innerHTML = items.map(d => {
+    // 'YYYYMM' → 'YY/MM'  (배치관리 화면과 동일)
+    const ym = String(d.CALMONTH||'');
+    return `<span>${ym.substring(2,4)}/${ym.substring(4,6)}</span>`;
   }).join('');
 }
 
