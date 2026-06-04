@@ -260,7 +260,7 @@
             <div class="status-row">
                 <label for="interfaceSelect">인터페이스 선택</label>
                 <select id="interfaceSelect" class="status-select" onchange="onInterfaceChange()">
-                    <option value="ALL">전체</option>
+                    <!-- 옵션은 populateDropdown() 에서 활성 인터페이스 기준으로 동적 주입 (상단 표 구성을 위해 '전체' 옵션은 제공하지 않음) -->
                 </select>
             </div>
         </div>
@@ -270,7 +270,7 @@
             <div class="stat-card">
                 <div class="stat-icon" style="background:#eef2ff;color:#4f46e5;"><i class="fas fa-tag"></i></div>
                 <div class="stat-info">
-                    <div class="stat-sub" id="stName">전체</div>
+                    <div class="stat-sub" id="stName">-</div>
                     <div class="stat-label">선택된 인터페이스</div>
                 </div>
             </div>
@@ -343,14 +343,13 @@
                         <th>RFC Param</th>
                         <th>인터페이스 테이블</th>
                         <th>기본모드</th>
-                        <th>실행명령어</th>
                         <th>활성</th>
                         <th>등록자</th>
                         <th>수정자</th>
                         <th style="width:110px;">관리</th>
                     </tr>
                 </thead>
-                <tbody id="masterBody"><tr><td colspan="14" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
+                <tbody id="masterBody"><tr><td colspan="13" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
             </table>
             </div>
         </div>
@@ -464,7 +463,7 @@
                 </div>
                 <div class="form-row">
                     <label>수신</label>
-                    <input id="mfReceiver" value="S&OP" maxlength="50">
+                    <input id="mfReceiver" value="analytics" maxlength="50">
                 </div>
             </div>
             <div class="form-grid">
@@ -485,23 +484,13 @@
                 <label>인터페이스 테이블 <span style="color:#94a3b8;font-weight:500;">(IFTBL — 월별 데이터 현황 차트 대상, 월 컬럼은 CALMONTH 고정)</span></label>
                 <input id="mfIftbl" placeholder="예: bw_profitability_data" maxlength="100" style="font-family:'Fira Code','Consolas',monospace;">
             </div>
-            <div class="form-grid">
-                <div class="form-row">
-                    <label>기본 실행 모드</label>
-                    <select id="mfDefaultMode">
-                        <option value="replace">REPLACE (기존 삭제 후 INSERT)</option>
-                        <option value="append">APPEND (추가 INSERT)</option>
-                        <option value="dry-run">DRY RUN (RFC만 호출, DB 변경 없음)</option>
-                    </select>
-                </div>
-                <div class="form-row">
-                    <label>허용 모드 <span style="color:#94a3b8;font-weight:500;">(CSV)</span></label>
-                    <input id="mfAllowedModes" placeholder="replace,append,dry-run" value="replace,append,dry-run">
-                </div>
-            </div>
             <div class="form-row">
-                <label>실행명령어</label>
-                <input id="mfCommand" placeholder="예: SAP_RFC_SYNC">
+                <label>기본 실행 모드</label>
+                <select id="mfDefaultMode">
+                    <option value="replace">REPLACE (기존 삭제 후 INSERT)</option>
+                    <option value="append">APPEND (추가 INSERT)</option>
+                    <option value="dry-run">DRY RUN (RFC만 호출, DB 변경 없음)</option>
+                </select>
             </div>
             <div class="form-row">
                 <label>비고</label>
@@ -636,7 +625,7 @@
             <div class="form-row">
                 <label>실행 모드 *</label>
                 <select id="runMode" style="font-size:14px;">
-                    <!-- JS render based on allowed_modes -->
+                    <!-- JS render based on ALLOWED_MODES_LIST (\uc11c\ubc84 \uc0c1\uc218) -->
                 </select>
                 <div id="runModeDesc" style="font-size:11px;color:#64748b;margin-top:6px;line-height:1.5;"></div>
             </div>
@@ -684,7 +673,7 @@ async function doLogout(){try{await fetch('/api/logout',{method:'POST',credentia
 // ============================================================
 let masterList=[];
 let scheduleList=[];
-let currentInterface='ALL';
+let currentInterface=''; // 상단 선택된 인터페이스 ID (초기화 시 populateDropdown 이후 첫 활성 인터페이스로 설정)
 
 // ============================================================
 // Init
@@ -709,10 +698,11 @@ async function init(){
 
   await loadMaster();        // 인터페이스 옵션 채우기 위해 먼저
   populateDropdown();
-  // 기본 선택: 첫 활성 인터페이스
-  const firstActive=masterList.find(m=>m.is_active===1);
-  currentInterface=firstActive ? firstActive.interface_id : 'ALL';
-  document.getElementById('interfaceSelect').value=currentInterface;
+  // 기본 선택: 첫 활성 인터페이스 (없으면 목록의 첫 항목, 그래도 없으면 빈값)
+  const firstActive = masterList.find(m=>m.is_active===1) || masterList[0];
+  currentInterface = firstActive ? firstActive.interface_id : '';
+  const selEl = document.getElementById('interfaceSelect');
+  if (selEl) selEl.value = currentInterface;
 
   await refreshTopArea();
   await loadSchedule();
@@ -724,14 +714,25 @@ async function init(){
 // Top area refresh (stats + chart)
 // ============================================================
 async function refreshTopArea(){
-  const ifId=currentInterface;
+  const ifId = currentInterface;
+  // 인터페이스가 하나도 없을 때(예: 마스터 비어있음) — 카드/차트만 빈 상태로 표시
+  if(!ifId){
+    document.getElementById('stName').textContent = '-';
+    document.getElementById('stTotalRows').textContent = '0';
+    document.getElementById('stSuccess').textContent  = '0';
+    document.getElementById('stFailed').textContent   = '0';
+    document.getElementById('stTotalJobs').textContent= '0';
+    renderMonthlyChart({ items: [], unmapped: true, reason: 'no_interface_selected' });
+    return;
+  }
   try{
+    const qs = '?interface_id='+encodeURIComponent(ifId);
     const [stats, monthly] = await Promise.all([
-      api('/api/interface/stats'+(ifId!=='ALL'?('?interface_id='+encodeURIComponent(ifId)):'')),
+      api('/api/interface/stats'   + qs),
       // 월별 데이터 현황: 인터페이스별 batch_master.IFTBL(인터페이스 테이블) 매핑에 따라 다른 적재 테이블 조회
-      api('/api/interface/monthly'+(ifId!=='ALL'?('?interface_id='+encodeURIComponent(ifId)):'')),
+      api('/api/interface/monthly' + qs),
     ]);
-    document.getElementById('stName').textContent = stats.interface_name || '전체';
+    document.getElementById('stName').textContent = stats.interface_name || ifId;
     document.getElementById('stTotalRows').textContent = Number(stats.total_rows||0).toLocaleString();
     document.getElementById('stSuccess').textContent = Number(stats.success_jobs||0).toLocaleString();
     document.getElementById('stFailed').textContent = Number(stats.failed_jobs||0).toLocaleString();
@@ -794,16 +795,21 @@ function renderMonthlyChart(resp){
 }
 
 function onInterfaceChange(){
-  currentInterface=document.getElementById('interfaceSelect').value || 'ALL';
+  currentInterface=document.getElementById('interfaceSelect').value || '';
   refreshTopArea();
   // 현재 활성 탭이 history 이면 같이 갱신
   if(currentTab==='history') loadHistory();
 }
 
+// 상단 인터페이스 선택 드롭다운 채우기
+// - '전체' 옵션은 제공하지 않음 (상단 표/차트는 단일 인터페이스 기준)
+// - 마스터 목록이 비어있으면 옵션 없음 (refreshTopArea 가 빈 상태로 처리)
 function populateDropdown(){
   const sel=document.getElementById('interfaceSelect');
-  sel.innerHTML='<option value="ALL">전체</option>'+
-    masterList.map(m=>`<option value="${escapeHtml(m.interface_id)}">${escapeHtml(m.interface_id)} - ${escapeHtml(m.interface_name)}${m.is_active?'':' (비활성)'}</option>`).join('');
+  if(!sel) return;
+  sel.innerHTML = masterList
+    .map(m=>`<option value="${escapeHtml(m.interface_id)}">${escapeHtml(m.interface_id)} - ${escapeHtml(m.interface_name)}${m.is_active?'':' (비활성)'}</option>`)
+    .join('');
 }
 
 // ============================================================
@@ -830,7 +836,7 @@ async function loadMaster(){
     masterList=j.items||[];
     document.getElementById('masterCount').textContent=masterList.length;
     document.getElementById('masterBody').innerHTML = masterList.length===0
-      ? `<tr><td colspan="14" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
+      ? `<tr><td colspan="13" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
       : masterList.map(m=>{
           const modeColor={replace:'#b45309',append:'#1d4ed8','dry-run':'#6d28d9'}[m.default_mode||'replace']||'#475569';
           const modeBg   ={replace:'#fef3c7',append:'#dbeafe','dry-run':'#ede9fe'}[m.default_mode||'replace']||'#f1f5f9';
@@ -848,7 +854,6 @@ async function loadMaster(){
           <td class="col-mono" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;" title="${escapeHtml(m.rfc_param||'')}">${escapeHtml(m.rfc_param||'-')}</td>
           <td style="text-align:center;">${iftblCell}</td>
           <td style="text-align:center;"><span style="background:${modeBg};color:${modeColor};padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">${(m.default_mode||'replace').toUpperCase()}</span></td>
-          <td class="col-mono">${escapeHtml(m.exec_command||'')}</td>
           <td style="text-align:center;"><span class="status-badge ${m.is_active?'badge-on':'badge-off'}">${m.is_active?'활성':'비활성'}</span></td>
           <td style="text-align:center;">${escapeHtml(m.created_by||'-')}</td>
           <td style="text-align:center;">${escapeHtml(m.updated_by||'-')}</td>
@@ -872,28 +877,24 @@ function openMasterModal(id){
     document.getElementById('mfId').disabled=true;
     document.getElementById('mfName').value=m.interface_name||'';
     document.getElementById('mfSender').value=m.sender||'SAP';
-    document.getElementById('mfReceiver').value=m.receiver||'S&OP';
+    document.getElementById('mfReceiver').value=m.receiver||'analytics';
     document.getElementById('mfRfcName').value=m.rfc_name||'';
     document.getElementById('mfUrl').value=m.rfc_func_or_url||'';
     document.getElementById('mfParam').value=m.rfc_param||'';
     document.getElementById('mfIftbl').value=m.IFTBL||'';
     document.getElementById('mfDefaultMode').value=m.default_mode||'replace';
-    document.getElementById('mfAllowedModes').value=m.allowed_modes||'replace,append,dry-run';
-    document.getElementById('mfCommand').value=m.exec_command||'';
     document.getElementById('mfRemark').value=m.remark||'';
     document.getElementById('mfActive').checked = !!m.is_active;
   }else{
     document.getElementById('mfId').value=''; document.getElementById('mfId').disabled=false;
     document.getElementById('mfName').value='';
     document.getElementById('mfSender').value='SAP';
-    document.getElementById('mfReceiver').value='S&OP';
+    document.getElementById('mfReceiver').value='analytics';
     document.getElementById('mfRfcName').value='';
     document.getElementById('mfUrl').value='POST /profit-api/sap-rfc/execute';
     document.getElementById('mfParam').value='';
     document.getElementById('mfIftbl').value='';
     document.getElementById('mfDefaultMode').value='replace';
-    document.getElementById('mfAllowedModes').value='replace,append,dry-run';
-    document.getElementById('mfCommand').value='SAP_RFC_SYNC';
     document.getElementById('mfRemark').value='';
     document.getElementById('mfActive').checked=true;
   }
@@ -906,14 +907,12 @@ async function saveMaster(){
     interface_id:  document.getElementById('mfId').value.trim(),
     interface_name:document.getElementById('mfName').value.trim(),
     sender:        document.getElementById('mfSender').value.trim()||'SAP',
-    receiver:      document.getElementById('mfReceiver').value.trim()||'S&OP',
+    receiver:      document.getElementById('mfReceiver').value.trim()||'analytics',
     rfc_name:      document.getElementById('mfRfcName').value.trim().toUpperCase()||null,
     rfc_func_or_url:document.getElementById('mfUrl').value.trim()||null,
     rfc_param:     document.getElementById('mfParam').value.trim()||null,
     IFTBL:         document.getElementById('mfIftbl').value.trim()||null,
     default_mode:  document.getElementById('mfDefaultMode').value||'replace',
-    allowed_modes: document.getElementById('mfAllowedModes').value.trim()||'replace,append,dry-run',
-    exec_command:  document.getElementById('mfCommand').value.trim()||null,
     remark:        document.getElementById('mfRemark').value.trim()||null,
     is_active:     document.getElementById('mfActive').checked?1:0,
   };
@@ -1028,13 +1027,14 @@ function onSchedTypeChange(){
   if(isOnce) populateOnceModeOptions();
 }
 
-// once 모드에서 마스터의 allowed_modes 기준으로 select 옵션 채움
+// once 모드에서 허용 모드 고정값으로 select 옵션 채움
 function populateOnceModeOptions(){
   const sel = document.getElementById('sfMode');
   if(!sel) return;
   const interfaceId = document.getElementById('sfInterface').value;
   const master = (typeof masterList!=='undefined') ? masterList.find(m=>m.interface_id===interfaceId) : null;
-  const allowed = ((master && master.allowed_modes) || 'replace,append,dry-run').split(',').map(s=>s.trim());
+  // 허용 모드는 이제 서버 상수로 고정 — 클라이언트도 동일 값 사용
+  const allowed = ['replace','append','dry-run'];
   const labelMap = { 'replace':'REPLACE — 기존 데이터 삭제 후 적재',
                      'append': 'APPEND — 기존 유지 + 추가 적재',
                      'dry-run':'DRY-RUN — 시뮬레이션 (실제 적재 없음)' };
@@ -1212,8 +1212,9 @@ function runSched(id){
   const t=new Date();
   document.getElementById('runCmonth').value = `${t.getFullYear()}${String(t.getMonth()+1).padStart(2,'0')}`;
 
-  // 모드 옵션 — batch_master.allowed_modes 기반
-  const allowed=(m.allowed_modes||'replace,append,dry-run').split(',').map(x=>x.trim()).filter(Boolean);
+  // 모드 옵션 — 고정 상수(replace,append,dry-run) 기반
+  // 허용 모드 고정 (서버 상수 ALLOWED_MODES_LIST 와 동일)
+  const allowed=['replace','append','dry-run'];
   const defaultMode=m.default_mode||'replace';
   const sel=document.getElementById('runMode');
   sel.innerHTML=allowed.map(md=>`<option value="${md}"${md===defaultMode?' selected':''}>${MODE_LABEL[md]||md}</option>`).join('');
@@ -1282,7 +1283,7 @@ async function loadHistory(){
   const rfc=document.getElementById('histRfc').value;
   if(rfc && rfc!=='ALL'){
     qs.set('rfc_name', rfc);
-  }else if(currentInterface && currentInterface!=='ALL'){
+  }else if(currentInterface){
     qs.set('interface_id', currentInterface);
   }
   const st=document.getElementById('histStatus').value;
