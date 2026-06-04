@@ -5160,11 +5160,28 @@ app.get('/api/batch/stats', requireAdmin, async (req, res) => {
 app.get('/api/interface/master', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT interface_id, interface_name, sender, receiver,
+      `SELECT interface_id, interface_name, sender, receiver, rfc_name,
               rfc_func_or_url, rfc_param, exec_command, remark,
               is_active, created_by, updated_by, created_at, updated_at
          FROM batch_master
          ORDER BY interface_id ASC`
+    );
+    res.json({ items: rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// RFC 함수명 + 인터페이스명 distinct 목록 (이력 필터용)
+app.get('/api/interface/rfc-list', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT rfc_name,
+              GROUP_CONCAT(DISTINCT interface_name ORDER BY interface_name SEPARATOR ', ') AS interface_names,
+              GROUP_CONCAT(DISTINCT interface_id ORDER BY interface_id SEPARATOR ',') AS interface_ids,
+              COUNT(*) AS cnt
+         FROM batch_master
+        WHERE rfc_name IS NOT NULL AND rfc_name <> ''
+        GROUP BY rfc_name
+        ORDER BY rfc_name ASC`
     );
     res.json({ items: rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -5187,6 +5204,7 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
   const {
     interface_id, interface_name,
     sender = 'SAP', receiver = 'S&OP',
+    rfc_name = null,
     rfc_func_or_url = null, rfc_param = null,
     exec_command = null, remark = null, is_active = 1,
   } = req.body || {};
@@ -5197,11 +5215,11 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
     const userId = req.session?.user?.user_id || 'admin';
     await pool.query(
       `INSERT INTO batch_master
-         (interface_id, interface_name, sender, receiver,
+         (interface_id, interface_name, sender, receiver, rfc_name,
           rfc_func_or_url, rfc_param, exec_command, remark,
           is_active, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [interface_id, interface_name, sender, receiver,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [interface_id, interface_name, sender, receiver, rfc_name,
        rfc_func_or_url, rfc_param, exec_command, remark,
        is_active ? 1 : 0, userId, userId]
     );
@@ -5217,7 +5235,7 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
 // 마스터 수정
 app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
   const {
-    interface_name, sender, receiver,
+    interface_name, sender, receiver, rfc_name,
     rfc_func_or_url, rfc_param, exec_command, remark, is_active,
   } = req.body || {};
   try {
@@ -5227,6 +5245,7 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
           SET interface_name  = COALESCE(?, interface_name),
               sender          = COALESCE(?, sender),
               receiver        = COALESCE(?, receiver),
+              rfc_name        = ?,
               rfc_func_or_url = ?,
               rfc_param       = ?,
               exec_command    = ?,
@@ -5235,6 +5254,7 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
               updated_by      = ?
         WHERE interface_id = ?`,
       [interface_name ?? null, sender ?? null, receiver ?? null,
+       rfc_name ?? null,
        rfc_func_or_url ?? null, rfc_param ?? null, exec_command ?? null, remark ?? null,
        (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
        userId, req.params.id]
@@ -5510,12 +5530,13 @@ app.get('/api/interface/monthly', requireAdmin, async (req, res) => {
 
 // ---------- (D) 이력 조회 + 재수행 ----------
 
-// 이력 목록 (filter: interface_id / status / start / end)
+// 이력 목록 (filter: interface_id / rfc_name / status / start / end)
 app.get('/api/interface/history', requireAdmin, async (req, res) => {
-  const { interface_id, status, start, end } = req.query;
+  const { interface_id, rfc_name, status, start, end } = req.query;
   const where = [];
   const params = [];
   if (interface_id && interface_id !== 'ALL') { where.push('j.interface_id = ?'); params.push(interface_id); }
+  if (rfc_name && rfc_name !== 'ALL') { where.push('m.rfc_name = ?'); params.push(rfc_name); }
   if (status && status !== 'ALL') { where.push('j.status = ?'); params.push(status); }
   if (start) { where.push('IFNULL(j.started_at, j.created_at) >= ?'); params.push(start + ' 00:00:00'); }
   if (end)   { where.push('IFNULL(j.started_at, j.created_at) <= ?'); params.push(end + ' 23:59:59'); }
@@ -5523,7 +5544,7 @@ app.get('/api/interface/history', requireAdmin, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
   try {
     const [rows] = await pool.query(
-      `SELECT j.id, j.job_type, j.interface_id, m.interface_name,
+      `SELECT j.id, j.job_type, j.interface_id, m.interface_name, m.rfc_name,
               j.cmonth, j.mode, j.status,
               j.started_at, j.finished_at,
               j.total_rows, j.inserted_rows, j.deleted_rows,

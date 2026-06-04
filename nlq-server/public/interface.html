@@ -95,11 +95,33 @@
         .btn-outline:hover{background:#f8fafc;color:#4f46e5;border-color:#a5b4fc;}
         .btn-sm{padding:4px 9px;font-size:11px;}
 
-        /* Filter row */
+        /* Filter row (legacy, kept for compatibility) */
         .filter-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;}
         .filter-row label{font-size:12px;color:#64748b;font-weight:600;}
         .filter-row select,.filter-row input{padding:6px 10px;border:1px solid #cbd5e1;border-radius:7px;font-size:12px;font-family:inherit;background:#fff;color:#1e293b;}
         .filter-row select:focus,.filter-row input:focus{outline:none;border-color:#818cf8;}
+
+        /* History filter — grouped boxes */
+        .filter-bar{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;}
+        .filter-group{display:flex;flex-direction:column;gap:5px;padding:0 14px;border-right:1px solid #e2e8f0;}
+        .filter-group:first-child{padding-left:4px;}
+        .filter-group:last-of-type{border-right:none;}
+        .filter-group-label{font-size:11px;color:#64748b;font-weight:700;letter-spacing:.3px;text-transform:uppercase;display:flex;align-items:center;gap:5px;}
+        .filter-group-label i{color:#94a3b8;font-size:10px;}
+        .filter-group-body{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;}
+        .filter-input{padding:7px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:12.5px;font-family:inherit;background:#fff;color:#1e293b;min-width:120px;height:34px;}
+        .filter-input:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(129,140,248,.15);}
+        .filter-input.wide{min-width:240px;}
+        .filter-sep{color:#cbd5e1;font-size:13px;font-weight:600;padding:0 2px;}
+        .filter-actions{margin-left:auto;display:flex;gap:6px;align-items:center;padding-left:14px;border-left:1px solid #e2e8f0;}
+        .filter-count{font-size:13px;color:#475569;}
+        .filter-count strong{color:#1e293b;font-weight:800;}
+        @media (max-width:980px){
+          .filter-bar{flex-direction:column;align-items:stretch;}
+          .filter-group{border-right:none;border-bottom:1px solid #e2e8f0;padding:0 0 10px 0;}
+          .filter-group:last-of-type{border-bottom:none;}
+          .filter-actions{margin-left:0;border-left:none;padding-left:0;padding-top:10px;border-top:1px solid #e2e8f0;}
+        }
 
         /* Modal */
         .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s;}
@@ -257,6 +279,7 @@
                         <th>인터페이스 명</th>
                         <th>송신</th>
                         <th>수신</th>
+                        <th>RFC 함수명</th>
                         <th>RFC Func. / REST URL</th>
                         <th>RFC Param</th>
                         <th>실행명령어</th>
@@ -266,7 +289,7 @@
                         <th style="width:110px;">관리</th>
                     </tr>
                 </thead>
-                <tbody id="masterBody"><tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
+                <tbody id="masterBody"><tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
             </table>
             </div>
         </div>
@@ -301,22 +324,40 @@
 
         <!-- TAB: history -->
         <div class="tab-panel fade-in" id="tab-history" style="display:none;">
-            <div class="filter-row">
-                <label>상태</label>
-                <select id="histStatus" onchange="loadHistory()">
-                    <option value="ALL">전체</option>
-                    <option value="success">성공</option>
-                    <option value="failed">실패</option>
-                    <option value="running">실행중</option>
-                    <option value="pending">대기</option>
-                </select>
-                <label>시작일</label>
-                <input type="date" id="histStart">
-                <label>종료일</label>
-                <input type="date" id="histEnd">
-                <button class="btn btn-outline btn-sm" onclick="loadHistory()"><i class="fas fa-search"></i> 조회</button>
-                <button class="btn btn-outline btn-sm" onclick="resetHistFilter()"><i class="fas fa-rotate-left"></i> 초기화</button>
-                <div class="ml-auto text-sm text-gray-600">총 <strong id="histCount">0</strong> 건</div>
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <div class="filter-group-label"><i class="fas fa-code"></i> 인터페이스 (RFC)</div>
+                    <div class="filter-group-body">
+                        <select id="histRfc" class="filter-input wide" onchange="loadHistory()">
+                            <option value="ALL">전체</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="filter-group">
+                    <div class="filter-group-label"><i class="fas fa-signal"></i> 상태</div>
+                    <div class="filter-group-body">
+                        <select id="histStatus" class="filter-input" onchange="loadHistory()">
+                            <option value="ALL">전체</option>
+                            <option value="success">성공</option>
+                            <option value="failed">실패</option>
+                            <option value="running">실행중</option>
+                            <option value="pending">대기</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="filter-group">
+                    <div class="filter-group-label"><i class="fas fa-calendar-days"></i> 조회 기간</div>
+                    <div class="filter-group-body">
+                        <input type="date" id="histStart" class="filter-input">
+                        <span class="filter-sep">~</span>
+                        <input type="date" id="histEnd" class="filter-input">
+                    </div>
+                </div>
+                <div class="filter-actions">
+                    <button class="btn btn-primary btn-sm" onclick="loadHistory()"><i class="fas fa-search"></i> 조회</button>
+                    <button class="btn btn-outline btn-sm" onclick="resetHistFilter()"><i class="fas fa-rotate-left"></i> 초기화</button>
+                    <div class="filter-count" style="margin-left:10px;">총 <strong id="histCount">0</strong> 건</div>
+                </div>
             </div>
             <div style="overflow-x:auto;">
             <table class="it-table">
@@ -365,9 +406,15 @@
                     <input id="mfReceiver" value="S&OP" maxlength="50">
                 </div>
             </div>
-            <div class="form-row">
-                <label>RFC Func. / REST URL</label>
-                <input id="mfUrl" placeholder="예: /sales-api/sap/rfc/007" maxlength="500">
+            <div class="form-grid">
+                <div class="form-row">
+                    <label>RFC 함수명 <span style="color:#94a3b8;font-weight:500;">(SAP RFC 호출용)</span></label>
+                    <input id="mfRfcName" placeholder="예: Z_BI_WEB_EX_BL" maxlength="100" style="font-family:'Fira Code','Consolas',monospace;">
+                </div>
+                <div class="form-row">
+                    <label>RFC Func. / REST URL</label>
+                    <input id="mfUrl" placeholder="예: /sales-api/sap/rfc/007" maxlength="500">
+                </div>
             </div>
             <div class="form-row">
                 <label>RFC Param</label>
@@ -505,6 +552,7 @@ async function init(){
 
   await refreshTopArea();
   await loadSchedule();
+  await loadRfcList();
   // 마스터 탭이 기본 활성
 }
 
@@ -587,13 +635,14 @@ async function loadMaster(){
     masterList=j.items||[];
     document.getElementById('masterCount').textContent=masterList.length;
     document.getElementById('masterBody').innerHTML = masterList.length===0
-      ? `<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
+      ? `<tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
       : masterList.map(m=>`
         <tr>
           <td class="col-mono">${escapeHtml(m.interface_id)}</td>
           <td>${escapeHtml(m.interface_name)}</td>
           <td style="text-align:center;">${escapeHtml(m.sender)}</td>
           <td style="text-align:center;">${escapeHtml(m.receiver)}</td>
+          <td class="col-mono" style="color:#7c3aed;font-weight:600;">${escapeHtml(m.rfc_name||'-')}</td>
           <td class="col-mono">${escapeHtml(m.rfc_func_or_url||'')}</td>
           <td style="text-align:center;">${escapeHtml(m.rfc_param||'-')}</td>
           <td class="col-mono">${escapeHtml(m.exec_command||'')}</td>
@@ -620,6 +669,7 @@ function openMasterModal(id){
     document.getElementById('mfName').value=m.interface_name||'';
     document.getElementById('mfSender').value=m.sender||'SAP';
     document.getElementById('mfReceiver').value=m.receiver||'S&OP';
+    document.getElementById('mfRfcName').value=m.rfc_name||'';
     document.getElementById('mfUrl').value=m.rfc_func_or_url||'';
     document.getElementById('mfParam').value=m.rfc_param||'';
     document.getElementById('mfCommand').value=m.exec_command||'';
@@ -630,6 +680,7 @@ function openMasterModal(id){
     document.getElementById('mfName').value='';
     document.getElementById('mfSender').value='SAP';
     document.getElementById('mfReceiver').value='S&OP';
+    document.getElementById('mfRfcName').value='';
     document.getElementById('mfUrl').value='';
     document.getElementById('mfParam').value='';
     document.getElementById('mfCommand').value='';
@@ -646,6 +697,7 @@ async function saveMaster(){
     interface_name:document.getElementById('mfName').value.trim(),
     sender:        document.getElementById('mfSender').value.trim()||'SAP',
     receiver:      document.getElementById('mfReceiver').value.trim()||'S&OP',
+    rfc_name:      document.getElementById('mfRfcName').value.trim().toUpperCase()||null,
     rfc_func_or_url:document.getElementById('mfUrl').value.trim()||null,
     rfc_param:     document.getElementById('mfParam').value.trim()||null,
     exec_command:  document.getElementById('mfCommand').value.trim()||null,
@@ -662,7 +714,7 @@ async function saveMaster(){
       toast('등록되었습니다','success');
     }
     closeMasterModal();
-    await loadMaster(); populateDropdown(); await refreshTopArea();
+    await loadMaster(); populateDropdown(); await refreshTopArea(); rfcListCache=[]; await loadRfcList();
   }catch(e){toast('저장 실패: '+e.message,'error');}
 }
 async function delMaster(id){
@@ -670,7 +722,7 @@ async function delMaster(id){
   try{
     await api('/api/interface/master/'+encodeURIComponent(id),{method:'DELETE'});
     toast('삭제되었습니다','success');
-    await loadMaster(); populateDropdown(); await loadSchedule(); await refreshTopArea();
+    await loadMaster(); populateDropdown(); await loadSchedule(); await refreshTopArea(); rfcListCache=[]; await loadRfcList();
   }catch(e){toast('삭제 실패: '+e.message,'error');}
 }
 
@@ -812,15 +864,38 @@ async function runSched(id){
 // ============================================================
 // TAB 3: History (read-only + rerun)
 // ============================================================
+let rfcListCache=[];
+async function loadRfcList(){
+  try{
+    const j=await api('/api/interface/rfc-list');
+    rfcListCache=j.items||[];
+    const sel=document.getElementById('histRfc');
+    if(sel){
+      const current=sel.value||'ALL';
+      sel.innerHTML='<option value="ALL">전체</option>'+
+        rfcListCache.map(r=>`<option value="${escapeHtml(r.rfc_name)}">${escapeHtml(r.rfc_name)}(${escapeHtml(r.interface_names||'-')})</option>`).join('');
+      sel.value=current;
+    }
+  }catch(e){/* 조용히 실패 — 필터 없이도 동작 */}
+}
 function resetHistFilter(){
+  document.getElementById('histRfc').value='ALL';
   document.getElementById('histStatus').value='ALL';
   document.getElementById('histStart').value='';
   document.getElementById('histEnd').value='';
   loadHistory();
 }
 async function loadHistory(){
+  // RFC 드롭다운이 비어있으면 먼저 채움
+  if(!rfcListCache.length) await loadRfcList();
   const qs=new URLSearchParams();
-  if(currentInterface && currentInterface!=='ALL') qs.set('interface_id', currentInterface);
+  // 상단 인터페이스 선택은 RFC 필터와 의미가 다르므로 RFC가 ALL일 때만 적용
+  const rfc=document.getElementById('histRfc').value;
+  if(rfc && rfc!=='ALL'){
+    qs.set('rfc_name', rfc);
+  }else if(currentInterface && currentInterface!=='ALL'){
+    qs.set('interface_id', currentInterface);
+  }
   const st=document.getElementById('histStatus').value;
   if(st && st!=='ALL') qs.set('status', st);
   const s=document.getElementById('histStart').value; if(s) qs.set('start', s);
@@ -834,7 +909,10 @@ async function loadHistory(){
       : items.map(h=>`
         <tr>
           <td style="text-align:center;">${h.id}</td>
-          <td>${escapeHtml(h.interface_id||'-')}${h.interface_name?` <span style="color:#94a3b8;font-size:11px;">(${escapeHtml(h.interface_name)})</span>`:''}</td>
+          <td>
+            ${h.rfc_name?`<span class="col-mono" style="color:#7c3aed;font-weight:600;">${escapeHtml(h.rfc_name)}</span><br>`:''}
+            <span style="font-size:11.5px;color:#475569;">${escapeHtml(h.interface_id||'-')}${h.interface_name?` <span style="color:#94a3b8;">(${escapeHtml(h.interface_name)})</span>`:''}</span>
+          </td>
           <td style="text-align:center;">${escapeHtml(h.job_type||'-')}</td>
           <td style="text-align:center;">${escapeHtml(h.mode||'-')}</td>
           <td style="text-align:center;">${badge(h.status)}</td>
