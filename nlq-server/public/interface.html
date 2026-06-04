@@ -341,6 +341,7 @@
                         <th>RFC 함수명</th>
                         <th>RFC Func. / REST URL</th>
                         <th>RFC Param</th>
+                        <th>적재 테이블</th>
                         <th>기본모드</th>
                         <th>실행명령어</th>
                         <th>활성</th>
@@ -349,7 +350,7 @@
                         <th style="width:110px;">관리</th>
                     </tr>
                 </thead>
-                <tbody id="masterBody"><tr><td colspan="13" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
+                <tbody id="masterBody"><tr><td colspan="14" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
             </table>
             </div>
         </div>
@@ -479,6 +480,16 @@
             <div class="form-row">
                 <label>RFC Param <span style="color:#94a3b8;font-weight:500;">(JSON, {CMONTH}는 실행시 치환)</span></label>
                 <input id="mfParam" placeholder='예: {"function":"Z_BI_WEB_EX_BL","params":{"I_CMONTH":"{CMONTH}"}}' style="font-family:'Fira Code','Consolas',monospace;font-size:12px;">
+            </div>
+            <div class="form-grid">
+                <div class="form-row">
+                    <label>적재 테이블명 <span style="color:#94a3b8;font-weight:500;">(월별 데이터 현황 차트 대상)</span></label>
+                    <input id="mfDataTable" placeholder="예: bw_profitability_data" maxlength="100" style="font-family:'Fira Code','Consolas',monospace;">
+                </div>
+                <div class="form-row">
+                    <label>월 컬럼명 <span style="color:#94a3b8;font-weight:500;">(YYYYMM, 기본: CALMONTH)</span></label>
+                    <input id="mfDataMonthCol" placeholder="예: CALMONTH" maxlength="50" style="font-family:'Fira Code','Consolas',monospace;">
+                </div>
             </div>
             <div class="form-grid">
                 <div class="form-row">
@@ -723,37 +734,53 @@ async function refreshTopArea(){
   try{
     const [stats, monthly] = await Promise.all([
       api('/api/interface/stats'+(ifId!=='ALL'?('?interface_id='+encodeURIComponent(ifId)):'')),
-      // 월별 데이터 현황은 인터페이스 선택과 무관하게 항상 bw_profitability_data 의 CALMONTH 별 행수
-      api('/api/interface/monthly'),
+      // 월별 데이터 현황: 인터페이스별 batch_master.data_table 매핑에 따라 다른 적재 테이블 조회
+      api('/api/interface/monthly'+(ifId!=='ALL'?('?interface_id='+encodeURIComponent(ifId)):'')),
     ]);
     document.getElementById('stName').textContent = stats.interface_name || '전체';
     document.getElementById('stTotalRows').textContent = Number(stats.total_rows||0).toLocaleString();
     document.getElementById('stSuccess').textContent = Number(stats.success_jobs||0).toLocaleString();
     document.getElementById('stFailed').textContent = Number(stats.failed_jobs||0).toLocaleString();
     document.getElementById('stTotalJobs').textContent = Number(stats.total_jobs||0).toLocaleString();
-    renderMonthlyChart(monthly.items||[]);
+    renderMonthlyChart(monthly);
   }catch(e){toast('상단 영역 로드 실패: '+e.message,'error');}
 }
 
 // 월별 적재 데이터 건수 바 차트 (batch.html 의 renderMonthlyBar 와 동일 로직)
-// items: [{CALMONTH:'YYYYMM', cnt}, ...]  (오래된 → 최신 순)
-function renderMonthlyChart(items){
+// resp: /api/interface/monthly 응답 객체
+//        { items:[{CALMONTH:'YYYYMM', cnt}, ...], unmapped?, reason?, data_table?, ... }
+function renderMonthlyChart(resp){
   const barEl   = document.getElementById('monthBar');
   const labelEl = document.getElementById('monthLabels');
   const infoEl  = document.getElementById('monthlyInfo');
+  const items   = (resp && resp.items) || [];
 
-  if(!items || items.length===0){
+  // 1) 매핑 자체가 없는 경우 (data_table 미지정)
+  if(resp && resp.unmapped){
+    const msg = resp.reason === 'no_data_table_mapping'
+      ? '이 인터페이스에는 적재 대상 테이블이 등록되어 있지 않습니다. <br><span style="font-size:11px;">[인터페이스 마스터 관리] 에서 "적재 테이블명" 을 입력해 주세요.</span>'
+      : '인터페이스 매핑 정보를 찾을 수 없습니다.';
+    barEl.innerHTML   = `<div class="month-empty" style="line-height:1.6;">${msg}</div>`;
+    labelEl.innerHTML = '';
+    infoEl.textContent= '';
+    return;
+  }
+
+  // 2) 매핑은 있지만 적재된 데이터가 0건인 경우
+  if(items.length===0){
     barEl.innerHTML   = '<div class="month-empty">적재된 데이터가 없습니다.</div>';
     labelEl.innerHTML = '';
     infoEl.textContent= '';
     return;
   }
 
+  // 3) 정상 렌더링
   // CALMONTH(YYYYMM) 기준 오래된 것부터 정렬
   items.sort((a,b) => String(a.CALMONTH||'').localeCompare(String(b.CALMONTH||'')));
   const maxCnt = Math.max(...items.map(d => Number(d.cnt||0)));
   const total  = items.reduce((s,d) => s + Number(d.cnt||0), 0);
-  infoEl.textContent = `${items.length}개월 (총 ${total.toLocaleString()}행)`;
+  const tableHint = resp && resp.data_table ? `  [${resp.data_table}]` : '';
+  infoEl.textContent = `${items.length}개월 (총 ${total.toLocaleString()}행)${tableHint}`;
 
   barEl.innerHTML = items.map(d => {
     const cnt = Number(d.cnt||0);
@@ -809,10 +836,13 @@ async function loadMaster(){
     masterList=j.items||[];
     document.getElementById('masterCount').textContent=masterList.length;
     document.getElementById('masterBody').innerHTML = masterList.length===0
-      ? `<tr><td colspan="13" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
+      ? `<tr><td colspan="14" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
       : masterList.map(m=>{
           const modeColor={replace:'#b45309',append:'#1d4ed8','dry-run':'#6d28d9'}[m.default_mode||'replace']||'#475569';
           const modeBg   ={replace:'#fef3c7',append:'#dbeafe','dry-run':'#ede9fe'}[m.default_mode||'replace']||'#f1f5f9';
+          const dataTableCell = m.data_table
+            ? `<span class="col-mono" style="color:#0f766e;font-weight:600;" title="월 컬럼: ${escapeHtml(m.data_month_column||'(미지정)')}">${escapeHtml(m.data_table)}</span>`
+            : `<span style="color:#cbd5e1;font-style:italic;">(미지정)</span>`;
           return `
         <tr>
           <td class="col-mono">${escapeHtml(m.interface_id)}</td>
@@ -822,6 +852,7 @@ async function loadMaster(){
           <td class="col-mono" style="color:#7c3aed;font-weight:600;">${escapeHtml(m.rfc_name||'-')}</td>
           <td class="col-mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(m.rfc_func_or_url||'')}">${escapeHtml(m.rfc_func_or_url||'')}</td>
           <td class="col-mono" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;" title="${escapeHtml(m.rfc_param||'')}">${escapeHtml(m.rfc_param||'-')}</td>
+          <td style="text-align:center;">${dataTableCell}</td>
           <td style="text-align:center;"><span style="background:${modeBg};color:${modeColor};padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">${(m.default_mode||'replace').toUpperCase()}</span></td>
           <td class="col-mono">${escapeHtml(m.exec_command||'')}</td>
           <td style="text-align:center;"><span class="status-badge ${m.is_active?'badge-on':'badge-off'}">${m.is_active?'활성':'비활성'}</span></td>
@@ -851,6 +882,8 @@ function openMasterModal(id){
     document.getElementById('mfRfcName').value=m.rfc_name||'';
     document.getElementById('mfUrl').value=m.rfc_func_or_url||'';
     document.getElementById('mfParam').value=m.rfc_param||'';
+    document.getElementById('mfDataTable').value=m.data_table||'';
+    document.getElementById('mfDataMonthCol').value=m.data_month_column||'';
     document.getElementById('mfDefaultMode').value=m.default_mode||'replace';
     document.getElementById('mfAllowedModes').value=m.allowed_modes||'replace,append,dry-run';
     document.getElementById('mfCommand').value=m.exec_command||'';
@@ -864,6 +897,8 @@ function openMasterModal(id){
     document.getElementById('mfRfcName').value='';
     document.getElementById('mfUrl').value='POST /profit-api/sap-rfc/execute';
     document.getElementById('mfParam').value='';
+    document.getElementById('mfDataTable').value='';
+    document.getElementById('mfDataMonthCol').value='';
     document.getElementById('mfDefaultMode').value='replace';
     document.getElementById('mfAllowedModes').value='replace,append,dry-run';
     document.getElementById('mfCommand').value='SAP_RFC_SYNC';
@@ -883,6 +918,8 @@ async function saveMaster(){
     rfc_name:      document.getElementById('mfRfcName').value.trim().toUpperCase()||null,
     rfc_func_or_url:document.getElementById('mfUrl').value.trim()||null,
     rfc_param:     document.getElementById('mfParam').value.trim()||null,
+    data_table:    document.getElementById('mfDataTable').value.trim()||null,
+    data_month_column: document.getElementById('mfDataMonthCol').value.trim()||null,
     default_mode:  document.getElementById('mfDefaultMode').value||'replace',
     allowed_modes: document.getElementById('mfAllowedModes').value.trim()||'replace,append,dry-run',
     exec_command:  document.getElementById('mfCommand').value.trim()||null,

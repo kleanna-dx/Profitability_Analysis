@@ -5329,7 +5329,9 @@ app.get('/api/interface/master', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT interface_id, interface_name, sender, receiver, rfc_name,
-              rfc_func_or_url, rfc_param, default_mode, allowed_modes,
+              rfc_func_or_url, rfc_param,
+              data_table, data_month_column,
+              default_mode, allowed_modes,
               exec_command, remark,
               is_active, created_by, updated_by, created_at, updated_at
          FROM batch_master
@@ -5368,6 +5370,17 @@ app.get('/api/interface/master/:id', requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// data_table / data_month_column 식별자 검증 (SQL Injection 방지)
+function validateDataMapping(data_table, data_month_column) {
+  if (data_table != null && data_table !== '' && !SAFE_IDENT.test(data_table)) {
+    return 'data_table 은 영문/숫자/언더스코어만 허용됩니다.';
+  }
+  if (data_month_column != null && data_month_column !== '' && !SAFE_IDENT.test(data_month_column)) {
+    return 'data_month_column 은 영문/숫자/언더스코어만 허용됩니다.';
+  }
+  return null;
+}
+
 // 마스터 생성
 app.post('/api/interface/master', requireAdmin, async (req, res) => {
   const {
@@ -5375,6 +5388,7 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
     sender = 'SAP', receiver = 'S&OP',
     rfc_name = null,
     rfc_func_or_url = null, rfc_param = null,
+    data_table = null, data_month_column = null,
     default_mode = 'replace',
     allowed_modes = 'replace,append,dry-run',
     exec_command = null, remark = null, is_active = 1,
@@ -5382,17 +5396,23 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
   if (!interface_id || !interface_name) {
     return res.status(400).json({ error: 'interface_id, interface_name 필수' });
   }
+  const mappingErr = validateDataMapping(data_table, data_month_column);
+  if (mappingErr) return res.status(400).json({ error: mappingErr });
   try {
     const userId = req.session?.user?.user_id || 'admin';
     await pool.query(
       `INSERT INTO batch_master
          (interface_id, interface_name, sender, receiver, rfc_name,
-          rfc_func_or_url, rfc_param, default_mode, allowed_modes,
+          rfc_func_or_url, rfc_param,
+          data_table, data_month_column,
+          default_mode, allowed_modes,
           exec_command, remark,
           is_active, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [interface_id, interface_name, sender, receiver, rfc_name,
-       rfc_func_or_url, rfc_param, default_mode, allowed_modes,
+       rfc_func_or_url, rfc_param,
+       data_table || null, data_month_column || null,
+       default_mode, allowed_modes,
        exec_command, remark,
        is_active ? 1 : 0, userId, userId]
     );
@@ -5409,29 +5429,37 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
 app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
   const {
     interface_name, sender, receiver, rfc_name,
-    rfc_func_or_url, rfc_param, default_mode, allowed_modes,
+    rfc_func_or_url, rfc_param,
+    data_table, data_month_column,
+    default_mode, allowed_modes,
     exec_command, remark, is_active,
   } = req.body || {};
+  const mappingErr = validateDataMapping(data_table, data_month_column);
+  if (mappingErr) return res.status(400).json({ error: mappingErr });
   try {
     const userId = req.session?.user?.user_id || 'admin';
     const [r] = await pool.query(
       `UPDATE batch_master
-          SET interface_name  = COALESCE(?, interface_name),
-              sender          = COALESCE(?, sender),
-              receiver        = COALESCE(?, receiver),
-              rfc_name        = ?,
-              rfc_func_or_url = ?,
-              rfc_param       = ?,
-              default_mode    = COALESCE(?, default_mode),
-              allowed_modes   = COALESCE(?, allowed_modes),
-              exec_command    = ?,
-              remark          = ?,
-              is_active       = COALESCE(?, is_active),
-              updated_by      = ?
+          SET interface_name    = COALESCE(?, interface_name),
+              sender            = COALESCE(?, sender),
+              receiver          = COALESCE(?, receiver),
+              rfc_name          = ?,
+              rfc_func_or_url   = ?,
+              rfc_param         = ?,
+              data_table        = ?,
+              data_month_column = ?,
+              default_mode      = COALESCE(?, default_mode),
+              allowed_modes     = COALESCE(?, allowed_modes),
+              exec_command      = ?,
+              remark            = ?,
+              is_active         = COALESCE(?, is_active),
+              updated_by        = ?
         WHERE interface_id = ?`,
       [interface_name ?? null, sender ?? null, receiver ?? null,
        rfc_name ?? null,
        rfc_func_or_url ?? null, rfc_param ?? null,
+       (data_table === undefined || data_table === '') ? null : data_table,
+       (data_month_column === undefined || data_month_column === '') ? null : data_month_column,
        default_mode ?? null, allowed_modes ?? null,
        exec_command ?? null, remark ?? null,
        (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
@@ -5830,24 +5858,56 @@ app.get('/api/interface/stats', requireAdmin, async (req, res) => {
 
 // 월별 데이터 (최근 12개월, started_at 기준)
 // 월별 적재 데이터 현황
-//   - 배치관리 화면의 "월별 데이터 현황" 과 동일한 데이터 소스를 사용한다.
-//   - bw_profitability_data 테이블의 CALMONTH(YYYYMM) 별 실제 적재된 행 수를 반환.
-//   - 인터페이스 선택과 무관하게 동일한 결과를 제공한다.
-//     (현재 운영에서는 NLP_RFC_001(수익성데이터)만 이 테이블에 적재되며,
-//      향후 다른 적재 테이블이 생기면 batch_master 에 대상 테이블 매핑 컬럼을
-//      추가하는 방식으로 확장 가능.)
-//   - 응답 포맷도 /api/batch/stats 의 monthlyData 와 동일하게 {CALMONTH, cnt} 로 반환.
+//   - 인터페이스별로 batch_master.data_table / data_month_column 매핑을 조회한 뒤,
+//     해당 테이블의 월 단위 행 수를 GROUP BY 로 집계하여 반환한다.
+//   - 응답 포맷: { items: [{CALMONTH:'YYYYMM', cnt:N}, ...] }
+//                (배치관리 화면의 /api/batch/stats monthlyData 와 동일 포맷)
+//   - interface_id 가 'ALL' 또는 빈 값이면 NLP_RFC_001(default: bw_profitability_data)
+//     매핑을 사용한다 (운영 기본 데이터 = 수익성분석).
+//   - 매핑이 없는 인터페이스(data_table 이 NULL) 는 unmapped:true 로 빈 결과 반환.
+//   - 테이블/컬럼명은 SELECT 문에 그대로 보간되므로, [a-zA-Z0-9_] 화이트리스트 검증
+//     필수 (SQL Injection 방지).
+const SAFE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 app.get('/api/interface/monthly', requireAdmin, async (req, res) => {
+  const reqInterfaceId = (req.query.interface_id || '').trim();
+  const useFilter = reqInterfaceId && reqInterfaceId !== 'ALL';
   try {
+    // 1) 매핑 조회. ALL 이면 NLP_RFC_001(수익성분석 기본) 의 매핑을 사용.
+    const targetId = useFilter ? reqInterfaceId : 'NLP_RFC_001';
+    const [mapRows] = await pool.query(
+      'SELECT interface_id, interface_name, data_table, data_month_column FROM batch_master WHERE interface_id = ?',
+      [targetId]
+    );
+    if (!mapRows.length) {
+      return res.json({ items: [], unmapped: true, reason: 'interface_not_found', interface_id: targetId });
+    }
+    const m = mapRows[0];
+    if (!m.data_table || !m.data_month_column) {
+      return res.json({
+        items: [], unmapped: true, reason: 'no_data_table_mapping',
+        interface_id: m.interface_id, interface_name: m.interface_name,
+      });
+    }
+    // 2) 화이트리스트 검증 (SQL Injection 방지)
+    if (!SAFE_IDENT.test(m.data_table) || !SAFE_IDENT.test(m.data_month_column)) {
+      return res.status(500).json({ error: `data_table/data_month_column 값이 안전한 식별자 형식이 아닙니다 (${m.interface_id}).` });
+    }
+    // 3) 월별 행수 집계 — 응답 키는 화면 호환성을 위해 항상 'CALMONTH' 로 통일
     const [rows] = await pool.query(
-      `SELECT CALMONTH, COUNT(*) AS cnt
-         FROM bw_profitability_data
-        GROUP BY CALMONTH
-        ORDER BY CALMONTH DESC
+      `SELECT \`${m.data_month_column}\` AS CALMONTH, COUNT(*) AS cnt
+         FROM \`${m.data_table}\`
+        GROUP BY \`${m.data_month_column}\`
+        ORDER BY \`${m.data_month_column}\` DESC
         LIMIT 12`
     );
     // 오래된 → 최신 순으로 정렬해서 반환
-    res.json({ items: rows.reverse() });
+    res.json({
+      items: rows.reverse(),
+      interface_id: m.interface_id,
+      interface_name: m.interface_name,
+      data_table: m.data_table,
+      data_month_column: m.data_month_column,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
