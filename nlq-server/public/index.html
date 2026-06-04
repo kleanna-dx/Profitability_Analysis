@@ -271,6 +271,19 @@
 
         /* Chart container */
         .chart-container{padding:16px;min-height:320px;position:relative;}
+        .chart-toolbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 16px 0;}
+        .chart-toolbar label{font-size:12px;color:#64748b;font-weight:600;}
+        .chart-type-select{
+            font-size:12.5px;font-family:'Noto Sans KR',sans-serif;color:#1e293b;
+            padding:5px 28px 5px 10px;border:1px solid #cbd5e1;border-radius:6px;
+            background-color:#fff;cursor:pointer;outline:none;
+            background-image:url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%2364748b' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+            background-repeat:no-repeat;background-position:right 8px center;
+            appearance:none;-webkit-appearance:none;-moz-appearance:none;
+            transition:border-color .15s,box-shadow .15s;
+        }
+        .chart-type-select:hover{border-color:#94a3b8;}
+        .chart-type-select:focus{border-color:#6366f1;box-shadow:0 0 0 2px rgba(99,102,241,0.15);}
 
         /* SQL display */
         .sql-display{
@@ -1255,6 +1268,15 @@ function appendBotMessage(data) {
                 ${tableHtml}
             </div>
             <div id="${id}_chart" class="res-panel" style="${!hasChart ? 'display:none' : ''}">
+                <div class="chart-toolbar">
+                    <label for="${chartId}_type">차트 유형:</label>
+                    <select id="${chartId}_type" class="chart-type-select" onchange="changeChartType('${chartId}', this)">
+                        <option value="bar">막대형</option>
+                        <option value="line">선형</option>
+                        <option value="pie">원형</option>
+                        <option value="doughnut">도넛형</option>
+                    </select>
+                </div>
                 <div class="chart-container"><canvas id="${chartId}" height="300"></canvas></div>
             </div>
             <div id="${id}_sql" class="res-panel">
@@ -1301,7 +1323,20 @@ function appendBotMessage(data) {
 
     // Render chart if applicable
     if (hasChart && data.data && data.data.length > 0) {
-        setTimeout(() => renderMsgChart(chartId, data), 100);
+        setTimeout(() => {
+            // 차트 데이터를 사용자 차트 유형 변경 시 재사용할 수 있도록 보관
+            const canvasEl = document.getElementById(chartId);
+            if (canvasEl) canvasEl._nlqChartData = data;
+
+            // 셀렉트 초기값을 백엔드 추천 유형(또는 기본 'bar')으로 동기화
+            const selectEl = document.getElementById(chartId + '_type');
+            const initialType = (data.chartType && data.chartType !== 'table') ? data.chartType : 'bar';
+            if (selectEl) {
+                const supported = ['bar','line','pie','doughnut'];
+                selectEl.value = supported.includes(initialType) ? initialType : 'bar';
+            }
+            renderMsgChart(chartId, data);
+        }, 100);
     }
 }
 
@@ -1361,7 +1396,7 @@ function isNumericValue(v) {
     return !isNaN(parseNumeric(v));
 }
 
-function renderMsgChart(canvasId, data) {
+function renderMsgChart(canvasId, data, overrideType) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -1369,8 +1404,16 @@ function renderMsgChart(canvasId, data) {
     const rows = data.data || [];
     if (rows.length === 0) return;
 
-    const chartType = data.chartType || 'bar';
-    if (chartType === 'table') return;
+    // 사용자가 드롭다운으로 선택한 유형이 있으면 우선 사용,
+    // 없으면 백엔드 추천 유형, 그것도 없으면 기본값 'bar'
+    let chartType = overrideType || data.chartType || 'bar';
+    if (chartType === 'table') chartType = 'bar';
+
+    // 기존 차트가 남아있다면 정리 (유형 변경 시 재렌더 대응)
+    if (charts[canvasId]) {
+        try { charts[canvasId].destroy(); } catch (e) {}
+        delete charts[canvasId];
+    }
 
     const config = data.chartConfig || {};
     const columns = Object.keys(rows[0]);
@@ -1447,6 +1490,14 @@ function renderMsgChart(canvasId, data) {
         },
     });
     charts[canvasId] = chart;
+}
+
+// 사용자가 드롭다운으로 차트 유형을 변경했을 때 호출되는 핸들러
+function changeChartType(canvasId, selectEl) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || !canvas._nlqChartData) return;
+    const newType = (selectEl && selectEl.value) || 'bar';
+    renderMsgChart(canvasId, canvas._nlqChartData, newType);
 }
 
 // ============================================================
