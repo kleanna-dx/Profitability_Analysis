@@ -4752,10 +4752,12 @@ async function isMenuAllowed(userId, urlPath) {
  */
 async function ensureBatchJobsTable() {
   try {
+    // 신규 환경: 완전한 스키마로 생성 (interface_id 포함)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS batch_jobs (
         id INT AUTO_INCREMENT PRIMARY KEY,
         job_type VARCHAR(50) NOT NULL DEFAULT 'SAP_RFC_SYNC' COMMENT '작업유형',
+        interface_id VARCHAR(50) NULL COMMENT '인터페이스 ID (batch_master)',
         cmonth VARCHAR(6) NOT NULL COMMENT '입력년월 (YYYYMM)',
         mode VARCHAR(20) NOT NULL DEFAULT 'replace' COMMENT '실행모드: replace/append/dry-run',
         status ENUM('pending','running','success','failed','cancelled') NOT NULL DEFAULT 'pending',
@@ -4770,9 +4772,32 @@ async function ensureBatchJobsTable() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_batch_status (status),
-        INDEX idx_batch_cmonth (cmonth)
+        INDEX idx_batch_cmonth (cmonth),
+        INDEX idx_batch_jobs_interface (interface_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='배치 작업 이력'
     `);
+
+    // 기존 환경 보완: interface_id 컬럼/인덱스가 없으면 추가 (멱등성)
+    const [colChk] = await pool.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'batch_jobs' AND COLUMN_NAME = 'interface_id'`
+    );
+    if (!colChk[0].c) {
+      await pool.query(
+        `ALTER TABLE batch_jobs
+           ADD COLUMN interface_id VARCHAR(50) NULL COMMENT '인터페이스 ID (batch_master)' AFTER job_type`
+      );
+      console.log('[Batch] batch_jobs.interface_id 컬럼 자동 추가');
+    }
+    const [idxChk] = await pool.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'batch_jobs' AND INDEX_NAME = 'idx_batch_jobs_interface'`
+    );
+    if (!idxChk[0].c) {
+      await pool.query(`ALTER TABLE batch_jobs ADD INDEX idx_batch_jobs_interface (interface_id)`);
+      console.log('[Batch] batch_jobs.idx_batch_jobs_interface 인덱스 자동 추가');
+    }
+
     console.log('[Batch] batch_jobs 테이블 준비 완료');
   } catch (e) {
     console.error('[Batch] batch_jobs 테이블 생성 실패:', e.message);
@@ -4799,7 +4824,7 @@ let _schedulerTickRunning = false;
 const SCHEDULER_TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 60_000); // 기본 60초
 
 async function runScheduleRow(s) {
-  // s: batch_schedule 행 + 마스터 JOIN 필드 (allowed_modes, default_mode)
+  // s: batch_schedule 행 + 마스터 JOIN 필드 (default_mode)
   try {
     // 1) 중복 실행 차단 — 같은 인터페이스가 running 이면 skip
     const [running] = await pool.query(
@@ -4823,17 +4848,17 @@ async function runScheduleRow(s) {
       cmonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
     }
 
-    // 3) 실행 모드 결정
-    const allowed = (s.allowed_modes || 'replace,append,dry-run').split(',').map(x=>x.trim());
+    // 3) 실행 모드 결정 — 허용 모드는 상수(ALLOWED_MODES_LIST) 기준
     let mode = s.exec_mode || s.default_mode || 'replace';
-    if (!allowed.includes(mode)) mode = allowed[0] || 'replace';
+    if (!ALLOWED_MODES_LIST.includes(mode)) mode = ALLOWED_MODES_LIST[0];
 
-    // 4) batch_jobs 레코드 생성
+    // 4) batch_jobs 레코드 생성 — interface_id 를 반드시 함께 기록해서
+    //    [인터페이스 이력관리] 탭에서 해당 인터페이스로 필터링/연결이 가능하도록 함
     const [r] = await pool.query(
       `INSERT INTO batch_jobs
-         (job_type, cmonth, mode, status, created_by, log_text)
-       VALUES (?, ?, ?, 'pending', ?, ?)`,
-      ['SAP_RFC_SYNC', cmonth, mode, `scheduler:${s.interface_id}`,
+         (job_type, interface_id, cmonth, mode, status, created_by, log_text)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+      ['SAP_RFC_SYNC', s.interface_id, cmonth, mode, `scheduler:${s.interface_id}`,
        `[Scheduler] schedule_id=${s.id} interface=${s.interface_id} type=${s.schedule_type} 자동 실행 시작`]
     );
     const jobId = r.insertId;
@@ -4877,7 +4902,7 @@ async function schedulerTick() {
   try {
     // ----- (A) once 예약: exec_datetime <= NOW() AND last_run_status IS NULL -----
     const [onceRows] = await pool.query(
-      `SELECT s.*, m.allowed_modes, m.default_mode
+      `SELECT s.*, m.default_mode
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
         WHERE s.schedule_type = 'once'
@@ -4892,7 +4917,7 @@ async function schedulerTick() {
 
     // ----- (B) daily: 오늘 exec_time 이 지났고, 오늘 아직 안 돈 행 -----
     const [dailyRows] = await pool.query(
-      `SELECT s.*, m.allowed_modes, m.default_mode
+      `SELECT s.*, m.default_mode
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
         WHERE s.schedule_type = 'daily'
@@ -4907,7 +4932,7 @@ async function schedulerTick() {
 
     // ----- (C) monthly: 오늘이 exec_day_of_month(또는 말일 보정)이고 exec_time 지났으며 이번 달 미실행 -----
     const [monthlyRows] = await pool.query(
-      `SELECT s.*, m.allowed_modes, m.default_mode,
+      `SELECT s.*, m.default_mode,
               LAST_DAY(NOW()) AS month_last_day
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
@@ -5005,13 +5030,13 @@ app.post('/api/batch/execute', requireAdmin, async (req, res) => {
     }
   } catch (e) { /* 무시, 계속 진행 */ }
 
-  // 작업 레코드 생성
+  // 작업 레코드 생성 — [배치관리] 화면은 수익성데이터(NLP_RFC_001) 전용 이므로 interface_id 고정
   const userId = req.session?.user?.id || 'unknown';
   let jobId;
   try {
     const [r] = await pool.query(
-      `INSERT INTO batch_jobs (job_type, cmonth, mode, status, created_by)
-       VALUES ('SAP_RFC_SYNC', ?, ?, 'pending', ?)`,
+      `INSERT INTO batch_jobs (job_type, interface_id, cmonth, mode, status, created_by)
+       VALUES ('SAP_RFC_SYNC', 'NLP_RFC_001', ?, ?, 'pending', ?)`,
       [cmonth, execMode, userId]
     );
     jobId = r.insertId;
@@ -5331,8 +5356,7 @@ app.get('/api/interface/master', requireAdmin, async (req, res) => {
       `SELECT interface_id, interface_name, sender, receiver, rfc_name,
               rfc_func_or_url, rfc_param,
               IFTBL,
-              default_mode, allowed_modes,
-              exec_command, remark,
+              default_mode, remark,
               is_active, created_by, updated_by, created_at, updated_at
          FROM batch_master
          ORDER BY interface_id ASC`
@@ -5370,6 +5394,11 @@ app.get('/api/interface/master/:id', requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// 실행 모드 상수 — 이전에는 batch_master.allowed_modes 컬럼으로 인터페이스별 차등화했으나,
+// 실제 등록된 모든 인터페이스가 동일 값이어서 상수로 일원화 (YAGNI).
+const ALLOWED_MODES_DEFAULT = 'replace,append,dry-run';
+const ALLOWED_MODES_LIST    = ALLOWED_MODES_DEFAULT.split(',').map(s => s.trim());
+
 // IFTBL(인터페이스 테이블) 식별자 검증 (SQL Injection 방지)
 function validateIftbl(iftbl) {
   if (iftbl != null && iftbl !== '' && !SAFE_IDENT.test(iftbl)) {
@@ -5379,16 +5408,16 @@ function validateIftbl(iftbl) {
 }
 
 // 마스터 생성
+//  - receiver 기본값: 'analytics' (수신 시스템은 다른 값을 들 이유가 없어서 고정)
 app.post('/api/interface/master', requireAdmin, async (req, res) => {
   const {
     interface_id, interface_name,
-    sender = 'SAP', receiver = 'S&OP',
+    sender = 'SAP', receiver = 'analytics',
     rfc_name = null,
     rfc_func_or_url = null, rfc_param = null,
     IFTBL = null,
     default_mode = 'replace',
-    allowed_modes = 'replace,append,dry-run',
-    exec_command = null, remark = null, is_active = 1,
+    remark = null, is_active = 1,
   } = req.body || {};
   if (!interface_id || !interface_name) {
     return res.status(400).json({ error: 'interface_id, interface_name 필수' });
@@ -5402,15 +5431,13 @@ app.post('/api/interface/master', requireAdmin, async (req, res) => {
          (interface_id, interface_name, sender, receiver, rfc_name,
           rfc_func_or_url, rfc_param,
           IFTBL,
-          default_mode, allowed_modes,
-          exec_command, remark,
+          default_mode, remark,
           is_active, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [interface_id, interface_name, sender, receiver, rfc_name,
        rfc_func_or_url, rfc_param,
        IFTBL || null,
-       default_mode, allowed_modes,
-       exec_command, remark,
+       default_mode, remark,
        is_active ? 1 : 0, userId, userId]
     );
     res.json({ ok: true, interface_id });
@@ -5428,8 +5455,8 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
     interface_name, sender, receiver, rfc_name,
     rfc_func_or_url, rfc_param,
     IFTBL,
-    default_mode, allowed_modes,
-    exec_command, remark, is_active,
+    default_mode,
+    remark, is_active,
   } = req.body || {};
   const mappingErr = validateIftbl(IFTBL);
   if (mappingErr) return res.status(400).json({ error: mappingErr });
@@ -5445,8 +5472,6 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
               rfc_param         = ?,
               IFTBL             = ?,
               default_mode      = COALESCE(?, default_mode),
-              allowed_modes     = COALESCE(?, allowed_modes),
-              exec_command      = ?,
               remark            = ?,
               is_active         = COALESCE(?, is_active),
               updated_by        = ?
@@ -5455,8 +5480,8 @@ app.put('/api/interface/master/:id', requireAdmin, async (req, res) => {
        rfc_name ?? null,
        rfc_func_or_url ?? null, rfc_param ?? null,
        (IFTBL === undefined || IFTBL === '') ? null : IFTBL,
-       default_mode ?? null, allowed_modes ?? null,
-       exec_command ?? null, remark ?? null,
+       default_mode ?? null,
+       remark ?? null,
        (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
        userId, req.params.id]
     );
@@ -5487,7 +5512,7 @@ app.get('/api/interface/schedule', requireAdmin, async (req, res) => {
               s.exec_day_of_month, s.target_cmonth, s.exec_mode,
               s.is_active, s.last_run_at, s.last_run_status, s.next_run_at,
               s.remark, s.created_by, s.created_at, s.updated_at,
-              m.default_mode, m.allowed_modes
+              m.default_mode
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
         ORDER BY s.interface_id ASC,
@@ -5520,8 +5545,7 @@ app.get('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
 const VALID_TYPES = ['daily', 'monthly', 'manual', 'once'];
 
 function validateScheduleFields({ schedule_type, exec_time, exec_day_of_month,
-                                  exec_datetime, target_cmonth, exec_mode,
-                                  allowed_modes }) {
+                                  exec_datetime, target_cmonth, exec_mode }) {
   if (!VALID_TYPES.includes(schedule_type)) {
     return `schedule_type 은 ${VALID_TYPES.join('/')} 중 하나여야 합니다.`;
   }
@@ -5534,9 +5558,8 @@ function validateScheduleFields({ schedule_type, exec_time, exec_day_of_month,
     if (!target_cmonth || !/^\d{6}$/.test(String(target_cmonth))) {
       return 'once 모드는 target_cmonth (YYYYMM) 가 필수입니다.';
     }
-    const allowed = (allowed_modes || 'replace,append,dry-run').split(',').map(s=>s.trim());
-    if (exec_mode && !allowed.includes(exec_mode)) {
-      return `exec_mode 가 허용 목록 (${allowed.join('/')}) 에 없습니다.`;
+    if (exec_mode && !ALLOWED_MODES_LIST.includes(exec_mode)) {
+      return `exec_mode 가 허용 목록 (${ALLOWED_MODES_LIST.join('/')}) 에 없습니다.`;
     }
   }
   if (schedule_type === 'monthly') {
@@ -5566,19 +5589,17 @@ app.post('/api/interface/schedule', requireAdmin, async (req, res) => {
   if (!interface_id) return res.status(400).json({ error: 'interface_id 필수' });
 
   try {
-    // 마스터 조회 — allowed_modes 검증용
+    // 마스터 존재여부 + default_mode 조회
     const [mrows] = await pool.query(
-      'SELECT allowed_modes, default_mode FROM batch_master WHERE interface_id = ?',
+      'SELECT default_mode FROM batch_master WHERE interface_id = ?',
       [interface_id]
     );
     if (!mrows.length) return res.status(400).json({ error: '존재하지 않는 interface_id 입니다.' });
-    const allowedModes = mrows[0].allowed_modes || 'replace,append,dry-run';
-    const defaultMode  = mrows[0].default_mode  || 'replace';
+    const defaultMode = mrows[0].default_mode || 'replace';
 
     const vErr = validateScheduleFields({
       schedule_type, exec_time, exec_day_of_month,
       exec_datetime, target_cmonth, exec_mode,
-      allowed_modes: allowedModes,
     });
     if (vErr) return res.status(400).json({ error: vErr });
 
@@ -5627,9 +5648,9 @@ app.put('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: `schedule_type 은 ${VALID_TYPES.join('/')} 중 하나여야 합니다.` });
   }
   try {
-    // 기존 행 + 마스터의 allowed_modes 조회
+    // 기존 행 + 마스터 default_mode 조회
     const [orig] = await pool.query(
-      `SELECT s.*, m.allowed_modes, m.default_mode
+      `SELECT s.*, m.default_mode
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
         WHERE s.id = ?`,
@@ -5647,7 +5668,6 @@ app.put('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
       exec_datetime:     exec_datetime     !== undefined ? exec_datetime     : cur.exec_datetime,
       target_cmonth:     target_cmonth     !== undefined ? target_cmonth     : cur.target_cmonth,
       exec_mode:         exec_mode         !== undefined ? exec_mode         : cur.exec_mode,
-      allowed_modes:     cur.allowed_modes,
     };
     const vErr = validateScheduleFields(merged);
     if (vErr) return res.status(400).json({ error: vErr });
@@ -5724,7 +5744,7 @@ app.post('/api/interface/schedule/:id/run', requireAdmin, async (req, res) => {
     const [rows] = await pool.query(
       `SELECT s.interface_id, m.interface_name, m.is_active,
               m.rfc_name, m.rfc_func_or_url, m.rfc_param,
-              m.default_mode, m.allowed_modes, m.exec_command
+              m.default_mode
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
         WHERE s.id = ?`,
@@ -5745,11 +5765,11 @@ app.post('/api/interface/schedule/:id/run', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: '유효하지 않은 년월입니다. YYYYMM 형식이어야 합니다.' });
     }
 
+    // 실행 모드 검증 — 허용 모드는 상수(ALLOWED_MODES_LIST)
     const defaultMode = sch.default_mode || 'replace';
-    const allowed = (sch.allowed_modes || 'replace,append,dry-run').split(',').map(s => s.trim());
     const execMode = mode || defaultMode;
-    if (!allowed.includes(execMode)) {
-      return res.status(400).json({ error: `유효하지 않은 실행 모드입니다. (허용: ${allowed.join('/')})` });
+    if (!ALLOWED_MODES_LIST.includes(execMode)) {
+      return res.status(400).json({ error: `유효하지 않은 실행 모드입니다. (허용: ${ALLOWED_MODES_LIST.join('/')})` });
     }
 
     // (3) 중복 실행 차단 — 같은 인터페이스가 이미 running이면 거부
