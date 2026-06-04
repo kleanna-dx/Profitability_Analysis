@@ -33,12 +33,12 @@ CREATE TABLE IF NOT EXISTS batch_schedule (
 INSERT INTO batch_schedule
   (interface_id,  schedule_type, exec_time, is_active, remark, created_by)
 VALUES
-  ('SNOP_RFC_001', 'daily', '06:00:00', 1, '매일 06:00', 'admin'),
-  ('SNOP_RFC_002', 'daily', '06:00:00', 1, '매일 06:00', 'admin'),
-  ('SNOP_RFC_003', 'daily', '06:00:00', 1, '매일 06:00', 'admin'),
-  ('SNOP_RFC_004', 'daily', '06:00:00', 1, '매일 06:00', 'admin'),
-  ('SNOP_RFC_005', 'daily', '23:00:00', 1, '매일 23:00', 'admin'),
-  ('SNOP_RFC_006', 'daily', '07:00:00', 0, '매일 07:00 (비활성)', 'admin')
+  ('SNOP_RFC_001', 'daily', '06:00:00', 1, NULL, 'admin'),
+  ('SNOP_RFC_002', 'daily', '06:00:00', 1, NULL, 'admin'),
+  ('SNOP_RFC_003', 'daily', '06:00:00', 1, NULL, 'admin'),
+  ('SNOP_RFC_004', 'daily', '06:00:00', 1, NULL, 'admin'),
+  ('SNOP_RFC_005', 'daily', '23:00:00', 1, NULL, 'admin'),
+  ('SNOP_RFC_006', 'daily', '07:00:00', 0, '(비활성)', 'admin')
 ON DUPLICATE KEY UPDATE
   schedule_type = VALUES(schedule_type),
   exec_time = VALUES(exec_time),
