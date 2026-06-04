@@ -6,8 +6,8 @@
 CREATE TABLE IF NOT EXISTS batch_schedule (
   id                  INT(11)      NOT NULL AUTO_INCREMENT,
   interface_id        VARCHAR(50)  NOT NULL                  COMMENT '인터페이스 ID (FK → batch_master)',
-  schedule_type       ENUM('daily','monthly') NOT NULL DEFAULT 'daily' COMMENT '수행 주기',
-  exec_time           TIME         NOT NULL DEFAULT '06:00:00' COMMENT '수행 시간',
+  schedule_type       ENUM('daily','monthly','manual') NOT NULL DEFAULT 'daily' COMMENT '수행 주기 (daily=매일, monthly=매월, manual=수동전용)',
+  exec_time           TIME         DEFAULT NULL              COMMENT '수행 시간 (manual 인 경우 NULL)',
   exec_day_of_month   TINYINT(2)   DEFAULT NULL              COMMENT '월간일 경우 실행일(1~31)',
   is_active           TINYINT(1)   NOT NULL DEFAULT 1        COMMENT '활성 여부',
   last_run_at         DATETIME     DEFAULT NULL              COMMENT '마지막 수행 시각',
