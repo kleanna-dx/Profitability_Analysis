@@ -5327,18 +5327,21 @@ app.post('/api/interface/schedule', requireAdmin, async (req, res) => {
     remark = null,
   } = req.body || {};
   if (!interface_id) return res.status(400).json({ error: 'interface_id 필수' });
-  if (!['daily', 'monthly'].includes(schedule_type)) {
-    return res.status(400).json({ error: "schedule_type 은 'daily' 또는 'monthly' 이어야 합니다." });
+  if (!['daily', 'monthly', 'manual'].includes(schedule_type)) {
+    return res.status(400).json({ error: "schedule_type 은 'daily', 'monthly', 'manual' 중 하나여야 합니다." });
   }
   try {
     const userId = req.session?.user?.user_id || 'admin';
+    // manual 수동 전용: 자동스케줄 안하므로 exec_time/exec_day도 없음
+    const finalExecTime = schedule_type === 'manual' ? null : exec_time;
+    const finalExecDay  = schedule_type === 'monthly' ? (exec_day_of_month ?? 1) : null;
     const [r] = await pool.query(
       `INSERT INTO batch_schedule
          (interface_id, schedule_type, exec_time, exec_day_of_month,
           is_active, remark, created_by, updated_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [interface_id, schedule_type, exec_time,
-       schedule_type === 'monthly' ? (exec_day_of_month ?? 1) : null,
+      [interface_id, schedule_type, finalExecTime,
+       finalExecDay,
        is_active ? 1 : 0, remark, userId, userId]
     );
     res.json({ ok: true, id: r.insertId });
@@ -5359,22 +5362,29 @@ app.put('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
     schedule_type, exec_time, exec_day_of_month,
     is_active, remark,
   } = req.body || {};
-  if (schedule_type && !['daily', 'monthly'].includes(schedule_type)) {
-    return res.status(400).json({ error: "schedule_type 은 'daily' 또는 'monthly' 이어야 합니다." });
+  if (schedule_type && !['daily', 'monthly', 'manual'].includes(schedule_type)) {
+    return res.status(400).json({ error: "schedule_type 은 'daily', 'monthly', 'manual' 중 하나여야 합니다." });
   }
   try {
     const userId = req.session?.user?.user_id || 'admin';
+    // manual 로 변경되면 exec_time/exec_day_of_month 강제 NULL 처리
+    const isManual = schedule_type === 'manual';
+    const isMonthly = schedule_type === 'monthly';
+    const finalExecTime = isManual ? null : (exec_time ?? null);
+    const finalExecDay  = isManual ? null
+                        : isMonthly ? (exec_day_of_month ?? 1)
+                        : null;
     const [r] = await pool.query(
       `UPDATE batch_schedule
           SET schedule_type     = COALESCE(?, schedule_type),
-              exec_time         = COALESCE(?, exec_time),
+              exec_time         = ${isManual ? '?' : 'COALESCE(?, exec_time)'},
               exec_day_of_month = ?,
               is_active         = COALESCE(?, is_active),
               remark            = ?,
               updated_by        = ?
         WHERE id = ?`,
-      [schedule_type ?? null, exec_time ?? null,
-       exec_day_of_month ?? null,
+      [schedule_type ?? null, finalExecTime,
+       finalExecDay,
        (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
        remark ?? null, userId, req.params.id]
     );
