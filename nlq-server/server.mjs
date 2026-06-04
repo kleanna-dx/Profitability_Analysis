@@ -5315,7 +5315,7 @@ app.get('/api/batch/stats', requireAdmin, async (req, res) => {
 });
 
 // ============================================================
-// 인터페이스 관리 API (SAP ↔ S&OP)
+// 인터페이스 관리 API (SAP ↔ AI Analytics)
 //   - batch_master      : 인터페이스 마스터 CRUD
 //   - batch_schedule    : 인터페이스 수행(스케줄) CRUD + 토글/수동실행
 //   - batch_jobs        : 인터페이스 이력 조회 (interface_id 필터)
