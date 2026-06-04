@@ -117,6 +117,21 @@
         .form-row textarea{resize:vertical;min-height:60px;}
         .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 
+        /* Day-of-month calendar grid */
+        .day-cal{border:1px solid #cbd5e1;border-radius:10px;padding:10px;background:#fff;}
+        .day-cal-hdr{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:6px;}
+        .day-cal-hdr span{text-align:center;font-size:11px;color:#94a3b8;font-weight:600;padding:4px 0;}
+        .day-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+        .day-cell{aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#475569;background:#f8fafc;border:1px solid transparent;border-radius:8px;cursor:pointer;transition:all .12s;user-select:none;}
+        .day-cell:hover{background:#eef2ff;color:#4f46e5;border-color:#c7d2fe;}
+        .day-cell.selected{background:#4f46e5;color:#fff;border-color:#4f46e5;box-shadow:0 2px 6px rgba(79,70,229,.35);}
+        .day-cell.selected:hover{background:#4338ca;color:#fff;}
+        .day-cell.last-day{position:relative;}
+        .day-cell.last-day::after{content:'말';position:absolute;bottom:1px;right:3px;font-size:8px;color:#94a3b8;font-weight:500;}
+        .day-cell.selected.last-day::after{color:#c7d2fe;}
+        .day-cal-help{font-size:11px;color:#64748b;margin-top:8px;display:flex;align-items:center;gap:6px;}
+        .day-cal-help i{color:#94a3b8;}
+
         /* Toast */
         .toast{position:fixed;top:18px;right:18px;background:#1e293b;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:300;opacity:0;transform:translateY(-10px);transition:all .2s;box-shadow:0 6px 18px rgba(0,0,0,.2);}
         .toast.show{opacity:1;transform:translateY(0);}
@@ -400,8 +415,18 @@
                 </div>
             </div>
             <div class="form-row" id="rowDayOfMonth" style="display:none;">
-                <label>실행일 (1~31)</label>
-                <input id="sfDay" type="number" min="1" max="31" value="1">
+                <label>실행일 선택 <span style="color:#94a3b8;font-weight:500;">(매월 해당 일에 실행)</span></label>
+                <div class="day-cal">
+                    <div class="day-cal-hdr">
+                        <span>1주</span><span>2주</span><span>3주</span><span>4주</span><span>5주</span><span></span><span></span>
+                    </div>
+                    <div class="day-grid" id="sfDayGrid"><!-- JS render --></div>
+                    <div class="day-cal-help">
+                        <i class="fas fa-circle-info"></i>
+                        선택한 날짜에 매월 실행됩니다. <strong>31일</strong>은 해당 일이 없는 달엔 자동으로 <strong>말일</strong>에 실행됩니다.
+                    </div>
+                </div>
+                <input id="sfDay" type="hidden" value="1">
             </div>
             <div class="form-row">
                 <label>비고</label>
@@ -691,6 +716,23 @@ let editingSchedId=null;
 function onSchedTypeChange(){
   const isMonthly=document.getElementById('sfType').value==='monthly';
   document.getElementById('rowDayOfMonth').style.display=isMonthly?'flex':'none';
+  if(isMonthly) renderDayGrid(Number(document.getElementById('sfDay').value)||1);
+}
+function renderDayGrid(selected){
+  const wrap=document.getElementById('sfDayGrid'); if(!wrap) return;
+  let html='';
+  for(let d=1; d<=31; d++){
+    const sel = d===Number(selected) ? ' selected':'';
+    const last= d===31 ? ' last-day':'';
+    html += `<div class="day-cell${sel}${last}" data-day="${d}" onclick="selectDay(${d})" title="매월 ${d}일${d===31?' (없는 달은 말일)':''}">${d}</div>`;
+  }
+  wrap.innerHTML=html;
+}
+function selectDay(d){
+  document.getElementById('sfDay').value=d;
+  document.querySelectorAll('#sfDayGrid .day-cell').forEach(el=>{
+    el.classList.toggle('selected', Number(el.dataset.day)===d);
+  });
 }
 function openSchedModal(id){
   editingSchedId=id||null;
