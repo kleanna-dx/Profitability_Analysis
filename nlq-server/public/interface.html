@@ -482,7 +482,7 @@
                     <select id="sfType" onchange="onSchedTypeChange()">
                         <option value="daily">매일 (DAILY)</option>
                         <option value="monthly">매월 (MONTHLY)</option>
-                        <option value="manual">직접 실행 (MANUAL) — 자동 스케줄 없음</option>
+                        <option value="manual">직접 실행 — 자동 스케줄 없음</option>
                     </select>
                 </div>
                 <div class="form-row" id="rowExecTime">
@@ -845,7 +845,7 @@ async function loadSchedule(){
                     : '매일';
         const timeStr = isManual ? '' : (s.exec_time||'').slice(0,5);
         const typeBadge = isManual
-          ? '<span style="background:#cffafe;color:#0e7490;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">MANUAL</span>'
+          ? '<span style="background:#cffafe;color:#0e7490;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">직접 실행</span>'
           : isMonthly
             ? '<span style="background:#fce7f3;color:#9d174d;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">MONTHLY</span>'
             : '<span style="background:#dbeafe;color:#1d4ed8;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">DAILY</span>';
