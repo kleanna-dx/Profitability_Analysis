@@ -4779,6 +4779,174 @@ async function ensureBatchJobsTable() {
   }
 }
 
+// =====================================================================
+// 배치 스케줄러 (Scheduler Tick)
+//
+//  - 1분마다 batch_schedule 을 조회하여 실행 시각이 도래한 행을 자동 실행
+//  - 지원 타입:
+//      * once   : exec_datetime <= NOW() AND last_run_status IS NULL
+//      * daily  : 매일 exec_time
+//      * monthly: 매월 exec_day_of_month 의 exec_time
+//  - manual 은 자동 실행 대상이 아님 (사용자가 직접 [수동실행] 버튼 클릭)
+//
+// 중복 실행 방지:
+//  - 같은 interface_id 에 batch_jobs.status='running' 행이 있으면 skip
+//  - daily/monthly: last_run_at 가 "오늘"이면 이미 실행한 것으로 간주 후 skip
+//  - once: last_run_status 가 NULL 이 아니면 (이미 한 번 시도됨) 다시 실행 안 함
+// =====================================================================
+
+let _schedulerTickRunning = false;
+const SCHEDULER_TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 60_000); // 기본 60초
+
+async function runScheduleRow(s) {
+  // s: batch_schedule 행 + 마스터 JOIN 필드 (allowed_modes, default_mode)
+  try {
+    // 1) 중복 실행 차단 — 같은 인터페이스가 running 이면 skip
+    const [running] = await pool.query(
+      `SELECT id FROM batch_jobs
+        WHERE status = 'running'
+          AND cmonth = ?
+          AND created_by IS NOT NULL
+        LIMIT 1`,
+      [s.target_cmonth || '000000']
+    );
+    if (running.length) {
+      console.log(`[Scheduler] skip schedule_id=${s.id} (other running job)`);
+      return;
+    }
+
+    // 2) 대상년월 결정
+    let cmonth = s.target_cmonth;
+    if (!cmonth) {
+      // daily/monthly 는 today 의 yyyymm
+      const now = new Date();
+      cmonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    // 3) 실행 모드 결정
+    const allowed = (s.allowed_modes || 'replace,append,dry-run').split(',').map(x=>x.trim());
+    let mode = s.exec_mode || s.default_mode || 'replace';
+    if (!allowed.includes(mode)) mode = allowed[0] || 'replace';
+
+    // 4) batch_jobs 레코드 생성
+    const [r] = await pool.query(
+      `INSERT INTO batch_jobs
+         (job_type, cmonth, mode, status, created_by, log_text)
+       VALUES (?, ?, ?, 'pending', ?, ?)`,
+      ['SAP_RFC_SYNC', cmonth, mode, `scheduler:${s.interface_id}`,
+       `[Scheduler] schedule_id=${s.id} interface=${s.interface_id} type=${s.schedule_type} 자동 실행 시작`]
+    );
+    const jobId = r.insertId;
+
+    // 5) batch_schedule 의 last_run 정보 갱신
+    await pool.query(
+      `UPDATE batch_schedule
+          SET last_run_at = NOW(),
+              last_run_status = 'running'
+        WHERE id = ?`,
+      [s.id]
+    );
+
+    console.log(`[Scheduler] FIRE schedule_id=${s.id} interface=${s.interface_id} cmonth=${cmonth} mode=${mode} jobId=${jobId}`);
+
+    // 6) 실제 RFC 실행 (비동기, 결과는 last_run_status 에 반영)
+    executeBatchJob(jobId, cmonth, mode)
+      .then(async () => {
+        const [j] = await pool.query('SELECT status FROM batch_jobs WHERE id=?', [jobId]);
+        const finalStatus = j[0]?.status === 'success' ? 'success' : 'failed';
+        await pool.query(
+          `UPDATE batch_schedule SET last_run_status = ? WHERE id = ?`,
+          [finalStatus, s.id]
+        );
+      })
+      .catch(async (err) => {
+        console.error(`[Scheduler] schedule_id=${s.id} 실행 실패:`, err.message);
+        await pool.query(
+          `UPDATE batch_schedule SET last_run_status = 'failed' WHERE id = ?`,
+          [s.id]
+        );
+      });
+  } catch (err) {
+    console.error(`[Scheduler] schedule_id=${s.id} 처리 오류:`, err.message);
+  }
+}
+
+async function schedulerTick() {
+  if (_schedulerTickRunning) return; // 중첩 실행 방지
+  _schedulerTickRunning = true;
+  try {
+    // ----- (A) once 예약: exec_datetime <= NOW() AND last_run_status IS NULL -----
+    const [onceRows] = await pool.query(
+      `SELECT s.*, m.allowed_modes, m.default_mode
+         FROM batch_schedule s
+         LEFT JOIN batch_master m ON m.interface_id = s.interface_id
+        WHERE s.schedule_type = 'once'
+          AND s.is_active = 1
+          AND s.exec_datetime IS NOT NULL
+          AND s.exec_datetime <= NOW()
+          AND s.last_run_status IS NULL
+        ORDER BY s.exec_datetime ASC
+        LIMIT 20`
+    );
+    for (const s of onceRows) await runScheduleRow(s);
+
+    // ----- (B) daily: 오늘 exec_time 이 지났고, 오늘 아직 안 돈 행 -----
+    const [dailyRows] = await pool.query(
+      `SELECT s.*, m.allowed_modes, m.default_mode
+         FROM batch_schedule s
+         LEFT JOIN batch_master m ON m.interface_id = s.interface_id
+        WHERE s.schedule_type = 'daily'
+          AND s.is_active = 1
+          AND s.exec_time IS NOT NULL
+          AND TIME(NOW()) >= s.exec_time
+          AND (s.last_run_at IS NULL OR DATE(s.last_run_at) < DATE(NOW()))
+        ORDER BY s.id ASC
+        LIMIT 20`
+    );
+    for (const s of dailyRows) await runScheduleRow(s);
+
+    // ----- (C) monthly: 오늘이 exec_day_of_month(또는 말일 보정)이고 exec_time 지났으며 이번 달 미실행 -----
+    const [monthlyRows] = await pool.query(
+      `SELECT s.*, m.allowed_modes, m.default_mode,
+              LAST_DAY(NOW()) AS month_last_day
+         FROM batch_schedule s
+         LEFT JOIN batch_master m ON m.interface_id = s.interface_id
+        WHERE s.schedule_type = 'monthly'
+          AND s.is_active = 1
+          AND s.exec_time IS NOT NULL
+          AND s.exec_day_of_month IS NOT NULL
+          AND (
+            DAY(NOW()) = s.exec_day_of_month
+            OR (s.exec_day_of_month > DAY(LAST_DAY(NOW())) AND DAY(NOW()) = DAY(LAST_DAY(NOW())))
+          )
+          AND TIME(NOW()) >= s.exec_time
+          AND (
+            s.last_run_at IS NULL
+            OR DATE_FORMAT(s.last_run_at, '%Y-%m') < DATE_FORMAT(NOW(), '%Y-%m')
+          )
+        ORDER BY s.id ASC
+        LIMIT 20`
+    );
+    for (const s of monthlyRows) await runScheduleRow(s);
+
+  } catch (err) {
+    console.error('[Scheduler] tick 오류:', err.message);
+  } finally {
+    _schedulerTickRunning = false;
+  }
+}
+
+function startScheduler() {
+  console.log(`[Scheduler] 시작 — tick 주기: ${SCHEDULER_TICK_MS}ms`);
+  // 시작 후 5초 뒤에 첫 tick (서버 준비 완료까지 대기)
+  setTimeout(() => {
+    schedulerTick().catch(e => console.error('[Scheduler] first tick:', e.message));
+    setInterval(() => {
+      schedulerTick().catch(e => console.error('[Scheduler] tick:', e.message));
+    }, SCHEDULER_TICK_MS);
+  }, 5000);
+}
+
 // 배치 작업 목록 조회 (최근 50건)
 app.get('/api/batch/jobs', requireAdmin, async (req, res) => {
   try {
@@ -5286,16 +5454,23 @@ app.delete('/api/interface/master/:id', requireAdmin, async (req, res) => {
 // ---------- (B) 스케줄 CRUD ----------
 
 // 스케줄 목록 (마스터 JOIN)
+//  - once 예약은 같은 interface_id 가 여러 행 존재할 수 있음
+//  - 정렬: 인터페이스 ASC, once 의 경우 exec_datetime ASC 로 시간순
 app.get('/api/interface/schedule', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT s.id, s.interface_id, m.interface_name,
-              s.schedule_type, s.exec_time, s.exec_day_of_month,
+              s.schedule_type, s.exec_time, s.exec_datetime,
+              s.exec_day_of_month, s.target_cmonth, s.exec_mode,
               s.is_active, s.last_run_at, s.last_run_status, s.next_run_at,
-              s.remark, s.created_by, s.created_at, s.updated_at
+              s.remark, s.created_by, s.created_at, s.updated_at,
+              m.default_mode, m.allowed_modes
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
-        ORDER BY s.interface_id ASC`
+        ORDER BY s.interface_id ASC,
+                 (s.schedule_type = 'once') DESC,
+                 s.exec_datetime ASC,
+                 s.id ASC`
     );
     res.json({ items: rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -5317,38 +5492,97 @@ app.get('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
 });
 
 // 스케줄 생성
+//  - schedule_type: daily / monthly / manual / once
+//  - once: exec_datetime (YYYY-MM-DD HH:MM:SS) + target_cmonth + exec_mode 필수
+const VALID_TYPES = ['daily', 'monthly', 'manual', 'once'];
+
+function validateScheduleFields({ schedule_type, exec_time, exec_day_of_month,
+                                  exec_datetime, target_cmonth, exec_mode,
+                                  allowed_modes }) {
+  if (!VALID_TYPES.includes(schedule_type)) {
+    return `schedule_type 은 ${VALID_TYPES.join('/')} 중 하나여야 합니다.`;
+  }
+  if (schedule_type === 'once') {
+    if (!exec_datetime) return 'once 모드는 exec_datetime (실행일시) 가 필수입니다.';
+    // YYYY-MM-DD HH:MM[:SS] 또는 YYYY-MM-DDTHH:MM 허용
+    const dtStr = String(exec_datetime).trim();
+    const ok = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(dtStr);
+    if (!ok) return 'exec_datetime 형식이 올바르지 않습니다. (YYYY-MM-DD HH:MM)';
+    if (!target_cmonth || !/^\d{6}$/.test(String(target_cmonth))) {
+      return 'once 모드는 target_cmonth (YYYYMM) 가 필수입니다.';
+    }
+    const allowed = (allowed_modes || 'replace,append,dry-run').split(',').map(s=>s.trim());
+    if (exec_mode && !allowed.includes(exec_mode)) {
+      return `exec_mode 가 허용 목록 (${allowed.join('/')}) 에 없습니다.`;
+    }
+  }
+  if (schedule_type === 'monthly') {
+    const d = Number(exec_day_of_month);
+    if (!Number.isInteger(d) || d < 1 || d > 31) {
+      return 'monthly 모드는 exec_day_of_month (1~31) 가 필요합니다.';
+    }
+  }
+  if ((schedule_type === 'daily' || schedule_type === 'monthly') && !exec_time) {
+    return `${schedule_type} 모드는 exec_time (HH:MM:SS) 가 필요합니다.`;
+  }
+  return null;
+}
+
 app.post('/api/interface/schedule', requireAdmin, async (req, res) => {
   const {
     interface_id,
     schedule_type = 'daily',
     exec_time = '06:00:00',
     exec_day_of_month = null,
+    exec_datetime = null,
+    target_cmonth = null,
+    exec_mode = null,
     is_active = 1,
     remark = null,
   } = req.body || {};
   if (!interface_id) return res.status(400).json({ error: 'interface_id 필수' });
-  if (!['daily', 'monthly', 'manual'].includes(schedule_type)) {
-    return res.status(400).json({ error: "schedule_type 은 'daily', 'monthly', 'manual' 중 하나여야 합니다." });
-  }
+
   try {
+    // 마스터 조회 — allowed_modes 검증용
+    const [mrows] = await pool.query(
+      'SELECT allowed_modes, default_mode FROM batch_master WHERE interface_id = ?',
+      [interface_id]
+    );
+    if (!mrows.length) return res.status(400).json({ error: '존재하지 않는 interface_id 입니다.' });
+    const allowedModes = mrows[0].allowed_modes || 'replace,append,dry-run';
+    const defaultMode  = mrows[0].default_mode  || 'replace';
+
+    const vErr = validateScheduleFields({
+      schedule_type, exec_time, exec_day_of_month,
+      exec_datetime, target_cmonth, exec_mode,
+      allowed_modes: allowedModes,
+    });
+    if (vErr) return res.status(400).json({ error: vErr });
+
     const userId = req.session?.user?.user_id || 'admin';
-    // manual 수동 전용: 자동스케줄 안하므로 exec_time/exec_day도 없음
-    const finalExecTime = schedule_type === 'manual' ? null : exec_time;
-    const finalExecDay  = schedule_type === 'monthly' ? (exec_day_of_month ?? 1) : null;
+
+    // 타입별로 보존할 필드 정리 (불필요한 컬럼은 NULL)
+    const isOnce    = schedule_type === 'once';
+    const isManual  = schedule_type === 'manual';
+    const isMonthly = schedule_type === 'monthly';
+    const finalExecTime = (isManual || isOnce) ? null : exec_time;
+    const finalExecDay  = isMonthly ? Number(exec_day_of_month) : null;
+    const finalExecDt   = isOnce ? String(exec_datetime).replace('T', ' ') : null;
+    const finalCmonth   = isOnce ? String(target_cmonth) : (target_cmonth || null);
+    const finalMode     = isOnce ? (exec_mode || defaultMode) : (exec_mode || null);
+
     const [r] = await pool.query(
       `INSERT INTO batch_schedule
-         (interface_id, schedule_type, exec_time, exec_day_of_month,
+         (interface_id, schedule_type, exec_time, exec_datetime,
+          exec_day_of_month, target_cmonth, exec_mode,
           is_active, remark, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [interface_id, schedule_type, finalExecTime,
-       finalExecDay,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [interface_id, schedule_type, finalExecTime, finalExecDt,
+       finalExecDay, finalCmonth, finalMode,
        is_active ? 1 : 0, remark, userId, userId]
     );
     res.json({ ok: true, id: r.insertId });
   } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: '해당 interface_id 의 스케줄이 이미 존재합니다.' });
-    }
     if (err.code === 'ER_NO_REFERENCED_ROW_2') {
       return res.status(400).json({ error: '존재하지 않는 interface_id 입니다.' });
     }
@@ -5357,36 +5591,77 @@ app.post('/api/interface/schedule', requireAdmin, async (req, res) => {
 });
 
 // 스케줄 수정
+//  - 부분 업데이트 지원: schedule_type 가 명시되지 않으면 기존 타입 유지
+//  - schedule_type 가 명시되면 그 타입에 맞춰 다른 필드 (NULL/값) 일관성 보정
 app.put('/api/interface/schedule/:id', requireAdmin, async (req, res) => {
   const {
     schedule_type, exec_time, exec_day_of_month,
+    exec_datetime, target_cmonth, exec_mode,
     is_active, remark,
   } = req.body || {};
-  if (schedule_type && !['daily', 'monthly', 'manual'].includes(schedule_type)) {
-    return res.status(400).json({ error: "schedule_type 은 'daily', 'monthly', 'manual' 중 하나여야 합니다." });
+
+  if (schedule_type && !VALID_TYPES.includes(schedule_type)) {
+    return res.status(400).json({ error: `schedule_type 은 ${VALID_TYPES.join('/')} 중 하나여야 합니다.` });
   }
   try {
+    // 기존 행 + 마스터의 allowed_modes 조회
+    const [orig] = await pool.query(
+      `SELECT s.*, m.allowed_modes, m.default_mode
+         FROM batch_schedule s
+         LEFT JOIN batch_master m ON m.interface_id = s.interface_id
+        WHERE s.id = ?`,
+      [req.params.id]
+    );
+    if (!orig.length) return res.status(404).json({ error: '스케줄을 찾을 수 없습니다.' });
+    const cur = orig[0];
+    const effectiveType = schedule_type || cur.schedule_type;
+
+    // 신규/현재값 머지 후 검증 (변경 안 한 필드는 기존값 사용)
+    const merged = {
+      schedule_type:     effectiveType,
+      exec_time:         exec_time         !== undefined ? exec_time         : cur.exec_time,
+      exec_day_of_month: exec_day_of_month !== undefined ? exec_day_of_month : cur.exec_day_of_month,
+      exec_datetime:     exec_datetime     !== undefined ? exec_datetime     : cur.exec_datetime,
+      target_cmonth:     target_cmonth     !== undefined ? target_cmonth     : cur.target_cmonth,
+      exec_mode:         exec_mode         !== undefined ? exec_mode         : cur.exec_mode,
+      allowed_modes:     cur.allowed_modes,
+    };
+    const vErr = validateScheduleFields(merged);
+    if (vErr) return res.status(400).json({ error: vErr });
+
     const userId = req.session?.user?.user_id || 'admin';
-    // manual 로 변경되면 exec_time/exec_day_of_month 강제 NULL 처리
-    const isManual = schedule_type === 'manual';
-    const isMonthly = schedule_type === 'monthly';
-    const finalExecTime = isManual ? null : (exec_time ?? null);
-    const finalExecDay  = isManual ? null
-                        : isMonthly ? (exec_day_of_month ?? 1)
-                        : null;
+
+    // 타입별 NULL 보정
+    const isOnce    = effectiveType === 'once';
+    const isManual  = effectiveType === 'manual';
+    const isMonthly = effectiveType === 'monthly';
+    const finalExecTime = (isManual || isOnce) ? null : (merged.exec_time || '06:00:00');
+    const finalExecDay  = isMonthly ? Number(merged.exec_day_of_month) : null;
+    const finalExecDt   = isOnce ? String(merged.exec_datetime).replace('T', ' ') : null;
+    const finalCmonth   = isOnce ? String(merged.target_cmonth) : (merged.target_cmonth || null);
+    const finalMode     = isOnce ? (merged.exec_mode || cur.default_mode || 'replace') : (merged.exec_mode || null);
+
+    // once 로 새로 바뀌면, 다시 미실행 상태로 되돌림 (last_run_* 초기화)
+    const resetLastRun = (schedule_type === 'once') && (cur.schedule_type !== 'once');
+
     const [r] = await pool.query(
       `UPDATE batch_schedule
-          SET schedule_type     = COALESCE(?, schedule_type),
-              exec_time         = ${isManual ? '?' : 'COALESCE(?, exec_time)'},
+          SET schedule_type     = ?,
+              exec_time         = ?,
+              exec_datetime     = ?,
               exec_day_of_month = ?,
+              target_cmonth     = ?,
+              exec_mode         = ?,
               is_active         = COALESCE(?, is_active),
               remark            = ?,
+              ${resetLastRun ? 'last_run_at=NULL, last_run_status=NULL,' : ''}
               updated_by        = ?
         WHERE id = ?`,
-      [schedule_type ?? null, finalExecTime,
-       finalExecDay,
+      [effectiveType, finalExecTime, finalExecDt,
+       finalExecDay, finalCmonth, finalMode,
        (is_active === undefined || is_active === null) ? null : (is_active ? 1 : 0),
-       remark ?? null, userId, req.params.id]
+       (remark !== undefined ? remark : cur.remark),
+       userId, req.params.id]
     );
     if (!r.affectedRows) return res.status(404).json({ error: '스케줄을 찾을 수 없습니다.' });
     res.json({ ok: true });
@@ -5804,6 +6079,9 @@ app.listen(PORT, '0.0.0.0', async () => {
 
   // 배치관리 테이블 자동 생성
   await ensureBatchJobsTable();
+
+  // 배치 스케줄러 시작 (once/daily/monthly 자동 실행)
+  startScheduler();
 
   // RBAC 테이블 자동 생성 + 시드 데이터
   await ensureRbacTables();
