@@ -295,6 +295,7 @@
                         <th>RFC 함수명</th>
                         <th>RFC Func. / REST URL</th>
                         <th>RFC Param</th>
+                        <th>기본모드</th>
                         <th>실행명령어</th>
                         <th>활성</th>
                         <th>등록자</th>
@@ -302,7 +303,7 @@
                         <th style="width:110px;">관리</th>
                     </tr>
                 </thead>
-                <tbody id="masterBody"><tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
+                <tbody id="masterBody"><tr><td colspan="13" style="text-align:center;color:#94a3b8;padding:20px;">불러오는 중...</td></tr></tbody>
             </table>
             </div>
         </div>
@@ -430,12 +431,26 @@
                 </div>
             </div>
             <div class="form-row">
-                <label>RFC Param</label>
-                <input id="mfParam" placeholder="(선택)">
+                <label>RFC Param <span style="color:#94a3b8;font-weight:500;">(JSON, {CMONTH}는 실행시 치환)</span></label>
+                <input id="mfParam" placeholder='예: {"function":"Z_BI_WEB_EX_BL","params":{"I_CMONTH":"{CMONTH}"}}' style="font-family:'Fira Code','Consolas',monospace;font-size:12px;">
+            </div>
+            <div class="form-grid">
+                <div class="form-row">
+                    <label>기본 실행 모드</label>
+                    <select id="mfDefaultMode">
+                        <option value="replace">REPLACE (기존 삭제 후 INSERT)</option>
+                        <option value="append">APPEND (추가 INSERT)</option>
+                        <option value="dry-run">DRY RUN (RFC만 호출, DB 변경 없음)</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>허용 모드 <span style="color:#94a3b8;font-weight:500;">(CSV)</span></label>
+                    <input id="mfAllowedModes" placeholder="replace,append,dry-run" value="replace,append,dry-run">
+                </div>
             </div>
             <div class="form-row">
                 <label>실행명령어</label>
-                <input id="mfCommand" placeholder="(선택)">
+                <input id="mfCommand" placeholder="예: SAP_RFC_SYNC">
             </div>
             <div class="form-row">
                 <label>비고</label>
@@ -510,6 +525,49 @@
         <div class="modal-footer">
             <button class="btn btn-outline" onclick="closeSchedModal()">취소</button>
             <button class="btn btn-primary" onclick="saveSched()"><i class="fas fa-save"></i> 저장</button>
+        </div>
+    </div>
+</div>
+
+<!-- Run Modal (수동 실행 — 년월 + 모드 선택) -->
+<div class="modal-overlay" id="runModal">
+    <div class="modal" style="max-width:560px;">
+        <div class="modal-header">
+            <i class="fas fa-play-circle text-green-500" style="color:#10b981;"></i>
+            수동 실행 — <span id="runIfName" class="col-mono" style="color:#4f46e5;">-</span>
+        </div>
+        <div class="modal-body">
+            <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px;color:#1e293b;">
+                <i class="fas fa-circle-info" style="color:#4f46e5;"></i>
+                <strong id="runRfcName" class="col-mono">-</strong> RFC를 호출하여 <strong id="runIfNameInline">-</strong> 데이터를 동기화합니다.
+            </div>
+
+            <div class="form-row">
+                <label>대상 년월 (YYYYMM) *</label>
+                <input id="runCmonth" type="text" maxlength="6" placeholder="예: 202604"
+                       style="font-family:monospace;font-size:14px;letter-spacing:1px;"
+                       oninput="this.value=this.value.replace(/\D/g,'').substring(0,6)">
+                <div style="font-size:11px;color:#94a3b8;margin-top:4px;">기본값: 현재 년월</div>
+            </div>
+
+            <div class="form-row">
+                <label>실행 모드 *</label>
+                <select id="runMode" style="font-size:14px;">
+                    <!-- JS render based on allowed_modes -->
+                </select>
+                <div id="runModeDesc" style="font-size:11px;color:#64748b;margin-top:6px;line-height:1.5;"></div>
+            </div>
+
+            <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-top:8px;font-size:12px;color:#92400e;">
+                <i class="fas fa-triangle-exclamation"></i>
+                <strong>REPLACE</strong>는 기존 해당월 데이터를 <strong>삭제 후</strong> 새로 적재합니다. 신중하게 선택하세요.
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeRunModal()">취소</button>
+            <button class="btn btn-success" onclick="doRunSched()" style="background:#10b981;border-color:#10b981;color:#fff;">
+                <i class="fas fa-play"></i> 실행
+            </button>
         </div>
     </div>
 </div>
@@ -659,16 +717,20 @@ async function loadMaster(){
     masterList=j.items||[];
     document.getElementById('masterCount').textContent=masterList.length;
     document.getElementById('masterBody').innerHTML = masterList.length===0
-      ? `<tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
-      : masterList.map(m=>`
+      ? `<tr><td colspan="13" style="text-align:center;color:#94a3b8;padding:18px;">등록된 인터페이스가 없습니다.</td></tr>`
+      : masterList.map(m=>{
+          const modeColor={replace:'#b45309',append:'#1d4ed8','dry-run':'#6d28d9'}[m.default_mode||'replace']||'#475569';
+          const modeBg   ={replace:'#fef3c7',append:'#dbeafe','dry-run':'#ede9fe'}[m.default_mode||'replace']||'#f1f5f9';
+          return `
         <tr>
           <td class="col-mono">${escapeHtml(m.interface_id)}</td>
           <td>${escapeHtml(m.interface_name)}</td>
           <td style="text-align:center;">${escapeHtml(m.sender)}</td>
           <td style="text-align:center;">${escapeHtml(m.receiver)}</td>
           <td class="col-mono" style="color:#7c3aed;font-weight:600;">${escapeHtml(m.rfc_name||'-')}</td>
-          <td class="col-mono">${escapeHtml(m.rfc_func_or_url||'')}</td>
-          <td style="text-align:center;">${escapeHtml(m.rfc_param||'-')}</td>
+          <td class="col-mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(m.rfc_func_or_url||'')}">${escapeHtml(m.rfc_func_or_url||'')}</td>
+          <td class="col-mono" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;" title="${escapeHtml(m.rfc_param||'')}">${escapeHtml(m.rfc_param||'-')}</td>
+          <td style="text-align:center;"><span style="background:${modeBg};color:${modeColor};padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;">${(m.default_mode||'replace').toUpperCase()}</span></td>
           <td class="col-mono">${escapeHtml(m.exec_command||'')}</td>
           <td style="text-align:center;"><span class="status-badge ${m.is_active?'badge-on':'badge-off'}">${m.is_active?'활성':'비활성'}</span></td>
           <td style="text-align:center;">${escapeHtml(m.created_by||'-')}</td>
@@ -677,7 +739,8 @@ async function loadMaster(){
             <button class="btn btn-outline btn-sm" onclick="openMasterModal('${escapeHtml(m.interface_id)}')"><i class="fas fa-pen"></i></button>
             <button class="btn btn-danger btn-sm" onclick="delMaster('${escapeHtml(m.interface_id)}')"><i class="fas fa-trash"></i></button>
           </td>
-        </tr>`).join('');
+        </tr>`;
+        }).join('');
   }catch(e){toast('마스터 로드 실패: '+e.message,'error');}
 }
 
@@ -696,6 +759,8 @@ function openMasterModal(id){
     document.getElementById('mfRfcName').value=m.rfc_name||'';
     document.getElementById('mfUrl').value=m.rfc_func_or_url||'';
     document.getElementById('mfParam').value=m.rfc_param||'';
+    document.getElementById('mfDefaultMode').value=m.default_mode||'replace';
+    document.getElementById('mfAllowedModes').value=m.allowed_modes||'replace,append,dry-run';
     document.getElementById('mfCommand').value=m.exec_command||'';
     document.getElementById('mfRemark').value=m.remark||'';
     document.getElementById('mfActive').checked = !!m.is_active;
@@ -705,9 +770,11 @@ function openMasterModal(id){
     document.getElementById('mfSender').value='SAP';
     document.getElementById('mfReceiver').value='S&OP';
     document.getElementById('mfRfcName').value='';
-    document.getElementById('mfUrl').value='';
+    document.getElementById('mfUrl').value='POST /profit-api/sap-rfc/execute';
     document.getElementById('mfParam').value='';
-    document.getElementById('mfCommand').value='';
+    document.getElementById('mfDefaultMode').value='replace';
+    document.getElementById('mfAllowedModes').value='replace,append,dry-run';
+    document.getElementById('mfCommand').value='SAP_RFC_SYNC';
     document.getElementById('mfRemark').value='';
     document.getElementById('mfActive').checked=true;
   }
@@ -724,6 +791,8 @@ async function saveMaster(){
     rfc_name:      document.getElementById('mfRfcName').value.trim().toUpperCase()||null,
     rfc_func_or_url:document.getElementById('mfUrl').value.trim()||null,
     rfc_param:     document.getElementById('mfParam').value.trim()||null,
+    default_mode:  document.getElementById('mfDefaultMode').value||'replace',
+    allowed_modes: document.getElementById('mfAllowedModes').value.trim()||'replace,append,dry-run',
     exec_command:  document.getElementById('mfCommand').value.trim()||null,
     remark:        document.getElementById('mfRemark').value.trim()||null,
     is_active:     document.getElementById('mfActive').checked?1:0,
@@ -906,16 +975,69 @@ async function toggleSched(id){
     await loadSchedule();
   }catch(e){toast('상태 변경 실패: '+e.message,'error');}
 }
-async function runSched(id){
-  if(!confirm('이 인터페이스를 지금 수동으로 실행하시겠습니까?')) return;
+// ============================================================
+// Run Modal (수동 실행 — 년월 + 모드 선택)
+// ============================================================
+let _runTargetSchedId=null;
+const MODE_LABEL={
+  replace : 'REPLACE (기존 삭제 후 INSERT)',
+  append  : 'APPEND (기존 유지, 추가 INSERT)',
+  'dry-run':'DRY RUN (RFC 호출만, DB 변경 없음)',
+};
+const MODE_DESC={
+  replace : '⚠️ 해당 년월의 기존 데이터를 삭제하고 새로 INSERT합니다. 가장 안전한 재동기화 모드.',
+  append  : '기존 데이터는 유지하고 RFC 결과를 추가로 INSERT합니다. 중복 데이터 발생 가능성에 주의하세요.',
+  'dry-run':'RFC만 호출하고 DB에는 변경을 가하지 않습니다. 테스트/검증용.',
+};
+function runSched(id){
+  const s=scheduleList.find(x=>x.id===id);
+  if(!s){toast('대상을 찾을 수 없습니다','error');return;}
+  const m=masterList.find(x=>x.interface_id===s.interface_id) || {};
+
+  _runTargetSchedId=id;
+  document.getElementById('runIfName').textContent       = s.interface_id;
+  document.getElementById('runIfNameInline').textContent = m.interface_name || s.interface_id;
+  document.getElementById('runRfcName').textContent      = m.rfc_name || '(RFC 미설정)';
+
+  // 대상 년월 — 현재 년월로 기본 채움
+  const t=new Date();
+  document.getElementById('runCmonth').value = `${t.getFullYear()}${String(t.getMonth()+1).padStart(2,'0')}`;
+
+  // 모드 옵션 — batch_master.allowed_modes 기반
+  const allowed=(m.allowed_modes||'replace,append,dry-run').split(',').map(x=>x.trim()).filter(Boolean);
+  const defaultMode=m.default_mode||'replace';
+  const sel=document.getElementById('runMode');
+  sel.innerHTML=allowed.map(md=>`<option value="${md}"${md===defaultMode?' selected':''}>${MODE_LABEL[md]||md}</option>`).join('');
+  sel.onchange=()=>{document.getElementById('runModeDesc').textContent=MODE_DESC[sel.value]||'';};
+  sel.onchange();
+
+  document.getElementById('runModal').classList.add('active');
+}
+function closeRunModal(){
+  document.getElementById('runModal').classList.remove('active');
+  _runTargetSchedId=null;
+}
+async function doRunSched(){
+  const id=_runTargetSchedId;
+  if(!id){closeRunModal();return;}
+  const cmonth=document.getElementById('runCmonth').value.trim();
+  const mode  =document.getElementById('runMode').value;
+  if(!/^\d{6}$/.test(cmonth)){toast('년월은 YYYYMM 형식 6자리여야 합니다','error');return;}
+
+  const modeLabel=MODE_LABEL[mode]||mode;
+  if(!confirm(`${cmonth.substring(0,4)}년 ${cmonth.substring(4)}월 데이터를 동기화합니다.\n\n실행 모드: ${modeLabel}\n\n계속하시겠습니까?`)) return;
+
   try{
-    const j=await api('/api/interface/schedule/'+id+'/run',{method:'POST'});
-    toast(`수동 실행 시작 (job_id=${j.job_id})`,'success');
-    // 잠시 후 갱신 (백엔드 비동기 완료 반영)
+    const j=await api('/api/interface/schedule/'+id+'/run',{
+      method:'POST',
+      body:JSON.stringify({cmonth, mode}),
+    });
+    toast(`실행 시작 — RFC=${j.rfc_name||'-'}, MODE=${(j.mode||mode).toUpperCase()}, job_id=${j.job_id}`,'success');
+    closeRunModal();
     setTimeout(async ()=>{
       await loadSchedule(); await refreshTopArea();
       if(currentTab==='history') await loadHistory();
-    }, 1200);
+    }, 1500);
   }catch(e){toast('실행 실패: '+e.message,'error');}
 }
 
