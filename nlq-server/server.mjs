@@ -1291,10 +1291,19 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 - 사용자가 "수량" 이라고만 하면 기본 단위는 BOX(ZQTY_BOX). BAG/EA는 사용자가 명시적으로 요청할 때만 포함.
 - 사용자가 "모든 수량" 또는 "BOX, BAG, EA 수량"처럼 여러 단위를 명시한 경우에만 복수 수량 컬럼 사용.
 
-[컬럼 별칭(alias) 작성 규칙]
+[컬럼 별칭(alias) 작성 규칙 — ★★★ 매우 중요 ★★★]
+- **SELECT 절의 모든 컬럼**(차원/명칭/코드/집계 포함)에 **반드시 한국어 AS 별칭**을 붙이세요. 영문 원본 컬럼명을 별칭 없이 결과셋에 노출하는 것을 금지합니다.
+- 별칭은 작은따옴표(') 또는 백틱(\`)으로 감싸세요.
 - 별칭에는 단위를 괄호로 명시: 예) '판매수량 합계(BOX)', '총매출(원)', '영업이익률(%)'
 - 집계 함수를 사용한 경우 "합계", "평균", "최대" 등을 별칭에 포함
-- 예시: FORMAT(SUM(ZQTY_BOX), 0) AS '판매수량 합계(BOX)',  FORMAT(SUM(ZAMT001), 0) AS '총매출 합계(원)'
+- 코드/명칭 컬럼도 의미 있는 한국어 별칭 필수:
+  ✗ 금지: SELECT MATERIAL, MATERIAL_NM, FORMAT(SUM(ZAMT001),0) AS '총매출 합계(원)'
+  ✓ 정답: SELECT MATERIAL AS '자재코드', MATERIAL_NM AS '자재명', FORMAT(SUM(ZAMT001),0) AS '총매출 합계(원)'
+- 별칭에 적절한 단어가 떠오르지 않으면 DB COMMENT/학습관리 동의어 의미를 추론하여 한국어로 부여하세요 (예: PROFIT_CTR → '손익센터', CALMONTH → '연월', DISTR_CHAN_NM → '유통경로명').
+- 예시 (전형적인 형태):
+  SELECT MATERIAL AS '자재코드', MATERIAL_NM AS '자재명',
+         FORMAT(SUM(ZQTY_BOX), 0) AS '판매수량 합계(BOX)',
+         FORMAT(SUM(ZAMT001), 0) AS '총매출 합계(원)'
 
 [분석형 질문 판별 - 매우 중요!]
 사용자의 질문이 단순 데이터 조회가 아니라 **분석, 요약, 시사점, 인사이트, 해석, 평가, 제언, 비교분석, 원인, 이유, 추천** 등을 요청하는 경우:
@@ -1721,6 +1730,186 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
 }
 
 // ============================================================
+// Helper: 도메인 자동 WHERE 조건 주입
+// - PS 도메인 → AND DIVISION = '10'
+// - HL 도메인 → AND DIVISION = '20'
+// - MGMT/기타 → no-op (전체 조회)
+// - 적용 대상: bw_profitability_data 테이블을 참조하는 SQL
+// - 중복 방지: SQL 어딘가에 이미 DIVISION 비교 조건이 있으면 추가하지 않음
+// ============================================================
+function applyDomainFilter(inputSql, domainCode) {
+  if (!inputSql) return inputSql;
+  const dc = (domainCode || '').toUpperCase();
+  // PS, HL 외의 도메인(MGMT, null 등)은 강제 필터 적용 안 함
+  const divisionMap = { PS: '10', HL: '20' };
+  const targetDivision = divisionMap[dc];
+  if (!targetDivision) return inputSql;
+
+  // 대상 테이블을 참조하지 않으면 적용 안 함
+  if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
+
+  // 이미 DIVISION 조건이 SQL 어딘가에 있으면 중복 추가 금지
+  // (DIVISION_NM 같은 다른 컬럼은 단어경계로 구분되므로 영향 없음)
+  if (/\bDIVISION\b\s*(=|<>|!=|<|>|\sIN\b|\sLIKE\b|\sBETWEEN\b)/i.test(inputSql)) {
+    return inputSql;
+  }
+
+  // WHERE 절이 있는지 검사. 첫 번째 WHERE의 기존 조건을 괄호로 감싸고
+  // 앞에 DIVISION = '<val>' AND 를 삽입.
+  // WHERE의 종료 지점은 GROUP BY / HAVING / ORDER BY / LIMIT / UNION / 서브쿼리 끝 ')' / 세미콜론 / SQL 끝
+  const whereTerminator = /(\bGROUP\s+BY\b|\bHAVING\b|\bORDER\s+BY\b|\bLIMIT\b|\bUNION\b|\)|;|$)/i;
+  const whereRegex = /\bWHERE\b\s+/i;
+  const whereMatch = whereRegex.exec(inputSql);
+
+  let result;
+  if (whereMatch) {
+    const before = inputSql.slice(0, whereMatch.index + whereMatch[0].length);
+    const rest = inputSql.slice(whereMatch.index + whereMatch[0].length);
+    // rest 안에서 WHERE 종료 지점을 찾는다
+    whereTerminator.lastIndex = 0;
+    const termMatch = whereTerminator.exec(rest);
+    let cond, tail;
+    if (termMatch && termMatch[0]) {
+      cond = rest.slice(0, termMatch.index).trim();
+      tail = rest.slice(termMatch.index);
+    } else {
+      cond = rest.trim();
+      tail = '';
+    }
+    // 빈 WHERE가 들어오는 경우는 거의 없지만 안전 처리
+    const wrapped = cond ? `DIVISION = '${targetDivision}' AND (${cond})` : `DIVISION = '${targetDivision}'`;
+    // 종료 토큰 앞에 공백 보장
+    const sep = tail && !tail.startsWith(' ') && !tail.startsWith(';') && !tail.startsWith(')') ? ' ' : '';
+    result = `${before}${wrapped}${sep}${tail}`;
+  } else {
+    // WHERE가 없으면 FROM bw_profitability_data [별칭?] 뒤에 WHERE 추가
+    // 별칭은 SQL 예약어(WHERE/GROUP/HAVING/ORDER/LIMIT/UNION/JOIN/ON 등)가 아니어야 함
+    const reservedAfterFrom = /^(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|ON)$/i;
+    const fromRegex = /\bFROM\s+bw_profitability_data\b(\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/i;
+    const fromMatch = fromRegex.exec(inputSql);
+    if (!fromMatch) return inputSql; // 이상 케이스: 안전하게 원본 반환
+    // 캡처된 별칭이 SQL 예약어이면 별칭이 아니라 다음 절이므로 매치 길이를 조정
+    let matchLen = fromMatch[0].length;
+    if (fromMatch[2] && reservedAfterFrom.test(fromMatch[2])) {
+      // 별칭 부분(공백 + 키워드)을 매치에서 제외
+      matchLen = fromMatch[0].length - fromMatch[1].length;
+    }
+    const insertPos = fromMatch.index + matchLen;
+    const before = inputSql.slice(0, insertPos);
+    const rest = inputSql.slice(insertPos);
+    // rest의 첫 토큰이 GROUP/HAVING/ORDER/LIMIT/UNION/세미콜론/끝이면 그 앞에 WHERE 삽입
+    whereTerminator.lastIndex = 0;
+    const termMatch = whereTerminator.exec(rest);
+    if (termMatch && termMatch.index > 0) {
+      const head = rest.slice(0, termMatch.index);
+      const tail = rest.slice(termMatch.index);
+      result = `${before}${head} WHERE DIVISION = '${targetDivision}' ${tail}`;
+    } else if (termMatch && termMatch.index === 0) {
+      // 바로 다음에 절이 오는 경우 (예: FROM bw_profitability_data ORDER BY ...)
+      result = `${before} WHERE DIVISION = '${targetDivision}' ${rest}`;
+    } else {
+      result = `${before} WHERE DIVISION = '${targetDivision}'${rest}`;
+    }
+  }
+
+  if (result !== inputSql) {
+    console.log(`[NLQ] 도메인 필터 자동 주입 (${dc} → DIVISION='${targetDivision}')`);
+  }
+  return result;
+}
+
+// ============================================================
+// Helper: SQL 결과셋 컬럼명 → 한국어 라벨 매핑
+// 우선순위:
+//  1순위) 결과 키에 이미 한글이 포함되어 있으면 그대로 사용 (= GPT가 AS 별칭을 한국어로 지정한 경우)
+//  2순위) DB COLUMN_COMMENT (INFORMATION_SCHEMA.COLUMNS)
+//  3순위) ontology_column.description (학습관리 등록값, 도메인 필터)
+//  최후) 원본 영문 컬럼명 그대로
+// SQL에서 FROM/JOIN 으로 참조되는 테이블 후보를 추출하여 매핑 사전 구성
+// ============================================================
+async function resolveColumnLabels(rows, sql, domainCode) {
+  const labels = {};
+  if (!rows || rows.length === 0) return labels;
+  const keys = Object.keys(rows[0]);
+  if (keys.length === 0) return labels;
+
+  // 결과 키에 한글이 포함되어 있는지 판별 (이미 AS 별칭으로 한국어 지정된 경우)
+  const hasKorean = (s) => /[\uAC00-\uD7AF]/.test(s);
+
+  // 한글 키는 그대로, 영문 키만 사전 조회 대상으로 수집
+  const englishKeys = [];
+  for (const k of keys) {
+    if (hasKorean(k)) {
+      labels[k] = k;
+    } else {
+      englishKeys.push(k);
+    }
+  }
+  if (englishKeys.length === 0) return labels;
+
+  // SQL에서 참조 테이블명 추출 (FROM / JOIN 뒤의 식별자)
+  // 보통 bw_profitability_data 하나지만, 안전하게 다중 테이블 지원
+  const tableSet = new Set();
+  const tableRegex = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)/gi;
+  let m;
+  while ((m = tableRegex.exec(sql || '')) !== null) {
+    tableSet.add(m[1]);
+  }
+  if (tableSet.size === 0) tableSet.add('bw_profitability_data'); // 폴백
+
+  const tables = [...tableSet];
+
+  // 2순위) DB COLUMN_COMMENT 일괄 조회
+  const commentMap = {}; // upperColumnName → comment
+  try {
+    const placeholders = tables.map(() => '?').join(',');
+    const colPlaceholders = englishKeys.map(() => '?').join(',');
+    const [rowsC] = await pool.query(
+      `SELECT COLUMN_NAME, COLUMN_COMMENT
+         FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME IN (${placeholders})
+          AND COLUMN_NAME IN (${colPlaceholders})`,
+      [...tables, ...englishKeys]
+    );
+    for (const r of rowsC) {
+      const cmt = (r.COLUMN_COMMENT || '').trim();
+      if (cmt) commentMap[r.COLUMN_NAME.toUpperCase()] = cmt;
+    }
+  } catch (e) {
+    console.error('[NLQ] COLUMN_COMMENT 조회 실패 (무시):', e.message);
+  }
+
+  // 3순위) ontology_column.description (도메인 필터)
+  const ontoMap = {}; // upperColumnName → description
+  try {
+    const dc = domainCode || 'PS';
+    const colPlaceholders = englishKeys.map(() => '?').join(',');
+    const [rowsO] = await pool.query(
+      `SELECT column_name, description
+         FROM ontology_column
+        WHERE domain_code = ?
+          AND column_name IN (${colPlaceholders})`,
+      [dc, ...englishKeys]
+    );
+    for (const r of rowsO) {
+      const desc = (r.description || '').trim();
+      if (desc) ontoMap[r.column_name.toUpperCase()] = desc;
+    }
+  } catch (e) {
+    console.error('[NLQ] ontology_column 조회 실패 (무시):', e.message);
+  }
+
+  // 우선순위 적용
+  for (const k of englishKeys) {
+    const upper = k.toUpperCase();
+    labels[k] = commentMap[upper] || ontoMap[upper] || k;
+  }
+
+  return labels;
+}
+
+// ============================================================
 // API: 자연어 질의 실행
 // ============================================================
 app.post('/api/nlq', async (req, res) => {
@@ -1885,6 +2074,12 @@ app.post('/api/nlq', async (req, res) => {
         isUnknownTerm: true,
       });
     }
+
+    // ★ 도메인별 DIVISION 자동 필터 주입 (PS→'10', HL→'20', MGMT→no-op)
+    //   - 학습 경로/GPT 경로 모두 여기로 합류하므로 한 곳에서 적용
+    //   - 이미 DIVISION 조건이 있으면 중복 추가하지 않음
+    sql = applyDomainFilter(sql, activeDomain);
+
     const sqlUpper = sql.toUpperCase().trim();
     if (!sqlUpper.startsWith('SELECT')) {
       // SQL이 아닌 안내 메시지가 sql 필드에 들어온 경우
@@ -2029,6 +2224,12 @@ ${dateHint}
       }
     }
 
+    // ★ 표/차트 헤더 한국어 라벨 매핑 (영문 컬럼명 → 한국어)
+    //   1순위 결과 키 자체가 한국어(GPT AS 별칭) → 그대로
+    //   2순위 DB COLUMN_COMMENT
+    //   3순위 ontology_column.description
+    const columnLabels = await resolveColumnLabels(rows, sql, activeDomain);
+
     const result = {
       success: true,
       query,
@@ -2038,6 +2239,7 @@ ${dateHint}
       chartType: chartType || 'table',
       chartConfig: chartConfig || {},
       data: rows,
+      columnLabels,                                    // ← 신규: 컬럼명 한국어 매핑
       rowCount: rows.length,
       executionTimeMs: execTime,
       ragEnabled: ragReady,
