@@ -126,6 +126,27 @@
         .btn-outline:hover{background:#f8fafc;color:#4f46e5;border-color:#a5b4fc;}
         .btn-sm{padding:4px 9px;font-size:11px;}
 
+        /* 이력관리 — 오류 메시지 셀의 [더보기] 버튼 */
+        .btn-more-log{
+            flex-shrink:0;
+            padding:3px 8px;
+            font-size:10.5px;
+            font-weight:600;
+            background:#fff;
+            color:#dc2626;
+            border:1px solid #fca5a5;
+            border-radius:6px;
+            cursor:pointer;
+            white-space:nowrap;
+            transition:all .15s ease;
+        }
+        .btn-more-log:hover{
+            background:#dc2626;
+            color:#fff;
+            border-color:#dc2626;
+        }
+        .btn-more-log i{margin-right:2px;}
+
         /* [수행 스케줄] 모달 — 실행 일시 입력 그룹 (캘린더 입력 그룹임을 시각적으로 명시) */
         .exec-dt-box{
             display:flex; gap:8px; align-items:stretch;
@@ -679,6 +700,36 @@
             <button class="btn btn-success" onclick="doRunSched()" style="background:#10b981;border-color:#10b981;color:#fff;">
                 <i class="fas fa-play"></i> 실행
             </button>
+        </div>
+    </div>
+</div>
+
+<!-- Job Log Modal (이력관리 → 오류 메시지 [더보기]) -->
+<div class="modal-overlay" id="jobLogModal">
+    <div class="modal" style="max-width:880px;">
+        <div class="modal-header">
+            <i class="fas fa-file-lines" style="color:#4f46e5;"></i>
+            작업 로그 상세 — <span id="jlJobId" class="col-mono" style="color:#4f46e5;">-</span>
+        </div>
+        <div class="modal-body">
+            <!-- 메타 정보 -->
+            <div id="jlMeta" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:#334155;line-height:1.7;"></div>
+
+            <!-- 오류 메시지 (한 줄 요약) -->
+            <div class="form-row">
+                <label style="color:#dc2626;"><i class="fas fa-circle-exclamation"></i> 오류 메시지</label>
+                <pre id="jlError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;font-size:12px;color:#991b1b;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto;margin:0;">-</pre>
+            </div>
+
+            <!-- 상세 로그 (log_text) -->
+            <div class="form-row">
+                <label><i class="fas fa-terminal"></i> 상세 로그</label>
+                <pre id="jlLog" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:12px 14px;font-size:11.5px;font-family:'SFMono-Regular',Consolas,'Liberation Mono',monospace;white-space:pre-wrap;word-break:break-all;max-height:360px;overflow:auto;margin:0;line-height:1.6;">-</pre>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="copyJobLog()"><i class="fas fa-copy"></i> 복사</button>
+            <button class="btn btn-primary" onclick="closeJobLogModal()"><i class="fas fa-xmark"></i> 닫기</button>
         </div>
     </div>
 </div>
@@ -1338,7 +1389,7 @@ async function loadRfcList(){
     if(sel){
       const current=sel.value||'ALL';
       sel.innerHTML='<option value="ALL">전체</option>'+
-        rfcListCache.map(r=>`<option value="${escapeHtml(r.rfc_name)}">${escapeHtml(r.rfc_name)}(${escapeHtml(r.interface_names||'-')})</option>`).join('');
+        rfcListCache.map(r=>`<option value="${escapeHtml(r.rfc_name)}">${escapeHtml(r.rfc_name)}(${escapeHtml(r.interface_name||'-')})</option>`).join('');
       sel.value=current;
       // 옵션을 새로 그렸으므로 상단 선택과 동기화 (옵션이 존재하면 그쪽 우선)
       syncHistRfcWithTopInterface();
@@ -1386,7 +1437,7 @@ async function loadHistory(){
           <td style="text-align:center;">${fmtSec(h.started_at)}</td>
           <td style="text-align:center;">${fmtSec(h.finished_at)}</td>
           <td style="text-align:right;">${Number(h.inserted_rows||0).toLocaleString()}</td>
-          <td style="color:#dc2626;font-size:11px;">${escapeHtml((h.error_message||'').slice(0,80))}</td>
+          <td style="color:#dc2626;font-size:11px;">${renderErrCell(h)}</td>
           <td style="text-align:center;">${escapeHtml(h.created_by||'-')}</td>
           <td style="text-align:center;">
             ${h.status==='failed' ? `<button class="btn btn-warn btn-sm" onclick="rerunJob(${h.id})"><i class="fas fa-redo"></i> 재수행</button>` : '-'}
@@ -1401,6 +1452,84 @@ async function rerunJob(jobId){
     toast(`재수행 시작 (new_job_id=${j.new_job_id})`,'success');
     setTimeout(async ()=>{await loadHistory(); await refreshTopArea();},1200);
   }catch(e){toast('재수행 실패: '+e.message,'error');}
+}
+
+// ============================================================
+// 이력관리 — 오류 메시지 셀 렌더링 + [더보기] 팝업
+// ============================================================
+// 오류 메시지 셀: 80자 미리보기 + [더보기] 버튼
+// - error_message 가 비어 있고 log_text 도 없으면 '-' 만 표시
+// - error_message 가 짧아도 (실패한 job 이면) 상세 로그를 볼 수 있도록 [더보기] 노출
+function renderErrCell(h){
+  const msg = (h.error_message||'').trim();
+  const preview = msg ? escapeHtml(msg.length>80 ? msg.slice(0,80)+'…' : msg) : '';
+  // [더보기] 노출 조건: 실패한 작업이거나 오류 메시지가 있는 경우
+  const showMore = (h.status==='failed') || msg.length > 0;
+  if(!preview && !showMore) return '-';
+  const previewHtml = preview ? `<span>${preview}</span>` : '';
+  const btnHtml = showMore
+    ? `<button class="btn-more-log" onclick="openJobLogModal(${h.id})" title="전체 로그 보기">
+         <i class="fas fa-magnifying-glass-plus"></i> 더보기
+       </button>`
+    : '';
+  return `<div style="display:flex;align-items:flex-start;gap:8px;justify-content:space-between;">
+            <div style="flex:1;min-width:0;line-height:1.5;">${previewHtml || '<span style="color:#94a3b8;">(메시지 없음)</span>'}</div>
+            ${btnHtml}
+          </div>`;
+}
+
+// [더보기] 버튼 클릭 → 단건 상세 API 호출 → 모달에 표시
+async function openJobLogModal(jobId){
+  const modal = document.getElementById('jobLogModal');
+  if(!modal) return;
+  // 먼저 로딩 상태로 모달 열기
+  document.getElementById('jlJobId').textContent = jobId;
+  document.getElementById('jlMeta').innerHTML = '<i class="fas fa-spinner fa-spin" style="color:#4f46e5;"></i> 로딩 중…';
+  document.getElementById('jlError').textContent = '-';
+  document.getElementById('jlLog').textContent = '-';
+  modal.classList.add('active');
+  try{
+    const d = await api('/api/interface/history/'+jobId);
+    // 메타 정보
+    document.getElementById('jlMeta').innerHTML = `
+      <b>인터페이스:</b> ${escapeHtml(d.interface_id||'-')}${d.interface_name?` <span style="color:#94a3b8;">(${escapeHtml(d.interface_name)})</span>`:''}
+      &nbsp;|&nbsp; <b>구분:</b> ${escapeHtml(d.job_type||'-')}
+      &nbsp;|&nbsp; <b>모드:</b> ${escapeHtml(d.mode||'-')}
+      &nbsp;|&nbsp; <b>상태:</b> ${badge(d.status)}
+      <br>
+      <b>시작:</b> ${fmtSec(d.started_at)} &nbsp;|&nbsp; <b>종료:</b> ${fmtSec(d.finished_at)}
+      &nbsp;|&nbsp; <b>처리행수:</b> ${Number(d.inserted_rows||0).toLocaleString()}
+      &nbsp;|&nbsp; <b>등록자:</b> ${escapeHtml(d.created_by||'-')}
+    `;
+    document.getElementById('jlError').textContent = d.error_message || '(오류 메시지 없음)';
+    document.getElementById('jlLog').textContent   = d.log_text     || '(상세 로그 없음)';
+  }catch(e){
+    document.getElementById('jlMeta').innerHTML = `<span style="color:#dc2626;">로드 실패: ${escapeHtml(e.message||'')}</span>`;
+  }
+}
+function closeJobLogModal(){
+  const modal = document.getElementById('jobLogModal');
+  if(modal) modal.classList.remove('active');
+}
+// [복사] 버튼 — 메타 + 오류 + 상세 로그를 한 번에 클립보드로
+function copyJobLog(){
+  const jobId = document.getElementById('jlJobId').textContent;
+  const err   = document.getElementById('jlError').textContent;
+  const log   = document.getElementById('jlLog').textContent;
+  const text  = `[Job #${jobId}]\n\n=== 오류 메시지 ===\n${err}\n\n=== 상세 로그 ===\n${log}`;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(
+      ()=>toast('클립보드에 복사되었습니다.','success'),
+      ()=>toast('복사 실패','error')
+    );
+  } else {
+    // fallback
+    const ta=document.createElement('textarea');
+    ta.value=text; document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); toast('클립보드에 복사되었습니다.','success'); }
+    catch{ toast('복사 실패','error'); }
+    finally{ ta.remove(); }
+  }
 }
 
 // ============================================================
