@@ -5369,14 +5369,13 @@ app.get('/api/interface/master', requireAdmin, async (req, res) => {
 app.get('/api/interface/rfc-list', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT rfc_name,
-              GROUP_CONCAT(DISTINCT interface_name ORDER BY interface_name SEPARATOR ', ') AS interface_names,
-              GROUP_CONCAT(DISTINCT interface_id ORDER BY interface_id SEPARATOR ',') AS interface_ids,
-              COUNT(*) AS cnt
+      `SELECT interface_id,
+              interface_name,
+              rfc_name
          FROM batch_master
-        WHERE rfc_name IS NOT NULL AND rfc_name <> ''
-        GROUP BY rfc_name
-        ORDER BY rfc_name ASC`
+        WHERE rfc_name IS NOT NULL
+          AND rfc_name <> ''
+        ORDER BY interface_id ASC`
     );
     res.json({ items: rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
