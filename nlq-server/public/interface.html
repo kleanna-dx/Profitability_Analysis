@@ -126,6 +126,33 @@
         .btn-outline:hover{background:#f8fafc;color:#4f46e5;border-color:#a5b4fc;}
         .btn-sm{padding:4px 9px;font-size:11px;}
 
+        /* [수행 스케줄] 모달 — 실행 일시 입력 그룹 (캘린더 입력 그룹임을 시각적으로 명시) */
+        .exec-dt-box{
+            display:flex; gap:8px; align-items:stretch;
+            padding:10px;
+            background:#f8fafc;
+            border:1.5px solid #c7d2fe;
+            border-radius:10px;
+            transition:border-color .15s ease, background .15s ease, box-shadow .15s ease;
+        }
+        .exec-dt-box:focus-within{
+            border-color:#6366f1;
+            background:#eef2ff;
+            box-shadow:0 0 0 3px rgba(99,102,241,0.15);
+        }
+        .exec-dt-input{
+            flex:1;
+            padding:8px 10px;
+            border:1px solid #cbd5e1;
+            border-radius:8px;
+            font-size:13px;
+            font-family:inherit;
+            background:#fff;
+            color:#1e293b;
+        }
+        .exec-dt-input:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 2px rgba(129,140,248,0.2);}
+        .exec-dt-done{white-space:nowrap; align-self:stretch;}
+
         /* Filter row (legacy, kept for compatibility) */
         .filter-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;}
         .filter-row label{font-size:12px;color:#64748b;font-weight:600;}
@@ -535,14 +562,18 @@
             <div class="form-grid" id="rowOnceFields" style="display:none;">
                 <div class="form-row">
                     <label>실행 일시 * <span style="color:#94a3b8;font-weight:500;">(예약 일시에 한 번 자동 실행)</span></label>
-                    <div style="display:flex;gap:8px;align-items:stretch;">
-                        <input id="sfExecDt" type="datetime-local" step="60" style="flex:1;">
-                        <button type="button" id="sfExecDtDone" class="btn btn-primary btn-sm"
+                    <!-- bordered 박스로 input + [완료] 버튼을 묶어 "캘린더 입력 그룹"임을 시각적으로 강조 -->
+                    <div class="exec-dt-box">
+                        <input id="sfExecDt" type="datetime-local" step="60" class="exec-dt-input">
+                        <button type="button" id="sfExecDtDone" class="btn btn-primary btn-sm exec-dt-done"
                                 onclick="onExecDtDone()"
-                                title="달력에서 날짜/시간 선택 후 클릭하면 캘린더가 닫히고 다음 필드로 이동합니다."
-                                style="white-space:nowrap;">
+                                title="달력에서 날짜/시간 선택 후 클릭하면 캘린더가 닫히고 다음 필드로 이동합니다.">
                             <i class="fas fa-check"></i> 완료
                         </button>
+                    </div>
+                    <div style="margin-top:6px;font-size:11.5px;color:#64748b;line-height:1.4;">
+                        <i class="fas fa-info-circle" style="color:#94a3b8;"></i>
+                        달력 아이콘을 눌러 날짜와 시간을 선택한 뒤 <b style="color:#4f46e5;">[완료]</b> 버튼을 누르세요.
                     </div>
                 </div>
                 <div class="form-row">
@@ -1324,11 +1355,12 @@ function resetHistFilter(){
 async function loadHistory(){
   // RFC 드롭다운이 비어있으면 먼저 채움 (loadRfcList 내부에서 상단과 동기화도 수행)
   if(!rfcListCache.length) await loadRfcList();
-  // 진입 시점에 한 번 더 동기화 (탭 전환 직후 등)
-  syncHistRfcWithTopInterface();
+  // ⚠️ 주의: 여기서 syncHistRfcWithTopInterface() 를 호출하면
+  //         사용자가 셀렉트박스에서 직접 선택한 값(onchange→loadHistory)을 즉시
+  //         덮어써 버려서 셀렉트가 안 먹히는 것처럼 보임. 동기화는 상단 인터페이스
+  //         변경/탭 전환/RFC 목록 재조회 시점에만 수행하고, loadHistory() 자체는
+  //         현재 히스토리 셀렉트 값을 그대로 신뢰해 쿼리한다.
   const qs=new URLSearchParams();
-  // 이제 histRfc 는 상단 인터페이스와 동기화되어 있으므로 이 값만 신뢰
-  // (사용자가 명시적으로 'ALL' 로 바꿨으면 그게 의도 → 필터 없이 전체 조회)
   const rfc=document.getElementById('histRfc').value;
   if(rfc && rfc!=='ALL') qs.set('rfc_name', rfc);
   const st=document.getElementById('histStatus').value;
