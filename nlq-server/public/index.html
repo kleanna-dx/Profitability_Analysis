@@ -1214,8 +1214,10 @@ function appendBotMessage(data) {
     let tableHtml = '<div class="p-4 text-center text-sm text-gray-400">결과가 없습니다.</div>';
     if (data.data && data.data.length > 0) {
         const cols = Object.keys(data.data[0]);
+        // 컬럼 한국어 라벨 매핑 (서버에서 1순위 AS별칭 > 2순위 DB COMMENT > 3순위 ontology 적용된 결과)
+        const colLabels = data.columnLabels || {};
         let t = '<div class="table-scroll" style="max-height:400px;overflow:auto;"><table class="data-table"><thead><tr><th>#</th>';
-        cols.forEach(c => t += `<th>${esc(c)}</th>`);
+        cols.forEach(c => t += `<th>${esc(colLabels[c] || c)}</th>`);
         t += '</tr></thead><tbody>';
         data.data.forEach((row, i) => {
             t += `<tr><td class="text-gray-400">${i+1}</td>`;
@@ -1419,6 +1421,9 @@ function renderMsgChart(canvasId, data, overrideType) {
     const columns = Object.keys(rows[0]);
     const labelCol = config.labelColumn || columns[0];
     let dataCols = config.dataColumns || columns.filter(c => c !== labelCol);
+    // 컬럼 한국어 라벨 매핑 (차트 범례/툴팁용)
+    const colLabels = data.columnLabels || {};
+    const labelOf = (c) => colLabels[c] || c;
     // FORMAT() 결과(콤마 포함 문자열)도 숫자로 인식
     dataCols = dataCols.filter(c => {
         const v = rows[0][c];
@@ -1445,7 +1450,7 @@ function renderMsgChart(canvasId, data, overrideType) {
         }];
     } else {
         datasets = dataCols.map((c, i) => ({
-            label: c,
+            label: labelOf(c),
             data: rows.map(r => parseNumeric(r[c]) || 0),
             backgroundColor: colors[i % colors.length],
             borderColor: borders[i % borders.length],
