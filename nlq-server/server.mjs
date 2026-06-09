@@ -512,7 +512,7 @@ async function getActiveDomain(req) {
 // ============================================================
 app.use(async (req, res, next) => {
   // 인증이 필요 없는 경로
-  const publicPaths = ['/login', '/login.html', '/api/login', '/api/login/sendEncData', '/api/logout', '/api/me'];
+  const publicPaths = ['/login', '/login.html', '/api/login', '/api/login/sendEncData', '/api/logout', '/api/me', '/api/history/retention'];
   if (publicPaths.some(p => req.path === p)) return next();
   // 그룹웨어 연동 API (/api/users/*) — API Key 인증은 각 라우트에서 별도 처리
   if (req.path.startsWith('/api/users')) return next();
@@ -563,51 +563,68 @@ app.use(express.static(path.join(import.meta.dirname, 'public')));
 
 /**
  * GET /api/users — 전체 사용자 조회 (pagination 지원)
- * Query: page(기본1), limit(기본50, 최대500), is_active(0|1), role, group_name, group_id, search
+ * Base URL: https://analytics.kleannara.com
+ * Query:
+ *   - page (기본 1)
+ *   - limit (기본 50, 최대 9999) — 빈값/미지정이면 기본 50
+ *   - is_active (0|1) — 빈값/미지정이면 활성+비활성 전체 반환
+ *   - role (role_code 예: 'admin','user') — 빈값/미지정이면 권한 무관 전체 반환
+ *   - group_name, group_id, search — 빈값/미지정이면 무시
+ *
+ * 응답의 `role` 필드는 roles 테이블의 role_code (LEFT JOIN). 권한 미지정 사용자는 null.
  */
 app.get('/api/users', verifyApiKey, async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page) || 1, 1);
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 500);
+    // ★ limit 상한 500 → 9999 (전체 유저 일괄 조회 지원)
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 9999);
     const offset = (page - 1) * limit;
 
-    // 필터 조건 동적 빌드
+    // 필터 조건 동적 빌드 — 빈 문자열("")과 undefined 모두 "필터 없음"으로 처리
+    const isBlank = (v) => v === undefined || v === null || String(v).trim() === '';
     const whereParts = [];
     const params = [];
 
-    if (req.query.is_active !== undefined) {
-      whereParts.push('is_active = ?');
-      params.push(parseInt(req.query.is_active));
+    // is_active: 빈값이면 활성/비활성 모두 반환
+    if (!isBlank(req.query.is_active)) {
+      const v = parseInt(req.query.is_active);
+      if (v === 0 || v === 1) {
+        whereParts.push('u.is_active = ?');
+        params.push(v);
+      }
     }
-    if (req.query.role) {
-      // role 문자열 → role_id 서브쿼리로 필터
-      whereParts.push('role_id = (SELECT id FROM roles WHERE role_code = ? LIMIT 1)');
-      params.push(req.query.role);
+    // role: 빈값이면 권한 무관 전체 반환
+    if (!isBlank(req.query.role)) {
+      whereParts.push('u.role_id = (SELECT id FROM roles WHERE role_code = ? LIMIT 1)');
+      params.push(String(req.query.role).trim());
     }
-    if (req.query.group_name) {
-      whereParts.push('group_name = ?');
-      params.push(req.query.group_name);
+    if (!isBlank(req.query.group_name)) {
+      whereParts.push('u.group_name = ?');
+      params.push(String(req.query.group_name).trim());
     }
-    if (req.query.group_id) {
-      whereParts.push('group_id = ?');
-      params.push(req.query.group_id);
+    if (!isBlank(req.query.group_id)) {
+      whereParts.push('u.group_id = ?');
+      params.push(String(req.query.group_id).trim());
     }
-    if (req.query.search) {
-      whereParts.push('(user_id LIKE ? OR name LIKE ? OR email LIKE ?)');
-      const kw = `%${req.query.search}%`;
+    if (!isBlank(req.query.search)) {
+      whereParts.push('(u.user_id LIKE ? OR u.name LIKE ? OR u.email LIKE ?)');
+      const kw = `%${String(req.query.search).trim()}%`;
       params.push(kw, kw, kw);
     }
 
     const whereClause = whereParts.length > 0 ? 'WHERE ' + whereParts.join(' AND ') : '';
 
-    // 총 건수
-    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM users ${whereClause}`, params);
+    // 총 건수 (COUNT)
+    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM users u ${whereClause}`, params);
     const total = countRows[0].total;
 
-    // 데이터 조회 (password 제외)
+    // 데이터 조회 (password 제외, role_id → role_code 로 변환하여 'role' 별칭 반환)
     const [rows] = await pool.query(
-      `SELECT id, user_id, name, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role, is_active, sso_yn, created_at, updated_at
-       FROM users ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`,
+      `SELECT u.id, u.user_id, u.name, u.email, u.group_name, u.group_id, u.parent_group_id, u.tenant_id,
+              u.phone, u.position,
+              (SELECT r.role_code FROM roles r WHERE r.id = u.role_id LIMIT 1) AS role,
+              u.is_active, u.sso_yn, u.created_at, u.updated_at
+       FROM users u ${whereClause} ORDER BY u.id ASC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
 
@@ -629,12 +646,16 @@ app.get('/api/users', verifyApiKey, async (req, res) => {
 
 /**
  * GET /api/users/:userId — 개별 사용자 조회
+ * Base URL: https://analytics.kleannara.com
  */
 app.get('/api/users/:userId', verifyApiKey, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT id, user_id, name, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role, is_active, sso_yn, created_at, updated_at
-       FROM users WHERE user_id = ?`,
+      `SELECT u.id, u.user_id, u.name, u.email, u.group_name, u.group_id, u.parent_group_id, u.tenant_id,
+              u.phone, u.position,
+              (SELECT r.role_code FROM roles r WHERE r.id = u.role_id LIMIT 1) AS role,
+              u.is_active, u.sso_yn, u.created_at, u.updated_at
+       FROM users u WHERE u.user_id = ?`,
       [req.params.userId]
     );
     if (rows.length === 0) {
@@ -1383,7 +1404,7 @@ async function matchSynonymsDirectly(query, domainCode) {
       `SELECT s.synonym_text, c.column_name, c.description, c.data_type
        FROM ontology_synonym s
        JOIN ontology_column c ON s.column_id = c.id
-       WHERE c.domain_code = ?`, [dc]
+       WHERE c.domain_code = ? AND c.is_active = 1`, [dc]
     );
     for (const row of ontSyns) {
       // 대소문자 무시 매칭 (영문 약어 대응: CAM, PC 등)
@@ -1425,7 +1446,7 @@ async function matchSynonymsDirectly(query, domainCode) {
     // 3단계: Ontology 컬럼 설명(description) 매칭 (domain_code 필터)
     // =========================================================
     const [ontCols] = await pool.query(
-      `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != '' AND domain_code = ?`, [dc]
+      `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != '' AND domain_code = ? AND is_active = 1`, [dc]
     );
     for (const row of ontCols) {
       if (row.description.length >= 2 && (query.includes(row.description) || queryUpper.includes(row.description.toUpperCase()))) {
@@ -2278,6 +2299,43 @@ ${dateHint}
 });
 
 // ============================================================
+// 이력 보관 정책 (자연어질의 / nl_query_history)
+// ============================================================
+// - 시간 기준: 보관기간(NLQ_HISTORY_RETENTION_DAYS, 기본 31일) 초과 행은 자동 DELETE
+// - 건수 기준: 사용자별 최신 200건만 유지
+// - 실행 시점: (1) 신규 이력 INSERT 시점 (2) 서버 시작 시 (3) 24시간 주기 스케줄
+const NLQ_HISTORY_RETENTION_DAYS = 31;
+
+async function purgeExpiredNlqHistory() {
+  try {
+    const [r] = await pool.query(
+      `DELETE FROM nl_query_history WHERE created_at < (NOW() - INTERVAL ? DAY)`,
+      [NLQ_HISTORY_RETENTION_DAYS]
+    );
+    if (r.affectedRows > 0) {
+      console.log(`[HistoryRetention] ${NLQ_HISTORY_RETENTION_DAYS}일 경과 이력 ${r.affectedRows}건 자동 삭제`);
+    }
+    return r.affectedRows;
+  } catch (e) {
+    console.error('[HistoryRetention] 자동 삭제 실패:', e.message);
+    return 0;
+  }
+}
+
+// 서버 시작 시 1회 실행 + 24시간 주기 반복 (서버 시작 30초 후 첫 실행 — DB 풀 안정화 대기)
+setTimeout(() => {
+  purgeExpiredNlqHistory().catch(() => {});
+  setInterval(() => {
+    purgeExpiredNlqHistory().catch(() => {});
+  }, 24 * 60 * 60 * 1000);
+}, 30 * 1000);
+
+// 이력 보관 정책 API (프론트 표시용)
+app.get('/api/history/retention', (req, res) => {
+  res.json({ days: NLQ_HISTORY_RETENTION_DAYS });
+});
+
+// ============================================================
 // 이력 저장 헬퍼 함수
 // ============================================================
 async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId, domainCode) {
@@ -2289,6 +2347,13 @@ async function saveHistory(userId, queryText, sql, explanation, chartType, chart
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [userId || null, sessionId || null, domainCode || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg]
   );
+
+  // 시간 기준 보관 정책: NLQ_HISTORY_RETENTION_DAYS(기본 31일) 경과 행 자동 삭제
+  // (저장 시점에 한 번 더 실행해서 즉시성 보장 — 사용자가 새 질의를 하면 바로 정리됨)
+  pool.query(
+    `DELETE FROM nl_query_history WHERE created_at < (NOW() - INTERVAL ? DAY)`,
+    [NLQ_HISTORY_RETENTION_DAYS]
+  ).catch(e => console.error('[HistoryRetention] INSERT-time purge 실패 (무시):', e.message));
 
   // 사용자별 최대 200건 유지
   if (userId) {
@@ -2512,7 +2577,8 @@ app.post('/api/ontology', requireAdmin, async (req, res) => {
       'INSERT INTO ontology_column (domain_code, column_name, table_name, description, data_type) VALUES (?,?,?,?,?)',
       [dc, column_name, table_name || 'bw_profitability_data', description || '', data_type || '']
     );
-    res.json({ id: r.insertId, domain_code: dc, column_name, table_name: table_name || 'bw_profitability_data', description, data_type });
+    // is_active 는 DB DEFAULT 1 로 자동 활성화됨
+    res.json({ id: r.insertId, domain_code: dc, column_name, table_name: table_name || 'bw_profitability_data', description, data_type, is_active: 1 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2534,6 +2600,38 @@ app.delete('/api/ontology/:id', requireAdmin, async (req, res) => {
     await pool.query('DELETE FROM ontology_synonym WHERE column_id=?', [req.params.id]);
     await pool.query('DELETE FROM ontology_column WHERE id=?', [req.params.id]);
     res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 활성/비활성 토글 (is_active)
+// body: { is_active: 0|1 }  (생략 시 현재 값의 반대로 토글)
+// → 비활성 컬럼은 NLQ(RAG 인덱스/동의어 매칭/RAG 컨텍스트) 및 비주얼 쿼리빌더 응답에서 제외됨
+app.patch('/api/ontology/:id/toggle', requireAdmin, async (req, res) => {
+  try {
+    const id = req.params.id;
+    let nextVal;
+    if (req.body && (req.body.is_active === 0 || req.body.is_active === 1
+                  || req.body.is_active === '0' || req.body.is_active === '1')) {
+      nextVal = Number(req.body.is_active) ? 1 : 0;
+    } else {
+      const [[row]] = await pool.query('SELECT is_active FROM ontology_column WHERE id=?', [id]);
+      if (!row) return res.status(404).json({ error: 'not found' });
+      nextVal = row.is_active ? 0 : 1;
+    }
+    await pool.query('UPDATE ontology_column SET is_active=? WHERE id=?', [nextVal, id]);
+
+    // 백그라운드로 RAG 인덱스 재빌드 (비동기, 응답 블로킹 X)
+    setImmediate(async () => {
+      try {
+        const count = await buildRagIndex(pool);
+        ragReady = true;
+        console.log(`[Ontology Toggle] RAG 재인덱싱 완료: ${count} 청크 (column_id=${id}, is_active=${nextVal})`);
+      } catch (e) {
+        console.error('[Ontology Toggle] RAG 재인덱싱 실패 (무시):', e.message);
+      }
+    });
+
+    res.json({ success: true, id: Number(id), is_active: nextVal });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -3429,11 +3527,16 @@ app.get('/api/builder/columns', async (req, res) => {
     `);
 
     // 2. Ontology 컬럼 정보 조회 (설명 보강, domain 필터)
+    //    is_active 도 함께 조회 → 비활성 컬럼은 빌더 응답에서 제외
     const dc = await getActiveDomain(req);
-    const [ontoCols] = await pool.query(`SELECT id, column_name, description, data_type FROM ontology_column WHERE domain_code = ?`, [dc]);
+    const [ontoCols] = await pool.query(`SELECT id, column_name, description, data_type, is_active FROM ontology_column WHERE domain_code = ?`, [dc]);
     const ontoMap = {};
+    const inactiveColSet = new Set(); // 비활성 컬럼명(UPPER) 집합
     for (const o of ontoCols) {
       ontoMap[o.column_name.toUpperCase()] = o;
+      if (o.is_active === 0) {
+        inactiveColSet.add(o.column_name.toUpperCase());
+      }
     }
 
     // 2-1. Ontology 동의어 일괄 조회 (도메인 필터 적용됨 — ontology_column이 이미 도메인 필터)
@@ -3480,6 +3583,9 @@ app.get('/api/builder/columns', async (req, res) => {
       const name = r.COLUMN_NAME;
       const ctype = r.COLUMN_TYPE;
       const onto = ontoMap[name.toUpperCase()];
+
+      // ★ 비활성 컬럼은 빌더 응답에서 제외 (ontology_column.is_active=0)
+      if (inactiveColSet.has(name.toUpperCase())) continue;
 
       // 타입 분류
       const dataType = /bigint|decimal|int|double|float/i.test(ctype) ? 'number' : 'text';

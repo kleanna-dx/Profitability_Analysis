@@ -64,6 +64,22 @@
         .dtable tbody tr:hover{background:#f8faff;}
         .dtable .mono{font-family:'Fira Code','Consolas',monospace;font-size:12px;color:#4f46e5;}
 
+        /* 활성/비활성 토글 스위치 */
+        .toggle-switch{position:relative;display:inline-block;width:42px;height:22px;cursor:pointer;vertical-align:middle;}
+        .toggle-switch input{opacity:0;width:0;height:0;}
+        .toggle-slider{position:absolute;inset:0;background:#cbd5e1;border-radius:22px;transition:background .2s;}
+        .toggle-slider::before{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;background:#fff;border-radius:50%;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
+        .toggle-switch input:checked + .toggle-slider{background:#10b981;}
+        .toggle-switch input:checked + .toggle-slider::before{transform:translateX(20px);}
+        .toggle-switch input:disabled + .toggle-slider{opacity:.5;cursor:not-allowed;}
+        .toggle-label{font-size:11px;font-weight:600;margin-left:6px;vertical-align:middle;}
+        .toggle-label.on{color:#10b981;}
+        .toggle-label.off{color:#94a3b8;}
+        /* 비활성 행 스타일 (Ontology 비활성) */
+        tr.row-inactive{background:#fafafa;opacity:.55;}
+        tr.row-inactive td{color:#94a3b8;}
+        tr.row-inactive .syn-chip{opacity:.6;}
+        tr.row-inactive .badge{opacity:.6;}
         /* Synonym chip */
         .syn-chip{display:inline-flex;align-items:center;gap:4px;background:#eef2ff;color:#4f46e5;font-size:11px;padding:3px 10px;border-radius:12px;margin:2px;border:1px solid #c7d2fe;transition:all .15s;}
         .syn-chip .syn-del{cursor:pointer;color:#a5b4fc;font-size:10px;margin-left:2px;transition:color .15s;}
@@ -314,6 +330,7 @@
                                     <th>테이블명</th>
                                     <th>설명</th>
                                     <th>데이터타입</th>
+                                    <th style="width:90px;text-align:center;" title="비활성 컬럼은 자연어질의/비주얼쿼리빌더에 노출되지 않습니다.">활성</th>
                                     <th style="min-width:250px;">동의어</th>
                                     <th style="width:80px;">작업</th>
                                 </tr>
@@ -948,7 +965,7 @@ function renderOntology() {
     const tbody = document.getElementById('ontologyBody');
     document.getElementById('ontologyCount').textContent = ontologyData.length + '개';
     if (ontologyData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">등록된 Ontology 컬럼이 없습니다.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 Ontology 컬럼이 없습니다.</td></tr>';
         return;
     }
     tbody.innerHTML = ontologyData.map((c, i) => {
@@ -962,13 +979,25 @@ function renderOntology() {
         const pendingAdds = pendingOntAdds.filter(p => p.colId === c.id).map(p =>
             `<span class="syn-chip pending-add">${esc(p.text)}<span class="syn-del" onclick="delOntSynonym(${p.tempId + 900001})" title="취소">&times;</span></span>`
         ).join('');
+        // is_active 가 컬럼에 없을 수도 있는 옛 응답에 대비해 기본값 1 처리
+        const isActive = (c.is_active === undefined || c.is_active === null) ? 1 : Number(c.is_active);
+        const rowCls = isActive ? '' : 'row-inactive';
+        const lblCls = isActive ? 'on' : 'off';
+        const lblTxt = isActive ? '활성' : '비활성';
         return `
-        <tr>
+        <tr class="${rowCls}" id="ont-row-${c.id}">
             <td class="text-gray-400">${i+1}</td>
             <td class="mono font-semibold">${esc(c.column_name)}</td>
             <td class="text-xs text-gray-500">${esc(c.table_name || '')}</td>
             <td>${esc(c.description || '')}</td>
             <td><span class="badge badge-blue">${esc(c.data_type || '-')}</span></td>
+            <td style="text-align:center;white-space:nowrap;">
+                <label class="toggle-switch" title="${isActive ? '비활성화하면 NLQ/빌더에서 숨겨집니다.' : '활성화하면 NLQ/빌더에 노출됩니다.'}">
+                    <input type="checkbox" ${isActive ? 'checked' : ''} onchange="toggleOntologyActive(${c.id}, this)" />
+                    <span class="toggle-slider"></span>
+                </label>
+                <span class="toggle-label ${lblCls}" id="ont-lbl-${c.id}">${lblTxt}</span>
+            </td>
             <td>
                 <div class="flex flex-wrap items-center gap-1">
                     ${existingSyns}${pendingAdds}
@@ -983,6 +1012,43 @@ function renderOntology() {
             </td>
         </tr>`;
     }).join('');
+}
+
+// 활성/비활성 토글 (즉시 PATCH 호출 + 시각적 피드백)
+async function toggleOntologyActive(id, checkboxEl) {
+    const newVal = checkboxEl.checked ? 1 : 0;
+    checkboxEl.disabled = true;
+    try {
+        const res = await fetch('/api/ontology/' + id + '/toggle', {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ is_active: newVal })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || ('HTTP ' + res.status));
+        }
+        const data = await res.json();
+        const applied = Number(data.is_active);
+        // 로컬 데이터 동기화
+        const item = ontologyData.find(x => x.id === id);
+        if (item) item.is_active = applied;
+        // 시각적 피드백 (행 회색 처리 / 라벨 변경)
+        const row = document.getElementById('ont-row-' + id);
+        const lbl = document.getElementById('ont-lbl-' + id);
+        if (row) row.className = applied ? '' : 'row-inactive';
+        if (lbl) {
+            lbl.className = 'toggle-label ' + (applied ? 'on' : 'off');
+            lbl.textContent = applied ? '활성' : '비활성';
+        }
+        checkboxEl.checked = !!applied;
+    } catch (e) {
+        alert('활성 상태 변경 실패: ' + e.message);
+        // 롤백
+        checkboxEl.checked = !newVal;
+    } finally {
+        checkboxEl.disabled = false;
+    }
 }
 
 function openAddOntologyModal() {

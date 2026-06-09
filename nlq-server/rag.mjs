@@ -85,11 +85,13 @@ async function buildRagIndex(pool) {
   }
 
   // 2. 온톨로지 청크 — 컬럼 + 동의어 포함 (domain_code 포함)
+  //    ★ is_active=1 인 컬럼만 RAG 인덱스에 포함 → 비활성 컬럼은 NLQ에 노출되지 않음
   const [ontRows] = await pool.query(
     `SELECT c.id, c.column_name, c.table_name, c.description, c.data_type, c.domain_code,
             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
      FROM ontology_column c
      LEFT JOIN ontology_synonym s ON s.column_id = c.id
+     WHERE c.is_active = 1
      GROUP BY c.id`
   );
   for (const o of ontRows) {

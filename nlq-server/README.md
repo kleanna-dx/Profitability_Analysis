@@ -7,7 +7,7 @@
 - **핵심 기술**: RAG (Retrieval-Augmented Generation) 기반 메타데이터 검색으로 정확한 SQL 생성
 
 ## URL
-- **Sandbox**: https://3000-iyzssy96ciws6myi4n1l0-3844e1b6.sandbox.novita.ai
+- **Production**: https://analytics.kleannara.com
 
 ## 주요 기능
 
