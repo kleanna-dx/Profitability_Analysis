@@ -1424,7 +1424,7 @@ async function matchSynonymsDirectly(query, domainCode) {
           description: row.description || '',
           data_type: row.data_type || '',
           source: 'ontology',
-          priority: 1,  // 최우선
+          priority: 3,  // Metric < Ontology 동의어
         });
       }
     }
@@ -1446,7 +1446,7 @@ async function matchSynonymsDirectly(query, domainCode) {
           description: row.description || row.metric_code,
           data_type: 'metric',
           source: 'metric',
-          priority: 2,
+          priority: 1,  // 최우선 (Metric 정확매칭)
         });
       }
     }
@@ -1466,7 +1466,7 @@ async function matchSynonymsDirectly(query, domainCode) {
             description: row.description,
             data_type: row.data_type || '',
             source: 'ontology_desc',
-            priority: 3,
+            priority: 4,  // Ontology 설명 매칭 (가장 낮음)
           });
         }
       }
@@ -1490,29 +1490,32 @@ async function matchSynonymsDirectly(query, domainCode) {
             description: desc,
             data_type: 'metric',
             source: 'metric_desc',
-            priority: 4,
+            priority: 2,  // Metric 설명 매칭 (Metric 동의어 다음)
           });
         }
       }
     }
 
     // =========================================================
-    // 5단계: 충돌 해결 — Ontology 정확매칭이 있으면 같은 단어의 Metric 매칭 제거
-    //   핵심 규칙: Ontology 동의어로 등록된 단어는 LLM이 임의로 Metric으로 해석 금지
+    // 5단계: 충돌 해결 — Metric 매칭이 있으면 같은 단어의 Ontology 매칭 제거
+    //   정책: Metric > Ontology (사용자 정의 산식 우선)
+    //   - 사용자가 자연어로 지표명을 질의했을 때, 해당 지표가 Metric에 등록되어 있으면
+    //     반드시 Metric 산식을 사용해야 함 (Ontology 단일 컬럼으로 대체 금지)
+    //   - Metric에 해당 지표가 없는 경우에만 Ontology 컬럼 매칭 사용
     // =========================================================
-    const ontologySynonyms = new Set(
-      matched.filter(m => m.source === 'ontology' || m.source === 'ontology_desc').map(m => m.synonym.toUpperCase())
+    const metricSynonyms = new Set(
+      matched.filter(m => m.source === 'metric' || m.source === 'metric_desc').map(m => m.synonym.toUpperCase())
     );
     filtered = matched.filter(m => {
-      // Metric 매칭인데 동일 단어가 Ontology에서도 매칭된 경우 → Ontology 우선, Metric 제거
-      if ((m.source === 'metric' || m.source === 'metric_desc') && ontologySynonyms.has(m.synonym.toUpperCase())) {
-        console.log(`[Synonym] Ontology 우선: "${m.synonym}" metric(${m.description}) 제거 → Ontology 컬럼 사용`);
+      // Ontology 매칭인데 동일 단어가 Metric에서도 매칭된 경우 → Metric 우선, Ontology 제거
+      if ((m.source === 'ontology' || m.source === 'ontology_desc') && metricSynonyms.has(m.synonym.toUpperCase())) {
+        console.log(`[Synonym] Metric 우선: "${m.synonym}" ontology(${m.column_name}) 제거 → Metric 산식 사용`);
         return false;
       }
       return true;
     });
 
-    // 우선순위 정렬: Ontology 정확매칭 > Metric 정확매칭 > 설명 매칭
+    // 우선순위 정렬: Metric 동의어(1) > Metric 설명(2) > Ontology 동의어(3) > Ontology 설명(4)
     filtered.sort((a, b) => (a.priority || 99) - (b.priority || 99));
 
     if (filtered.length > 0) {
