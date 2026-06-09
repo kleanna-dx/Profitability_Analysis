@@ -982,8 +982,8 @@ PLANT        | VARCHAR(10)   | 플랜트 코드 (예: P100, P200, P300, P400, P5
 PLANT_NM     | VARCHAR(100)  | 플랜트명
 DISTR_CHAN   | VARCHAR(5)    | 유통 경로 코드 (예: 10=내수, 20=로컬, 30=수출)
 DISTR_CHAN_NM| VARCHAR(100)  | 유통경로명
-ZDISTCHAN    | VARCHAR(5)  | 내수/수출구분자(사업장)
-ZORG_TEAM    | VARCHAR(10) | 영업팀(사업장그룹) 코드
+BIC_ZDISTCHAN    | VARCHAR(5)  | 내수/수출구분자(사업장)
+BIC_ZORG_TEAM    | VARCHAR(10) | 영업팀(사업장그룹) 코드
 SALES_OFF    | VARCHAR(10)   | 사업장 코드
 SALES_OFF_NM | VARCHAR(100)  | 사업장명
 
@@ -1000,12 +1000,12 @@ PRODH3       | VARCHAR(15)   | 제품계층 구조레벨3 코드
 PRODH3_NM    | VARCHAR(100)  | 품목군 (제품군 소)
 PRODH4       | VARCHAR(20)   | 제품계층 구조레벨4 코드
 PRODH4_NM    | VARCHAR(100)  | 스펙, 사이즈, 크기, 지폭
-ZJPCODE      | VARCHAR(10)   | 지종/제품구분 코드 (예: SN, FT, WT)
-ZJPCODE_NM   | VARCHAR(100) | 지종/제품구분명
-ZBRAND       | VARCHAR(10)   | 브랜드1 코드 (예: BRH006, BRH002)
-ZBRAND_NM    | VARCHAR(100) | 브랜드 1 명
-ZSBRAND      | VARCHAR(10)   | 브랜드2 코드
-ZSBRAND_NM   | VARCHAR(100) | 브랜드 2 명
+BIC_ZJPCODE      | VARCHAR(10)   | 지종/제품구분 코드 (예: SN, FT, WT)
+BIC_ZJPCODE_NM   | VARCHAR(100) | 지종/제품구분명
+BIC_ZBRAND       | VARCHAR(10)   | 브랜드1 코드 (예: BRH006, BRH002)
+BIC_ZBRAND_NM    | VARCHAR(100) | 브랜드 1 명
+BIC_ZSBRAND      | VARCHAR(10)   | 브랜드2 코드
+BIC_ZSBRAND_NM   | VARCHAR(100) | 브랜드 2 명
 
 -- 거래처 --
 BILL_TYPE    | VARCHAR(10)   | 대금청구유형 코드
@@ -1018,23 +1018,23 @@ CUST_GRP1    | VARCHAR(5)    | 고객 그룹1 코드
 CUST_GRP1_NM | VARCHAR(100)  | 고객그룹1 명
 COUNTRY      | VARCHAR(5)    | 국가 코드 (예: KR)
 COUNTRY_NM   | VARCHAR(100)  | 국가 명
-ZKUNN2       | VARCHAR(20)   | 영업사원 코드
-ZKUNN2_NM    | VARCHAR(100) | 영업사원 명
+BIC_ZKUNN2       | VARCHAR(20)   | 영업사원 코드
+BIC_ZKUNN2_NM    | VARCHAR(100) | 영업사원 명
 CUSTOMER     | VARCHAR(20)   | 고객 코드
 CUSTOMER_NM  | VARCHAR(100)  | 고객 명
 MATERIAL     | VARCHAR(30)   | 자재 코드 (예: FRT-NEE0004A)
 MATERIAL_NM  | VARCHAR(100)  | 자재 명 (예: 깨끗한나라 2겹 화장지 45m 18롤)
 
 -- 수량 단위 --
-ZBOXUNIT     | VARCHAR(5)    | BOX단위
-ZBAGUNIT     | VARCHAR(5)    | BAG단위
-ZUNIT        | VARCHAR(5)    | 기준수량단위(KG/EA)
+BIC_ZBOXUNIT     | VARCHAR(5)    | BOX단위
+BIC_ZBAGUNIT     | VARCHAR(5)    | BAG단위
+BIC_ZUNIT        | VARCHAR(5)    | 기준수량단위(KG/EA)
 CURRENCY     | VARCHAR(5)    | 통화 (예: KRW)
 
 -- 수량 --
-ZQTY_BOX     | DECIMAL(18,3) | 수량(BOX)
-ZQTY_BAG     | BIGINT        | 수량(BAG)
-ZQTY_KE      | DECIMAL(18,3) | 수량(KG/EA)
+BIC_ZQTY_BOX     | DECIMAL(18,3) | 수량(BOX)
+BIC_ZQTY_BAG     | BIGINT        | 수량(BAG)
+BIC_ZQTY_KE      | DECIMAL(18,3) | 수량(KG/EA)
 
 -- 금액 (ZAMT001 ~ ZAMT064, 모두 BIGINT 타입) --
 ZAMT001 | BIGINT | 총매출
@@ -1118,10 +1118,10 @@ const METRIC_DICTIONARY = `
 - 영업이익 = SUM(ZAMT055)
 - 영업이익률 = SUM(ZAMT055) / NULLIF(SUM(ZAMT003),0) * 100
 - 경상이익 = SUM(ZAMT064)
-- BOX수량 = SUM(ZQTY_BOX)
-- BAG수량 = SUM(ZQTY_BAG)
-- EA수량 = SUM(ZQTY_KE)
-- 평균단가(BOX) = SUM(ZAMT001) / NULLIF(SUM(ZQTY_BOX),0)
+- BOX수량 = SUM(BIC_ZQTY_BOX)
+- BAG수량 = SUM(BIC_ZQTY_BAG)
+- EA수량 = SUM(BIC_ZQTY_KE)
+- 평균단가(BOX) = SUM(ZAMT001) / NULLIF(SUM(BIC_ZQTY_BOX),0)
 - 재료비합계 = SUM(ZAMT006)+SUM(ZAMT007)+SUM(ZAMT008)+SUM(ZAMT009)+SUM(ZAMT010)+SUM(ZAMT011)
 - 인건비합계 = SUM(ZAMT012)+SUM(ZAMT013)+SUM(ZAMT014)
 - 마케팅비합계 = SUM(ZAMT047)+SUM(ZAMT048)+SUM(ZAMT049)+SUM(ZAMT050)+SUM(ZAMT051)+SUM(ZAMT052)+SUM(ZAMT053)+SUM(ZAMT054)
@@ -1171,15 +1171,15 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 
 ■ 허용되는 컬럼명 — 아래 목록에 있는 컬럼만 SQL에 사용할 수 있습니다:
 SEQ, CALYEAR, CALMONTH, CALDAY, CO_AREA, CO_AREA_NM, PROFIT_CTR, PROFIT_CTR_NM,
-DIVISION, DIVISION_NM, PLANT, PLANT_NM, DISTR_CHAN, DISTR_CHAN_NM, ZDISTCHAN,
-ZORG_TEAM, SALES_OFF, SALES_OFF_NM, MATL_TYPE, MATL_TYPE_NM, MATL_GROUP, MATL_GROUP_NM,
+DIVISION, DIVISION_NM, PLANT, PLANT_NM, DISTR_CHAN, DISTR_CHAN_NM, BIC_ZDISTCHAN,
+BIC_ZORG_TEAM, SALES_OFF, SALES_OFF_NM, MATL_TYPE, MATL_TYPE_NM, MATL_GROUP, MATL_GROUP_NM,
 PRODH1, PRODH1_NM, PRODH2, PRODH2_NM, PRODH3, PRODH3_NM, PRODH4, PRODH4_NM,
-ZJPCODE, ZJPCODE_NM, ZBRAND, ZBRAND_NM, ZSBRAND, ZSBRAND_NM,
+BIC_ZJPCODE, BIC_ZJPCODE_NM, BIC_ZBRAND, BIC_ZBRAND_NM, BIC_ZSBRAND, BIC_ZSBRAND_NM,
 BILL_TYPE, BILL_TYPE_NM, INCOTERMS, INCOTERMS_NM, CUST_GROUP, CUST_GROUP_NM,
-CUST_GRP1, CUST_GRP1_NM, COUNTRY, COUNTRY_NM, ZKUNN2, ZKUNN2_NM,
+CUST_GRP1, CUST_GRP1_NM, COUNTRY, COUNTRY_NM, BIC_ZKUNN2, BIC_ZKUNN2_NM,
 CUSTOMER, CUSTOMER_NM, MATERIAL, MATERIAL_NM,
-ZBOXUNIT, ZBAGUNIT, ZUNIT, CURRENCY,
-ZQTY_BOX, ZQTY_BAG, ZQTY_KE,
+BIC_ZBOXUNIT, BIC_ZBAGUNIT, BIC_ZUNIT, CURRENCY,
+BIC_ZQTY_BOX, BIC_ZQTY_BAG, BIC_ZQTY_KE,
 ZAMT001, ZAMT002, ZAMT003, ZAMT004, ZAMT005, ZAMT006, ZAMT007, ZAMT008,
 ZAMT009, ZAMT010, ZAMT011, ZAMT012, ZAMT013, ZAMT014, ZAMT015, ZAMT016,
 ZAMT017, ZAMT018, ZAMT019, ZAMT020, ZAMT021, ZAMT022, ZAMT023, ZAMT024,
@@ -1210,13 +1210,24 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 - 언더스코어(_) 위치, 대소문자를 정확히 지켜서 위 목록에 있는 그대로만 사용하세요
 
 ■ 자주 틀리는 컬럼명 예시 (왼쪽 ✗ 금지 → 오른쪽 ✓ 정답):
-  ZQTYBOX ✗ → ZQTY_BOX ✓ (수량 BOX)
-  ZQTYBAG ✗ → ZQTY_BAG ✓ (수량 BAG)
-  ZQTYKE ✗ → ZQTY_KE ✓ (수량 KG/EA)
-  ZQTYKGEA ✗ → ZQTY_KE ✓ (KG/EA 수량은 ZQTY_KE임!)
-  ZQTY_KGEA ✗ → ZQTY_KE ✓
-  ZQTY_KG ✗ → ZQTY_KE ✓
-  ZQTY_EA ✗ → ZQTY_KE ✓
+  ★ 2026-06 재네이밍 — 아래 16개 컬럼은 BIC_ 프리픽스가 필수!
+  ZDISTCHAN ✗ → BIC_ZDISTCHAN ✓
+  ZORG_TEAM ✗ → BIC_ZORG_TEAM ✓
+  ZJPCODE ✗ → BIC_ZJPCODE ✓ / ZJPCODE_NM ✗ → BIC_ZJPCODE_NM ✓
+  ZBRAND ✗ → BIC_ZBRAND ✓ / ZBRAND_NM ✗ → BIC_ZBRAND_NM ✓
+  ZSBRAND ✗ → BIC_ZSBRAND ✓ / ZSBRAND_NM ✗ → BIC_ZSBRAND_NM ✓
+  ZKUNN2 ✗ → BIC_ZKUNN2 ✓ / ZKUNN2_NM ✗ → BIC_ZKUNN2_NM ✓
+  ZBOXUNIT ✗ → BIC_ZBOXUNIT ✓ / ZBAGUNIT ✗ → BIC_ZBAGUNIT ✓ / ZUNIT ✗ → BIC_ZUNIT ✓
+  ZQTYBOX ✗ → BIC_ZQTY_BOX ✓ (수량 BOX)
+  ZQTYBAG ✗ → BIC_ZQTY_BAG ✓ (수량 BAG)
+  ZQTYKE ✗ → BIC_ZQTY_KE ✓ (수량 KG/EA)
+  ZQTY_BOX ✗ → BIC_ZQTY_BOX ✓
+  ZQTY_BAG ✗ → BIC_ZQTY_BAG ✓
+  ZQTY_KE ✗ → BIC_ZQTY_KE ✓
+  ZQTYKGEA ✗ → BIC_ZQTY_KE ✓ (KG/EA 수량은 BIC_ZQTY_KE임!)
+  ZQTY_KGEA ✗ → BIC_ZQTY_KE ✓
+  ZQTY_KG ✗ → BIC_ZQTY_KE ✓
+  ZQTY_EA ✗ → BIC_ZQTY_KE ✓
   ZSALES ✗ → ZAMT001 ✓ (총매출)
   ZREVENUE ✗ → ZAMT001 ✓
   DISTR_CHAN_NAME ✗ → DISTR_CHAN_NM ✓
@@ -1243,7 +1254,7 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 13. 명칭으로 질문 시 코드값으로 WHERE
 14. PROFIT_CTR: 10자리 선행0 (예: '0000002000')
 15. 자재명: MATERIAL_NM (자재 명 컬럼)
-16. 브랜드: ZBRAND (브랜드1), ZSBRAND (브랜드2)
+16. 브랜드: BIC_ZBRAND (브랜드1), BIC_ZSBRAND (브랜드2)
 17. **학습 데이터 우선**: 아래 RAG 컨텍스트에 유사 질문의 검증된 SQL이 있으면 그 패턴을 최우선 참고
 18. **알 수 없는 용어 처리 (매우 중요!)**: 사용자의 질문에 포함된 핵심 용어(업무 명칭, 지표명, 분류명 등)가 아래 조건을 **모두** 만족하지 못하면, SQL을 생성하지 말고 반드시 안내 메시지만 응답하세요:
   - 동의어 매칭 결과에 해당 용어가 없음
@@ -1286,9 +1297,9 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 
 [컬럼 최소화 원칙 - 매우 중요!]
 - **질문에서 요청한 항목만 SELECT 하세요. 관련 있어 보이더라도 질문에 없는 항목은 절대 추가하지 마세요.**
-- 예: "판매수량 합계"라고 하면 → BOX 수량(ZQTY_BOX) 하나만 사용. BAG수량, EA수량은 질문에 없으므로 포함 금지.
+- 예: "판매수량 합계"라고 하면 → BOX 수량(BIC_ZQTY_BOX) 하나만 사용. BAG수량, EA수량은 질문에 없으므로 포함 금지.
 - 예: "총매출 합계"라고 하면 → SUM(ZAMT001) 하나만 사용. 순매출, 영업이익 등은 추가하지 마세요.
-- 사용자가 "수량" 이라고만 하면 기본 단위는 BOX(ZQTY_BOX). BAG/EA는 사용자가 명시적으로 요청할 때만 포함.
+- 사용자가 "수량" 이라고만 하면 기본 단위는 BOX(BIC_ZQTY_BOX). BAG/EA는 사용자가 명시적으로 요청할 때만 포함.
 - 사용자가 "모든 수량" 또는 "BOX, BAG, EA 수량"처럼 여러 단위를 명시한 경우에만 복수 수량 컬럼 사용.
 
 [컬럼 별칭(alias) 작성 규칙 — ★★★ 매우 중요 ★★★]
@@ -1302,7 +1313,7 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 - 별칭에 적절한 단어가 떠오르지 않으면 DB COMMENT/학습관리 동의어 의미를 추론하여 한국어로 부여하세요 (예: PROFIT_CTR → '손익센터', CALMONTH → '연월', DISTR_CHAN_NM → '유통경로명').
 - 예시 (전형적인 형태):
   SELECT MATERIAL AS '자재코드', MATERIAL_NM AS '자재명',
-         FORMAT(SUM(ZQTY_BOX), 0) AS '판매수량 합계(BOX)',
+         FORMAT(SUM(BIC_ZQTY_BOX), 0) AS '판매수량 합계(BOX)',
          FORMAT(SUM(ZAMT001), 0) AS '총매출 합계(원)'
 
 [분석형 질문 판별 - 매우 중요!]
@@ -3453,15 +3464,15 @@ app.get('/api/builder/columns', async (req, res) => {
       'SEQ': 'system',
       'CALYEAR': 'period', 'CALMONTH': 'period', 'CALDAY': 'period',
       'CO_AREA': 'org', 'CO_AREA_NM': 'org', 'PROFIT_CTR': 'org', 'PROFIT_CTR_NM': 'org', 'DIVISION': 'org', 'DIVISION_NM': 'org', 'PLANT': 'org', 'PLANT_NM': 'org',
-      'DISTR_CHAN': 'org', 'DISTR_CHAN_NM': 'org', 'ZDISTCHAN': 'org', 'ZORG_TEAM': 'org', 'SALES_OFF': 'org', 'SALES_OFF_NM': 'org',
+      'DISTR_CHAN': 'org', 'DISTR_CHAN_NM': 'org', 'BIC_ZDISTCHAN': 'org', 'BIC_ZORG_TEAM': 'org', 'SALES_OFF': 'org', 'SALES_OFF_NM': 'org',
       'MATL_TYPE': 'product', 'MATL_TYPE_NM': 'product', 'MATL_GROUP': 'product', 'MATL_GROUP_NM': 'product',
       'PRODH1': 'product', 'PRODH1_NM': 'product', 'PRODH2': 'product', 'PRODH2_NM': 'product', 'PRODH3': 'product', 'PRODH3_NM': 'product', 'PRODH4': 'product', 'PRODH4_NM': 'product',
-      'ZJPCODE': 'product', 'ZJPCODE_NM': 'product', 'ZBRAND': 'product', 'ZBRAND_NM': 'product', 'ZSBRAND': 'product', 'ZSBRAND_NM': 'product',
+      'BIC_ZJPCODE': 'product', 'BIC_ZJPCODE_NM': 'product', 'BIC_ZBRAND': 'product', 'BIC_ZBRAND_NM': 'product', 'BIC_ZSBRAND': 'product', 'BIC_ZSBRAND_NM': 'product',
       'MATERIAL': 'product', 'MATERIAL_NM': 'product',
       'BILL_TYPE': 'trade', 'BILL_TYPE_NM': 'trade', 'INCOTERMS': 'trade', 'INCOTERMS_NM': 'trade', 'CUST_GROUP': 'trade', 'CUST_GROUP_NM': 'trade',
-      'CUST_GRP1': 'trade', 'CUST_GRP1_NM': 'trade', 'COUNTRY': 'trade', 'COUNTRY_NM': 'trade', 'ZKUNN2': 'trade', 'ZKUNN2_NM': 'trade', 'CUSTOMER': 'trade', 'CUSTOMER_NM': 'trade',
-      'ZBOXUNIT': 'unit', 'ZBAGUNIT': 'unit', 'ZUNIT': 'unit', 'CURRENCY': 'unit',
-      'ZQTY_BOX': 'quantity', 'ZQTY_BAG': 'quantity', 'ZQTY_KE': 'quantity',
+      'CUST_GRP1': 'trade', 'CUST_GRP1_NM': 'trade', 'COUNTRY': 'trade', 'COUNTRY_NM': 'trade', 'BIC_ZKUNN2': 'trade', 'BIC_ZKUNN2_NM': 'trade', 'CUSTOMER': 'trade', 'CUSTOMER_NM': 'trade',
+      'BIC_ZBOXUNIT': 'unit', 'BIC_ZBAGUNIT': 'unit', 'BIC_ZUNIT': 'unit', 'CURRENCY': 'unit',
+      'BIC_ZQTY_BOX': 'quantity', 'BIC_ZQTY_BAG': 'quantity', 'BIC_ZQTY_KE': 'quantity',
     };
 
     const columns = [];
