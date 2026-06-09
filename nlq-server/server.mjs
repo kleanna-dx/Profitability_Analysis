@@ -775,7 +775,8 @@ app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
 
 /**
  * PUT /api/users/bulk — Bulk 사용자 수정
- * Body: { users: [{ userId, name?, email?, groupName?, groupId?, parentGroupId?, tenantId?, phone?, position?, role? }] }
+ * Body: { users: [{ userId, name?, email?, groupName?, groupId?, parentGroupId?, tenantId?, phone?, position?, role?, is_active? }] }
+ * - is_active: 1 → 비활성 사용자 복구, 0 → 비활성화 (DELETE /api/users/bulk와 동일 효과)
  */
 app.put('/api/users/bulk', verifyApiKey, async (req, res) => {
   const { users } = req.body;
@@ -826,6 +827,14 @@ app.put('/api/users/bulk', verifyApiKey, async (req, res) => {
             const [rr] = await conn.query('SELECT id FROM roles WHERE role_code=?', [u.role]);
             if (rr.length > 0) { updates.push('role_id=?'); vals.push(rr[0].id); }
           } catch(e) {}
+        }
+        // is_active: 비활성 사용자 복구(1) 또는 비활성화(0) — 0/1/'0'/'1' 모두 허용
+        if (u.is_active !== undefined && u.is_active !== null && u.is_active !== '') {
+          const v = Number(u.is_active);
+          if (v === 0 || v === 1) {
+            updates.push('is_active=?');
+            vals.push(v);
+          }
         }
 
         if (updates.length === 0) {
