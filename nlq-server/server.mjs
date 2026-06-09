@@ -5729,7 +5729,7 @@ app.get('/api/interface/schedule', requireAdmin, async (req, res) => {
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
         ORDER BY s.interface_id ASC,
                  (s.schedule_type = 'once') DESC,
-                 s.exec_datetime ASC,
+                 s.exec_datetime DESC,
                  s.id ASC`
     );
     res.json({ items: rows });
