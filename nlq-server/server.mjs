@@ -1392,6 +1392,126 @@ chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(
 
 /**
  * 동의어 직접 매칭 (DB 조회 기반)
+/**
+ * Metric 산식 재귀 확장
+ * - 산식 내부에서 다른 metric_code를 참조하는 경우 해당 산식까지 풀어서 최종 산식 반환
+ * - 예: ZAMT035 산식 "ZAMT003-ZAMT034" → ZAMT003, ZAMT034도 metric이면 각각의 산식으로 치환
+ *        → "(SUM(ZAMT001)-SUM(ZAMT002)-SUM(ZAMT004))-(SUM(ZAMT026)+SUM(ZAMT025)+SUM(ZAMT005))"
+ * - 무한 루프 방지: visited Set으로 순환 참조 차단
+ * - 최대 깊이 제한: 5단계 (안전장치)
+ *
+ * 규칙:
+ *  1) 산식 내 토큰 중 metricMap에 존재하는 metric_code가 있으면 해당 산식으로 치환
+ *  2) 치환 시 하위 산식도 동일 규칙으로 재귀 확장
+ *  3) aggregation == 'CALC' (이미 SUM() 등 포함된 산식)이면 그대로 사용
+ *  4) aggregation == 'SUM' (단일 컬럼/단순 식)이면 산식 그대로 사용 (상위에서 SUM()으로 감싸짐)
+ *  5) 토큰이 metric_code도 아니고 SQL 키워드도 아니면 그대로 둠 (원시 DB 컬럼)
+ *
+ * @param {string} formula - 원본 산식 문자열
+ * @param {Object} metricMap - { metric_code: { formula, aggregation } } 형태의 전체 Metric 맵
+ * @param {Set<string>} [visited] - 이미 방문한 metric_code 집합 (순환 방지)
+ * @param {number} [depth] - 현재 재귀 깊이
+ * @returns {string} 확장된 최종 산식
+ */
+function expandMetricFormula(formula, metricMap, visited = new Set(), depth = 0) {
+  if (!formula || typeof formula !== 'string') return formula || '';
+  if (depth >= 5) {
+    console.warn(`[Metric] expandMetricFormula 최대 깊이(5) 도달, 추가 확장 중단: ${formula}`);
+    return formula;
+  }
+
+  // SQL 키워드 및 집계 함수
+  const SQL_KEYWORDS = new Set([
+    'SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'NULLIF', 'COALESCE', 'IFNULL',
+    'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT', 'NULL', 'AS',
+    'CAST', 'CONVERT', 'ROUND', 'FLOOR', 'CEIL', 'ABS', 'DISTINCT'
+  ]);
+
+  // ★ 보호 구간 추출: 이미 SUM(...) 등 집계 함수로 감싸진 부분은 풀지 않음
+  // 예: "SUM(ZAMT001)-SUM(ZAMT002)" 에서 SUM(...) 안의 ZAMT001은 metric이라도 그대로 둠
+  // 방식: 집계함수(...)를 placeholder로 치환 → 재귀 확장 → 다시 복원
+  const protected_ = [];
+  const AGGREGATE_FN_PATTERN = /\b(SUM|AVG|COUNT|MAX|MIN|IFNULL|COALESCE|NULLIF|CAST|CONVERT|ROUND|FLOOR|CEIL|ABS)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi;
+  let masked = formula.replace(AGGREGATE_FN_PATTERN, (whole) => {
+    const idx = protected_.length;
+    protected_.push(whole);
+    return `__PROT${idx}__`;
+  });
+
+  // 마스킹된 산식에서 식별자 치환 (함수 호출 뒤의 '('는 placeholder엔 없으므로 안전)
+  masked = masked.replace(/\b([A-Z][A-Z0-9_]*)\b(?!\s*\()/g, (match) => {
+    // placeholder는 건드리지 않음
+    if (/^__PROT\d+__$/.test(match)) return match;
+    if (SQL_KEYWORDS.has(match)) return match;
+
+    // metric_code로 등록되어 있는가?
+    const meta = metricMap[match];
+    if (!meta) return match; // 원시 DB 컬럼이거나 알 수 없는 토큰 → 그대로
+
+    // 순환 참조 방지
+    if (visited.has(match)) {
+      console.warn(`[Metric] 순환 참조 감지, 확장 중단: ${match} (이미 방문: ${[...visited].join(',')})`);
+      return match;
+    }
+
+    const nextVisited = new Set(visited);
+    nextVisited.add(match);
+
+    // 하위 산식 재귀 확장
+    const subFormula = expandMetricFormula(meta.formula, metricMap, nextVisited, depth + 1);
+
+    let replacement;
+    if ((meta.aggregation || '').toUpperCase() === 'CALC') {
+      // CALC: 이미 SUM() 등 포함된 완성 산식 → 괄호로만 감쌈
+      replacement = `(${subFormula})`;
+    } else {
+      // SUM 등 단일 집계: 산식이 단순 컬럼 1개면 SUM(col), 산술식이면 각 토큰을 SUM()으로 감쌈
+      const isSimpleCol = /^[A-Z][A-Z0-9_]*$/.test(subFormula.trim());
+      if (isSimpleCol) {
+        replacement = `SUM(${subFormula.trim()})`;
+      } else {
+        const wrapped = subFormula.replace(/\b([A-Z][A-Z0-9_]*)\b(?!\s*\()/g, (tok) => {
+          if (SQL_KEYWORDS.has(tok)) return tok;
+          if (/^__PROT\d+__$/.test(tok)) return tok;
+          return `SUM(${tok})`;
+        });
+        replacement = `(${wrapped})`;
+      }
+    }
+    return replacement;
+  });
+
+  // placeholder 복원
+  return masked.replace(/__PROT(\d+)__/g, (_, i) => protected_[Number(i)]);
+}
+
+/**
+ * 도메인별 전체 Metric 맵 로드
+ * - matchSynonymsDirectly에서 재귀 확장 시 참조용
+ * - { metric_code: { formula, aggregation, description } } 형태
+ */
+async function loadMetricMap(domainCode) {
+  const dc = domainCode || 'PS';
+  const map = {};
+  try {
+    const [rows] = await pool.query(
+      `SELECT metric_code, aggregation, formula, description FROM metric WHERE domain_code = ?`, [dc]
+    );
+    for (const r of rows) {
+      map[r.metric_code] = {
+        formula: r.formula || '',
+        aggregation: r.aggregation || 'SUM',
+        description: r.description || '',
+      };
+    }
+  } catch (e) {
+    console.error('[Metric] loadMetricMap 실패:', e.message);
+  }
+  return map;
+}
+
+/**
+ * 동의어 직접 매칭 (RAG 보완)
  * - RAG 임베딩 유사도 검색의 한계 보완
  * - 사용자 질문에 포함된 동의어를 DB에서 직접 찾아 컬럼 매핑 정보 반환
  * - ★ 도메인별 분리: 선택된 도메인의 Ontology/Metric만 참조 (PS/HL/MGMT 혼용 금지)
@@ -1404,6 +1524,8 @@ async function matchSynonymsDirectly(query, domainCode) {
   const matched = [];
   let filtered = [];
   const dc = domainCode || 'PS';
+  // ★ 도메인 전체 Metric 맵 로드 (재귀 확장용)
+  const metricMap = await loadMetricMap(dc);
   const queryUpper = query.toUpperCase();
   try {
     // =========================================================
@@ -1440,9 +1562,29 @@ async function matchSynonymsDirectly(query, domainCode) {
     );
     for (const row of metSyns) {
       if (query.includes(row.synonym_text) || queryUpper.includes(row.synonym_text.toUpperCase())) {
+        // ★ 산식 내 다른 metric_code 참조를 재귀적으로 확장
+        const expandedFormula = expandMetricFormula(
+          row.formula,
+          metricMap,
+          new Set([row.metric_code]),  // 자기 자신 즉시 재참조 방지
+          0
+        );
+        // 확장 결과가 원본과 다르면 로그
+        if (expandedFormula !== row.formula) {
+          console.log(`[Metric] 산식 재귀 확장: ${row.metric_code} "${row.formula}" → "${expandedFormula}"`);
+        }
+        // column_name 형식: CALC면 (확장식) 그대로, SUM이면 SUM(확장식) — 단 확장된 산식 안에 이미 SUM이 들어있으면 그대로 둠
+        let columnName;
+        const aggUpper = (row.aggregation || '').toUpperCase();
+        const hasSumInside = /\bSUM\s*\(/i.test(expandedFormula);
+        if (aggUpper === 'CALC' || hasSumInside) {
+          columnName = `CALC(${expandedFormula})`;
+        } else {
+          columnName = `SUM(${expandedFormula})`;
+        }
         matched.push({
           synonym: row.synonym_text,
-          column_name: `${row.aggregation}(${row.formula})`,
+          column_name: columnName,
           description: row.description || row.metric_code,
           data_type: 'metric',
           source: 'metric',
@@ -1484,9 +1626,27 @@ async function matchSynonymsDirectly(query, domainCode) {
       const desc = row.description;
       if (desc.length >= 2 && (query.includes(desc) || queryUpper.includes(desc.toUpperCase()))) {
         if (!matched.some(m => m.source === 'metric' && m.description === desc)) {
+          // ★ 산식 내 다른 metric_code 참조를 재귀적으로 확장
+          const expandedFormula = expandMetricFormula(
+            row.formula,
+            metricMap,
+            new Set([row.metric_code]),  // 자기 자신 즉시 재참조 방지
+            0
+          );
+          if (expandedFormula !== row.formula) {
+            console.log(`[Metric] 산식 재귀 확장(desc): ${row.metric_code} "${row.formula}" → "${expandedFormula}"`);
+          }
+          let columnName;
+          const aggUpper = (row.aggregation || '').toUpperCase();
+          const hasSumInside = /\bSUM\s*\(/i.test(expandedFormula);
+          if (aggUpper === 'CALC' || hasSumInside) {
+            columnName = `CALC(${expandedFormula})`;
+          } else {
+            columnName = `SUM(${expandedFormula})`;
+          }
           matched.push({
             synonym: desc,
-            column_name: `${row.aggregation}(${row.formula})`,
+            column_name: columnName,
             description: desc,
             data_type: 'metric',
             source: 'metric_desc',
