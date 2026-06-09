@@ -35,7 +35,10 @@ public class SapRfcSyncService {
     private final JdbcTemplate jdbcTemplate;
     private final SapRfcProperties sapProperties;
 
-    /** bw_profitability_data 컬럼 목록 (SEQ 제외) */
+    /** bw_profitability_data 컬럼 목록 (SEQ 제외)
+     *  주의: 2026-06 기준 16개 컬럼이 BIC_ 프리픽스로 재네이밍됨.
+     *  SAP RFC T_DATA 가 보내는 필드명은 여전히 옛 이름이므로,
+     *  SAP→DB 매핑은 {@link #SAP_FIELD_TO_DB_COLUMN} 으로 수행. */
     private static final List<String> DB_COLUMNS = List.of(
             "CALYEAR", "CALMONTH", "CALDAY",
             "CO_AREA", "CO_AREA_NM",
@@ -43,7 +46,7 @@ public class SapRfcSyncService {
             "DIVISION", "DIVISION_NM",
             "PLANT", "PLANT_NM",
             "DISTR_CHAN", "DISTR_CHAN_NM",
-            "ZDISTCHAN", "ZORG_TEAM",
+            "BIC_ZDISTCHAN", "BIC_ZORG_TEAM",
             "SALES_OFF", "SALES_OFF_NM",
             "MATL_TYPE", "MATL_TYPE_NM",
             "MATL_GROUP", "MATL_GROUP_NM",
@@ -51,19 +54,19 @@ public class SapRfcSyncService {
             "PRODH2", "PRODH2_NM",
             "PRODH3", "PRODH3_NM",
             "PRODH4", "PRODH4_NM",
-            "ZJPCODE", "ZJPCODE_NM",
-            "ZBRAND", "ZBRAND_NM",
-            "ZSBRAND", "ZSBRAND_NM",
+            "BIC_ZJPCODE", "BIC_ZJPCODE_NM",
+            "BIC_ZBRAND", "BIC_ZBRAND_NM",
+            "BIC_ZSBRAND", "BIC_ZSBRAND_NM",
             "BILL_TYPE", "BILL_TYPE_NM",
             "INCOTERMS", "INCOTERMS_NM",
             "CUST_GROUP", "CUST_GROUP_NM",
             "CUST_GRP1", "CUST_GRP1_NM",
             "COUNTRY", "COUNTRY_NM",
-            "ZKUNN2", "ZKUNN2_NM",
+            "BIC_ZKUNN2", "BIC_ZKUNN2_NM",
             "CUSTOMER", "CUSTOMER_NM",
             "MATERIAL", "MATERIAL_NM",
-            "ZBOXUNIT", "ZBAGUNIT", "ZUNIT", "CURRENCY",
-            "ZQTY_BOX", "ZQTY_BAG", "ZQTY_KE",
+            "BIC_ZBOXUNIT", "BIC_ZBAGUNIT", "BIC_ZUNIT", "CURRENCY",
+            "BIC_ZQTY_BOX", "BIC_ZQTY_BAG", "BIC_ZQTY_KE",
             "ZAMT001", "ZAMT002", "ZAMT003", "ZAMT004", "ZAMT005",
             "ZAMT006", "ZAMT007", "ZAMT008", "ZAMT009", "ZAMT010",
             "ZAMT011", "ZAMT012", "ZAMT013", "ZAMT014", "ZAMT015",
@@ -79,14 +82,47 @@ public class SapRfcSyncService {
             "ZAMT061", "ZAMT062", "ZAMT063", "ZAMT064"
     );
 
-    /** 숫자형 컬럼 Set */
+    /** 숫자형 컬럼 Set (DB 컬럼명 기준) */
     private static final Set<String> NUMERIC_COLUMNS;
     static {
-        Set<String> nums = new HashSet<>(Arrays.asList("ZQTY_BOX", "ZQTY_BAG", "ZQTY_KE"));
+        Set<String> nums = new HashSet<>(Arrays.asList("BIC_ZQTY_BOX", "BIC_ZQTY_BAG", "BIC_ZQTY_KE"));
         for (int i = 1; i <= 64; i++) {
             nums.add(String.format("ZAMT%03d", i));
         }
         NUMERIC_COLUMNS = Collections.unmodifiableSet(nums);
+    }
+
+    /**
+     * SAP RFC T_DATA 필드명 → DB 컬럼명 매핑.
+     *
+     * <p>2026-06 기준 bw_profitability_data 의 16개 컬럼이 BIC_ 프리픽스로 재네이밍되었지만,
+     * SAP BW 측 RFC(Z_BI_WEB_EX_BL) 가 내려주는 T_DATA 의 필드명은 여전히 옛 이름이다.
+     * 따라서 RFC 필드명 → DB 컬럼명 변환 테이블을 두고, fieldIndexMap 빌드 시
+     * 이 매핑을 거쳐 매칭한다.</p>
+     *
+     * <p>매핑이 없는 컬럼(예: CALMONTH, ZAMT001~064 등)은 SAP 필드명 == DB 컬럼명 이므로
+     * 본 맵에 등록하지 않는다.</p>
+     */
+    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN;
+    static {
+        Map<String, String> m = new HashMap<>();
+        m.put("ZDISTCHAN",   "BIC_ZDISTCHAN");
+        m.put("ZORG_TEAM",   "BIC_ZORG_TEAM");
+        m.put("ZJPCODE",     "BIC_ZJPCODE");
+        m.put("ZJPCODE_NM",  "BIC_ZJPCODE_NM");
+        m.put("ZBRAND",      "BIC_ZBRAND");
+        m.put("ZBRAND_NM",   "BIC_ZBRAND_NM");
+        m.put("ZSBRAND",     "BIC_ZSBRAND");
+        m.put("ZSBRAND_NM",  "BIC_ZSBRAND_NM");
+        m.put("ZKUNN2",      "BIC_ZKUNN2");
+        m.put("ZKUNN2_NM",   "BIC_ZKUNN2_NM");
+        m.put("ZBOXUNIT",    "BIC_ZBOXUNIT");
+        m.put("ZBAGUNIT",    "BIC_ZBAGUNIT");
+        m.put("ZUNIT",       "BIC_ZUNIT");
+        m.put("ZQTY_BOX",    "BIC_ZQTY_BOX");
+        m.put("ZQTY_BAG",    "BIC_ZQTY_BAG");
+        m.put("ZQTY_KE",     "BIC_ZQTY_KE");
+        SAP_FIELD_TO_DB_COLUMN = Collections.unmodifiableMap(m);
     }
 
     /** INSERT SQL (미리 생성) */
@@ -292,12 +328,16 @@ public class SapRfcSyncService {
             java.lang.reflect.Method getNameMethod = metaData.getClass()
                     .getMethod("getName", int.class);
 
+            // SAP 필드명을 DB 컬럼명으로 변환하여 fieldIndexMap 구성
+            // (BIC_ 재네이밍 이후 SAP T_DATA 는 여전히 옛 이름을 사용하므로 매핑 필요)
             Set<String> dbColumnSet = new HashSet<>(DB_COLUMNS);
             Map<String, Integer> fieldIndexMap = new LinkedHashMap<>();
             for (int j = 0; j < totalFieldCount; j++) {
-                String fname = (String) getNameMethod.invoke(metaData, j);
-                if (dbColumnSet.contains(fname)) {
-                    fieldIndexMap.put(fname, j);
+                String sapName = (String) getNameMethod.invoke(metaData, j);
+                // SAP 필드명 → DB 컬럼명 변환 (매핑 없으면 동일 이름 사용)
+                String dbName = SAP_FIELD_TO_DB_COLUMN.getOrDefault(sapName, sapName);
+                if (dbColumnSet.contains(dbName)) {
+                    fieldIndexMap.put(dbName, j);
                 }
             }
             appendBatchLog(batchId, String.format("  [RFC-5] 매핑 필드: %d/%d개 (DB 컬럼 기준)",
@@ -373,7 +413,8 @@ public class SapRfcSyncService {
                     } else if (NUMERIC_COLUMNS.contains(col)) {
                         try {
                             double d = Double.parseDouble(rawValue.replace(",", "").trim());
-                            values[c] = col.startsWith("ZQTY_") ? d : (long) d;
+                            // BIC_ZQTY_* (수량) 는 DECIMAL → double, ZAMT* (금액) 는 BIGINT → long
+                            values[c] = col.startsWith("BIC_ZQTY_") ? d : (long) d;
                         } catch (NumberFormatException e) {
                             values[c] = 0;
                         }
