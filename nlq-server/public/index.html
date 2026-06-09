@@ -555,6 +555,13 @@
             <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>최근 이력</p>
             <span class="history-clear-btn" onclick="clearAllHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
         </div>
+        <div id="historyRetentionNotice" class="text-[10px] text-indigo-300/70 leading-snug" style="margin:-2px 12px 4px 12px;display:flex;align-items:flex-start;gap:6px;">
+            <i class="fas fa-info-circle" style="margin-top:2px;flex-shrink:0;"></i>
+            <span>
+                <span style="font-weight:600;">보관주기: 31일</span><br>
+                <span>31일이 지나면 자동으로 내역이 삭제됩니다</span>
+            </span>
+        </div>
         <div id="historyList" class="history-list">
             <div class="history-empty"><i class="fas fa-inbox"></i><br>아직 질의 이력이 없습니다</div>
         </div>
@@ -925,6 +932,18 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     // 최근 이력 로드
     await loadHistory();
+
+    // 이력 보관 정책 안내 문구 동적 갱신 (백엔드 정책값 반영)
+    try {
+        const r = await fetch('/api/history/retention');
+        if (r.ok) {
+            const { days } = await r.json();
+            const el = document.getElementById('historyRetentionNotice');
+            if (el && days) {
+                el.innerHTML = `<i class="fas fa-info-circle" style="margin-top:2px;flex-shrink:0;"></i><span><span style="font-weight:600;">보관주기: ${days}일</span><br><span>${days}일이 지나면 자동으로 내역이 삭제됩니다</span></span>`;
+            }
+        }
+    } catch (e) { /* 안내 문구는 정적 fallback 유지 */ }
 });
 
 // ============================================================
