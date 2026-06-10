@@ -3149,7 +3149,8 @@ async function saveHistory(userId, queryText, sql, explanation, chartType, chart
 app.get('/api/history', async (req, res) => {
   try {
     const userId = req.session?.user?.id || null;
-    console.log('[GET /api/history] session user:', JSON.stringify(req.session?.user), '→ userId:', userId);
+    const tab = req.query.tab || 'recent'; // recent | bookmarked
+    console.log('[GET /api/history] session user:', JSON.stringify(req.session?.user), '→ userId:', userId, 'tab:', tab);
     const limit = Math.min(parseInt(req.query.limit) || 30, 100);
 
     if (!userId) {
@@ -3157,7 +3158,10 @@ app.get('/api/history', async (req, res) => {
       return res.json([]);
     }
 
-    // 세션 단위로 그룹핑하여 반환 (domain_code 포함 — 배지 표시용)
+    // 즐겨찾기 탭일 때만 HAVING으로 필터 (세션 내 어느 row라도 is_bookmarked=1이면 해당 세션 즐겨찾기)
+    const havingClause = tab === 'bookmarked' ? 'HAVING is_bookmarked = 1' : '';
+
+    // 세션 단위로 그룹핑하여 반환 (domain_code + is_bookmarked 포함)
     const [rows] = await pool.query(
       `SELECT
          COALESCE(session_id, CONCAT('legacy_', id)) AS session_key,
@@ -3169,18 +3173,62 @@ app.get('/api/history', async (req, res) => {
          SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS success_count,
          SUM(row_count) AS total_rows,
          session_id,
-         MAX(domain_code) AS domain_code
+         MAX(domain_code) AS domain_code,
+         MAX(is_bookmarked) AS is_bookmarked
        FROM nl_query_history h
        WHERE user_id = ?
        GROUP BY COALESCE(session_id, CONCAT('legacy_', id))
+       ${havingClause}
        ORDER BY last_time DESC
        LIMIT ?`,
       [userId, userId, limit]
     );
-    console.log('[GET /api/history] userId:', userId, '→ sessions returned:', rows.length);
+    console.log('[GET /api/history] userId:', userId, 'tab:', tab, '→ sessions returned:', rows.length);
     res.json(rows);
   } catch (err) {
     console.error('[GET /api/history] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 세션 단위 즐겨찾기 토글
+//   sessionKey: 'legacy_<id>' 또는 UUID 형식 세션 ID
+//   세션 내 모든 row의 is_bookmarked를 일괄 업데이트
+app.patch('/api/history/session/:sessionKey/bookmark', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const sessionKey = req.params.sessionKey;
+
+    // 현재 즐겨찾기 상태 조회 (세션 첫 row 기준)
+    let currentRows;
+    if (sessionKey.startsWith('legacy_')) {
+      const id = parseInt(sessionKey.replace('legacy_', ''));
+      [currentRows] = await pool.query(
+        'SELECT MAX(is_bookmarked) AS is_bookmarked FROM nl_query_history WHERE id=? AND user_id=?',
+        [id, userId]
+      );
+    } else {
+      [currentRows] = await pool.query(
+        'SELECT MAX(is_bookmarked) AS is_bookmarked FROM nl_query_history WHERE session_id=? AND user_id=?',
+        [sessionKey, userId]
+      );
+    }
+    if (!currentRows || currentRows.length === 0) {
+      return res.status(404).json({ error: '세션을 찾을 수 없습니다.' });
+    }
+    const newVal = currentRows[0].is_bookmarked ? 0 : 1;
+
+    // 세션 내 모든 row 일괄 업데이트
+    if (sessionKey.startsWith('legacy_')) {
+      const id = parseInt(sessionKey.replace('legacy_', ''));
+      await pool.query('UPDATE nl_query_history SET is_bookmarked=? WHERE id=? AND user_id=?', [newVal, id, userId]);
+    } else {
+      await pool.query('UPDATE nl_query_history SET is_bookmarked=? WHERE session_id=? AND user_id=?', [newVal, sessionKey, userId]);
+    }
+    res.json({ success: true, is_bookmarked: newVal });
+  } catch (err) {
+    console.error('[PATCH /api/history/session/:sessionKey/bookmark] error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -7269,6 +7317,19 @@ async function ensureBookmarkShareTables() {
       await pool.query(`ALTER TABLE nl_query_history ADD COLUMN domain_code varchar(20) DEFAULT NULL COMMENT '분석 영역 도메인 코드' AFTER session_id`);
       await pool.query(`ALTER TABLE nl_query_history ADD INDEX idx_nl_domain (user_id, domain_code)`);
       console.log('[Migration] nl_query_history에 domain_code 컨럼 추가 완료');
+    }
+
+    // 5-2) nl_query_history에 is_bookmarked 컬럼 추가 (없으면) — 자연어 질의 이력 즐겨찾기용
+    //   세션 단위 토글이지만 row 단위로 저장 (세션 내 모든 row가 동일 값)
+    //   → MAX(is_bookmarked)로 세션 단위 즐겨찾기 여부 판정
+    const [nlBmCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nl_query_history' AND COLUMN_NAME = 'is_bookmarked'`
+    );
+    if (nlBmCols.length === 0) {
+      await pool.query(`ALTER TABLE nl_query_history ADD COLUMN is_bookmarked tinyint(1) NOT NULL DEFAULT 0 COMMENT '즐겨찾기 여부 (세션 단위 토글)' AFTER domain_code`);
+      await pool.query(`ALTER TABLE nl_query_history ADD INDEX idx_nl_bookmark (user_id, is_bookmarked)`);
+      console.log('[Migration] nl_query_history에 is_bookmarked 컬럼 추가 완료');
     }
 
     // 5) shared_queries 테이블 생성 (없으면)
