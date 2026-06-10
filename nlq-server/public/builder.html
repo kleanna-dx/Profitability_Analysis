@@ -1861,6 +1861,14 @@ function pickSuggestion(idx, val) {
 // ─── Execute Query ───────────────────────────
 // ─── 기간 필드 미선택 경고 + 사이드바 깜빡이는 하이라이트 ─────
 function highlightPeriodFieldsInSidebar() {
+    // ★ 사용자가 필드 검색바에 검색어를 입력한 상태면 CALMONTH/CALDAY 카드가
+    //   필터링되어 DOM에 없을 수 있음 → 검색어 초기화 + 전체 필드 다시 렌더링
+    const searchEl = document.getElementById('fieldSearch');
+    if (searchEl && searchEl.value) {
+        searchEl.value = '';
+        renderFieldList(allColumns);
+    }
+
     // 사이드바의 CALMONTH/CALDAY 카드를 찾아서 깜빡이는 빨간 하이라이트 적용
     const targets = [];
     DATE_FIELDS.forEach(col => {
