@@ -481,6 +481,30 @@
             text-align:center;padding:20px 16px;color:#818cf8;font-size:12px;opacity:0.6;
         }
 
+        /* History Tabs (최근 / 즐겨찾기) — 비주얼 쿼리 빌더와 동일 톤 */
+        .history-tabs{display:flex;gap:2px;padding:0 12px 6px;background:transparent;}
+        .history-tab{
+            flex:1;text-align:center;padding:6px 4px;font-size:11px;font-weight:600;
+            color:#a5b4fc;cursor:pointer;border-radius:6px;transition:all .15s;
+            border:1px solid transparent;position:relative;
+        }
+        .history-tab:hover{background:rgba(255,255,255,0.06);color:#c7d2fe;}
+        .history-tab.active{background:rgba(99,102,241,0.2);color:#e0e7ff;border-color:rgba(99,102,241,0.3);}
+
+        /* 즐겨찾기 별 아이콘 — 빌더와 동일 톤(amber) */
+        .history-item-star{
+            opacity:0;width:20px;height:20px;border-radius:4px;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;
+            color:#fbbf24;font-size:11px;cursor:pointer;transition:all .15s;
+            margin-top:2px;
+        }
+        .history-item:hover .history-item-star{opacity:1;}
+        .history-item-star.bookmarked{opacity:1;color:#f59e0b;}
+        .history-item-star:hover{background:rgba(251,191,36,0.15);}
+
+        /* 액션 버튼 묶음 (별표 + 삭제) */
+        .history-item-actions{display:flex;gap:2px;flex-shrink:0;align-items:flex-start;}
+
         /* Scrollbar */
         .chat-area::-webkit-scrollbar{width:6px;}
         .chat-area::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
@@ -520,11 +544,11 @@
         </button>
     </div>
 
-    <!-- Recent History -->
+    <!-- Recent History / Bookmarks -->
     <div>
         <div class="history-header">
-            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>최근 이력</p>
-            <span class="history-clear-btn" onclick="clearAllHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
+            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>쿼리 이력</p>
+            <span id="historyClearBtn" class="history-clear-btn" onclick="clearAllHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
         </div>
         <div id="historyRetentionNotice" class="text-[10px] text-indigo-300/70 leading-snug" style="margin:-2px 12px 4px 12px;display:flex;align-items:flex-start;gap:6px;">
             <i class="fas fa-info-circle" style="margin-top:2px;flex-shrink:0;"></i>
@@ -532,6 +556,11 @@
                 <span style="font-weight:600;">보관주기: 31일</span><br>
                 <span>31일이 지나면 자동으로 내역이 삭제됩니다</span>
             </span>
+        </div>
+        <!-- 최근 / 즐겨찾기 탭 (비주얼 쿼리 빌더와 동일 UX) -->
+        <div class="history-tabs">
+            <div class="history-tab active" data-tab="recent" onclick="switchHistoryTab('recent')"><i class="fas fa-clock" style="margin-right:3px;"></i>최근</div>
+            <div class="history-tab" data-tab="bookmarked" onclick="switchHistoryTab('bookmarked')"><i class="fas fa-star" style="margin-right:3px;"></i>즐겨찾기</div>
         </div>
         <div id="historyList" class="history-list">
             <div class="history-empty"><i class="fas fa-inbox"></i><br>아직 질의 이력이 없습니다</div>
@@ -1865,11 +1894,24 @@ async function executeEditedSql(msgId) {
 }
 
 // ============================================================
-// History (이력 관리)
+// History (이력 관리 + 즐겨찾기)
 // ============================================================
+let currentHistoryTab = 'recent'; // 'recent' | 'bookmarked'
+
+function switchHistoryTab(tab) {
+    currentHistoryTab = tab;
+    document.querySelectorAll('.history-tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.tab === tab);
+    });
+    // 전체 삭제 버튼은 '최근' 탭에서만 노출 (즐겨찾기 탭에선 의미 모호)
+    const clearBtn = document.getElementById('historyClearBtn');
+    if (clearBtn) clearBtn.style.display = tab === 'recent' ? '' : 'none';
+    loadHistory();
+}
+
 async function loadHistory() {
     try {
-        const res = await fetch('/api/history?limit=30');
+        const res = await fetch(`/api/history?limit=30&tab=${currentHistoryTab}`);
         const data = await res.json();
         historyCache = data;
         renderHistoryList(data);
@@ -1881,7 +1923,9 @@ async function loadHistory() {
 function renderHistoryList(items) {
     const container = document.getElementById('historyList');
     if (!items || items.length === 0) {
-        container.innerHTML = '<div class="history-empty"><i class="fas fa-inbox"></i><br>아직 질의 이력이 없습니다</div>';
+        const emptyMsg = currentHistoryTab === 'bookmarked' ? '즐겨찾기한 이력이 없습니다' : '아직 질의 이력이 없습니다';
+        const emptyIcon = currentHistoryTab === 'bookmarked' ? 'fa-star' : 'fa-inbox';
+        container.innerHTML = `<div class="history-empty"><i class="fas ${emptyIcon}"></i><br>${emptyMsg}</div>`;
         return;
     }
     let html = '';
@@ -1899,6 +1943,10 @@ function renderHistoryList(items) {
         const dc = item.domain_code;
         const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${dc}]</span>` : '';
         const meta = `${time}${countBadge}`;
+        // 즐겨찾기 별 아이콘 — 채워진 별(fas) vs 빈 별(far)
+        const isBookmarked = !!item.is_bookmarked;
+        const starCls = isBookmarked ? 'bookmarked' : '';
+        const starStyle = isBookmarked ? 'fas' : 'far';
         html += `
             <div class="history-item${activeCls}" data-session="${esc(sessionKey)}" onclick="restoreSession('${esc(sessionKey)}')">
                 <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
@@ -1906,12 +1954,39 @@ function renderHistoryList(items) {
                     <div class="history-item-query">${domainBadge}${esc(title)}</div>
                     <div class="history-item-meta">${meta}</div>
                 </div>
-                <div class="history-item-del" onclick="event.stopPropagation();deleteSession('${esc(sessionKey)}')" title="삭제">
-                    <i class="fas fa-times"></i>
+                <div class="history-item-actions">
+                    <div class="history-item-star ${starCls}" onclick="event.stopPropagation();toggleSessionBookmark('${esc(sessionKey)}')" title="즐겨찾기">
+                        <i class="${starStyle} fa-star"></i>
+                    </div>
+                    <div class="history-item-del" onclick="event.stopPropagation();deleteSession('${esc(sessionKey)}')" title="삭제">
+                        <i class="fas fa-times"></i>
+                    </div>
                 </div>
             </div>`;
     });
     container.innerHTML = html;
+}
+
+// 세션 단위 즐겨찾기 토글 — 세션 내 모든 row의 is_bookmarked를 일괄 업데이트
+async function toggleSessionBookmark(sessionKey) {
+    try {
+        const res = await fetch(`/api/history/session/${encodeURIComponent(sessionKey)}/bookmark`, { method: 'PATCH' });
+        const data = await res.json();
+        if (data.success) {
+            // 캐시 업데이트 (현재 탭이 '즐겨찾기'이고 해제한 경우 목록에서 제거)
+            const item = historyCache.find(h => (h.session_key || ('legacy_' + h.first_id)) === sessionKey);
+            if (item) item.is_bookmarked = data.is_bookmarked;
+            if (currentHistoryTab === 'bookmarked' && !data.is_bookmarked) {
+                // 즐겨찾기 탭에서 해제했으면 목록에서 제거
+                historyCache = historyCache.filter(h => (h.session_key || ('legacy_' + h.first_id)) !== sessionKey);
+            }
+            renderHistoryList(historyCache);
+        } else if (data.error) {
+            alert('즐겨찾기 변경 실패: ' + data.error);
+        }
+    } catch(e) {
+        alert('즐겨찾기 변경 오류: ' + e.message);
+    }
 }
 
 function formatHistoryTime(dateStr) {
