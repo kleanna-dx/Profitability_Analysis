@@ -100,6 +100,69 @@
         }
         .field-item:hover { background:#eff6ff; }
         .field-item.dragging { opacity:0.4; }
+
+        /* ── 기간 필드 미선택 경고 — 사이드바 깜빡이는 빨간 하이라이트 ── */
+        @keyframes period-field-blink {
+            0%, 100% {
+                background:#fee2e2;
+                box-shadow: 0 0 0 0 rgba(239,68,68,0.6), inset 0 0 0 2px #ef4444;
+                transform: scale(1);
+            }
+            50% {
+                background:#fecaca;
+                box-shadow: 0 0 12px 4px rgba(239,68,68,0.45), inset 0 0 0 2px #dc2626;
+                transform: scale(1.02);
+            }
+        }
+        .field-item.period-required-blink {
+            animation: period-field-blink 0.6s ease-in-out infinite;
+            border-radius:6px;
+            position:relative;
+            z-index:2;
+        }
+        .field-item.period-required-blink .fname { color:#991b1b; font-weight:700; }
+        .field-item.period-required-blink .fcode { color:#dc2626; font-weight:700; }
+        .field-item.period-required-blink .icon { background:#dc2626 !important; }
+
+        /* ── 경고 모달 ── */
+        .pivot-warn-modal-backdrop {
+            position:fixed; inset:0; background:rgba(15,23,42,0.55);
+            display:none; align-items:center; justify-content:center;
+            z-index:9999; backdrop-filter: blur(2px);
+        }
+        .pivot-warn-modal-backdrop.active { display:flex; }
+        .pivot-warn-modal {
+            background:white; border-radius:14px; padding:24px 28px;
+            max-width:460px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.3);
+            animation: modal-pop 0.2s ease-out;
+        }
+        @keyframes modal-pop {
+            from { opacity:0; transform: scale(0.92) translateY(-8px); }
+            to   { opacity:1; transform: scale(1) translateY(0); }
+        }
+        .pivot-warn-modal h3 {
+            margin:0 0 10px; font-size:1.05rem; color:#991b1b;
+            display:flex; align-items:center; gap:8px;
+        }
+        .pivot-warn-modal h3 i { font-size:1.2rem; color:#ef4444; }
+        .pivot-warn-modal p {
+            margin:8px 0 16px; font-size:0.88rem; color:#475569; line-height:1.55;
+        }
+        .pivot-warn-modal .hint {
+            background:#fef3c7; border-left:3px solid #f59e0b;
+            padding:10px 12px; border-radius:6px; font-size:0.8rem; color:#78350f;
+            margin-bottom:16px;
+        }
+        .pivot-warn-modal .actions {
+            display:flex; justify-content:flex-end; gap:8px;
+        }
+        .pivot-warn-modal button {
+            padding:8px 18px; border-radius:6px; border:none; cursor:pointer;
+            font-size:0.85rem; font-weight:600;
+            background:#ef4444; color:white;
+            transition: background 0.15s;
+        }
+        .pivot-warn-modal button:hover { background:#dc2626; }
         .field-item .icon {
             width:22px; height:22px; border-radius:6px; display:flex; align-items:center;
             justify-content:center; font-size:0.65rem; font-weight:700; color:white; flex-shrink:0;
@@ -999,13 +1062,7 @@ let loadedHistoryId = null; // 기존 이력 클릭 시 설정 → 재실행 시
 let compareYoY = false;
 let compareMoM = false;
 let compareDimSelections = {};  // { columnName: true/false } 비교기준 DIM 선택 상태
-const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 날짜 필드 — UI 곳곳의 dim 필드 필터링에 사용
-// 결과 표에 자동으로 표시되는 기본 필드 (백엔드가 SELECT/GROUP BY에 자동 추가)
-const DEFAULT_FIELDS = [
-    { column: 'CALMONTH', alias: '달력연도/월', aggregate: '', type: 'text', category: 'period', _default: true }
-];
-// 사용자가 X 버튼으로 기본 필드를 제거했는지 추적 (제거 후에는 자동 복원 안 함)
-let removedDefaultFields = new Set();
+const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 날짜 필드 — UI 곳곳의 dim 필드 필터링 + 피벗 검증에 사용
 // 권장 비교기준 DIM (월별 변동이 적은 필드)
 const RECOMMENDED_COMPARE_DIMS = ['MATERIAL_NM','MATERIAL','DIVISION','PROFIT_CTR','MATL_GROUP','MATL_TYPE'];
 
@@ -1089,10 +1146,8 @@ async function switchDomain(dc){
 
 // ─── 새 쿼리빌더 (전체 초기화 + 도메인 잠금 해제) ───
 function newQueryBuilder(){
-    // 1) 필드 초기화 + 기본 필드(CALMONTH) 재설정
+    // 1) 필드 초기화 (정책: CALMONTH 자동 추가 없음)
     selectedFields = [];
-    removedDefaultFields = new Set(); // 새 쿼리 시작 시 기본 필드 제거 이력도 리셋
-    ensureDefaultFields();
     renderSelectedFields();
     updateOrderByOptions();
 
@@ -1144,13 +1199,11 @@ function newQueryBuilder(){
 window.addEventListener('DOMContentLoaded', async () => {
     await initDomainAndRole();
     initDateSelectors();
-    // ★ loadColumns()를 await — allColumns가 채워진 후에 renderSelectedFields() 실행되어야
-    //   selectedFields의 column → col.label('달력연도/월') 매핑이 정상 동작
+    // allColumns가 채워진 후에 renderSelectedFields()가 실행되어야 한글 alias 정상 매핑
     await loadColumns();
     loadBuilderHistory();
-    // 페이지 로드 시 조회필드에 기본 필드(CALMONTH 등) 자동 표시
-    // — 결과 표에 자동으로 나오는 컬럼이 조회필드에도 보이도록 사용자 직관에 맞춤
-    ensureDefaultFields();
+    // 정책 변경: CALMONTH 자동 기본 추가 제거
+    //   → 사용자가 [기간] 필드를 명시 선택하지 않으면 피벗 실행 시 경고 + 사이드바 하이라이트
     renderSelectedFields();
     updateOrderByOptions();
 });
@@ -1517,34 +1570,16 @@ function addField(colName) {
 }
 
 function removeField(idx) {
-    const removed = selectedFields[idx];
-    // 기본 필드(CALMONTH 등)를 사용자가 직접 X로 제거한 경우, 자동 복원 차단
-    if (removed && removed._default && removed.column) {
-        removedDefaultFields.add(removed.column);
-    }
     selectedFields.splice(idx, 1);
     renderSelectedFields();
     updateOrderByOptions();
     updateCompareDimPanel();
 }
 
-// 결과 표에 자동 표시되는 기본 필드(CALMONTH 등)를 조회필드에 자동 추가
-// — 사용자가 한 번 제거했으면 다시 추가하지 않음
-function ensureDefaultFields() {
-    DEFAULT_FIELDS.forEach(def => {
-        if (removedDefaultFields.has(def.column)) return; // 사용자가 제거한 필드는 복원 안 함
-        if (selectedFields.find(f => f.column === def.column)) return; // 이미 있으면 스킵
-        // 맨 앞에 삽입 — 결과 표 컬럼 순서와 일치
-        selectedFields.unshift({ ...def });
-    });
-}
-
 function clearFields() {
     selectedFields = [];
     compareDimSelections = {};
-    removedDefaultFields = new Set(); // 초기화 시 기본 필드 제거 이력도 리셋
     builderDomainLocked=false;renderDomainSelectorBar();
-    ensureDefaultFields(); // CALMONTH 등 기본 필드 재설정
     renderSelectedFields();
     updateOrderByOptions();
     updateCompareDimPanel();
@@ -1824,9 +1859,65 @@ function pickSuggestion(idx, val) {
 }
 
 // ─── Execute Query ───────────────────────────
+// ─── 기간 필드 미선택 경고 + 사이드바 깜빡이는 하이라이트 ─────
+function highlightPeriodFieldsInSidebar() {
+    // 사이드바의 CALMONTH/CALDAY 카드를 찾아서 깜빡이는 빨간 하이라이트 적용
+    const targets = [];
+    DATE_FIELDS.forEach(col => {
+        const el = document.querySelector(`.field-item[data-name="${col}"]`);
+        if (el) targets.push(el);
+    });
+    if (targets.length === 0) return;
+
+    targets.forEach(el => el.classList.add('period-required-blink'));
+
+    // 8초 후 자동 해제 (사용자가 더 빨리 클릭하면 그때도 해제)
+    const handlers = [];
+    const stop = () => {
+        targets.forEach((el, i) => {
+            el.classList.remove('period-required-blink');
+            if (handlers[i]) el.removeEventListener('click', handlers[i]);
+        });
+    };
+    targets.forEach((el, i) => {
+        // 깜빡이는 동안에는 단일 클릭으로 즉시 조회필드에 추가 (UX 단축)
+        const handler = (ev) => {
+            ev.stopPropagation();
+            const colName = el.getAttribute('data-name');
+            if (colName) addField(colName);
+            stop();
+        };
+        handlers[i] = handler;
+        el.addEventListener('click', handler);
+    });
+    setTimeout(stop, 8000);
+
+    // 첫 번째 기간 필드로 사이드바 스크롤 이동 (눈에 띄게)
+    targets[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function openPeriodWarnModal() {
+    document.getElementById('periodWarnModal').classList.add('active');
+}
+function closePeriodWarnModal(ev) {
+    // backdrop 클릭(ev.target=backdrop)이거나 확인 버튼 클릭(ev 없음) 시 닫기
+    // 내부 모달 콘텐츠 클릭은 onclick="event.stopPropagation()"로 차단됨
+    document.getElementById('periodWarnModal').classList.remove('active');
+    // 모달 닫은 직후 사이드바 깜빡임 시작 (모달이 가리지 않도록 약간 지연)
+    setTimeout(() => highlightPeriodFieldsInSidebar(), 80);
+}
+
 async function executeQuery() {
     if (selectedFields.length === 0) {
         alert('조회할 필드를 하나 이상 선택해주세요.');
+        return;
+    }
+    // ★ 기간 필드(CALMONTH/CALDAY) 1개 이상 선택 필수
+    //   백엔드가 더 이상 CALMONTH를 자동 추가하지 않으므로 사용자가 명시 선택해야 함
+    //   (비교모드는 백엔드에서 자동 CALMONTH 표시 유지 — [전월대비/전년대비] 클릭 자체가 월 비교 명시)
+    const hasPeriodField = selectedFields.some(f => DATE_FIELDS.includes(f.column));
+    if (!hasPeriodField && !compareYoY && !compareMoM) {
+        openPeriodWarnModal();
         return;
     }
     const btn = document.getElementById('execBtn');
@@ -2382,17 +2473,13 @@ async function restoreSharedHistory(id) {
 function applyHistoryToBuilder(item) {
     // 0. 이력 ID는 호출자가 설정 (restoreBuilderHistory → set, restoreSharedHistory → null)
 
-    // 1. 필드 복원
+    // 1. 필드 복원 (이력에 저장된 필드 그대로 — CALMONTH 자동 추가 없음)
     selectedFields = (item.fields_json || []).map(f => ({
         column: f.column,
         alias: f.alias || f.column,
         aggregate: f.aggregate || '',
         type: (allColumns.find(c => c.name === f.column) || {}).type || 'text',
     }));
-    // 기본 필드(CALMONTH)는 결과 표에 자동 표시되므로 조회필드에도 노출
-    // — 이력 복원 시 제거 이력 리셋 후 자동 추가
-    removedDefaultFields = new Set();
-    ensureDefaultFields();
     renderSelectedFields();
     updateOrderByOptions();
 
@@ -2617,5 +2704,23 @@ async function clearAllBuilderHistory() {
 }
 </script>
 <script>async function doLogout(){if(!confirm("로그아웃 하시겠습니까?"))return;try{await fetch("/api/logout",{method:"POST"})}catch(e){}window.location.href="/login"}</script>
+
+<!-- ── 기간 필드 미선택 경고 모달 ── -->
+<div class="pivot-warn-modal-backdrop" id="periodWarnModal" onclick="closePeriodWarnModal(event)">
+    <div class="pivot-warn-modal" onclick="event.stopPropagation()">
+        <h3><i class="fas fa-exclamation-triangle"></i>기간 필드를 선택해주세요</h3>
+        <p>조회 필드에 <b>기간 필드</b>가 없어서 피벗을 생성할 수 없습니다.<br>
+        왼쪽 <b>[기간]</b> 섹션에서 다음 중 하나를 선택해주세요:</p>
+        <div class="hint">
+            <i class="fas fa-calendar-alt" style="margin-right:6px;"></i>
+            <b>달력연도/월 (CALMONTH)</b> — 월 단위 집계 (가장 일반적)<br>
+            <i class="fas fa-calendar-day" style="margin-right:6px;margin-top:4px;"></i>
+            <b>달력일 (CALDAY)</b> — 일 단위 집계 (일별 추이 분석)
+        </div>
+        <div class="actions">
+            <button onclick="closePeriodWarnModal()">확인 (필드 선택하러 가기)</button>
+        </div>
+    </div>
+</div>
 </body>
 </html>
