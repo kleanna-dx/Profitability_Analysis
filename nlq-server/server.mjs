@@ -1961,27 +1961,73 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
   if (!inputSql) return inputSql;
   try {
     const dc = domainCode || 'PS';
-    const [metricRows] = await pool.query(
-      `SELECT metric_code, aggregation, formula FROM metric WHERE aggregation = 'SUM' AND (formula LIKE '%-%' OR formula LIKE '%+%') AND domain_code = ?`, [dc]
-    );
+    // 도메인의 모든 CALC/SUM 산식 metric 로드 (TOTAL_XXX 패턴 제한 제거 — 운영은 ZAMT### 형태)
+    const metricMap = await loadMetricMap(dc);
+    if (!metricMap || Object.keys(metricMap).length === 0) return inputSql;
+
     let result = inputSql;
-    for (const m of metricRows) {
-      const codeMatch = m.metric_code.match(/^TOTAL_(\w+)$/);
-      if (codeMatch) {
-        const rawCol = codeMatch[1]; // e.g., ZAMT035
-        const detectPattern = new RegExp(`SUM\\(${rawCol}\\)`, 'gi');
-        if (detectPattern.test(result)) {
-          // SUM(ZAMT035) → (SUM(ZAMT003)-SUM(ZAMT034))
-          const replacement = `(SUM(${m.formula.replace(/-/g, ')-SUM(').replace(/\+/g, ')+SUM(')}))`;
-          const replacePattern = new RegExp(`SUM\\(${rawCol}\\)`, 'gi');
-          const before = result;
-          result = result.replace(replacePattern, replacement);
-          if (before !== result) {
-            console.log(`[NLQ] Metric 자동 치환: SUM(${rawCol}) → ${replacement}`);
-          }
+    const replacedCodes = [];
+
+    // 각 metric_code에 대해 SQL 안에서 단순 합산 패턴을 찾아 풀린 산식으로 치환
+    for (const [code, meta] of Object.entries(metricMap)) {
+      if (!meta || !meta.formula) continue;
+      // 재귀 확장된 산식 (모든 하위 metric_code까지 전부 풀림)
+      const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
+      if (!expanded || expanded === code) continue;
+
+      // 안전한 SQL 표현식으로 감싸기 (괄호 포함)
+      // expandMetricFormula는 이미 SUM(콜럼) 형태를 포함한 풀린 산식을 반환
+      const replacement = `(${expanded})`;
+
+      // 패턴 1: SUM(ZAMT035) 같은 단순 합산 형태
+      const sumPattern = new RegExp(`SUM\\s*\\(\\s*${code}\\s*\\)`, 'gi');
+      if (sumPattern.test(result)) {
+        const before = result;
+        result = result.replace(sumPattern, replacement);
+        if (before !== result) {
+          replacedCodes.push(`SUM(${code})`);
+        }
+      }
+
+      // 패턴 2: 단독 컬럼 형태 (예: SELECT ZAMT035 ... 또는 FORMAT(ZAMT035, 0))
+      // — 다른 metric_code의 부분 문자열로 매칭되지 않도록 \b 사용
+      const bareTokenPattern = new RegExp(`\\b${code}\\b(?!\\s*\\()`, 'g');
+      // SUM(...) 안의 코드는 위 패턴1에서 처리됐으므로 여기선 SUM 바깥의 것만 잡음
+      // 간단하게: SUM(...) 표현은 이미 처리된 상태이므로 남은 토큰만 치환
+      if (bareTokenPattern.test(result)) {
+        const before = result;
+        // 남은 토큰을 풀린 산식으로 치환 (괄호 보존)
+        result = result.replace(bareTokenPattern, replacement);
+        if (before !== result) {
+          replacedCodes.push(code);
         }
       }
     }
+
+    if (replacedCodes.length > 0) {
+      console.log(`[NLQ] Metric 자동 치환 적용: ${replacedCodes.join(', ')}`);
+    }
+
+    // FORMAT() 인자 누락 같은 명백한 오류 SQL 사전 차단
+    // 예: FORMAT(SUM(ZAMT035))  → 두 번째 인자 없음 → 운영에서 "Incorrect parameter count" 에러
+    const badFormat = /\bFORMAT\s*\([^()]*\)/gi;
+    result = result.replace(badFormat, (m) => {
+      // 괄호 안의 콤마 개수가 0이면 인자 1개뿐 → 기본 자리수 0 추가
+      const inner = m.slice(m.indexOf('(') + 1, m.lastIndexOf(')'));
+      // 콤마가 괄호 밖에 있으면 인자 2개 이상으로 간주 (안전한 검사)
+      let depth = 0, hasTopLevelComma = false;
+      for (const ch of inner) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        else if (ch === ',' && depth === 0) { hasTopLevelComma = true; break; }
+      }
+      if (!hasTopLevelComma) {
+        console.log(`[NLQ] FORMAT() 인자 누락 보정: ${m} → FORMAT(${inner}, 0)`);
+        return `FORMAT(${inner}, 0)`;
+      }
+      return m;
+    });
+
     return result;
   } catch (e) {
     console.error('[NLQ] Metric 자동 치환 실패 (무시):', e.message);
@@ -2256,16 +2302,23 @@ app.post('/api/nlq', async (req, res) => {
         }
       }
 
-      // 대화 히스토리를 GPT messages에 주입 (후속 질문에서 이전 SQL 맥락 유지)
+      // 대화 히스토리를 GPT messages에 주입 (후속 질문에서 이전 질문 맥락 유지)
+      // ⚠️ 중요: 이전 SQL은 LLM에게 절대 주지 않음.
+      //   - 과거 학습관리 변경 전(예: Metric 산식 등록 전)에 생성된 SQL이 history에 남아있으면
+      //     LLM이 그 잘못된 SQL을 "정답"으로 인식하여 재생산(회귀)함.
+      //   - 따라서 이전 턴은 사용자 질의(role=user)만 포함하고, assistant 응답은 주지 않음.
+      //   - 후속 질문의 맥락("그 중에서 5월만", "그래프로 보여줘")은 user 질의 흐름만으로 충분.
       const messages = [{ role: 'system', content: systemPrompt }];
       if (Array.isArray(conversationContext) && conversationContext.length > 0) {
-        // 최근 5턴만 사용 (토큰 절약)
-        const recentCtx = conversationContext.slice(-5);
+        // 최근 3턴만 사용 (토큰 절약 + 오염 최소화)
+        const recentCtx = conversationContext.slice(-3);
         for (const turn of recentCtx) {
-          messages.push({ role: 'user', content: turn.query });
-          messages.push({ role: 'assistant', content: JSON.stringify({ sql: turn.sql }) });
+          if (turn && turn.query) {
+            messages.push({ role: 'user', content: turn.query });
+            // assistant SQL 주입은 의도적으로 생략 (이전 SQL 회귀 차단)
+          }
         }
-        console.log(`[NLQ] 대화 컨텍스트 ${recentCtx.length}턴 포함`);
+        console.log(`[NLQ] 대화 컨텍스트 ${recentCtx.length}턴 포함 (질의만, SQL 제외)`);
       }
       messages.push({ role: 'user', content: query });
 
