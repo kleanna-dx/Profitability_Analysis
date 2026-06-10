@@ -2206,6 +2206,124 @@ function isAnalysisQuery(query) {
 }
 
 // ============================================================
+// Helper: 분석질문 모드에서 사용자 질문 의도 분류
+// - concept: 개념/용어 설명 요청 (예: "SKU가 뭐야?", "KPI란?") → DB 조회 없이 정의만
+// - data_analysis: 특정 데이터 조회/분석 요청 (예: "지급수수료 분석해줘", "SKU별 매출 TOP5")
+// - interpretation: 원인/시사점/해석/제언 요청 (예: "왜 낮아졌어?", "전월대비 분석")
+// 1차: 휴리스틱(빠름) → 분류 실패 시 LLM 폴백
+// ============================================================
+function classifyAnalysisIntentHeuristic(query) {
+  if (!query || typeof query !== 'string') return null;
+  const q = query.replace(/\s+/g, '');
+
+  // 1) 개념 질문 패턴 — "X가 뭐야/뭔가/무엇/의미/정의/란?"
+  //    단, "X가 뭐길래 그렇게 낮아?" 같은 해석성은 제외 (뒤에 원인성 키워드 있으면 제외)
+  const conceptPatterns = [
+    /(이|가|은|는)?\s*(뭐|뭐야|뭔가요|뭔지|무엇|무엇인가|무엇인지|무슨\s*뜻|어떤\s*뜻|어떤\s*의미)\?*$/,
+    /(이|가|은|는)?\s*뭐(예|에)요\?*$/,
+    /란\s*\?*$/,
+    /이란\s*(무엇|뭐|어떤)/,
+    /의\s*(정의|개념|의미|뜻)/,
+    /^(.+?)(이|가|은|는|란)?\s*(무엇|뭐)/,
+    /설명해\s*줘$/,  // "X 설명해줘" - 단독이면 개념 설명
+    /알려줘$/,        // 데이터 키워드 없는 단독 "알려줘"는 아래에서 후처리
+  ];
+
+  // 2) 해석/원인 분석 패턴
+  const interpretationPatterns = [
+    /왜/, /원인/, /이유/, /때문/,
+    /낮아졌|높아졌|감소했|증가했|줄었|늘었|악화|개선/,
+    /전월\s*대비/, /전년\s*대비/, /전기\s*대비/, /YoY|MoM/i,
+    /시사점/, /인사이트/, /제언/, /추천/, /개선\s*방안/,
+    /해석/, /평가/, /진단/, /코멘트/, /의미/,
+    /어떻게\s*보(이|여)/, /어떤\s*의미/,
+  ];
+
+  // 3) 데이터 분석 패턴 (특정 데이터 요청 동사가 있어야 함)
+  const dataAnalysisPatterns = [
+    /분석해/, /비교해/, /보여줘/, /조회/, /구해/, /계산/,
+    /TOP\s*\d+/i, /상위\s*\d+/, /하위\s*\d+/, /순위/,
+    /별\s*(매출|이익|원가|금액|합계|비중)/,
+    /합계|총액|평균|최대|최소/,
+    /얼마|몇\s*원|몇\s*개/,
+    // "YYYY년 N월 ... 알려줘/보여줘" 류 — 명백한 데이터 요청
+    /\d{4}\s*년.*\d{1,2}\s*월.*(알려줘|보여줘|조회|구해|계산)/,
+    /\d{1,2}\s*월.*(알려줘|보여줘|조회|구해|계산)/,
+  ];
+
+  const hasInterpretation = interpretationPatterns.some(p => p.test(q));
+  if (hasInterpretation) return 'interpretation';
+
+  const hasDataAnalysis = dataAnalysisPatterns.some(p => p.test(q));
+  if (hasDataAnalysis) return 'data_analysis';
+
+  // 개념 질문 패턴 검사 (해석/분석 키워드가 없을 때만)
+  const hasConcept = conceptPatterns.some(p => p.test(q));
+  if (hasConcept) {
+    // "지급수수료 알려줘"처럼 데이터 컬럼명 + 알려줘는 data_analysis 쪽
+    // (휴리스틱으로는 컬럼명 모르므로) 명백한 개념 의문문만 concept으로 분류
+    if (/(뭐|뭐야|뭐예요|뭔가|무엇|무슨\s*뜻|어떤\s*뜻|의\s*정의|의\s*개념|의\s*의미|의\s*뜻|이란|란\?)/.test(q)) {
+      return 'concept';
+    }
+    // "X 설명해줘"는 명확하지 않으니 LLM 폴백
+    return null;
+  }
+
+  return null;  // 분류 실패 → LLM 폴백
+}
+
+async function classifyAnalysisIntent(query, openaiClient, model) {
+  // 1차: 휴리스틱
+  const heuristic = classifyAnalysisIntentHeuristic(query);
+  if (heuristic) {
+    console.log(`[NLQ] 의도 분류(휴리스틱): ${heuristic} ("${query}")`);
+    return heuristic;
+  }
+
+  // 2차: LLM 분류 (휴리스틱 실패 시)
+  try {
+    const completion = await openaiClient.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: 'system',
+          content: `당신은 사용자 질문 의도 분류기입니다. 사용자 질문을 다음 3가지 중 하나로 분류하세요.
+
+[분류 기준]
+1. concept: 용어/개념의 정의나 설명을 묻는 질문 (DB 데이터 불필요)
+   - 예: "SKU가 뭐야?", "KPI란 무엇인가요?", "매출총이익의 개념을 설명해줘"
+
+2. data_analysis: 실제 데이터를 조회하거나 항목별로 분석을 요청하는 질문
+   - 예: "지급수수료 분석해줘", "SKU별 매출 TOP5 알려줘", "올해 4월 매출 보여줘"
+
+3. interpretation: 원인, 시사점, 변화의 해석, 제언을 요청하는 질문
+   - 예: "왜 낮아졌어?", "전월 대비 분석해줘", "수익성 어떻게 보여?", "개선 방안이 뭐야?"
+
+[응답 형식]
+반드시 JSON 한 줄로만 응답: {"intent": "concept|data_analysis|interpretation", "reason": "한 줄 이유"}`,
+        },
+        { role: 'user', content: query },
+      ],
+      temperature: 0,
+      max_tokens: 100,
+      response_format: { type: 'json_object' },
+    });
+    const raw = completion.choices[0].message.content.trim();
+    const parsed = JSON.parse(raw);
+    const intent = parsed.intent;
+    if (['concept', 'data_analysis', 'interpretation'].includes(intent)) {
+      console.log(`[NLQ] 의도 분류(LLM): ${intent} — ${parsed.reason} ("${query}")`);
+      return intent;
+    }
+  } catch (err) {
+    console.warn(`[NLQ] 의도 분류 LLM 실패, interpretation 폴백:`, err.message);
+  }
+
+  // 폴백: interpretation (기존 동작)
+  return 'interpretation';
+}
+
+// ============================================================
 // Helper: 질의에서 기준연월 추출 (분석형 질문용)
 // - "2026년 4월", "2026-04", "4월", "당월", "전월", "이번달", "지난달" 등 지원
 // - 추출 실패 시 latestMonth(데이터의 최신 월) 사용
@@ -2649,13 +2767,80 @@ app.post('/api/nlq', async (req, res) => {
       console.log(`[NLQ] 사용자 선택: 현황집계 → 표+SQL 경로 강제 (키워드 자동감지 비활성)`);
     }
     if (!matchedSql && isAnalysisMode) {
-      console.log(`[NLQ] 🧠 분석형 질문 처리 → 안전 경로 라우팅 (SQL 생성 우회)`);
+      console.log(`[NLQ] 🧠 분석형 질문 처리 → 의도 분류 → 경로 분기`);
       try {
+        // ============================================================
+        // ★ 의도 분류: 사용자 질문이 개념설명 / 데이터분석 / 해석 중 무엇인지 판단
+        // ============================================================
+        const intent = await classifyAnalysisIntent(query, openai, GPT_MODEL);
+
+        // ─────────────────────────────────────────────────────────
+        // 경로 1: 개념/용어 설명 (concept) — DB 조회 없이 정의만
+        // ─────────────────────────────────────────────────────────
+        if (intent === 'concept') {
+          console.log(`[NLQ] 분석경로 → concept (개념설명, DB 조회 생략)`);
+
+          const conceptCompletion = await openai.chat.completions.create({
+            model: GPT_MODEL,
+            messages: [
+              {
+                role: 'system',
+                content: `당신은 기업 수익성·재무 데이터 도메인 전문가입니다.
+사용자가 용어나 개념의 정의를 물었습니다. 데이터 조회 없이 **개념/용어 정의만** 간결하게 설명하세요.
+
+[답변 작성 규칙]
+1. 정의를 한두 문장으로 명확하게 제시
+2. 필요 시 예시 1~2개를 짧게 추가 (괄호 안 또는 한 줄)
+3. **KPI 수치, 데이터 분석, 시사점, 제언은 절대 포함하지 말 것**
+4. **"긍정적 시사점", "부정적 시사점", "제언" 같은 섹션 금지**
+5. 한국어, 친절하고 전문적인 톤
+6. 200~400자 이내로 핵심만
+7. 마크다운 굵게(**)는 핵심 용어에만 최소한으로 사용
+8. 데이터에 없는 내용 추측 금지
+9. 모든 문장은 완결된 형태로 종료`,
+              },
+              { role: 'user', content: query },
+            ],
+            temperature: 0.2,
+            max_tokens: 800,
+          });
+
+          let conceptAnswer = conceptCompletion.choices[0].message.content.trim();
+
+          // 이력 저장 (SQL 없음)
+          const nlqUserIdConcept = req.session?.user?.id || null;
+          saveHistory(
+            nlqUserIdConcept, query, null,
+            conceptAnswer,
+            'analysis',
+            {},
+            [],
+            0, 0, 'SUCCESS', null, session_id || null, activeDomain
+          ).catch(e => console.error('[History] 저장 실패:', e.message));
+
+          return res.json({
+            success: true,
+            isAnalysisAnswer: true,
+            answerType: 'concept',  // ★ 의도 유형 표기
+            answer: conceptAnswer,
+            analysis: conceptAnswer,
+            rows: [],
+            rowCount: 0,
+            sql: null,
+            explanation: null,
+            chartType: 'analysis',
+            chartConfig: {},
+          });
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // 경로 2/3: data_analysis 또는 interpretation — DB 조회 필요
+        // ─────────────────────────────────────────────────────────
         const dc = await getDataDateContext();
         dateContext = dc;
         const calmonth = extractCalmonthFromQuery(query, dc);
         const analysisSql = await buildAnalysisSQL(activeDomain, calmonth);
-        console.log(`[NLQ] 분석용 안전 SQL 생성 (CALMONTH=${calmonth})`);
+        console.log(`[NLQ] 분석경로 → ${intent} (CALMONTH=${calmonth})`);
 
         // 도메인 필터 자동 주입
         const finalSql = applyDomainFilter(analysisSql, activeDomain);
@@ -2674,17 +2859,30 @@ app.post('/api/nlq', async (req, res) => {
         , 2);
         const cmLabel = calmonth ? `${calmonth.substring(0,4)}년 ${parseInt(calmonth.substring(4,6))}월` : dc.latestLabel;
 
-        const userContent = rows.length > 0
-          ? `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회된 핵심 KPI 데이터]\n${dataText}\n\n위 KPI 데이터를 기반으로 사용자의 질문에 대한 전문적인 분석 답변을 작성해주세요.`
-          : `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (해당 기간 데이터 없음)\n\n해당 기간에 데이터가 없습니다. 데이터가 적재되지 않은 가능성을 안내하고, 사용자가 다른 기간을 시도할 수 있도록 친절히 안내해주세요.`;
+        // ─────────────────────────────────────────────────────────
+        // 의도별 시스템 프롬프트 분기
+        // ─────────────────────────────────────────────────────────
+        let analysisSystemPrompt;
+        if (intent === 'data_analysis') {
+          // 데이터 분석: 사용자가 요청한 데이터 위주, 시사점/제언은 가볍게
+          analysisSystemPrompt = `당신은 기업 수익성 분석 전문 컨설턴트입니다.
+사용자가 **특정 데이터의 조회/분석**을 요청했습니다. 데이터 수치 위주로 핵심을 명료하게 답변하세요.
 
-        const analysisCompletion = await openai.chat.completions.create({
-          model: GPT_MODEL,
-          messages: [
-            {
-              role: 'system',
-              content: `당신은 기업 수익성 분석 전문 컨설턴트입니다.
-사용자가 분석/인사이트/시사점을 요청했습니다. 데이터를 기반으로 핵심 위주의 간결한 분석 답변을 작성하세요.
+[답변 작성 규칙]
+1. 마크다운 형식 (제목·볼드·리스트 적절히)
+2. 사용자가 질문한 항목의 수치를 먼저 명확히 제시
+3. 데이터에 해당 항목이 없으면 "조회된 데이터에 X 정보가 포함되어 있지 않습니다"라고 솔직히 안내
+4. **"긍정적 시사점", "부정적 시사점", "제언" 같은 고정 섹션을 강제로 붙이지 말 것**
+5. 사용자가 명시적으로 시사점/제언을 요청한 경우에만 1~2줄 추가
+6. 금액은 억/만 단위 (예: 45,409,440,210원 → 약 454억원)
+7. 한국어 답변, 300~600자 이내
+8. 데이터에 없는 내용 추측 금지
+9. "당월", "전월", "이번달" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기
+10. 모든 문장은 완결된 형태로 종료`;
+        } else {
+          // interpretation: 원인·시사점·제언 (기존 동작 유지)
+          analysisSystemPrompt = `당신은 기업 수익성 분석 전문 컨설턴트입니다.
+사용자가 **원인 분석/시사점/해석/제언**을 요청했습니다. 데이터를 기반으로 핵심 위주의 간결한 분석 답변을 작성하세요.
 
 [답변 작성 규칙]
 1. 마크다운 형식 (제목, 볼드, 리스트)
@@ -2700,8 +2898,17 @@ app.post('/api/nlq', async (req, res) => {
 [★ 길이·완결성 규칙 — 반드시 준수]
 - 답변은 500~800자 이내로 핵심만 작성 (장황한 나열·반복 금지)
 - 모든 문장은 반드시 완결된 형태로 끝낼 것
-- 마지막 문장까지 깔끔하게 마무리한 뒤 종료`,
-            },
+- 마지막 문장까지 깔끔하게 마무리한 뒤 종료`;
+        }
+
+        const userContent = rows.length > 0
+          ? `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회된 핵심 KPI 데이터]\n${dataText}\n\n위 KPI 데이터를 기반으로 사용자의 질문에 대한 전문적인 답변을 작성해주세요.`
+          : `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (해당 기간 데이터 없음)\n\n해당 기간에 데이터가 없습니다. 데이터가 적재되지 않은 가능성을 안내하고, 사용자가 다른 기간을 시도할 수 있도록 친절히 안내해주세요.`;
+
+        const analysisCompletion = await openai.chat.completions.create({
+          model: GPT_MODEL,
+          messages: [
+            { role: 'system', content: analysisSystemPrompt },
             { role: 'user', content: userContent },
           ],
           temperature: 0.3,
@@ -2739,6 +2946,7 @@ app.post('/api/nlq', async (req, res) => {
         return res.json({
           success: true,
           isAnalysisAnswer: true,        // ★ 프론트에서 표/SQL 탭을 숨길 수 있도록 표식
+          answerType: intent,             // ★ 의도 유형 표기 (data_analysis | interpretation)
           answer: analysis,
           analysis: analysis,             // 호환성 위해 양쪽으로 제공
           rows: [],                       // 표 데이터 비움
