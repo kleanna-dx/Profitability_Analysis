@@ -1146,7 +1146,9 @@ function newQueryBuilder(){
 window.addEventListener('DOMContentLoaded', async () => {
     await initDomainAndRole();
     initDateSelectors();
-    loadColumns();
+    // ★ loadColumns()를 await — allColumns가 채워진 후에 renderSelectedFields() 실행되어야
+    //   selectedFields의 column → col.label('달력연도/월') 매핑이 정상 동작
+    await loadColumns();
     loadBuilderHistory();
     // 페이지 로드 시 조회필드에 기본 필드(CALMONTH 등) 자동 표시
     // — 결과 표에 자동으로 나오는 컬럼이 조회필드에도 보이도록 사용자 직관에 맞춤
@@ -1658,7 +1660,7 @@ function renderSelectedFields() {
         html += `<div class="selected-field${isMetric ? ' selected-metric' : ''}" onmousedown="sfMouseDown(event, ${i})">
             <span class="drag-handle"><i class="fas fa-grip-vertical"></i></span>
             <span style="color:${isMetric ? '#7c3aed' : (isNum ? '#7c3aed' : '#4f46e5')};font-weight:700;">${isMetric ? '\u0192' : (isNum ? '#' : 'T')}</span>
-            <span>${col ? col.label : (f.metric_code || f.column)}</span>`;
+            <span>${col ? col.label : (f.alias || f.metric_code || f.column)}</span>`;
         if (isMetric) {
             // Metric: 산식 표시 (수정 불가)
             html += `<span class="metric-formula-badge" title="${(f.formula||'').replace(/"/g,'&quot;')}"><i class="fas fa-calculator" style="font-size:9px;margin-right:2px;"></i>산식</span>`;
