@@ -6943,21 +6943,58 @@ app.get('/api/interface/stats', requireAdmin, async (req, res) => {
     const [success] = await pool.query(`SELECT COUNT(*) AS cnt FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='success'`, params);
     const [failed]  = await pool.query(`SELECT COUNT(*) AS cnt FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='failed'`, params);
     const [running] = await pool.query(`SELECT COUNT(*) AS cnt FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='running'`, params);
+
+    // [legacy] batch_jobs 누적 inserted_rows 합계 (재적재 시 중복 합산되어 실제 DB 행수와 다름)
+    //   → 호환성을 위해 inserted_rows_sum 필드로 계속 반환하지만,
+    //     화면 메인 지표(total_rows)는 실제 테이블 COUNT(*) 로 교체.
     const [rowsSum] = await pool.query(
-      `SELECT IFNULL(SUM(inserted_rows), 0) AS total_rows FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='success'`,
+      `SELECT IFNULL(SUM(inserted_rows), 0) AS total_inserted FROM batch_jobs ${baseWhere}${useFilter ? ' AND' : ' WHERE'} status='success'`,
       params
     );
 
     let interfaceName = '전체';
+    let mappedIftbl = null;  // 인터페이스가 실제 적재하는 테이블명
     if (useFilter) {
-      const [m] = await pool.query('SELECT interface_name FROM batch_master WHERE interface_id = ?', [interfaceId]);
+      const [m] = await pool.query(
+        'SELECT interface_name, IFTBL FROM batch_master WHERE interface_id = ?',
+        [interfaceId]
+      );
       interfaceName = m[0]?.interface_name || interfaceId;
+      mappedIftbl = m[0]?.IFTBL || null;
+    } else {
+      // 전체(ALL) 선택 시 기본 데이터는 NLP_RFC_001(수익성분석) IFTBL 을 사용한다
+      // (다중 인터페이스를 동시에 합산하지 않는다 — 화면 메인 지표는 단일 테이블 기준)
+      const [m] = await pool.query(
+        "SELECT IFTBL FROM batch_master WHERE interface_id = 'NLP_RFC_001'"
+      );
+      mappedIftbl = m[0]?.IFTBL || null;
+    }
+
+    // ★ 실제 DB 테이블 행수 (재적재로 인한 중복 합산이 없는 진짜 적재량)
+    //   IFTBL 식별자는 [A-Za-z_][A-Za-z0-9_]* 화이트리스트로 검증하여
+    //   SQL Injection 을 차단한다. (아래 monthly API 의 SAFE_IDENT 와 동일)
+    let dbTotalRows = 0;
+    const safeIdentRegex = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    if (mappedIftbl && safeIdentRegex.test(mappedIftbl)) {
+      try {
+        const [tbl] = await pool.query(`SELECT COUNT(*) AS cnt FROM \`${mappedIftbl}\``);
+        dbTotalRows = Number(tbl[0].cnt) || 0;
+      } catch (e) {
+        // IFTBL 이 존재하지 않거나 권한 문제일 수 있음 — 0 으로 폴백
+        console.warn(`[interface/stats] IFTBL=${mappedIftbl} COUNT 실패: ${e.message}`);
+      }
     }
 
     res.json({
       interface_id: useFilter ? interfaceId : 'ALL',
       interface_name: interfaceName,
-      total_rows: Number(rowsSum[0].total_rows) || 0,
+      // ★ total_rows: 실제 DB 테이블에 현재 적재되어 있는 행수 (재적재 중복 X)
+      //   화면의 "전체 DB 행수" 메인 지표에 해당.
+      total_rows: dbTotalRows,
+      // [참고] 배치 이력 누적 적재량 (재적재 시 중복 합산)
+      //   기존 클라이언트 호환성을 위해 같이 반환.
+      inserted_rows_sum: Number(rowsSum[0].total_inserted) || 0,
+      iftbl: mappedIftbl,
       total_jobs: total[0].cnt,
       success_jobs: success[0].cnt,
       failed_jobs: failed[0].cnt,
