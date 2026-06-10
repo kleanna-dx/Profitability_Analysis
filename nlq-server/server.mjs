@@ -4369,27 +4369,16 @@ app.get('/api/builder/columns', async (req, res) => {
     }
 
     // 3-1. Metric으로 등록된 DB 컬럼명 집합 구축 (ontology 섹션에서 숨기기 위해)
-    //   ─ (a) metric_code 자체가 DB 컬럼명과 같은 경우 (예: metric_code='ZAMT035' → 매출총이익)
-    //   ─ (b) formula에서 참조하는 DB 컬럼 (예: formula='SUM(ZAMT035)' → ZAMT035)
-    //   formula 예시: 'ZAMT035', 'SUM(ZAMT035)', 'SUM(ZAMT035)/NULLIF(SUM(ZAMT003),0)*100' 등
-    //   → DB 실제 컬럼명과 일치하는 식별자만 추출 (SUM/NULLIF 등 함수명은 자동 제외)
+    //   ─ metric_code 자체가 DB 컬럼명과 같은 경우만 제외 (예: metric_code='ZAMT035' → 매출총이익)
+    //   ─ formula 내 참조 컬럼(예: SUM(ZAMT001))은 원본 데이터이므로 ontology에 그대로 노출
+    //   ─ 즉, ZAMT001 같은 원본 컬럼이 metric으로 등록되지 않았다면 [금액] 섹션에 정상 표시됨
     const validDbColSet = new Set(dbCols.map(r => r.COLUMN_NAME.toUpperCase()));
-    const metricReferencedCols = new Set(); // ontology에서 숨길 DB 컬럼명 (UPPER)
-    const tokenRegex = /[A-Z_][A-Z0-9_]*/g;
+    const metricCodeSet = new Set(); // metric_code = DB 컬럼명인 경우만 (UPPER)
     for (const m of metricRows) {
-      // (a) metric_code 자체
       if (m.metric_code) {
         const code = String(m.metric_code).toUpperCase();
         if (validDbColSet.has(code)) {
-          metricReferencedCols.add(code);
-        }
-      }
-      // (b) formula 내 컬럼 참조
-      if (!m.formula) continue;
-      const tokens = String(m.formula).toUpperCase().match(tokenRegex) || [];
-      for (const tk of tokens) {
-        if (validDbColSet.has(tk)) {
-          metricReferencedCols.add(tk);
+          metricCodeSet.add(code);
         }
       }
     }
@@ -4403,9 +4392,10 @@ app.get('/api/builder/columns', async (req, res) => {
       // ★ 비활성 컬럼은 빌더 응답에서 제외 (ontology_column.is_active=0)
       if (inactiveColSet.has(name.toUpperCase())) continue;
 
-      // ★ Metric 산식에서 참조된 컬럼은 ontology 섹션에서 제외 (계산지표 섹션에서만 노출)
-      //    예: GROSS_PROFIT metric의 formula='ZAMT035' → ZAMT035는 계산지표로만 표시
-      if (metricReferencedCols.has(name.toUpperCase())) continue;
+      // ★ Metric으로 등록된 컬럼(metric_code = 컬럼명)은 ontology 섹션에서 제외
+      //    → 같은 ZAMT035가 [금액]에도 [계산지표]에도 나오는 중복 표시 방지 (계산지표만 노출)
+      //    formula에서 참조되는 원본 컬럼(예: ZAMT001)은 ontology에 그대로 노출됨
+      if (metricCodeSet.has(name.toUpperCase())) continue;
 
       // 타입 분류
       const dataType = /bigint|decimal|int|double|float/i.test(ctype) ? 'number' : 'text';
