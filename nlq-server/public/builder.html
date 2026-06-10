@@ -999,9 +999,7 @@ let loadedHistoryId = null; // 기존 이력 클릭 시 설정 → 재실행 시
 let compareYoY = false;
 let compareMoM = false;
 let compareDimSelections = {};  // { columnName: true/false } 비교기준 DIM 선택 상태
-const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 좌측 필드 목록에서 숨길 날짜 필드 (자동 처리됨)
-// 조회필드 추가를 차단할 날짜 필드 (CALMONTH는 결과 표에 자동 표시되므로 조회필드에도 노출)
-const BLOCK_ADD_FIELDS = ['CALDAY'];
+const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 날짜 필드 — UI 곳곳의 dim 필드 필터링에 사용
 // 결과 표에 자동으로 표시되는 기본 필드 (백엔드가 SELECT/GROUP BY에 자동 추가)
 const DEFAULT_FIELDS = [
     { column: 'CALMONTH', alias: '달력연도/월', aggregate: '', type: 'text', category: 'period', _default: true }
@@ -1178,8 +1176,10 @@ function renderFieldList(cols) {
     let html = '';
     CATEGORY_ORDER.forEach(cat => {
         if (!grouped[cat] || grouped[cat].length === 0) return;
-        // 날짜 필드를 제외한 카운트
-        const visibleCols = grouped[cat].filter(c => !DATE_FIELDS.includes(c.name));
+        // ★ 모든 필드 표시 — CALMONTH/CALDAY도 사이드바에 노출
+        //   (결과 표/조회필드에 자동 표시되는 필드가 사이드바에만 없으면 사용자 혼란)
+        //   addField() 중복 체크로 이미 추가된 필드는 다시 추가되지 않음
+        const visibleCols = grouped[cat];
         if (visibleCols.length === 0) return;
         const catIcon = cat === 'metric' ? '<i class="fas fa-calculator" style="font-size:10px;margin-right:3px;color:#7c3aed;"></i>' : '';
         html += `<div class="field-cat-label">${catIcon}${CATEGORY_NAMES[cat] || cat} (${visibleCols.length})</div>`;
@@ -1498,9 +1498,7 @@ function getDefaultAggregate(col) {
 }
 
 function addField(colName) {
-    // CALDAY 등 차단 대상 필드는 조회 필드에 추가 불가
-    // (CALMONTH는 결과 표에 자동 표시되므로 조회필드에도 노출 — 차단 해제)
-    if (BLOCK_ADD_FIELDS.includes(colName)) return;
+    // 중복 추가 방지 (이미 같은 컬럼이 그룹 기준으로 추가되어 있으면 무시)
     if (selectedFields.find(f => f.column === colName && !f.aggregate)) return;
     const col = allColumns.find(c => c.name === colName);
     if (!col) return;
