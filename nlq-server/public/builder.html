@@ -422,6 +422,15 @@
         tbody td:last-child { border-right:none; } /* 마지막 컬럼은 구분선 제거 */
         tbody tr:hover { background:#eff6ff; }
         td.num { text-align:right; font-variant-numeric:tabular-nums; font-family:'Fira Code',monospace; font-size:0.78rem; }
+        /* 순번(#) 컬럼 — 가장 좁고 회색조로 표시 */
+        thead th.col-seq, tbody td.col-seq {
+            width:48px; min-width:48px; max-width:48px;
+            text-align:center;
+            padding-left:8px; padding-right:8px;
+            color:#94a3b8;
+            font-size:0.72rem;
+        }
+        thead th.col-seq { font-weight:600; }
         .chart-wrap { padding:24px; display:none; min-height:380px; }
         .chart-wrap.active { display:block; }
         .chart-container { position:relative; max-width:900px; margin:0 auto; }
@@ -2227,7 +2236,7 @@ function renderTable(columns, rows) {
             }
         });
     }
-    let html = '<table><thead><tr><th>#</th>';
+    let html = '<table><thead><tr><th class="col-seq">순번</th>';
     columns.forEach(col => {
         // 비교 컬럼 헤더에 스타일 추가
         if (compareCols.has(col)) {
@@ -2238,7 +2247,7 @@ function renderTable(columns, rows) {
     });
     html += '</tr></thead><tbody>';
     rows.forEach((row, idx) => {
-        html += `<tr><td style="color:#94a3b8;font-size:0.72rem">${idx+1}</td>`;
+        html += `<tr><td class="col-seq">${idx+1}</td>`;
         columns.forEach(col => {
             const val = row[col];
             if (compareCols.has(col)) {
