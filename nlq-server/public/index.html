@@ -414,19 +414,16 @@
         .mode-toggle:hover{color:#4f46e5;border-color:#c7d2fe;}
         .mode-toggle.active{color:#4f46e5;background:#eef2ff;border-color:#c7d2fe;font-weight:600;}
 
-        /* 질문 유형 라디오 (현황집계 / 분석질문) */
+        /* 질문 유형 라디오 (현황집계 / 분석질문) - 입력바 인라인 배치 */
         .query-mode-bar{
-            max-width:900px;margin:0 auto 8px;display:flex;gap:6px;align-items:center;
-            padding:0 2px;
-        }
-        .query-mode-label{
-            font-size:11px;color:#94a3b8;font-weight:500;margin-right:4px;
+            display:inline-flex;gap:4px;align-items:center;flex-shrink:0;
         }
         .query-mode-radio{
             display:inline-flex;align-items:center;gap:5px;cursor:pointer;
             font-size:12px;color:#64748b;font-weight:500;
-            padding:5px 11px;border-radius:14px;border:1px solid #e2e8f0;
+            padding:6px 10px;border-radius:8px;border:1px solid #e5e7eb;
             background:#fff;transition:all .15s;user-select:none;
+            white-space:nowrap;
         }
         .query-mode-radio:hover{border-color:#c7d2fe;color:#4f46e5;}
         .query-mode-radio input[type="radio"]{
@@ -446,6 +443,11 @@
             background:#eef2ff;border-color:#c7d2fe;color:#4f46e5;font-weight:600;
         }
         .query-mode-radio i{font-size:10px;}
+
+        /* 좁은 화면 대응: 라디오 텍스트 숨기고 아이콘만 표시 */
+        @media (max-width: 768px){
+            .query-mode-radio{padding:6px 8px;}
+        }
 
         /* SQL textarea mode */
         .sql-textarea{
@@ -689,24 +691,23 @@
 
     <!-- Input Bar -->
     <div class="input-bar">
-        <!-- 질문 유형 선택 (현황집계: 표+SQL / 분석질문: 텍스트 분석만) -->
-        <div class="query-mode-bar" id="queryModeBar">
-            <span class="query-mode-label"><i class="fas fa-question-circle"></i> 질문 유형:</span>
-            <label class="query-mode-radio checked" id="queryModeAggregateLabel">
-                <input type="radio" name="queryMode" value="aggregate" checked
-                       onchange="onQueryModeChange('aggregate')" />
-                <i class="fas fa-table"></i> 현황집계
-            </label>
-            <label class="query-mode-radio" id="queryModeAnalysisLabel">
-                <input type="radio" name="queryMode" value="analysis"
-                       onchange="onQueryModeChange('analysis')" />
-                <i class="fas fa-lightbulb"></i> 분석질문
-            </label>
-        </div>
         <div class="input-row">
             <button id="modeToggle" class="mode-toggle" onclick="toggleInputMode()" title="직접 SQL 모드 전환">
                 <i class="fas fa-code"></i> SQL
             </button>
+            <!-- 질문 유형 선택 (현황집계: 표+SQL / 분석질문: 텍스트 분석만) - 인라인 배치 -->
+            <div class="query-mode-bar" id="queryModeBar">
+                <label class="query-mode-radio checked" id="queryModeAggregateLabel">
+                    <input type="radio" name="queryMode" value="aggregate" checked
+                           onchange="onQueryModeChange('aggregate')" />
+                    <i class="fas fa-table"></i> 현황집계
+                </label>
+                <label class="query-mode-radio" id="queryModeAnalysisLabel">
+                    <input type="radio" name="queryMode" value="analysis"
+                           onchange="onQueryModeChange('analysis')" />
+                    <i class="fas fa-lightbulb"></i> 분석질문
+                </label>
+            </div>
             <input id="queryInput" type="text" class="input-field"
                 placeholder="자연어로 질문을 입력하세요 (예: 플랜트별 총매출 현황을 알려줘)"
                 autocomplete="off" />
