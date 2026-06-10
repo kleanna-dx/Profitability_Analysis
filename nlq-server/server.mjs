@@ -1486,6 +1486,41 @@ function expandMetricFormula(formula, metricMap, visited = new Set(), depth = 0)
 }
 
 /**
+ * 산식 내에 등장하는 모든 metric_code를 재귀적으로 수집
+ * - expandMetricFormula의 트리거가 되는 토큰들을 추적
+ * - RAG 컨텍스트에서 해당 컬럼들의 단순 정의를 차단하기 위한 용도
+ * - 예: ZAMT035 산식 "ZAMT003-ZAMT034" → ZAMT003, ZAMT034
+ *       ZAMT034 산식 "ZAMT026+SUM(ZAMT025)+ZAMT005" → ZAMT026, ZAMT005 추가
+ *       최종 Set: { ZAMT003, ZAMT034, ZAMT026, ZAMT005 }
+ *
+ * @param {string} formula - 원본 산식
+ * @param {Object} metricMap - 도메인 전체 Metric 맵
+ * @param {Set<string>} [visited] - 이미 방문한 metric_code (순환 방지)
+ * @returns {Set<string>} 산식이 참조하는 모든 metric_code
+ */
+function collectReferencedMetricCodes(formula, metricMap, visited = new Set()) {
+  const result = new Set();
+  if (!formula || typeof formula !== 'string') return result;
+  // 모든 식별자 토큰 추출 (함수 호출 포함 — SUM(ZAMT001)도 ZAMT001 잡혀야 함)
+  const tokens = formula.match(/\b([A-Z][A-Z0-9_]+)\b/g) || [];
+  const SQL_KEYWORDS = new Set([
+    'SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'NULLIF', 'COALESCE', 'IFNULL',
+    'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT', 'NULL', 'AS',
+    'CAST', 'CONVERT', 'ROUND', 'FLOOR', 'CEIL', 'ABS', 'DISTINCT'
+  ]);
+  for (const tok of tokens) {
+    if (SQL_KEYWORDS.has(tok)) continue;
+    if (metricMap[tok] && !visited.has(tok)) {
+      result.add(tok);
+      const next = new Set(visited); next.add(tok);
+      const subRefs = collectReferencedMetricCodes(metricMap[tok].formula, metricMap, next);
+      for (const sr of subRefs) result.add(sr);
+    }
+  }
+  return result;
+}
+
+/**
  * 도메인별 전체 Metric 맵 로드
  * - matchSynonymsDirectly에서 재귀 확장 시 참조용
  * - { metric_code: { formula, aggregation, description } } 형태
@@ -1582,6 +1617,9 @@ async function matchSynonymsDirectly(query, domainCode) {
         } else {
           columnName = `SUM(${expandedFormula})`;
         }
+        // ★ 산식에 참여한 모든 metric_code 수집 (RAG 컨텍스트에서 단순 컬럼 차단용)
+        const referencedCodes = collectReferencedMetricCodes(row.formula, metricMap, new Set([row.metric_code]));
+        referencedCodes.add(row.metric_code);  // 자기 자신도 포함
         matched.push({
           synonym: row.synonym_text,
           column_name: columnName,
@@ -1589,6 +1627,8 @@ async function matchSynonymsDirectly(query, domainCode) {
           data_type: 'metric',
           source: 'metric',
           priority: 1,  // 최우선 (Metric 정확매칭)
+          metric_code: row.metric_code,
+          referenced_codes: [...referencedCodes],  // ZAMT035, ZAMT003, ZAMT034, ZAMT026, ZAMT005 등
         });
       }
     }
@@ -1644,6 +1684,9 @@ async function matchSynonymsDirectly(query, domainCode) {
           } else {
             columnName = `SUM(${expandedFormula})`;
           }
+          // ★ 산식에 참여한 모든 metric_code 수집
+          const referencedCodes = collectReferencedMetricCodes(row.formula, metricMap, new Set([row.metric_code]));
+          referencedCodes.add(row.metric_code);
           matched.push({
             synonym: desc,
             column_name: columnName,
@@ -1651,6 +1694,8 @@ async function matchSynonymsDirectly(query, domainCode) {
             data_type: 'metric',
             source: 'metric_desc',
             priority: 2,  // Metric 설명 매칭 (Metric 동의어 다음)
+            metric_code: row.metric_code,
+            referenced_codes: [...referencedCodes],
           });
         }
       }
@@ -1710,20 +1755,34 @@ async function buildRAGSystemPrompt(query, domainCode) {
     synonymContext = '\n[★ 동의어 매칭 결과 - 최우선 적용! 아래 매핑을 반드시 SQL에 사용하세요]\n';
     
     if (metricMatches.length > 0) {
-      synonymContext += '\n🚨🚨🚨 [Metric 산식 — 반드시 아래 산식을 SQL에 그대로 사용! 다른 컬럼 대체 절대 금지!] 🚨🚨🚨\n';
+      synonymContext += '\n🚨🚨🚨 [Metric 산식 — 아래 산식을 SQL에 그대로(괄호 포함) 사용! 단순 컬럼이나 다른 형태로 변형 절대 금지!] 🚨🚨🚨\n';
+      // 산식에 참여한 모든 metric_code 수집 (LLM에게 단순 컬럼 사용 금지 안내용)
+      const allRefCodes = new Set();
       for (const m of metricMatches) {
-        // Metric 산식에서 관련 단순 컬럼명 추출 (예: SUM(ZAMT003-ZAMT034) → ZAMT035 금지 안내)
-        const formulaMatch = m.column_name.match(/^(\w+)\((.+)\)$/);
-        synonymContext += `- "${m.synonym}" → SQL에 반드시 사용할 산식: ${m.column_name}\n`;
-        // TOTAL_XXX 패턴에서 단순 컬럼 금지 안내 추출
-        if (m.description) {
-          synonymContext += `  ⚠️ 주의: SUM(ZAMT035) 같은 단순 컬럼 사용 금지! 반드시 위 산식을 사용하세요.\n`;
+        if (Array.isArray(m.referenced_codes)) {
+          for (const c of m.referenced_codes) allRefCodes.add(c);
         }
       }
-      synonymContext += '\n예시) 매출총이익 조회 시:\n';
-      synonymContext += '  ✗ 틀린 SQL: SELECT SUM(ZAMT035) AS 매출총이익  ← 사용 금지!\n';
-      synonymContext += '  ✓ 올바른 SQL: SELECT SUM(ZAMT003-ZAMT034) AS 매출총이익  ← 이것을 사용!\n';
-      synonymContext += '  ✓ 또는: SELECT SUM(ZAMT003)-SUM(ZAMT034) AS 매출총이익  ← 이것도 가능\n';
+      for (const m of metricMatches) {
+        // column_name이 "CALC(...)" 또는 "SUM(...)" 형태이므로 괄호 내부만 추출하여 LLM에게 권장
+        const formulaMatch = m.column_name.match(/^(\w+)\((.+)\)$/);
+        const innerFormula = formulaMatch ? formulaMatch[2] : m.column_name;
+        synonymContext += `- "${m.synonym}" (metric_code: ${m.metric_code || '?'})\n`;
+        synonymContext += `  ▶ 반드시 사용할 SQL 표현식: ${innerFormula}\n`;
+        synonymContext += `  ▶ FORMAT()이나 ORDER BY 등에도 동일하게 위 표현식을 그대로 복사해 사용하세요.\n`;
+      }
+      if (allRefCodes.size > 0) {
+        synonymContext += `\n⛔ 절대 사용 금지 컬럼 (위 산식의 구성 요소 또는 매칭된 metric_code):\n`;
+        synonymContext += `   ${[...allRefCodes].join(', ')}\n`;
+        synonymContext += `   → 이 코드들을 SUM(코드) 또는 SUM(코드)±SUM(코드) 형태로 단순 합산하면 안 됩니다.\n`;
+        synonymContext += `   → 반드시 위에 제시된 산식 표현식 전체를 그대로 SELECT 절에 넣으세요.\n`;
+      }
+      synonymContext += `\n예시) 매출총이익 산식이 "(SUM(ZAMT001)-SUM(ZAMT002)-SUM(ZAMT004))-(ZAMT026+SUM(ZAMT025)+ZAMT005)" 로 제공되면:\n`;
+      synonymContext += `  ✗ 금지: SELECT SUM(ZAMT035)\n`;
+      synonymContext += `  ✗ 금지: SELECT SUM(ZAMT003)-SUM(ZAMT034)\n`;
+      synonymContext += `  ✗ 금지: SELECT SUM(ZAMT003-ZAMT034)\n`;
+      synonymContext += `  ✓ 정답: SELECT (SUM(ZAMT001)-SUM(ZAMT002)-SUM(ZAMT004))-(SUM(ZAMT026)+SUM(ZAMT025)+SUM(ZAMT005))\n`;
+      synonymContext += `         (제공된 산식 표현식을 그대로 복사하되, 산식 안에 SUM()으로 감싸지 않은 원시 컬럼이 있다면 SUM()으로 감싸도 됩니다)\n`;
     }
     if (columnMatches.length > 0) {
       synonymContext += '\n🔷 [Ontology 컬럼 매핑 — 이 단어들은 Metric이 아닌 Ontology 컬럼입니다!]\n';
@@ -1740,18 +1799,15 @@ async function buildRAGSystemPrompt(query, domainCode) {
   }
 
   // ★ Metric 산식이 매칭된 컬럼 목록 수집 (RAG 컨텍스트에서 해당 단순 컬럼 제거용)
+  //   matchSynonymsDirectly에서 이미 수집한 referenced_codes를 그대로 활용
+  //   (예: ZAMT035 매칭 시 → ZAMT035, ZAMT003, ZAMT034, ZAMT026, ZAMT005 전부 차단)
   const metricReplacedColumns = new Set();
-  for (const m of synonymMatches.filter(x => x.source === 'metric')) {
-    // SUM(ZAMT003-ZAMT034) 에서 metric_code가 TOTAL_ZAMT035 → ZAMT035를 필터링 대상으로
-    try {
-      const [metRows] = await pool.query(
-        `SELECT metric_code FROM metric WHERE CONCAT(aggregation, '(', formula, ')') = ?`, [m.column_name]
-      );
-      for (const mr of metRows) {
-        const match = mr.metric_code.match(/^TOTAL_(\w+)$/);
-        if (match) metricReplacedColumns.add(match[1]); // e.g., ZAMT035
-      }
-    } catch(e) {}
+  for (const m of synonymMatches.filter(x => x.source === 'metric' || x.source === 'metric_desc')) {
+    if (Array.isArray(m.referenced_codes)) {
+      for (const c of m.referenced_codes) metricReplacedColumns.add(c);
+    } else if (m.metric_code) {
+      metricReplacedColumns.add(m.metric_code);
+    }
   }
   if (metricReplacedColumns.size > 0) {
     console.log(`[RAG] Metric 산식 대체 컬럼 (RAG에서 제외): ${[...metricReplacedColumns].join(', ')}`);
