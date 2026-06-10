@@ -4793,14 +4793,12 @@ app.post('/api/builder/query', async (req, res) => {
       console.log(`[Builder] 비교모드 params: [${finalParams.join(', ')}]`);
 
     // ═══════════════════════════════════════════════
-    // 일반 모드 (비교 없음): 기존 로직 + CALMONTH 항상 첫 컬럼
+    // 일반 모드 (비교 없음): 사용자가 명시 선택한 필드만 SELECT/GROUP BY
+    // (이전: CALMONTH 자동 첫 컬럼 추가 → 정책 변경: 사용자 명시 선택만 처리)
+    // 프론트엔드에서 기간 필드(CALMONTH/CALDAY) 미선택 시 피벗 실행 차단
     // ═══════════════════════════════════════════════
     } else {
       const selectParts = [];
-      // CALMONTH 항상 첫 컬럼 자동 포함 (달력연도/월)
-      if (!userFieldCols.includes('CALMONTH')) {
-        selectParts.push('`CALMONTH` AS `달력연도/월`');
-      }
       for (const f of fields) {
         const col = f.column;
         const agg = f.aggregate;
@@ -4830,21 +4828,13 @@ app.post('/api/builder/query', async (req, res) => {
       if (userWhere) whereParts.push(userWhere);
 
       // GROUP BY
-      //   기본 정책: 월 단위 집계 (CALMONTH 자동 추가)
-      //   사용자가 group_by에 CALDAY를 명시적으로 포함하면 일 단위 집계 허용 (유저 의도 존중)
+      // 정책: 사용자가 명시 선택한 group_by 필드만 처리 (CALMONTH/CALDAY 자동 추가 없음)
+      // 프론트엔드에서 기간 필드(CALMONTH/CALDAY) 미선택 시 피벗 실행이 차단됨
       const groupParts = [];
-      const userExplicitCalday = Array.isArray(group_by) && group_by.includes('CALDAY');
-      if (!userFieldCols.includes('CALMONTH') && group_by && group_by.length > 0 && !userExplicitCalday) {
-        groupParts.push('`CALMONTH`');
-      }
       if (group_by && group_by.length > 0) {
         for (const g of group_by) {
           // Metric 필드는 GROUP BY에서 제외 (산식이므로)
           if (g.startsWith('METRIC__')) continue;
-          // CALMONTH 중복 방지 (이미 자동 추가된 경우 스킵)
-          if (g === 'CALMONTH' && groupParts.includes('`CALMONTH`')) continue;
-          // CALDAY는 사용자가 명시적으로 넣었을 때만 허용 (일 단위 집계)
-          if (g === 'CALDAY' && !userExplicitCalday) continue;
           if (validCols.has(g)) groupParts.push(`\`${g}\``);
         }
       }
