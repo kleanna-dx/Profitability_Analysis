@@ -1555,14 +1555,43 @@ function addField(colName) {
     if (selectedFields.find(f => f.column === colName && !f.aggregate)) return;
     const col = allColumns.find(c => c.name === colName);
     if (!col) return;
+
+    // 추가할 필드 객체 구성
+    let newField;
     if (col.is_metric) {
         // Metric 필드: 산식이 이미 포함되어 있으므로 aggregate='METRIC'으로 표시
-        selectedFields.push({ column: colName, alias: col.label || col.metric_code, aggregate: 'METRIC', type: 'number', is_metric: true, formula: col.formula, metric_code: col.metric_code });
+        newField = { column: colName, alias: col.label || col.metric_code, aggregate: 'METRIC', type: 'number', is_metric: true, formula: col.formula, metric_code: col.metric_code };
     } else {
         // ★ 카테고리 기반 기본 집계 자동 추천 (금액/수량 → SUM, 그 외 → 그룹기준)
         const defaultAgg = getDefaultAggregate(col);
-        selectedFields.push({ column: colName, alias: col.label, aggregate: defaultAgg, type: col.type, category: col.category });
+        newField = { column: colName, alias: col.label, aggregate: defaultAgg, type: col.type, category: col.category };
     }
+
+    // ★ 기간 필드(CALMONTH/CALDAY)는 항상 결과 표 맨 앞에 오도록 selectedFields 앞쪽에 배치
+    //   (시간축이 첫 컬럼으로 오는 게 피벗 분석에서 가장 자연스러움)
+    //   순서: CALMONTH(연도/월) → CALDAY(일) → 나머지 사용자 필드
+    if (DATE_FIELDS.includes(colName)) {
+        // 기존 기간 필드들 사이의 자연스러운 위치 계산
+        //   CALMONTH는 다른 기간 필드보다 앞, CALDAY는 CALMONTH 뒤·다른 필드 앞
+        const PERIOD_ORDER = ['CALMONTH', 'CALDAY'];
+        const newOrderIdx = PERIOD_ORDER.indexOf(colName);
+        // 자신보다 우선순위가 높은 기간 필드(예: CALDAY 추가 시 CALMONTH) 다음에 삽입
+        let insertIdx = 0;
+        for (let i = 0; i < selectedFields.length; i++) {
+            const f = selectedFields[i];
+            const fOrderIdx = PERIOD_ORDER.indexOf(f.column);
+            if (fOrderIdx >= 0 && fOrderIdx <= newOrderIdx) {
+                insertIdx = i + 1; // 이 기간 필드 바로 뒤로
+            } else {
+                break; // 비-기간 필드를 만나면 그 앞에서 멈춤
+            }
+        }
+        selectedFields.splice(insertIdx, 0, newField);
+    } else {
+        // 일반 필드는 기존대로 맨 뒤에 추가
+        selectedFields.push(newField);
+    }
+
     if(!builderDomainLocked){builderDomainLocked=true;renderDomainSelectorBar();}
     renderSelectedFields();
     updateOrderByOptions();
