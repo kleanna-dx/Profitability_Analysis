@@ -1467,6 +1467,19 @@ function handleCondDrop(e) {
 // ─── Field Management ────────────────────────
 function addFieldByClick(colName) { addField(colName); }
 
+// 컬럼 카테고리/타입에 따라 기본 집계 추천
+//   amount/quantity → SUM (월 합계가 기본)
+//   기타 (org/product/trade/period/unit/text) → '' (그룹 기준으로 사용)
+//   사용자가 드롭다운에서 언제든 변경 가능
+function getDefaultAggregate(col) {
+    if (!col) return '';
+    if (col.is_metric) return 'METRIC';
+    // 금액·수량 카테고리는 기본 SUM
+    if (col.category === 'amount' || col.category === 'quantity') return 'SUM';
+    // 그 외 (코드/명칭/단위 등)는 그룹 기준
+    return '';
+}
+
 function addField(colName) {
     // 날짜 필드는 조회 필드에 추가 차단
     if (DATE_FIELDS.includes(colName)) return;
@@ -1477,7 +1490,9 @@ function addField(colName) {
         // Metric 필드: 산식이 이미 포함되어 있으므로 aggregate='METRIC'으로 표시
         selectedFields.push({ column: colName, alias: col.label || col.metric_code, aggregate: 'METRIC', type: 'number', is_metric: true, formula: col.formula, metric_code: col.metric_code });
     } else {
-        selectedFields.push({ column: colName, alias: col.label, aggregate: '', type: col.type });
+        // ★ 카테고리 기반 기본 집계 자동 추천 (금액/수량 → SUM, 그 외 → 그룹기준)
+        const defaultAgg = getDefaultAggregate(col);
+        selectedFields.push({ column: colName, alias: col.label, aggregate: defaultAgg, type: col.type, category: col.category });
     }
     if(!builderDomainLocked){builderDomainLocked=true;renderDomainSelectorBar();}
     renderSelectedFields();
@@ -1614,9 +1629,12 @@ function renderSelectedFields() {
             // Metric: 산식 표시 (수정 불가)
             html += `<span class="metric-formula-badge" title="${(f.formula||'').replace(/"/g,'&quot;')}"><i class="fas fa-calculator" style="font-size:9px;margin-right:2px;"></i>산식</span>`;
         } else if (isNum) {
-            html += `<select class="agg-select" onchange="setAggregate(${i}, this.value)" onclick="event.stopPropagation()">
-                <option value="" ${f.aggregate===''?'selected':''}>원본</option>
-                <option value="SUM" ${f.aggregate==='SUM'?'selected':''}>SUM</option>
+            // 카테고리 기반 추천 집계 (UI 힌트용)
+            const recommended = (f.category === 'amount' || f.category === 'quantity') ? 'SUM' : '';
+            const mark = (v) => v === recommended ? ' ⭐' : '';
+            html += `<select class="agg-select" onchange="setAggregate(${i}, this.value)" onclick="event.stopPropagation()" title="⭐ = 자동 추천 (월 합계 기준). 원본값을 보려면 '원본' 선택">
+                <option value="" ${f.aggregate===''?'selected':''}>원본${mark('')}</option>
+                <option value="SUM" ${f.aggregate==='SUM'?'selected':''}>SUM${mark('SUM')}</option>
                 <option value="AVG" ${f.aggregate==='AVG'?'selected':''}>AVG</option>
                 <option value="MAX" ${f.aggregate==='MAX'?'selected':''}>MAX</option>
                 <option value="MIN" ${f.aggregate==='MIN'?'selected':''}>MIN</option>
