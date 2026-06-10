@@ -999,7 +999,15 @@ let loadedHistoryId = null; // 기존 이력 클릭 시 설정 → 재실행 시
 let compareYoY = false;
 let compareMoM = false;
 let compareDimSelections = {};  // { columnName: true/false } 비교기준 DIM 선택 상태
-const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 필터에서 제외할 날짜 필드
+const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 좌측 필드 목록에서 숨길 날짜 필드 (자동 처리됨)
+// 조회필드 추가를 차단할 날짜 필드 (CALMONTH는 결과 표에 자동 표시되므로 조회필드에도 노출)
+const BLOCK_ADD_FIELDS = ['CALDAY'];
+// 결과 표에 자동으로 표시되는 기본 필드 (백엔드가 SELECT/GROUP BY에 자동 추가)
+const DEFAULT_FIELDS = [
+    { column: 'CALMONTH', alias: '달력연도/월', aggregate: '', type: 'text', category: 'period', _default: true }
+];
+// 사용자가 X 버튼으로 기본 필드를 제거했는지 추적 (제거 후에는 자동 복원 안 함)
+let removedDefaultFields = new Set();
 // 권장 비교기준 DIM (월별 변동이 적은 필드)
 const RECOMMENDED_COMPARE_DIMS = ['MATERIAL_NM','MATERIAL','DIVISION','PROFIT_CTR','MATL_GROUP','MATL_TYPE'];
 
@@ -1083,8 +1091,10 @@ async function switchDomain(dc){
 
 // ─── 새 쿼리빌더 (전체 초기화 + 도메인 잠금 해제) ───
 function newQueryBuilder(){
-    // 1) 필드 초기화
+    // 1) 필드 초기화 + 기본 필드(CALMONTH) 재설정
     selectedFields = [];
+    removedDefaultFields = new Set(); // 새 쿼리 시작 시 기본 필드 제거 이력도 리셋
+    ensureDefaultFields();
     renderSelectedFields();
     updateOrderByOptions();
 
@@ -1138,6 +1148,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     initDateSelectors();
     loadColumns();
     loadBuilderHistory();
+    // 페이지 로드 시 조회필드에 기본 필드(CALMONTH 등) 자동 표시
+    // — 결과 표에 자동으로 나오는 컬럼이 조회필드에도 보이도록 사용자 직관에 맞춤
+    ensureDefaultFields();
+    renderSelectedFields();
+    updateOrderByOptions();
 });
 
 async function loadColumns() {
@@ -1481,8 +1496,9 @@ function getDefaultAggregate(col) {
 }
 
 function addField(colName) {
-    // 날짜 필드는 조회 필드에 추가 차단
-    if (DATE_FIELDS.includes(colName)) return;
+    // CALDAY 등 차단 대상 필드는 조회 필드에 추가 불가
+    // (CALMONTH는 결과 표에 자동 표시되므로 조회필드에도 노출 — 차단 해제)
+    if (BLOCK_ADD_FIELDS.includes(colName)) return;
     if (selectedFields.find(f => f.column === colName && !f.aggregate)) return;
     const col = allColumns.find(c => c.name === colName);
     if (!col) return;
@@ -1501,16 +1517,34 @@ function addField(colName) {
 }
 
 function removeField(idx) {
+    const removed = selectedFields[idx];
+    // 기본 필드(CALMONTH 등)를 사용자가 직접 X로 제거한 경우, 자동 복원 차단
+    if (removed && removed._default && removed.column) {
+        removedDefaultFields.add(removed.column);
+    }
     selectedFields.splice(idx, 1);
     renderSelectedFields();
     updateOrderByOptions();
     updateCompareDimPanel();
 }
 
+// 결과 표에 자동 표시되는 기본 필드(CALMONTH 등)를 조회필드에 자동 추가
+// — 사용자가 한 번 제거했으면 다시 추가하지 않음
+function ensureDefaultFields() {
+    DEFAULT_FIELDS.forEach(def => {
+        if (removedDefaultFields.has(def.column)) return; // 사용자가 제거한 필드는 복원 안 함
+        if (selectedFields.find(f => f.column === def.column)) return; // 이미 있으면 스킵
+        // 맨 앞에 삽입 — 결과 표 컬럼 순서와 일치
+        selectedFields.unshift({ ...def });
+    });
+}
+
 function clearFields() {
     selectedFields = [];
     compareDimSelections = {};
+    removedDefaultFields = new Set(); // 초기화 시 기본 필드 제거 이력도 리셋
     builderDomainLocked=false;renderDomainSelectorBar();
+    ensureDefaultFields(); // CALMONTH 등 기본 필드 재설정
     renderSelectedFields();
     updateOrderByOptions();
     updateCompareDimPanel();
@@ -2004,6 +2038,34 @@ function downloadExcel() {
     XLSX.writeFile(wb, `피벗결과_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
+// 셀 값을 표시용 숫자로 포맷팅 (천 단위 쉼표 + 소수점 처리)
+// — 정수형/소수점 0뿐이면 → "41,868,195,260"
+// — 소수점 있는 실수면 → "1,234.56" (최대 2자리)
+function formatCellNumber(val) {
+    const num = Number(val);
+    if (!isFinite(num)) return String(val);
+    // 정수이거나 소수점 이하가 0인 경우 (예: 41868195260.00) → 정수 형식
+    if (Number.isInteger(num) || Math.abs(num - Math.trunc(num)) < 1e-9) {
+        return Math.trunc(num).toLocaleString('ko-KR');
+    }
+    // 소수점 있는 경우 → 최대 소수점 2자리까지 표시
+    return num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+// 값이 숫자(혹은 숫자형 문자열)인지 판단
+// — MariaDB의 SUM(DECIMAL) 결과는 문자열로 반환되므로 typeof 검사만으로는 부족
+function isNumericValue(v) {
+    if (v === null || v === undefined || v === '') return false;
+    if (typeof v === 'number') return isFinite(v);
+    if (typeof v === 'string') {
+        // 순수 숫자 문자열만 통과 (날짜 코드 "202604" 같은 것도 포함되므로 컬럼 단위 판단은 호출측에서)
+        const s = v.trim();
+        if (!/^-?\d+(\.\d+)?$/.test(s)) return false;
+        return isFinite(Number(s));
+    }
+    return false;
+}
+
 function renderTable(columns, rows) {
     const numCols = new Set();
     // 비교 컬럼 감지 (전월대비/전년대비 등 증감상태 컬럼)
@@ -2011,9 +2073,22 @@ function renderTable(columns, rows) {
     columns.forEach(col => {
         if (/전월대비|전년대비/.test(col)) compareCols.add(col);
     });
+    // 숫자 컬럼 판단:
+    //   1) 컬럼명이 날짜형이면 제외 (달력연도/월, CALMONTH, CALDAY 등 → 코드값 그대로 표시)
+    //   2) 첫 번째 비-null 행의 값이 숫자(혹은 숫자형 문자열)이면 numeric으로 인정
+    //      → SUM(DECIMAL) 등 문자열로 반환되는 케이스도 커버
+    const isDateColName = (col) => /달력|CALMONTH|CALDAY|연도|월$|일자|날짜/i.test(col);
     if (rows.length > 0) {
         columns.forEach(col => {
-            if (!compareCols.has(col) && typeof rows[0][col] === 'number') numCols.add(col);
+            if (compareCols.has(col)) return;
+            if (isDateColName(col)) return;
+            // 첫 비-null 값으로 판단
+            for (const row of rows) {
+                const v = row[col];
+                if (v === null || v === undefined || v === '') continue;
+                if (isNumericValue(v)) numCols.add(col);
+                break; // 첫 비-null 값으로 결정
+            }
         });
     }
     let html = '<table><thead><tr><th>#</th>';
@@ -2038,8 +2113,8 @@ function renderTable(columns, rows) {
                 else if (str.includes('▼')) style += 'color:#2563eb;background:#eff6ff;';
                 else style += 'color:#94a3b8;';
                 html += `<td style="${style}">${str}</td>`;
-            } else if (numCols.has(col) && val !== null && val !== undefined) {
-                html += `<td class="num">${Number(val).toLocaleString()}</td>`;
+            } else if (numCols.has(col) && val !== null && val !== undefined && val !== '') {
+                html += `<td class="num">${formatCellNumber(val)}</td>`;
             } else {
                 html += `<td>${val ?? ''}</td>`;
             }
@@ -2314,6 +2389,10 @@ function applyHistoryToBuilder(item) {
         aggregate: f.aggregate || '',
         type: (allColumns.find(c => c.name === f.column) || {}).type || 'text',
     }));
+    // 기본 필드(CALMONTH)는 결과 표에 자동 표시되므로 조회필드에도 노출
+    // — 이력 복원 시 제거 이력 리셋 후 자동 추가
+    removedDefaultFields = new Set();
+    ensureDefaultFields();
     renderSelectedFields();
     updateOrderByOptions();
 
