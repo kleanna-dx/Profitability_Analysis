@@ -2075,6 +2075,127 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
 // ============================================================
 
 // ============================================================
+// Helper: 분석형 질문 사전 판별 (백엔드 1차 분류)
+// - LLM 호출 전에 키워드로 빠르게 분석형 여부 판단
+// - 분석형이면 SQL 생성 단계 자체를 건너뛰고 안전한 분석 전용 경로로 라우팅
+// ============================================================
+function isAnalysisQuery(query) {
+  if (!query || typeof query !== 'string') return false;
+  const q = query.replace(/\s+/g, '');
+  // 분석/요약/시사점/인사이트/해석/평가/제언/추천/원인/이유/의미/트렌드 등
+  const analysisKeywords = [
+    '분석', '인사이트', '시사점', '요약해', '요약', '해석', '평가', '제언', '추천',
+    '왜', '원인', '이유', '의미', '트렌드', '개선', '비교분석', '리포트', '보고서',
+    '코멘트', '진단', '평가해', '설명해줘', '알려줘', '말해줘',
+  ];
+  return analysisKeywords.some(kw => q.includes(kw));
+}
+
+// ============================================================
+// Helper: 질의에서 기준연월 추출 (분석형 질문용)
+// - "2026년 4월", "2026-04", "4월", "당월", "전월", "이번달", "지난달" 등 지원
+// - 추출 실패 시 latestMonth(데이터의 최신 월) 사용
+// ============================================================
+function extractCalmonthFromQuery(query, dateCtx) {
+  if (!query) return dateCtx.latestMonth;
+  // YYYY년 M월 / YYYY년 MM월
+  let m = query.match(/(\d{4})\s*년\s*(\d{1,2})\s*월/);
+  if (m) {
+    return `${m[1]}${String(parseInt(m[2])).padStart(2, '0')}`;
+  }
+  // YYYY-MM / YYYY.MM
+  m = query.match(/(\d{4})[-\.](\d{1,2})/);
+  if (m) {
+    return `${m[1]}${String(parseInt(m[2])).padStart(2, '0')}`;
+  }
+  // "당월", "이번달", "이달" → 최신
+  if (/(당월|이번\s*달|이달|최근달)/.test(query)) return dateCtx.latestMonth;
+  // "전월", "지난달" → 전월
+  if (/(전월|지난\s*달|작년동월|작년\s*동월)/.test(query)) return dateCtx.prevMonth;
+  // 단순 "N월" 만 있는 경우 → 데이터 최신 연도 기준
+  m = query.match(/(\d{1,2})\s*월/);
+  if (m) {
+    const y = dateCtx.latestMonth.substring(0, 4);
+    return `${y}${String(parseInt(m[1])).padStart(2, '0')}`;
+  }
+  // 못 찾으면 최신
+  return dateCtx.latestMonth;
+}
+
+// ============================================================
+// Helper: 분석형 질문용 안전 KPI 조회 SQL 자동 생성
+// - LLM을 거치지 않고 백엔드가 직접 SQL 빌드 → 문법 오류 0% 보장
+// - 도메인의 모든 metric을 재귀 확장된 산식으로 SELECT (단일 행)
+// - WHERE는 기준연월만 (안전한 일반 컬럼 조건)
+// - GROUP BY 없음 → "Invalid use of group function" 절대 발생 안 함
+// ============================================================
+async function buildAnalysisSQL(domainCode, calmonth) {
+  const dc = domainCode || 'PS';
+  const metricMap = await loadMetricMap(dc);
+
+  // 핵심 KPI 우선순위 (도메인 PS 기준 일반적 분석 항목)
+  // 운영 데이터에 없는 코드는 자동 스킵됨
+  const corePriorityCodes = [
+    'ZAMT001', // 총매출
+    'ZAMT002', // 매출할인
+    'ZAMT003', // 순매출 (계산형)
+    'ZAMT004', // 매출에누리
+    'ZAMT005', // 매출원가-제품 (계산형)
+    'ZAMT025', // 매출원가-기타항목
+    'ZAMT026', // 매출원가-기타 (계산형)
+    'ZAMT034', // 매출원가계 (계산형)
+    'ZAMT035', // 매출총이익 (계산형)
+  ];
+
+  const selectExprs = [];
+  const aliasUsed = new Set();
+
+  // 1) 우선 코어 KPI
+  for (const code of corePriorityCodes) {
+    const m = metricMap[code];
+    if (!m || !m.formula) continue;
+    const expanded = expandMetricFormula(m.formula, metricMap, new Set([code]), 0);
+    if (!expanded) continue;
+    const safeExpr = expanded.includes('SUM(') || expanded.includes('sum(') ? `(${expanded})` : `SUM(${expanded})`;
+    // alias: description 우선, 없으면 metric_code
+    let alias = (m.description || code).replace(/['"`\\]/g, '').substring(0, 40);
+    if (aliasUsed.has(alias)) alias = `${alias}_${code}`;
+    aliasUsed.add(alias);
+    selectExprs.push(`FORMAT(${safeExpr}, 0) AS '${alias}'`);
+  }
+
+  // 2) 나머지 metric 도 추가 (있으면)
+  for (const [code, m] of Object.entries(metricMap)) {
+    if (corePriorityCodes.includes(code)) continue;
+    if (!m || !m.formula) continue;
+    if (selectExprs.length >= 25) break; // 너무 많아지지 않게 제한
+    const expanded = expandMetricFormula(m.formula, metricMap, new Set([code]), 0);
+    if (!expanded) continue;
+    const safeExpr = expanded.includes('SUM(') || expanded.includes('sum(') ? `(${expanded})` : `SUM(${expanded})`;
+    let alias = (m.description || code).replace(/['"`\\]/g, '').substring(0, 40);
+    if (aliasUsed.has(alias)) alias = `${alias}_${code}`;
+    aliasUsed.add(alias);
+    selectExprs.push(`FORMAT(${safeExpr}, 0) AS '${alias}'`);
+  }
+
+  if (selectExprs.length === 0) {
+    // metric이 하나도 없으면 raw 컬럼이라도 조회
+    selectExprs.push(`FORMAT(SUM(ZAMT001), 0) AS '총매출'`);
+  }
+
+  // WHERE 절: 기준연월 (CALMONTH는 'YYYYMM' 문자열)
+  const cm = calmonth || '';
+  const whereClause = cm ? `WHERE CALMONTH = '${cm}'` : '';
+
+  const sql = `SELECT
+  ${selectExprs.join(',\n  ')}
+FROM bw_profitability_data
+${whereClause}`;
+
+  return sql;
+}
+
+// ============================================================
 // Helper: SQL 사전 검증 (LLM이 생성한 SQL의 명백한 오류 패턴 탐지)
 // - LLM이 만들 수 있는 "Invalid use of group function" 같은 실행 시 오류를
 //   실행 전에 잡아내어 자동 재요청 또는 친절한 에러 메시지로 전환
@@ -2392,6 +2513,128 @@ app.post('/api/nlq', async (req, res) => {
     let sql, answer = '', explanation, chartType, chartConfig, analysisRequired = false;
     let ragInfo = null;  // RAG 검색 상세 정보
     let dateContext = null;  // 당월/전월 날짜 컨텍스트
+
+    // ============================================================
+    // ★ 분석형 질문 사전 분기 (안전 경로)
+    // - LLM이 SQL을 만들다 오류 내는 일을 원천 차단
+    // - 백엔드가 안전한 KPI 조회 SQL을 직접 빌드 → 실행 → 결과로 LLM 분석 답변만 받음
+    // - 표/차트 생성 안 함, 사용자에게는 텍스트 분석만 노출
+    // - 학습 데이터 매칭이 있으면 그쪽 우선 (사용자가 검증한 SQL)
+    // ============================================================
+    if (!matchedSql && isAnalysisQuery(query)) {
+      console.log(`[NLQ] 🧠 분석형 질문 감지 → 안전 경로 라우팅 (SQL 생성 우회)`);
+      try {
+        const dc = await getDataDateContext();
+        dateContext = dc;
+        const calmonth = extractCalmonthFromQuery(query, dc);
+        const analysisSql = await buildAnalysisSQL(activeDomain, calmonth);
+        console.log(`[NLQ] 분석용 안전 SQL 생성 (CALMONTH=${calmonth})`);
+
+        // 도메인 필터 자동 주입
+        const finalSql = applyDomainFilter(analysisSql, activeDomain);
+
+        // DB 실행
+        const startTime = Date.now();
+        const [rows] = await pool.query(finalSql);
+        const execTime = Date.now() - startTime;
+        console.log(`[NLQ] 분석용 SQL 실행 완료: ${execTime}ms, ${rows.length}행`);
+
+        // LLM 분석 답변 생성
+        const dateInfo = `[기간 참고] 당월=${dc.latestLabel}, 전월=${dc.prevLabel}. "당월", "이번달", "전월" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기.`;
+        const dataForAnalysis = rows.slice(0, 50);
+        const dataText = JSON.stringify(dataForAnalysis, (key, val) =>
+          typeof val === 'bigint' ? Number(val) : val
+        , 2);
+        const cmLabel = calmonth ? `${calmonth.substring(0,4)}년 ${parseInt(calmonth.substring(4,6))}월` : dc.latestLabel;
+
+        const userContent = rows.length > 0
+          ? `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회된 핵심 KPI 데이터]\n${dataText}\n\n위 KPI 데이터를 기반으로 사용자의 질문에 대한 전문적인 분석 답변을 작성해주세요.`
+          : `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (해당 기간 데이터 없음)\n\n해당 기간에 데이터가 없습니다. 데이터가 적재되지 않은 가능성을 안내하고, 사용자가 다른 기간을 시도할 수 있도록 친절히 안내해주세요.`;
+
+        const analysisCompletion = await openai.chat.completions.create({
+          model: GPT_MODEL,
+          messages: [
+            {
+              role: 'system',
+              content: `당신은 기업 수익성 분석 전문 컨설턴트입니다.
+사용자가 분석/인사이트/시사점을 요청했습니다. 데이터를 기반으로 핵심 위주의 간결한 분석 답변을 작성하세요.
+
+[답변 작성 규칙]
+1. 마크다운 형식 (제목, 볼드, 리스트)
+2. 핵심 수치 인용 (예: "총매출 454억원")
+3. 긍정/부정 시사점 균형 제시
+4. 실행 가능한 제언 1~3개
+5. 금액은 억/만 단위 (예: 45,409,440,210원 → 약 454억원)
+6. 한국어 답변
+7. 데이터에 없는 내용 추측 금지
+8. 조회 결과 0행: 원인과 대안을 간단히 제안
+9. "당월", "전월", "이번달" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기
+
+[★ 길이·완결성 규칙 — 반드시 준수]
+- 답변은 500~800자 이내로 핵심만 작성 (장황한 나열·반복 금지)
+- 모든 문장은 반드시 완결된 형태로 끝낼 것
+- 마지막 문장까지 깔끔하게 마무리한 뒤 종료`,
+            },
+            { role: 'user', content: userContent },
+          ],
+          temperature: 0.3,
+          max_tokens: 3000,
+        });
+
+        let analysis = analysisCompletion.choices[0].message.content.trim();
+        const analysisFinishReason = analysisCompletion.choices[0].finish_reason;
+        if (analysisFinishReason === 'length' && analysis.length > 0) {
+          const lastCleanEnd = Math.max(
+            analysis.lastIndexOf('다.'),
+            analysis.lastIndexOf('요.'),
+            analysis.lastIndexOf('세요.'),
+            analysis.lastIndexOf('니다.'),
+            analysis.lastIndexOf('시오.'),
+          );
+          if (lastCleanEnd > analysis.length * 0.5) {
+            const cutPos = analysis.indexOf('.', lastCleanEnd) + 1;
+            analysis = analysis.substring(0, cutPos).trim();
+          }
+        }
+
+        // 이력 저장 (분석형은 표·차트 없이; 분석 본문은 explanation 필드에 저장)
+        const nlqUserIdAnalysis = req.session?.user?.id || null;
+        saveHistory(
+          nlqUserIdAnalysis, query, finalSql,
+          analysis,        // ★ explanation 필드에 분석 본문 저장 (history 복원 시 사용)
+          'analysis',      // chartType
+          {},               // chartConfig
+          [],               // result_data: 분석형은 표 표시 안 하므로 비움
+          rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain
+        ).catch(e => console.error('[History] 저장 실패:', e.message));
+
+        // 응답: 표·차트·SQL 모두 노출하지 않고 텍스트 분석만 노출
+        return res.json({
+          success: true,
+          isAnalysisAnswer: true,        // ★ 프론트에서 표/SQL 탭을 숨길 수 있도록 표식
+          answer: analysis,
+          analysis: analysis,             // 호환성 위해 양쪽으로 제공
+          rows: [],                       // 표 데이터 비움
+          rowCount: 0,
+          sql: null,                      // SQL 노출 안 함
+          explanation: null,
+          chartType: 'analysis',
+          chartConfig: {},
+        });
+      } catch (analysisErr) {
+        console.error('[NLQ] 분석 경로 실패:', analysisErr.message);
+        // 분석 경로가 실패해도 일반 경로로 fallthrough하지 않고 친절한 안내로 마무리
+        return res.json({
+          success: false,
+          isAnalysisAnswer: true,
+          answer: '죄송합니다. 분석 답변을 생성하는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+          rows: [],
+          rowCount: 0,
+          sql: null,
+          error_user_friendly: true,
+        });
+      }
+    }
 
     if (matchedSql) {
       // 학습 데이터 매칭 → AI 호출 없이 직접 사용
