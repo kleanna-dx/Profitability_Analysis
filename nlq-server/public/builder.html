@@ -1062,7 +1062,7 @@ let loadedHistoryId = null; // 기존 이력 클릭 시 설정 → 재실행 시
 let compareYoY = false;
 let compareMoM = false;
 let compareDimSelections = {};  // { columnName: true/false } 비교기준 DIM 선택 상태
-const DATE_FIELDS = ['CALMONTH', 'CALDAY'];  // 날짜 필드 — UI 곳곳의 dim 필드 필터링 + 피벗 검증에 사용
+const DATE_FIELDS = ['CALYEAR', 'CALMONTH', 'CALDAY'];  // 날짜 필드 — UI 곳곳의 dim 필드 필터링 + 피벗 검증에 사용 (CALYEAR는 운영 DB에만 존재할 수 있음)
 // 권장 비교기준 DIM (월별 변동이 적은 필드)
 const RECOMMENDED_COMPARE_DIMS = ['MATERIAL_NM','MATERIAL','DIVISION','PROFIT_CTR','MATL_GROUP','MATL_TYPE'];
 
@@ -1567,15 +1567,15 @@ function addField(colName) {
         newField = { column: colName, alias: col.label, aggregate: defaultAgg, type: col.type, category: col.category };
     }
 
-    // ★ 기간 필드(CALMONTH/CALDAY)는 항상 결과 표 맨 앞에 오도록 selectedFields 앞쪽에 배치
+    // ★ 기간 필드(CALYEAR/CALMONTH/CALDAY)는 항상 결과 표 맨 앞에 오도록 selectedFields 앞쪽에 배치
     //   (시간축이 첫 컬럼으로 오는 게 피벗 분석에서 가장 자연스러움)
-    //   순서: CALMONTH(연도/월) → CALDAY(일) → 나머지 사용자 필드
+    //   순서: CALYEAR(연도) → CALMONTH(연도/월) → CALDAY(일) → 나머지 사용자 필드
     if (DATE_FIELDS.includes(colName)) {
         // 기존 기간 필드들 사이의 자연스러운 위치 계산
-        //   CALMONTH는 다른 기간 필드보다 앞, CALDAY는 CALMONTH 뒤·다른 필드 앞
-        const PERIOD_ORDER = ['CALMONTH', 'CALDAY'];
+        //   CALYEAR < CALMONTH < CALDAY 우선순위로 정렬 (큰 시간 단위가 앞)
+        const PERIOD_ORDER = ['CALYEAR', 'CALMONTH', 'CALDAY'];
         const newOrderIdx = PERIOD_ORDER.indexOf(colName);
-        // 자신보다 우선순위가 높은 기간 필드(예: CALDAY 추가 시 CALMONTH) 다음에 삽입
+        // 자신보다 우선순위가 높은 기간 필드 다음에 삽입 (예: CALDAY 추가 시 CALYEAR/CALMONTH 뒤)
         let insertIdx = 0;
         for (let i = 0; i < selectedFields.length; i++) {
             const f = selectedFields[i];
@@ -2205,7 +2205,7 @@ function renderTable(columns, rows) {
     //   1) 컬럼명이 날짜형이면 제외 (달력연도/월, CALMONTH, CALDAY 등 → 코드값 그대로 표시)
     //   2) 첫 번째 비-null 행의 값이 숫자(혹은 숫자형 문자열)이면 numeric으로 인정
     //      → SUM(DECIMAL) 등 문자열로 반환되는 케이스도 커버
-    const isDateColName = (col) => /달력|CALMONTH|CALDAY|연도|월$|일자|날짜/i.test(col);
+    const isDateColName = (col) => /달력|CALYEAR|CALMONTH|CALDAY|연도|월$|일자|날짜/i.test(col);
     if (rows.length > 0) {
         columns.forEach(col => {
             if (compareCols.has(col)) return;
@@ -2749,7 +2749,9 @@ async function clearAllBuilderHistory() {
         <p>조회 필드에 <b>기간 필드</b>가 없어서 피벗을 생성할 수 없습니다.<br>
         왼쪽 <b>[기간]</b> 섹션에서 다음 중 하나를 선택해주세요:</p>
         <div class="hint">
-            <i class="fas fa-calendar-alt" style="margin-right:6px;"></i>
+            <i class="fas fa-calendar" style="margin-right:6px;"></i>
+            <b>달력연도 (CALYEAR)</b> — 연 단위 집계 (연도별 비교)<br>
+            <i class="fas fa-calendar-alt" style="margin-right:6px;margin-top:4px;"></i>
             <b>달력연도/월 (CALMONTH)</b> — 월 단위 집계 (가장 일반적)<br>
             <i class="fas fa-calendar-day" style="margin-right:6px;margin-top:4px;"></i>
             <b>달력일 (CALDAY)</b> — 일 단위 집계 (일별 추이 분석)
