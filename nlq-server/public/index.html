@@ -513,35 +513,6 @@
 
     <div class="sidebar-divider"></div>
 
-    <!-- DB Info -->
-    <div class="px-5 py-3">
-        <p class="text-xs text-indigo-300 font-semibold mb-2 uppercase tracking-wider">시스템 정보</p>
-        <div class="space-y-2 text-xs text-indigo-200">
-            <div class="flex items-center gap-2">
-                <span id="sideDbDot" class="dot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>
-                <span id="sideDbLabel">DB 연결 확인중</span>
-            </div>
-            <div class="flex items-center gap-2">
-                <span id="sideAiDot" class="dot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>
-                <span id="sideAiLabel">ChatGPT API</span>
-            </div>
-            <div class="flex items-center gap-2">
-                <i class="fas fa-microchip text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
-                <span id="sideModelLabel">Model: -</span>
-            </div>
-            <div class="flex items-center gap-2">
-                <i class="fas fa-database text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
-                <span id="sideDataLabel">데이터: -</span>
-            </div>
-            <div class="flex items-center gap-2" id="sideRagRow" style="display:none;">
-                <i class="fas fa-brain text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
-                <span id="sideRagLabel">RAG: -</span>
-            </div>
-        </div>
-    </div>
-
-    <div class="sidebar-divider"></div>
-
     <!-- New Chat Button -->
     <div style="padding:0 16px 8px;">
         <button onclick="startNewChat();closeSidebar();" style="width:100%;padding:8px 12px;background:rgba(99,102,241,0.2);border:1px solid rgba(99,102,241,0.3);border-radius:8px;color:#c7d2fe;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all .15s;" onmouseover="this.style.background='rgba(99,102,241,0.35)'" onmouseout="this.style.background='rgba(99,102,241,0.2)'">
@@ -843,14 +814,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('topAiLabel').textContent = d.ai;
         const topDataEl = document.getElementById('topDataLabel');
         if (topDataEl) topDataEl.textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
-        // Sidebar
-        document.getElementById('sideDbDot').style.background = '#22c55e';
-        document.getElementById('sideDbLabel').textContent = 'DB 연결됨';
-        document.getElementById('sideAiDot').style.background = '#22c55e';
-        document.getElementById('sideAiLabel').textContent = 'ChatGPT API 연결됨';
-        document.getElementById('sideModelLabel').textContent = 'Model: ' + d.ai;
-        document.getElementById('sideDataLabel').textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
-        // RAG 상태 표시
+        // RAG 상태 표시 (상단바)
         if (d.rag) {
             const ragPill = document.getElementById('topRagPill');
             const ragDot = document.getElementById('topRagDot');
@@ -863,24 +827,6 @@ window.addEventListener('DOMContentLoaded', async () => {
                 } else {
                     if (ragLabel) ragLabel.textContent = 'RAG 대기';
                 }
-            }
-            // 사이드바
-            const sideRagRow = document.getElementById('sideRagRow');
-            const sideRagLabel = document.getElementById('sideRagLabel');
-            sideRagRow.style.display = 'flex';
-            if (d.rag.enabled) {
-                const types = d.rag.byType;
-                const parts = [];
-                if (types.schema) parts.push('스키마 ' + types.schema);
-                if (types.ontology) parts.push('온톨로지 ' + types.ontology);
-                if (types.metric) parts.push('메트릭 ' + types.metric);
-                if (types.feedback) parts.push('피드백 ' + types.feedback);
-                if (types.code_mapping) parts.push('코드매핑 ' + types.code_mapping);
-                if (types.rule) parts.push('규칙 ' + types.rule);
-                sideRagLabel.textContent = 'RAG 활성 (' + d.rag.totalChunks + '청크)';
-                sideRagLabel.title = parts.join(', ');
-            } else {
-                sideRagLabel.textContent = 'RAG 비활성 (폴백 모드)';
             }
         }
     } catch(e) {
