@@ -966,8 +966,8 @@ const openai = new OpenAI({
 });
 
 // AI 모델명 (환경변수로 변경 가능)
-// GenSpark 프록시 지원 모델: claude-sonnet-4-6(추천), gpt-5.5, gpt-5.4-mini, claude-haiku-4-6
-const GPT_MODEL = process.env.GPT_MODEL || 'claude-sonnet-4-6';
+// GenSpark 프록시 지원 모델: gpt-5.5(추천), claude-sonnet-4-6, gpt-5.4-mini, claude-haiku-4-6
+const GPT_MODEL = process.env.GPT_MODEL || 'gpt-5.5';
 
 console.log(`[NLQ] AI 설정: model=${GPT_MODEL}, baseURL=${process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'}`);
 
