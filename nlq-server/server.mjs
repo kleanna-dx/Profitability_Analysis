@@ -4830,8 +4830,11 @@ app.post('/api/builder/query', async (req, res) => {
       if (userWhere) whereParts.push(userWhere);
 
       // GROUP BY
+      //   기본 정책: 월 단위 집계 (CALMONTH 자동 추가)
+      //   사용자가 group_by에 CALDAY를 명시적으로 포함하면 일 단위 집계 허용 (유저 의도 존중)
       const groupParts = [];
-      if (!userFieldCols.includes('CALMONTH') && group_by && group_by.length > 0) {
+      const userExplicitCalday = Array.isArray(group_by) && group_by.includes('CALDAY');
+      if (!userFieldCols.includes('CALMONTH') && group_by && group_by.length > 0 && !userExplicitCalday) {
         groupParts.push('`CALMONTH`');
       }
       if (group_by && group_by.length > 0) {
@@ -4840,8 +4843,8 @@ app.post('/api/builder/query', async (req, res) => {
           if (g.startsWith('METRIC__')) continue;
           // CALMONTH 중복 방지 (이미 자동 추가된 경우 스킵)
           if (g === 'CALMONTH' && groupParts.includes('`CALMONTH`')) continue;
-          // CALDAY는 GROUP BY에서 제외 (월단위 집계 기준)
-          if (g === 'CALDAY') continue;
+          // CALDAY는 사용자가 명시적으로 넣었을 때만 허용 (일 단위 집계)
+          if (g === 'CALDAY' && !userExplicitCalday) continue;
           if (validCols.has(g)) groupParts.push(`\`${g}\``);
         }
       }
