@@ -1347,17 +1347,27 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
          FORMAT(SUM(BIC_ZQTY_BOX), 0) AS '판매수량 합계(BOX)',
          FORMAT(SUM(ZAMT001), 0) AS '총매출 합계(원)'
 
-[★ 동일 동의어가 여러 컬럼에 매칭된 경우 — 매우 중요!]
-- 학습관리에서 하나의 동의어(synonym)가 여러 컬럼에 매핑되어 있는 경우가 있습니다.
-  예) "지급수수료" → ZAMT040(지급수수료(변동)), ZAMT044(지급수수료(고정))
-  예) "급여" → ZAMT037(급여(변동)), ZAMT043(급여(고정))
-- 이 경우 사용자가 어떤 항목을 원하는지 알 수 없으므로 **모든 매칭 컬럼을 SELECT에 개별 컬럼으로 포함**하세요.
+[★ 동일 키워드가 여러 컬럼에 매칭된 경우 — 매우 중요!]
+- 사용자가 입력한 단어가 여러 컬럼에 매핑되어 있는 경우가 있습니다:
+  • 동의어 다중 등록: "지급수수료" → ZAMT040(지급수수료(변동)) + ZAMT044(지급수수료(고정))
+  • 동의어 + description 부분 일치: "소모품비" → ZAMT049(소모품비, 동의어매칭) + ZAMT019(수선/소모품비, description 부분포함)
+  • 변동/고정 분리: "급여" → ZAMT037(급여(변동)) + ZAMT043(급여(고정))
+- 이 경우 임의로 하나만 선택하면 안 되며, **매칭된 활성 컬럼을 모두 SELECT에 개별 컬럼으로 포함**해야 합니다.
 - 각 컬럼의 AS 별칭은 **반드시 해당 컬럼의 description(학습관리 등록 설명)을 그대로 사용**하세요.
-  ✗ 금지: SELECT FORMAT(SUM(ZAMT040)+SUM(ZAMT044),0) AS '지급수수료 합계(원)'  → 통합 별칭 만들면 안 됨!
-  ✗ 금지: SELECT FORMAT(SUM(ZAMT040),0) AS '지급수수료(원)'  → 하나만 선택해서 답하면 안 됨!
-  ✓ 정답: SELECT FORMAT(SUM(ZAMT040),0) AS '지급수수료(변동)',
-                FORMAT(SUM(ZAMT044),0) AS '지급수수료(고정)'
-- 동의어 매칭 컨텍스트의 "[중요] N개 컬럼에 동시 매칭됨" 안내를 따르세요.
+  사용자가 입력한 키워드("소모품비")를 별칭의 기준으로 쓰지 마세요. 각 컬럼의 등록 description이 기준입니다.
+
+  ✗ 금지: SELECT FORMAT(SUM(ZAMT049),0) AS '소모품비 합계(원)'  → ZAMT019 누락
+  ✗ 금지: SELECT FORMAT(SUM(ZAMT049)+SUM(ZAMT019),0) AS '소모품비 합계(원)'  → 통합 별칭 금지
+  ✓ 정답: SELECT
+            FORMAT(SUM(ZAMT049),0) AS '소모품비 합계(원)',          -- ZAMT049의 description "소모품비"
+            FORMAT(SUM(ZAMT019),0) AS '수선/소모품비 합계(원)'      -- ZAMT019의 description "수선/소모품비"
+
+  ✗ 금지: SELECT FORMAT(SUM(ZAMT040)+SUM(ZAMT044),0) AS '지급수수료 합계(원)'
+  ✓ 정답: SELECT
+            FORMAT(SUM(ZAMT040),0) AS '지급수수료(변동) 합계(원)',
+            FORMAT(SUM(ZAMT044),0) AS '지급수수료(고정) 합계(원)'
+
+- 동의어 매칭 컨텍스트의 "[중요] N개 컬럼에 매칭됨" 안내를 그대로 따르세요.
 
 [분석형 질문 판별 - 매우 중요!]
 사용자의 질문이 단순 데이터 조회가 아니라 **분석, 요약, 시사점, 인사이트, 해석, 평가, 제언, 비교분석, 원인, 이유, 추천** 등을 요청하는 경우:
@@ -1615,17 +1625,23 @@ async function matchSynonymsDirectly(query, domainCode) {
        JOIN ontology_column c ON s.column_id = c.id
        WHERE c.domain_code = ? AND c.is_active = 1`, [dc]
     );
+    // ★ 사용자 질문에서 매칭된 동의어 키워드 추적 (다른 컬럼의 description 매칭에 활용)
+    //   예: "소모품비" 키워드로 ZAMT049 동의어 매칭 → "소모품비"를 키워드로 기록
+    //   → 3단계에서 ZAMT019의 description "수선/소모품비"에 "소모품비"가 포함되면 같은 그룹으로 매칭
+    const matchedKeywords = new Set();
     for (const row of ontSyns) {
       // 대소문자 무시 매칭 (영문 약어 대응: CAM, PC 등)
       if (query.includes(row.synonym_text) || queryUpper.includes(row.synonym_text.toUpperCase())) {
         matched.push({
           synonym: row.synonym_text,
+          matchedKeyword: row.synonym_text,  // ★ 그룹핑 키 (사용자가 입력한 실제 단어)
           column_name: row.column_name,
           description: row.description || '',
           data_type: row.data_type || '',
           source: 'ontology',
           priority: 3,  // Metric < Ontology 동의어
         });
+        matchedKeywords.add(row.synonym_text);
       }
     }
 
@@ -1665,6 +1681,7 @@ async function matchSynonymsDirectly(query, domainCode) {
         referencedCodes.add(row.metric_code);  // 자기 자신도 포함
         matched.push({
           synonym: row.synonym_text,
+          matchedKeyword: row.synonym_text,
           column_name: columnName,
           description: row.description || row.metric_code,
           data_type: 'metric',
@@ -1678,21 +1695,49 @@ async function matchSynonymsDirectly(query, domainCode) {
 
     // =========================================================
     // 3단계: Ontology 컬럼 설명(description) 매칭 (domain_code 필터)
+    //   3-A. description 전체가 질문에 포함되는 경우 (기존 로직)
+    //   3-B. ★ 1단계에서 매칭된 동의어 키워드가 다른 컬럼의 description에도 포함되는 경우
+    //        예: "소모품비"가 ZAMT049 동의어로 매칭 → ZAMT019 description "수선/소모품비"에도 포함
+    //        → 두 컬럼을 동일 키워드 그룹으로 묶어 모두 SELECT에 포함
     // =========================================================
     const [ontCols] = await pool.query(
       `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != '' AND domain_code = ? AND is_active = 1`, [dc]
     );
     for (const row of ontCols) {
+      // 3-A: description 전체가 질문에 포함
       if (row.description.length >= 2 && (query.includes(row.description) || queryUpper.includes(row.description.toUpperCase()))) {
         if (!matched.some(m => m.column_name === row.column_name)) {
           matched.push({
             synonym: row.description,
+            matchedKeyword: row.description,
             column_name: row.column_name,
             description: row.description,
             data_type: row.data_type || '',
             source: 'ontology_desc',
             priority: 4,  // Ontology 설명 매칭 (가장 낮음)
           });
+        }
+        continue;  // 이미 매칭됐으면 3-B 검사 불필요
+      }
+      // 3-B: 1단계에서 매칭된 동의어 키워드가 이 컬럼의 description에 부분 포함되는지 검사
+      //      → 같은 키워드로 매칭된 다른 컬럼이 있으면 description 부분 일치만으로도 후보 추가
+      //      → 단, 키워드 길이가 2자 이상이어야 노이즈 방지
+      if (!matched.some(m => m.column_name === row.column_name)) {
+        for (const kw of matchedKeywords) {
+          if (kw.length < 2) continue;
+          if (row.description.includes(kw)) {
+            matched.push({
+              synonym: row.description,
+              matchedKeyword: kw,  // ★ 같은 키워드로 매칭 → 동일 그룹화
+              column_name: row.column_name,
+              description: row.description,
+              data_type: row.data_type || '',
+              source: 'ontology_desc_partial',
+              priority: 4,
+            });
+            console.log(`[Synonym] description 부분매칭: "${kw}" → ${row.column_name} (description: "${row.description}")`);
+            break;  // 한 키워드로 매칭되면 더 검사 안 함
+          }
         }
       }
     }
@@ -1732,6 +1777,7 @@ async function matchSynonymsDirectly(query, domainCode) {
           referencedCodes.add(row.metric_code);
           matched.push({
             synonym: desc,
+            matchedKeyword: desc,
             column_name: columnName,
             description: desc,
             data_type: 'metric',
@@ -1752,12 +1798,14 @@ async function matchSynonymsDirectly(query, domainCode) {
     //   - Metric에 해당 지표가 없는 경우에만 Ontology 컬럼 매칭 사용
     // =========================================================
     const metricSynonyms = new Set(
-      matched.filter(m => m.source === 'metric' || m.source === 'metric_desc').map(m => m.synonym.toUpperCase())
+      matched.filter(m => m.source === 'metric' || m.source === 'metric_desc')
+             .map(m => (m.matchedKeyword || m.synonym).toUpperCase())
     );
     filtered = matched.filter(m => {
       // Ontology 매칭인데 동일 단어가 Metric에서도 매칭된 경우 → Metric 우선, Ontology 제거
-      if ((m.source === 'ontology' || m.source === 'ontology_desc') && metricSynonyms.has(m.synonym.toUpperCase())) {
-        console.log(`[Synonym] Metric 우선: "${m.synonym}" ontology(${m.column_name}) 제거 → Metric 산식 사용`);
+      if ((m.source === 'ontology' || m.source === 'ontology_desc' || m.source === 'ontology_desc_partial')
+          && metricSynonyms.has((m.matchedKeyword || m.synonym).toUpperCase())) {
+        console.log(`[Synonym] Metric 우선: "${m.matchedKeyword || m.synonym}" ontology(${m.column_name}) 제거 → Metric 산식 사용`);
         return false;
       }
       return true;
@@ -1792,8 +1840,10 @@ async function buildRAGSystemPrompt(query, domainCode) {
   let synonymContext = '';
   if (synonymMatches.length > 0) {
     // Metric 산식 매칭과 Ontology 컬럼 매칭 분리
+    //   ★ ontology_desc_partial: 사용자 키워드가 다른 컬럼의 description에 부분 포함된 매칭
+    //     (예: "소모품비"로 ZAMT049 동의어 매칭 + ZAMT019 description "수선/소모품비"에 포함)
     const metricMatches = synonymMatches.filter(m => m.source === 'metric' || m.source === 'metric_desc');
-    const columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc');
+    const columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc' || m.source === 'ontology_desc_partial');
     
     synonymContext = '\n[★ 동의어 매칭 결과 - 최우선 적용! 아래 매핑을 반드시 SQL에 사용하세요]\n';
     
@@ -1830,42 +1880,58 @@ async function buildRAGSystemPrompt(query, domainCode) {
     if (columnMatches.length > 0) {
       synonymContext += '\n🔷 [Ontology 컬럼 매핑 — 이 단어들은 Metric이 아닌 Ontology 컬럼입니다!]\n';
 
-      // ★ 동일 동의어(synonym_text)에 여러 컬럼이 매칭된 경우 그룹핑
-      //   예: "지급수수료" → ZAMT040(지급수수료(변동)), ZAMT044(지급수수료(고정)) 동시 매칭
+      // ★ 동일 사용자 키워드(matchedKeyword)에 여러 컬럼이 매칭된 경우 그룹핑
+      //   - matchedKeyword: 사용자가 질문에서 실제로 사용한 단어 (예: "소모품비", "지급수수료")
+      //   - 케이스1: "지급수수료" → ZAMT040(지급수수료(변동)), ZAMT044(지급수수료(고정)) 동의어 매칭
+      //   - 케이스2: "소모품비" → ZAMT049(소모품비) 동의어 + ZAMT019(수선/소모품비) description 부분 매칭
       //   AI가 어떤 컬럼을 골라야 할지 몰라 회피하는 문제 해결: "모두 SELECT에 포함" 지시
       const synonymGroups = new Map();
       for (const m of columnMatches) {
-        const key = m.synonym;
+        const key = m.matchedKeyword || m.synonym;  // 호환성: matchedKeyword 없으면 synonym 사용
         if (!synonymGroups.has(key)) synonymGroups.set(key, []);
         synonymGroups.get(key).push(m);
       }
+      // 그룹 내 중복 컬럼 제거 (동일 컬럼이 ontology + ontology_desc_partial 두 source로 들어올 수 있음)
+      for (const [key, group] of synonymGroups) {
+        const seen = new Set();
+        const dedup = [];
+        for (const m of group) {
+          if (!seen.has(m.column_name)) {
+            seen.add(m.column_name);
+            dedup.push(m);
+          }
+        }
+        synonymGroups.set(key, dedup);
+      }
 
-      for (const [synonym, group] of synonymGroups) {
+      for (const [keyword, group] of synonymGroups) {
         if (group.length === 1) {
           // 단일 매칭: 기존 방식
           const m = group[0];
-          synonymContext += `- 사용자가 말한 "${synonym}" → 컬럼: ${m.column_name} (${m.data_type}) - ${m.description}\n`;
-          synonymContext += `  🚫 "${synonym}"을(를) Metric 산식이나 금액 지표로 해석하지 마세요! 이것은 Ontology 컬럼(차원/분류)입니다.\n`;
+          synonymContext += `- 사용자가 말한 "${keyword}" → 컬럼: ${m.column_name} (${m.data_type}) - ${m.description}\n`;
+          synonymContext += `  🚫 "${keyword}"을(를) Metric 산식이나 금액 지표로 해석하지 마세요! 이것은 Ontology 컬럼(차원/분류)입니다.\n`;
         } else {
           // ★★★ 다중 매칭: 모든 컬럼을 SELECT에 포함 + 각각 description으로 별칭 ★★★
           const isAmountType = group.some(m => /int|decimal|numeric|float|double/i.test(m.data_type || ''));
-          synonymContext += `\n🔥🔥🔥 [중요] "${synonym}" 동의어는 ${group.length}개 컬럼에 동시 매칭됨 — **반드시 모두 SELECT에 포함하세요!** 🔥🔥🔥\n`;
+          synonymContext += `\n🔥🔥🔥 [중요] 사용자 키워드 "${keyword}"는 ${group.length}개 컬럼에 매칭됨 — **반드시 모두 SELECT에 포함하세요!** 🔥🔥🔥\n`;
           for (const m of group) {
-            synonymContext += `  • ${m.column_name} (${m.data_type}) — 설명: ${m.description}\n`;
+            const matchType = m.source === 'ontology_desc_partial' ? '설명 부분일치' : (m.source === 'ontology_desc' ? '설명 정확일치' : '동의어 등록');
+            synonymContext += `  • ${m.column_name} (${m.data_type}) — 설명: ${m.description} [${matchType}]\n`;
           }
           if (isAmountType) {
             synonymContext += `  ▶ SELECT 절 작성 규칙 (금액 컬럼):\n`;
             for (const m of group) {
               const safeAlias = (m.description || m.column_name).replace(/"/g, '');
-              synonymContext += `     SUM(${m.column_name}) AS \`${safeAlias}\`\n`;
+              synonymContext += `     FORMAT(SUM(${m.column_name}), 0) AS '${safeAlias} 합계(원)'\n`;
             }
             synonymContext += `  ⚠️ 하나만 선택하거나, 합산해서 하나의 컬럼으로 묶지 마세요!\n`;
             synonymContext += `  ⚠️ 각 컬럼을 **개별 컬럼**으로 SELECT 절에 나열하고, 각각 위 description을 AS 별칭으로 그대로 사용하세요!\n`;
-            synonymContext += `  ⚠️ AI가 임의로 "지급수수료 합계" 같은 통합 별칭을 만들지 말 것!\n`;
+            synonymContext += `  ⚠️ AI가 임의로 "${keyword} 합계" 같은 통합 별칭을 만들지 말 것!\n`;
+            synonymContext += `  ⚠️ 사용자가 입력한 "${keyword}"가 아니라 각 컬럼의 **설명(description)**을 별칭의 기준으로 사용!\n`;
           } else {
             synonymContext += `  ▶ SELECT 절에 위 컬럼들을 모두 포함하고, 각각 description을 AS 별칭으로 사용하세요.\n`;
           }
-          synonymContext += `  🚫 "${synonym}"을(를) Metric 산식이나 단일 컬럼으로 해석하지 마세요!\n`;
+          synonymContext += `  🚫 "${keyword}"을(를) Metric 산식이나 단일 컬럼으로 해석하지 마세요!\n`;
         }
       }
     }
