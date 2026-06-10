@@ -1362,6 +1362,36 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 단순 조회형 질문의 예 (analysisRequired: false):
 - "총매출 합계 보여줘", "제품군별 매출", "상위 10개 품목"
 
+🚨🚨🚨 [SQL 작성 절대 규칙 — MariaDB 문법 준수] 🚨🚨🚨
+1. WHERE 절에는 절대 집계함수(SUM/AVG/COUNT/MAX/MIN)를 쓰지 마세요!
+   ❌ 금지: WHERE SUM(ZAMT001) > 1000  → "Invalid use of group function" 에러 발생
+   ✅ 올바름: SELECT ... GROUP BY ... HAVING SUM(ZAMT001) > 1000
+
+2. GROUP BY 없이 집계함수와 일반 컬럼을 SELECT에 같이 쓰지 마세요!
+   ❌ 금지: SELECT MATERIAL, SUM(ZAMT001) FROM ... (GROUP BY 없음)
+   ✅ 올바름: SELECT MATERIAL, SUM(ZAMT001) FROM ... GROUP BY MATERIAL
+   ✅ 또는: SELECT SUM(ZAMT001) FROM ...  (GROUP BY 없이 집계만)
+
+3. 분석형 질문(인사이트/시사점/요약 등)의 SQL 작성 방법:
+   - 단일 행에 여러 KPI를 한 번에 집계 (GROUP BY 없음, 일반 컬럼도 없음)
+   ✅ 권장 형태:
+   SELECT
+     FORMAT(SUM(ZAMT001), 0) AS '총매출',
+     FORMAT(SUM(ZAMT003), 0) AS '순매출',
+     FORMAT(SUM(ZAMT005), 0) AS '매출원가',
+     ...
+   FROM bw_profitability_data
+   WHERE 기준연월='2026-04'   -- WHERE에는 일반 컬럼 조건만!
+   - 차원별로 보고 싶으면 GROUP BY 명시:
+   SELECT 제품군, FORMAT(SUM(ZAMT001), 0) AS '매출'
+   FROM bw_profitability_data
+   WHERE 기준연월='2026-04'
+   GROUP BY 제품군
+
+4. FORMAT() 함수는 반드시 2개 인자: FORMAT(숫자표현, 소수자리수)
+   ❌ 금지: FORMAT(SUM(ZAMT001))    → 인자 부족 에러
+   ✅ 올바름: FORMAT(SUM(ZAMT001), 0)  ← 마지막 0 필수
+
 응답 형식 (반드시 JSON):
 {
   "sql": "SELECT ...",
@@ -2043,6 +2073,119 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
 // - 적용 대상: bw_profitability_data 테이블을 참조하는 SQL
 // - 중복 방지: SQL 어딘가에 이미 DIVISION 비교 조건이 있으면 추가하지 않음
 // ============================================================
+
+// ============================================================
+// Helper: SQL 사전 검증 (LLM이 생성한 SQL의 명백한 오류 패턴 탐지)
+// - LLM이 만들 수 있는 "Invalid use of group function" 같은 실행 시 오류를
+//   실행 전에 잡아내어 자동 재요청 또는 친절한 에러 메시지로 전환
+// - 검증 통과 시 { valid: true }, 실패 시 { valid: false, reason: '...' }
+// ============================================================
+function validateSqlPreExecution(sql) {
+  if (!sql || typeof sql !== 'string') {
+    return { valid: false, reason: 'SQL이 비어있습니다.' };
+  }
+
+  const sqlUpper = sql.toUpperCase();
+
+  // 검사 1: WHERE 절에 집계함수 사용 검출
+  //   - "WHERE ... SUM(...)" / "WHERE ... AVG(...)" 등은 MariaDB에서 즉시 에러
+  //   - HAVING 절은 허용되므로 WHERE..HAVING 구간만 검사
+  const whereStart = sqlUpper.search(/\bWHERE\b/);
+  if (whereStart >= 0) {
+    // WHERE 절의 종료 지점 찾기: GROUP BY / HAVING / ORDER BY / LIMIT / UNION / 끝
+    const afterWhere = sql.slice(whereStart);
+    const terminatorMatch = afterWhere.match(/\b(GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION)\b/i);
+    const whereEnd = terminatorMatch
+      ? whereStart + terminatorMatch.index
+      : sql.length;
+    const whereClause = sql.slice(whereStart, whereEnd);
+
+    // WHERE 절 안에 집계함수가 (서브쿼리 밖에서) 사용되었는지 검사
+    // 단, 서브쿼리 안의 집계함수는 정상이므로 제외해야 함
+    // 간단한 휴리스틱: 서브쿼리(괄호) 안의 내용은 제거하고 검사
+    let stripped = whereClause;
+    let prev;
+    do {
+      prev = stripped;
+      // 가장 안쪽 괄호부터 제거 (서브쿼리/함수 호출은 일단 제거)
+      stripped = stripped.replace(/\([^()]*\)/g, '');
+    } while (stripped !== prev);
+
+    // 이제 stripped에는 서브쿼리/함수 호출이 제거된 WHERE 절만 남음
+    // 그런데 SUM(...) 같은 형태도 괄호 안이 제거되면서 "SUM" 토큰만 남음
+    // 즉 stripped에 "SUM" "AVG" "COUNT" "MAX" "MIN" 토큰이 보이면 → 그건 WHERE 안 집계함수
+    const aggFnPattern = /\b(SUM|AVG|COUNT|MAX|MIN)\b/i;
+    if (aggFnPattern.test(stripped)) {
+      const matched = stripped.match(aggFnPattern);
+      return {
+        valid: false,
+        reason: `WHERE 절에 집계함수 ${matched[1].toUpperCase()}()가 사용되었습니다. 집계 결과로 필터링하려면 HAVING 절을 사용해야 합니다.`,
+      };
+    }
+  }
+
+  // 검사 2: GROUP BY 없이 집계함수와 일반 컬럼이 SELECT에 함께 있는지 (간이 검사)
+  //   - SELECT 절만 추출
+  const selectMatch = sql.match(/SELECT\s+([\s\S]*?)\s+FROM\s/i);
+  if (selectMatch) {
+    const selectClause = selectMatch[1];
+    // 집계함수 사용 여부
+    const hasAgg = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(selectClause);
+    // GROUP BY 존재 여부
+    const hasGroupBy = /\bGROUP\s+BY\b/i.test(sql);
+
+    if (hasAgg && !hasGroupBy) {
+      // 집계 + 일반 컬럼 혼용 검사:
+      //   SELECT 항목을 콤마로 분리하되 괄호 안 콤마는 무시
+      const items = [];
+      let depth = 0, buf = '';
+      for (const ch of selectClause) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        if (ch === ',' && depth === 0) {
+          items.push(buf.trim());
+          buf = '';
+        } else {
+          buf += ch;
+        }
+      }
+      if (buf.trim()) items.push(buf.trim());
+
+      // 각 항목이 집계함수를 포함하는지 검사
+      let plainColumnCount = 0;
+      let aggColumnCount = 0;
+      for (const item of items) {
+        // AS alias / 그냥 표현 모두 검사 대상은 표현부 자체
+        const expr = item.split(/\s+AS\s+/i)[0].trim();
+        if (/\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(expr)) {
+          aggColumnCount++;
+        } else if (expr && expr !== '*') {
+          // 상수/표현식은 제외하고 컬럼 참조로 보이는 것만 카운트
+          // 예: '문자열', 123, NOW() 등은 제외
+          if (!/^['"]/.test(expr) && !/^\d+(\.\d+)?$/.test(expr)) {
+            // CASE WHEN, IF 등은 일반 컬럼 아님 → 그냥 패스 (보수적 판단)
+            if (!/\b(CASE|IF|COALESCE|IFNULL|NULLIF)\s*[\(\s]/i.test(expr)) {
+              plainColumnCount++;
+            }
+          }
+        }
+      }
+
+      if (aggColumnCount > 0 && plainColumnCount > 0) {
+        return {
+          valid: false,
+          reason: `GROUP BY 없이 집계함수와 일반 컬럼(${plainColumnCount}개)이 SELECT 절에 혼용되었습니다. GROUP BY 절을 추가하거나 일반 컬럼을 제거해야 합니다.`,
+        };
+      }
+    }
+  }
+
+  // 검사 3: HAVING 절이 GROUP BY 없이 사용되는 경우 (드물지만 가능)
+  //   - 일부 DB는 허용하나 위험 패턴이므로 통과시킴 (false positive 방지)
+
+  return { valid: true };
+}
+
 function applyDomainFilter(inputSql, domainCode) {
   if (!inputSql) return inputSql;
   const dc = (domainCode || '').toUpperCase();
@@ -2411,9 +2554,118 @@ app.post('/api/nlq', async (req, res) => {
       }
     }
 
+    // 2-B. SQL 사전 검증 (LLM이 잘못된 SQL을 만들었을 가능성 사전 탐지)
+    //   - WHERE 절에 집계함수(SUM/AVG/COUNT/MAX/MIN) 사용 → MariaDB "Invalid use of group function" 에러
+    //   - 이런 패턴이 발견되면 LLM에게 에러 컨텍스트와 함께 재요청하여 자동 복구
+    const sqlValidation = validateSqlPreExecution(sql);
+    if (!sqlValidation.valid) {
+      console.warn(`[NLQ] SQL 사전 검증 실패: ${sqlValidation.reason}`);
+      console.warn(`[NLQ] 문제 SQL: ${sql}`);
+      // LLM에게 에러 컨텍스트 추가하여 재요청
+      try {
+        const fixPrompt = `이전에 생성한 SQL에 문제가 있습니다.
+
+[잘못된 SQL]
+${sql}
+
+[문제점]
+${sqlValidation.reason}
+
+[수정 규칙]
+- WHERE 절에는 절대 집계함수(SUM/AVG/COUNT/MAX/MIN)를 쓰지 마세요
+- 집계 결과로 필터링이 필요하면 HAVING 절을 사용하세요
+- GROUP BY 없이 집계함수와 일반 컬럼을 SELECT에 같이 쓰지 마세요
+- 분석형 질문이면 모든 KPI를 GROUP BY 없이 단일 행으로 집계하세요 (SELECT SUM(...), SUM(...), ...)
+
+위 규칙을 지켜서 동일한 질문에 대한 올바른 SQL을 다시 생성하세요.
+응답 형식은 동일하게 JSON: {"sql": "...", "answer": "...", "explanation": "...", "chartType": "...", "chartConfig": {...}, "analysisRequired": ${analysisRequired}}`;
+
+        const retryCompletion = await openai.chat.completions.create({
+          model: GPT_MODEL,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: query },
+            { role: 'assistant', content: JSON.stringify({ sql }) },
+            { role: 'user', content: fixPrompt },
+          ],
+          temperature: 0.1,
+          response_format: { type: 'json_object' },
+        });
+        const retryRaw = retryCompletion.choices[0].message.content;
+        console.log(`[NLQ] SQL 재생성 응답: ${retryRaw}`);
+        const retryParsed = JSON.parse(retryRaw);
+        if (retryParsed.sql) {
+          sql = await applyMetricFormulaReplacement(retryParsed.sql, activeDomain);
+          sql = applyDomainFilter(sql, activeDomain);
+          // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
+          const reval = validateSqlPreExecution(sql);
+          if (!reval.valid) {
+            console.error(`[NLQ] 재생성 SQL도 검증 실패: ${reval.reason}`);
+            // 친절한 에러 메시지 반환
+            return res.json({
+              success: false,
+              sql,
+              rows: [],
+              rowCount: 0,
+              answer: '죄송합니다. 이 질문은 좀 더 구체적으로 다시 말씀해 주세요. 예: "2026년 4월 제품군별 매출과 영업이익 분석"',
+              explanation: '쿼리 생성 중 집계 함수 사용 규칙 위반이 반복 감지되어 실행하지 않았습니다.',
+              error_user_friendly: true,
+            });
+          }
+          console.log(`[NLQ] SQL 자동 복구 성공`);
+        }
+      } catch (retryErr) {
+        console.error(`[NLQ] SQL 재생성 실패:`, retryErr.message);
+        return res.json({
+          success: false,
+          sql,
+          rows: [],
+          rowCount: 0,
+          answer: '죄송합니다. 질문을 좀 더 구체적으로 다시 말씀해 주시거나, "2026년 4월 매출 분석"처럼 분석 대상 기간을 명확히 표현해 주세요.',
+          explanation: `SQL 생성 오류: ${sqlValidation.reason}`,
+          error_user_friendly: true,
+        });
+      }
+    }
+
     // 3. DB 실행
     const startTime = Date.now();
-    const [rows] = await pool.query(sql);
+    let rows;
+    try {
+      [rows] = await pool.query(sql);
+    } catch (dbErr) {
+      // DB 실행 실패 시에도 친절한 메시지로 변환
+      const errMsg = dbErr.sqlMessage || dbErr.message || '';
+      console.error(`[NLQ] DB 실행 실패: ${errMsg}`);
+      console.error(`[NLQ] 실패 SQL: ${sql}`);
+
+      // 사용자 친화적 에러 메시지로 변환
+      let friendly = '죄송합니다. 질문을 처리하는 중 오류가 발생했습니다. 좀 더 구체적으로 다시 말씀해 주세요.';
+      if (/Invalid use of group function/i.test(errMsg)) {
+        friendly = '죄송합니다. 분석형 질문을 처리하는 중 쿼리 생성에 문제가 있었습니다. 질문을 좀 더 구체적으로 다시 말씀해 주세요. 예: "2026년 4월 제품군별 매출과 영업이익 분석"';
+      } else if (/Unknown column/i.test(errMsg)) {
+        friendly = '죄송합니다. 질문에 등록되지 않은 용어가 포함된 것 같습니다. 학습관리에서 해당 용어를 확인해 주세요.';
+      } else if (/Incorrect parameter count/i.test(errMsg)) {
+        friendly = '죄송합니다. 쿼리 생성에 문제가 있었습니다. 다시 한 번 질문해 주세요.';
+      } else if (/syntax/i.test(errMsg)) {
+        friendly = '죄송합니다. 쿼리 문법 오류가 발생했습니다. 질문을 다시 표현해 주세요.';
+      }
+
+      // 실패 이력 저장
+      const failUserId = req.session?.user?.id || null;
+      saveHistory(failUserId, query, sql, null, null, null, null, 0, 0, 'FAILED', errMsg, session_id || null, activeDomain)
+        .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
+
+      return res.json({
+        success: false,
+        sql,
+        rows: [],
+        rowCount: 0,
+        answer: friendly,
+        explanation: `DB 실행 오류: ${errMsg}`,
+        error_user_friendly: true,
+      });
+    }
     const execTime = Date.now() - startTime;
 
     console.log(`[NLQ] SQL 실행: ${execTime}ms, ${rows.length}행`);
