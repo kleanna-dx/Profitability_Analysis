@@ -4355,6 +4355,45 @@ app.get('/api/builder/columns', async (req, res) => {
       'BIC_ZQTY_BOX': 'quantity', 'BIC_ZQTY_BAG': 'quantity', 'BIC_ZQTY_KE': 'quantity',
     };
 
+    // 3. Metric 계산 지표 먼저 조회 (DB 컬럼 루프 전에 — 산식 참조 컬럼을 ontology에서 숨기기 위해)
+    const dc2 = dc; // dc 변수 alias
+    let metricRows = [];
+    try {
+      const [_rows] = await pool.query(
+        `SELECT id, metric_code, aggregation, formula, table_name, description, domain_code FROM metric WHERE domain_code = ?`,
+        [dc2]
+      );
+      metricRows = _rows;
+    } catch (e) {
+      console.error('[Builder] metric 사전조회 오류 (무시):', e.message);
+    }
+
+    // 3-1. Metric으로 등록된 DB 컬럼명 집합 구축 (ontology 섹션에서 숨기기 위해)
+    //   ─ (a) metric_code 자체가 DB 컬럼명과 같은 경우 (예: metric_code='ZAMT035' → 매출총이익)
+    //   ─ (b) formula에서 참조하는 DB 컬럼 (예: formula='SUM(ZAMT035)' → ZAMT035)
+    //   formula 예시: 'ZAMT035', 'SUM(ZAMT035)', 'SUM(ZAMT035)/NULLIF(SUM(ZAMT003),0)*100' 등
+    //   → DB 실제 컬럼명과 일치하는 식별자만 추출 (SUM/NULLIF 등 함수명은 자동 제외)
+    const validDbColSet = new Set(dbCols.map(r => r.COLUMN_NAME.toUpperCase()));
+    const metricReferencedCols = new Set(); // ontology에서 숨길 DB 컬럼명 (UPPER)
+    const tokenRegex = /[A-Z_][A-Z0-9_]*/g;
+    for (const m of metricRows) {
+      // (a) metric_code 자체
+      if (m.metric_code) {
+        const code = String(m.metric_code).toUpperCase();
+        if (validDbColSet.has(code)) {
+          metricReferencedCols.add(code);
+        }
+      }
+      // (b) formula 내 컬럼 참조
+      if (!m.formula) continue;
+      const tokens = String(m.formula).toUpperCase().match(tokenRegex) || [];
+      for (const tk of tokens) {
+        if (validDbColSet.has(tk)) {
+          metricReferencedCols.add(tk);
+        }
+      }
+    }
+
     const columns = [];
     for (const r of dbCols) {
       const name = r.COLUMN_NAME;
@@ -4363,6 +4402,10 @@ app.get('/api/builder/columns', async (req, res) => {
 
       // ★ 비활성 컬럼은 빌더 응답에서 제외 (ontology_column.is_active=0)
       if (inactiveColSet.has(name.toUpperCase())) continue;
+
+      // ★ Metric 산식에서 참조된 컬럼은 ontology 섹션에서 제외 (계산지표 섹션에서만 노출)
+      //    예: GROSS_PROFIT metric의 formula='ZAMT035' → ZAMT035는 계산지표로만 표시
+      if (metricReferencedCols.has(name.toUpperCase())) continue;
 
       // 타입 분류
       const dataType = /bigint|decimal|int|double|float/i.test(ctype) ? 'number' : 'text';
@@ -4382,12 +4425,8 @@ app.get('/api/builder/columns', async (req, res) => {
       columns.push({ name, label, type: dataType, db_type: ctype, category, synonyms });
     }
 
-    // 3. Metric 계산 지표 조회 (도메인 필터 적용)
+    // 3-2. Metric 계산 지표를 columns에 추가 (위에서 조회한 metricRows 사용)
     try {
-      const [metricRows] = await pool.query(
-        `SELECT id, metric_code, aggregation, formula, table_name, description, domain_code FROM metric WHERE domain_code = ?`,
-        [dc]
-      );
       // 동의어 일괄 조회
       const metricIds = metricRows.map(m => m.id);
       let synonymMap = {};
