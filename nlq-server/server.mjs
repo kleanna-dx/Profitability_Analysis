@@ -2531,11 +2531,14 @@ async function resolveColumnLabels(rows, sql, domainCode) {
 // API: 자연어 질의 실행
 // ============================================================
 app.post('/api/nlq', async (req, res) => {
-  const { query, conversationContext, session_id } = req.body;
+  const { query, conversationContext, session_id, queryMode } = req.body;
   if (!query || !query.trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.' });
   }
   const activeDomain = await getActiveDomain(req);
+  // ★ 질문 유형: 'aggregate'(현황집계: 표+SQL) | 'analysis'(분석질문: 텍스트만)
+  //   기본값 'aggregate' — 프론트엔드 라디오에서 명시적으로 선택 (기존 자동 키워드 감지보다 우선)
+  const userQueryMode = (queryMode === 'analysis') ? 'analysis' : 'aggregate';
 
   try {
     console.log(`[NLQ] 질의: ${query}`);
@@ -2568,9 +2571,19 @@ app.post('/api/nlq', async (req, res) => {
     // - 백엔드가 안전한 KPI 조회 SQL을 직접 빌드 → 실행 → 결과로 LLM 분석 답변만 받음
     // - 표/차트 생성 안 함, 사용자에게는 텍스트 분석만 노출
     // - 학습 데이터 매칭이 있으면 그쪽 우선 (사용자가 검증한 SQL)
+    // ★★★ 라우팅 규칙 ★★★
+    //   1) 사용자가 라디오에서 '분석질문' 명시적 선택 → 강제 분석 경로 (키워드 무시)
+    //   2) 사용자가 '현황집계' 선택 (기본값) → 키워드 자동 감지 우회, 일반(표+SQL) 경로 강제
+    //   → "소모품비 알려줘" 같은 단순 조회가 '알려줘' 키워드 때문에 분석 경로로 잘못 빠지는 문제 해결
     // ============================================================
-    if (!matchedSql && isAnalysisQuery(query)) {
-      console.log(`[NLQ] 🧠 분석형 질문 감지 → 안전 경로 라우팅 (SQL 생성 우회)`);
+    const isAnalysisMode = (userQueryMode === 'analysis');
+    if (isAnalysisMode) {
+      console.log(`[NLQ] 사용자 선택: 분석질문 → 분석 경로 라우팅`);
+    } else {
+      console.log(`[NLQ] 사용자 선택: 현황집계 → 표+SQL 경로 강제 (키워드 자동감지 비활성)`);
+    }
+    if (!matchedSql && isAnalysisMode) {
+      console.log(`[NLQ] 🧠 분석형 질문 처리 → 안전 경로 라우팅 (SQL 생성 우회)`);
       try {
         const dc = await getDataDateContext();
         dateContext = dc;
@@ -2713,10 +2726,24 @@ app.post('/api/nlq', async (req, res) => {
     } else {
       // 1. RAG 기반 SQL 생성 (질문 관련 메타데이터만 검색하여 프롬프트에 주입)
       const buildResult = await buildRAGSystemPrompt(query, activeDomain);
-      const systemPrompt = buildResult.prompt;
+      let systemPrompt = buildResult.prompt;
       const ragContext = buildResult.ragContext;
       dateContext = buildResult.dateContext;
-      console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady})`);
+      // ★ 사용자가 '현황집계' 라디오를 선택한 경우: 시스템 프롬프트에 명시적 지시 추가
+      //   → GPT가 "알려줘" 같은 단어 때문에 analysisRequired:true로 응답하지 않도록 강제
+      if (userQueryMode === 'aggregate') {
+        systemPrompt += `\n\n[★★★ 사용자 명시 지시: 현황집계 모드 ★★★]
+- 사용자가 답변 유형 라디오에서 "현황집계"를 명시적으로 선택했습니다.
+- 따라서 이 질문은 표(데이터 조회) + SQL 형태로 답변해야 합니다.
+- 질문에 "알려줘", "보여줘" 등의 표현이 포함되어 있어도 **analysisRequired는 반드시 false**로 응답하세요.
+- 분석/시사점/원인 등 텍스트 코멘트를 생성하지 말고, SELECT 문으로 결과를 집계해서 보여주는 SQL을 작성하세요.
+- 예) "소모품비 알려줘" → SELECT FORMAT(SUM(ZAMT049),0) AS '소모품비(원)' FROM ... (분석 텍스트 X)`;
+      } else {
+        systemPrompt += `\n\n[★★★ 사용자 명시 지시: 분석질문 모드 ★★★]
+- 사용자가 답변 유형 라디오에서 "분석질문"을 명시적으로 선택했습니다.
+- 따라서 이 질문은 표/차트 없이 텍스트 분석 답변만 생성해야 합니다 (analysisRequired: true).`;
+      }
+      console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady}, 모드: ${userQueryMode})`);
 
       // RAG 검색 상세 정보 수집
       if (ragContext) {
@@ -2810,6 +2837,12 @@ app.post('/api/nlq', async (req, res) => {
       chartType = parsed.chartType;
       chartConfig = parsed.chartConfig;
       analysisRequired = parsed.analysisRequired === true;
+      // ★ 사용자가 '현황집계' 라디오 선택 시 GPT가 analysisRequired:true로 응답해도 강제 false
+      //   → 표+SQL만 노출, 분석 답변 생성 단계(4-B) 우회
+      if (userQueryMode === 'aggregate' && analysisRequired) {
+        console.log(`[NLQ] 사용자 '현황집계' 선택 — GPT의 analysisRequired:true 무시 (강제 false)`);
+        analysisRequired = false;
+      }
     }
 
     // 2. SQL 검증
