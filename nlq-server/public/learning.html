@@ -400,10 +400,31 @@
         <div id="panel_ontology" class="panel-content">
             <div class="card">
                 <div class="card-header">
-                    <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-3 flex-wrap">
                         <h2 class="text-sm font-bold text-gray-800">Ontology 관리</h2>
                         <span class="badge badge-blue" id="ontologyCount">0개</span>
-                        <span id="ontSortBadge" class="sort-active-badge" style="display:none;cursor:pointer;" onclick="clearOntologySort()" title="클릭하면 정렬 해제"></span>
+                        <!-- ★ Ontology 검색 영역 (전체 / 컬럼명 / 설명) -->
+                        <div class="ont-search-wrap" style="display:flex;gap:6px;align-items:center;">
+                            <select id="ontSearchScope" onchange="onOntSearchChange()" style="
+                                padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;
+                                background:#fff;color:#0f172a;cursor:pointer;min-width:90px;height:34px;
+                            ">
+                                <option value="all">전체</option>
+                                <option value="column_name">컬럼명</option>
+                                <option value="description">설명</option>
+                            </select>
+                            <div style="position:relative;width:260px;">
+                                <input type="text" id="ontSearchInput" placeholder="검색어를 입력하세요 (부분 일치)" oninput="onOntSearchChange()" style="
+                                    width:100%;padding:6px 30px 6px 10px;border:1px solid #cbd5e1;border-radius:6px;
+                                    font-size:13px;background:#fff;height:34px;box-sizing:border-box;
+                                "/>
+                                <button id="ontSearchClearBtn" type="button" onclick="clearOntSearch()" title="검색어 지우기" style="
+                                    display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);
+                                    background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:14px;padding:2px 4px;
+                                "><i class="fas fa-times-circle"></i></button>
+                            </div>
+                            <span id="ontSearchResultInfo" style="font-size:12px;color:#64748b;display:none;white-space:nowrap;"></span>
+                        </div>
                     </div>
                     <div class="flex gap-2 flex-wrap items-center">
                         <span id="ragStatusText" style="font-size:12px;color:#94a3b8;"></span>
@@ -429,31 +450,6 @@
                     </div>
                 </div>
                 <div class="card-body">
-                    <!-- ★ Ontology 검색 영역 (전체 / 컬럼명 / 설명) -->
-                    <div class="ont-search-wrap" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
-                        <label for="ontSearchScope" style="font-size:12px;color:#475569;font-weight:600;">
-                            <i class="fas fa-search" style="margin-right:4px;color:#64748b;"></i>검색
-                        </label>
-                        <select id="ontSearchScope" onchange="onOntSearchChange()" style="
-                            padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;
-                            background:#fff;color:#0f172a;cursor:pointer;min-width:90px;
-                        ">
-                            <option value="all">전체</option>
-                            <option value="column_name">컬럼명</option>
-                            <option value="description">설명</option>
-                        </select>
-                        <div style="position:relative;flex:1;min-width:220px;max-width:420px;">
-                            <input type="text" id="ontSearchInput" placeholder="검색어를 입력하세요 (부분 일치)" oninput="onOntSearchChange()" style="
-                                width:100%;padding:6px 30px 6px 10px;border:1px solid #cbd5e1;border-radius:6px;
-                                font-size:13px;background:#fff;
-                            "/>
-                            <button id="ontSearchClearBtn" type="button" onclick="clearOntSearch()" title="검색어 지우기" style="
-                                display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);
-                                background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:14px;padding:2px 4px;
-                            "><i class="fas fa-times-circle"></i></button>
-                        </div>
-                        <span id="ontSearchResultInfo" style="font-size:12px;color:#64748b;display:none;"></span>
-                    </div>
                     <div class="table-scroll">
                         <table class="dtable" id="ontologyTable">
                             <thead>
@@ -1178,7 +1174,7 @@ function clearOntSearch() {
     onOntSearchChange();
 }
 
-// 헤더 아이콘 상태 갱신 + 정렬 상태 뱃지 표시
+// 헤더 아이콘 상태 갱신 (상단 정렬 상태 뱃지는 사용하지 않음 — 헤더의 ▲/▼만 사용)
 function updateOntologySortIndicators() {
     const keys = ['column_name', 'description'];
     keys.forEach(k => {
@@ -1189,19 +1185,6 @@ function updateOntologySortIndicators() {
             th.classList.add(ontologySortDir === 'asc' ? 'sort-asc' : 'sort-desc');
         }
     });
-    // 상단 정렬 상태 뱃지
-    const badge = document.getElementById('ontSortBadge');
-    if (!badge) return;
-    if (ontologySortKey && ontologySortDir) {
-        const labelMap = { column_name: '컬럼명', description: '설명' };
-        const arrow = ontologySortDir === 'asc' ? '↑' : '↓';
-        const dirLabel = ontologySortDir === 'asc' ? '오름차순' : '내림차순';
-        badge.innerHTML = `<i class="fas fa-sort-amount-${ontologySortDir === 'asc' ? 'up-alt' : 'down'}" style="margin-right:4px;"></i>${labelMap[ontologySortKey]} ${arrow} ${dirLabel} <i class="fas fa-times-circle" style="margin-left:6px;opacity:.85;"></i>`;
-        badge.style.display = 'inline-block';
-    } else {
-        badge.style.display = 'none';
-        badge.innerHTML = '';
-    }
 }
 
 // 정렬 해제 (상단 뱃지 클릭 시)
