@@ -2621,6 +2621,143 @@ function applyDomainFilter(inputSql, domainCode) {
 }
 
 // ============================================================
+// Helper: Dummy 행 제거 (결과 후필터) — 안전망
+// - 서버 응답 data 배열에서 어떤 컬럼이든 값이 정확히 'Dummy' (대소문자 무시) 인 행 제거
+// - SQL 자동주입이 적용 안 된 경우(서브쿼리/UNION/CTE/JOIN 등)에도 보호
+// - 답변 생성용 샘플도 동일하게 거름 → LLM 답변에 Dummy 노출 차단
+// ============================================================
+function isDummyValue(v) {
+  if (v === null || v === undefined) return false;
+  // 문자열만 대상으로 — bigint/number/Date 등은 비교 대상이 아님
+  if (typeof v !== 'string') return false;
+  const s = v.trim().toLowerCase();
+  return s === 'dummy';
+}
+function filterDummyRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const out = rows.filter(r => {
+    if (!r || typeof r !== 'object') return true;
+    // 어떤 컬럼이라도 'Dummy' 면 행 제외
+    for (const k of Object.keys(r)) {
+      if (isDummyValue(r[k])) return false;
+    }
+    return true;
+  });
+  const removed = rows.length - out.length;
+  if (removed > 0) console.log(`[NLQ] Dummy 행 제거: ${removed}건 (${rows.length} → ${out.length})`);
+  return out;
+}
+
+// ============================================================
+// Helper: SQL 단계에서 Dummy 제외 조건 자동 주입
+// - bw_profitability_data 또는 그 별칭의 명칭(_NM) 컬럼들에 NOT LIKE '%Dummy%' AND ...
+// - 단순 SELECT (UNION/CTE 없는) 만 대상으로 안전 주입
+// - 이미 SQL 안에 'Dummy' 문자열을 다루는 경우 중복 주입 금지
+// - 실패해도 결과 후필터(filterDummyRows)가 백업
+// ============================================================
+function applyDummyFilter(inputSql) {
+  if (!inputSql) return inputSql;
+  // bw_profitability_data 를 직접 참조하지 않으면 대상 아님
+  if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
+  // 이미 Dummy 관련 조건이 있으면 중복 추가 금지
+  if (/dummy/i.test(inputSql)) return inputSql;
+  // UNION / CTE / 윈도우는 안전을 위해 자동주입 제외 (후필터로 처리)
+  if (/\bUNION\b/i.test(inputSql) || /\bWITH\b\s+\w+\s+AS\s*\(/i.test(inputSql)) return inputSql;
+
+  // FROM/JOIN bw_profitability_data [별칭?] 첫 매칭에서 별칭 추출
+  const reservedAfterFrom = /^(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|ON)$/i;
+  const tableRefRegex = /\b(?:FROM|JOIN)\s+bw_profitability_data\b(\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/i;
+  const refMatch = tableRefRegex.exec(inputSql);
+  if (!refMatch) return inputSql;
+  const alias = (refMatch[2] && !reservedAfterFrom.test(refMatch[2])) ? refMatch[2] : '';
+  const prefix = alias ? `${alias}.` : '';
+
+  // 대상 _NM 컬럼들 (사진의 손익센터명 + 일반적인 명칭 컬럼들)
+  // 보수적으로 자주 노출되는 핵심 4개만 자동주입 (PROFIT_CTR_NM, DIVISION_NM, PLANT_NM, MATERIAL_NM)
+  // 나머지는 결과 후필터로 충분히 커버됨
+  const nameCols = ['PROFIT_CTR_NM', 'DIVISION_NM', 'PLANT_NM', 'MATERIAL_NM'];
+  const dummyCond = nameCols
+    .map(c => `(${prefix}${c} IS NULL OR ${prefix}${c} NOT LIKE '%Dummy%')`)
+    .join(' AND ');
+
+  // WHERE 절 종료 토큰
+  const whereTerminator = /(\bGROUP\s+BY\b|\bHAVING\b|\bORDER\s+BY\b|\bLIMIT\b|\bUNION\b|\)|;|$)/i;
+  const whereRegex = /\bWHERE\b\s+/i;
+  const whereMatch = whereRegex.exec(inputSql);
+
+  let result;
+  if (whereMatch) {
+    const before = inputSql.slice(0, whereMatch.index + whereMatch[0].length);
+    const rest = inputSql.slice(whereMatch.index + whereMatch[0].length);
+    whereTerminator.lastIndex = 0;
+    const termMatch = whereTerminator.exec(rest);
+    let cond, tail;
+    if (termMatch && termMatch[0]) {
+      cond = rest.slice(0, termMatch.index).trim();
+      tail = rest.slice(termMatch.index);
+    } else {
+      cond = rest.trim();
+      tail = '';
+    }
+    const wrapped = cond ? `(${cond}) AND ${dummyCond}` : dummyCond;
+    const sep = tail && !tail.startsWith(' ') && !tail.startsWith(';') && !tail.startsWith(')') ? ' ' : '';
+    result = `${before}${wrapped}${sep}${tail}`;
+  } else {
+    // WHERE 없으면 FROM 절 뒤에 WHERE 추가
+    const fromRegex = /\bFROM\s+bw_profitability_data\b(\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/i;
+    const fromMatch = fromRegex.exec(inputSql);
+    if (!fromMatch) return inputSql;
+    let matchLen = fromMatch[0].length;
+    if (fromMatch[2] && reservedAfterFrom.test(fromMatch[2])) {
+      matchLen = fromMatch[0].length - fromMatch[1].length;
+    }
+    const insertPos = fromMatch.index + matchLen;
+    const before = inputSql.slice(0, insertPos);
+    const rest = inputSql.slice(insertPos);
+    whereTerminator.lastIndex = 0;
+    const termMatch = whereTerminator.exec(rest);
+    if (termMatch && termMatch.index > 0) {
+      const head = rest.slice(0, termMatch.index);
+      const tail = rest.slice(termMatch.index);
+      result = `${before}${head} WHERE ${dummyCond} ${tail}`;
+    } else if (termMatch && termMatch.index === 0) {
+      result = `${before} WHERE ${dummyCond} ${rest}`;
+    } else {
+      result = `${before} WHERE ${dummyCond}${rest}`;
+    }
+  }
+  if (result !== inputSql) console.log(`[NLQ] Dummy 제외 조건 자동 주입 (_NM ${nameCols.length}개)`);
+  return result;
+}
+
+// ============================================================
+// Helper: 답변 문장의 "YYYY년 M월" 패턴을 **굵게** 처리
+// - 입력 예: "최신 마감월인 2026년 5월(CALMONTH='202605')을 기준으로..."
+// - 출력 예: "최신 마감월인 **2026년 5월**(CALMONTH='202605')을 기준으로..."
+// - 이미 **로 감싸진 경우 중복 방지
+// - 마크다운 굵게가 적용되지 않는 영역(코드블록 ```)은 제외
+// ============================================================
+function boldYearMonth(text) {
+  if (!text || typeof text !== 'string') return text;
+  // 코드블록(```...```) 영역은 건드리지 않음
+  const parts = text.split(/(```[\s\S]*?```)/g);
+  const pattern = /(\d{4})\s*년\s*(\d{1,2})\s*월/g;
+  const transformed = parts.map((seg, idx) => {
+    // 짝수 인덱스만 일반 텍스트 (홀수 인덱스는 코드블록)
+    if (idx % 2 === 1) return seg;
+    // 이미 **로 감싸진 경우: 라인 단위로 검사
+    return seg.replace(pattern, (m, y, mm, offset, str) => {
+      // 직전 두 글자가 ** 이면 이미 굵게 감싸진 상태
+      const before = str.slice(Math.max(0, offset - 2), offset);
+      const after  = str.slice(offset + m.length, offset + m.length + 2);
+      if (before === '**' && after === '**') return m;
+      return `**${y}년 ${parseInt(mm, 10)}월**`;
+    });
+  });
+  return transformed.join('');
+}
+
+// ============================================================
 // Helper: SQL 결과셋 컬럼명 → 한국어 라벨 매핑
 // 우선순위:
 //  1순위) 결과 키에 이미 한글이 포함되어 있으면 그대로 사용 (= GPT가 AS 별칭을 한국어로 지정한 경우)
@@ -2807,6 +2944,9 @@ app.post('/api/nlq', async (req, res) => {
 
           let conceptAnswer = conceptCompletion.choices[0].message.content.trim();
 
+          // ★ 후처리: 년월 굵게 (LLM이 빠뜨려도 보장)
+          conceptAnswer = boldYearMonth(conceptAnswer);
+
           // 이력 저장 (SQL 없음)
           const nlqUserIdConcept = req.session?.user?.id || null;
           saveHistory(
@@ -2843,16 +2983,22 @@ app.post('/api/nlq', async (req, res) => {
         console.log(`[NLQ] 분석경로 → ${intent} (CALMONTH=${calmonth})`);
 
         // 도메인 필터 자동 주입
-        const finalSql = applyDomainFilter(analysisSql, activeDomain);
+        let finalSql = applyDomainFilter(analysisSql, activeDomain);
+        // ★ Dummy 행 제외 조건 자동 주입
+        finalSql = applyDummyFilter(finalSql);
 
         // DB 실행
         const startTime = Date.now();
-        const [rows] = await pool.query(finalSql);
+        let [rows] = await pool.query(finalSql);
+        // ★ Dummy 행 후필터 (SQL 자동주입이 안 닿은 케이스 안전망)
+        rows = filterDummyRows(rows);
         const execTime = Date.now() - startTime;
         console.log(`[NLQ] 분석용 SQL 실행 완료: ${execTime}ms, ${rows.length}행`);
 
         // LLM 분석 답변 생성
         const dateInfo = `[기간 참고] 당월=${dc.latestLabel}, 전월=${dc.prevLabel}. "당월", "이번달", "전월" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기.`;
+        // ★ 답변 출력 규칙 (전역 규칙) — analysis 경로
+        const analysisFormatRule = `[답변 출력 규칙]\n- "YYYY년 M월" 형태의 년월 표현은 반드시 **굵게(마크다운 **)** 강조하세요. 예: **2026년 5월**\n- 조회 결과에 'Dummy' 값이 있으면 본문에 언급하지 마세요. (사용자에게 노출되지 않습니다)`;
         const dataForAnalysis = rows.slice(0, 50);
         const dataText = JSON.stringify(dataForAnalysis, (key, val) =>
           typeof val === 'bigint' ? Number(val) : val
@@ -2902,8 +3048,8 @@ app.post('/api/nlq', async (req, res) => {
         }
 
         const userContent = rows.length > 0
-          ? `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회된 핵심 KPI 데이터]\n${dataText}\n\n위 KPI 데이터를 기반으로 사용자의 질문에 대한 전문적인 답변을 작성해주세요.`
-          : `${dateInfo}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (해당 기간 데이터 없음)\n\n해당 기간에 데이터가 없습니다. 데이터가 적재되지 않은 가능성을 안내하고, 사용자가 다른 기간을 시도할 수 있도록 친절히 안내해주세요.`;
+          ? `${dateInfo}\n\n${analysisFormatRule}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회된 핵심 KPI 데이터]\n${dataText}\n\n위 KPI 데이터를 기반으로 사용자의 질문에 대한 전문적인 답변을 작성해주세요.`
+          : `${dateInfo}\n\n${analysisFormatRule}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (해당 기간 데이터 없음)\n\n해당 기간에 데이터가 없습니다. 데이터가 적재되지 않은 가능성을 안내하고, 사용자가 다른 기간을 시도할 수 있도록 친절히 안내해주세요.`;
 
         const analysisCompletion = await openai.chat.completions.create({
           model: GPT_MODEL,
@@ -2930,6 +3076,9 @@ app.post('/api/nlq', async (req, res) => {
             analysis = analysis.substring(0, cutPos).trim();
           }
         }
+
+        // ★ 후처리: 년월 굵게 (LLM이 빠뜨려도 보장)
+        analysis = boldYearMonth(analysis);
 
         // 이력 저장 (분석형은 표·차트 없이; 분석 본문은 explanation 필드에 저장)
         const nlqUserIdAnalysis = req.session?.user?.id || null;
@@ -3133,6 +3282,8 @@ app.post('/api/nlq', async (req, res) => {
     //   - 학습 경로/GPT 경로 모두 여기로 합류하므로 한 곳에서 적용
     //   - 이미 DIVISION 조건이 있으면 중복 추가하지 않음
     sql = applyDomainFilter(sql, activeDomain);
+    // ★ Dummy 행 제외 조건 자동 주입 (PROFIT_CTR_NM/DIVISION_NM 등 _NM 컬럼)
+    sql = applyDummyFilter(sql);
 
     const sqlUpper = sql.toUpperCase().trim();
     if (!sqlUpper.startsWith('SELECT')) {
@@ -3195,6 +3346,7 @@ ${sqlValidation.reason}
         if (retryParsed.sql) {
           sql = await applyMetricFormulaReplacement(retryParsed.sql, activeDomain);
           sql = applyDomainFilter(sql, activeDomain);
+          sql = applyDummyFilter(sql);
           // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
           const reval = validateSqlPreExecution(sql);
           if (!reval.valid) {
@@ -3231,6 +3383,8 @@ ${sqlValidation.reason}
     let rows;
     try {
       [rows] = await pool.query(sql);
+      // ★ Dummy 행 후필터 (SQL 자동주입이 안 닿은 케이스 안전망)
+      rows = filterDummyRows(rows);
     } catch (dbErr) {
       // DB 실행 실패 시에도 친절한 메시지로 변환
       const errMsg = dbErr.sqlMessage || dbErr.message || '';
@@ -3276,6 +3430,8 @@ ${sqlValidation.reason}
       // 날짜 컨텍스트 (dateContext가 없으면 폴백)
       const dc = dateContext || await getDataDateContext();
       const dateHint = `[기간 참고] 당월=${dc.latestLabel}, 전월=${dc.prevLabel}. "당월","이번달","전월" 등의 표현에는 반드시 실제 년월을 괄호로 병기하세요. 예: "당월(${dc.latestLabel})", "전월(${dc.prevLabel})"`;
+      // ★ 답변 출력 규칙 (전역 규칙)
+      const formatRule = `[답변 출력 규칙]\n- "YYYY년 M월" 형태의 년월 표현은 반드시 **굵게(마크다운 **)** 강조하세요. 예: **2026년 5월**\n- 조회 결과에 'Dummy' 값이 있으면 본문에 언급하지 마세요. (사용자에게 노출되지 않습니다)`;
 
       const answerCompletion = await openai.chat.completions.create({
         model: GPT_MODEL,
@@ -3285,6 +3441,7 @@ ${sqlValidation.reason}
             content: `아래 데이터 조회 결과를 보고, 질문에 대한 답변을 1~2문장의 자연스러운 한국어로 작성해주세요.
 SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표현하세요.
 ${dateHint}
+${formatRule}
 
 질문: ${query}
 결과 (${rows.length}행): ${sampleText.substring(0, 600)}`
@@ -3298,6 +3455,8 @@ ${dateHint}
       if (rawAnswer && rawAnswer.trim()) {
         answer = rawAnswer.trim();
       }
+      // ★ 후처리: 년월 굵게 (LLM이 빠뜨려도 보장)
+      answer = boldYearMonth(answer);
       console.log(`[NLQ] Answer 최종: "${answer}"`);
     } catch (ansErr) {
       console.error('[NLQ] Answer 생성 실패:', ansErr.message);
