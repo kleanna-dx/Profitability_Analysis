@@ -457,6 +457,7 @@
                     <div class="flex items-center gap-3">
                         <h2 class="text-sm font-bold text-gray-800">Metric 관리</h2>
                         <span class="badge badge-purple" id="metricCount">0개</span>
+                        <span id="metricSortBadge" class="sort-active-badge" style="display:none;cursor:pointer;" onclick="clearMetricSort()" title="클릭하면 정렬 해제"></span>
                     </div>
                     <div class="flex gap-2 flex-wrap items-center">
                         <span id="metricRagStatusText" style="font-size:12px;color:#94a3b8;"></span>
@@ -481,11 +482,11 @@
                             <thead>
                                 <tr>
                                     <th style="width:40px;">#</th>
-                                    <th>지표코드</th>
+                                    <th class="sort-th" data-sort-key="metric_code" onclick="toggleMetricSort('metric_code')" title="클릭하여 지표코드 기준 정렬"><i class="fas fa-sort" style="font-size:10px;margin-right:4px;opacity:.7;"></i>지표코드<span class="sort-ico" id="metSortIco_metric_code"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
                                     <th>집계방식</th>
                                     <th>산식</th>
                                     <th>테이블명</th>
-                                    <th>설명</th>
+                                    <th class="sort-th" data-sort-key="description" onclick="toggleMetricSort('description')" title="클릭하여 설명 기준 정렬"><i class="fas fa-sort" style="font-size:10px;margin-right:4px;opacity:.7;"></i>설명<span class="sort-ico" id="metSortIco_description"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
                                     <th style="min-width:200px;">동의어</th>
                                     <th style="width:80px;">작업</th>
                                 </tr>
@@ -743,6 +744,9 @@ let ontologyData = [];
 let ontologySortKey = null;   // 'column_name' | 'description' | null
 let ontologySortDir = null;   // 'asc' | 'desc' | null
 let metricData = [];
+// Metric 정렬 상태: null/'asc'/'desc' 3단계 토글
+let metricSortKey = null;   // 'metric_code' | 'description' | null
+let metricSortDir = null;   // 'asc' | 'desc' | null
 let joinData = [];
 
 // ============================================================
@@ -1141,6 +1145,57 @@ function clearOntologySort() {
     renderOntology();
 }
 
+// ============================================================
+// Metric 정렬 (Ontology와 동일 패턴)
+// - 3단계 토글: null → asc → desc → null
+// - metric_code / description 컬럼에 적용
+// - pending(추가/수정/삭제) 항목도 함께 정렬됨
+// ============================================================
+function toggleMetricSort(key) {
+    if (metricSortKey !== key) {
+        metricSortKey = key;
+        metricSortDir = 'asc';
+    } else if (metricSortDir === 'asc') {
+        metricSortDir = 'desc';
+    } else if (metricSortDir === 'desc') {
+        metricSortKey = null;
+        metricSortDir = null;
+    } else {
+        metricSortDir = 'asc';
+    }
+    renderMetric();
+}
+
+function updateMetricSortIndicators() {
+    const keys = ['metric_code', 'description'];
+    keys.forEach(k => {
+        const th = document.querySelector(`#metricTable th.sort-th[data-sort-key="${k}"]`);
+        if (!th) return;
+        th.classList.remove('sort-asc', 'sort-desc');
+        if (metricSortKey === k) {
+            th.classList.add(metricSortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+        }
+    });
+    const badge = document.getElementById('metricSortBadge');
+    if (!badge) return;
+    if (metricSortKey && metricSortDir) {
+        const labelMap = { metric_code: '지표코드', description: '설명' };
+        const arrow = metricSortDir === 'asc' ? '↑' : '↓';
+        const dirLabel = metricSortDir === 'asc' ? '오름차순' : '내림차순';
+        badge.innerHTML = `<i class="fas fa-sort-amount-${metricSortDir === 'asc' ? 'up-alt' : 'down'}" style="margin-right:4px;"></i>${labelMap[metricSortKey]} ${arrow} ${dirLabel} <i class="fas fa-times-circle" style="margin-left:6px;opacity:.85;"></i>`;
+        badge.style.display = 'inline-block';
+    } else {
+        badge.style.display = 'none';
+        badge.innerHTML = '';
+    }
+}
+
+function clearMetricSort() {
+    metricSortKey = null;
+    metricSortDir = null;
+    renderMetric();
+}
+
 function renderOntology() {
     const tbody = document.getElementById('ontologyBody');
     document.getElementById('ontologyCount').textContent = ontologyData.length + '개';
@@ -1323,12 +1378,35 @@ function renderMetric() {
     ];
     const totalCount = metricData.length + pendingMetricAdds.length - pendingMetricDeletes.length;
     document.getElementById('metricCount').textContent = (totalCount >= 0 ? totalCount : 0) + '개';
+    updateMetricSortIndicators();
     if (allMetrics.length === 0) {
         tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 계산지표가 없습니다.</td></tr>';
         return;
     }
+    // ★ pending_edit 적용된 display 값 기준으로 정렬 (사용자가 화면에서 보는 값 기준)
+    const sortKeyForDisplay = (m) => {
+        const isPendingAdd = m._source === 'pending_add';
+        const pendingEdit = !isPendingAdd ? pendingMetricEdits.find(p => p.id === m.id) : null;
+        const display = pendingEdit || m;
+        return display;
+    };
+    // 정렬용 임시 표현 (display 값으로 정렬 키 산정)
+    let sortedMetrics = allMetrics;
+    if (metricSortKey && metricSortDir) {
+        const decorated = allMetrics.map((item, idx) => {
+            const display = sortKeyForDisplay(item);
+            return { item, idx, sortVal: (display[metricSortKey] ?? '').toString() };
+        });
+        const dir = metricSortDir === 'asc' ? 1 : -1;
+        decorated.sort((a, b) => {
+            const cmp = a.sortVal.localeCompare(b.sortVal, 'ko', { sensitivity: 'base', numeric: true });
+            if (cmp !== 0) return cmp * dir;
+            return a.idx - b.idx;
+        });
+        sortedMetrics = decorated.map(x => x.item);
+    }
     let idx = 0;
-    tbody.innerHTML = allMetrics.map((m) => {
+    tbody.innerHTML = sortedMetrics.map((m) => {
         const isPendingAdd = m._source === 'pending_add';
         const isPendingDel = !isPendingAdd && pendingMetricDeletes.includes(m.id);
         const pendingEdit = !isPendingAdd ? pendingMetricEdits.find(p => p.id === m.id) : null;
