@@ -80,14 +80,119 @@
         tr.row-inactive td{color:#94a3b8;}
         tr.row-inactive .syn-chip{opacity:.6;}
         tr.row-inactive .badge{opacity:.6;}
-        /* Sortable column header */
-        .dtable th.sort-th{cursor:pointer;user-select:none;transition:background .15s;}
-        .dtable th.sort-th:hover{background:#eef2ff;color:#4f46e5;}
-        .dtable th.sort-th .sort-ico{display:inline-flex;flex-direction:column;margin-left:6px;vertical-align:middle;line-height:0.6;font-size:9px;color:#cbd5e1;transition:color .15s;}
-        .dtable th.sort-th .sort-ico .arr{display:block;}
-        .dtable th.sort-th.sort-asc .sort-ico .arr-up{color:#4f46e5;}
-        .dtable th.sort-th.sort-desc .sort-ico .arr-down{color:#4f46e5;}
-        .dtable th.sort-th.sort-asc, .dtable th.sort-th.sort-desc{color:#4f46e5;}
+        /* ★ Sortable column header — 눈에 잘 띄도록 강화된 디자인 */
+        .dtable th.sort-th{
+            cursor:pointer;
+            user-select:none;
+            position:relative;
+            padding-right:38px !important;
+            transition:all .2s ease;
+            border-bottom:2px solid #e2e8f0;
+        }
+        /* 평소 상태: 점선 밑줄로 "클릭 가능" 시그널 */
+        .dtable th.sort-th::after{
+            content:'';
+            position:absolute;
+            left:16px; right:38px; bottom:6px;
+            height:0;
+            border-bottom:1.5px dashed #c7d2fe;
+            opacity:.8;
+            transition:opacity .2s;
+        }
+        .dtable th.sort-th:hover{
+            background:linear-gradient(135deg,#eef2ff,#e0e7ff);
+            color:#4338ca;
+            transform:translateY(-1px);
+        }
+        .dtable th.sort-th:hover::after{border-color:#818cf8;opacity:1;}
+        /* 정렬 아이콘 박스 (헤더 우측 고정) */
+        .dtable th.sort-th .sort-ico{
+            position:absolute;
+            right:10px;
+            top:50%;
+            transform:translateY(-50%);
+            display:inline-flex;
+            flex-direction:column;
+            align-items:center;
+            justify-content:center;
+            width:22px;
+            height:28px;
+            border-radius:6px;
+            background:#f1f5f9;
+            border:1.5px solid #cbd5e1;
+            line-height:1;
+            transition:all .2s ease;
+        }
+        .dtable th.sort-th:hover .sort-ico{
+            background:#fff;
+            border-color:#818cf8;
+            box-shadow:0 2px 6px rgba(99,102,241,.18);
+        }
+        .dtable th.sort-th .sort-ico .arr{
+            display:block;
+            font-size:11px;
+            color:#94a3b8;
+            font-weight:900;
+            line-height:1;
+            transition:color .15s;
+        }
+        .dtable th.sort-th .sort-ico .arr-up{margin-bottom:1px;}
+        /* 활성 정렬 상태 — 보라색 그라데이션 + 흰색 텍스트 */
+        .dtable th.sort-th.sort-asc,
+        .dtable th.sort-th.sort-desc{
+            background:linear-gradient(135deg,#6366f1,#4f46e5) !important;
+            color:#fff !important;
+            border-bottom-color:#4338ca;
+            box-shadow:inset 0 -3px 0 #3730a3;
+        }
+        .dtable th.sort-th.sort-asc::after,
+        .dtable th.sort-th.sort-desc::after{
+            border-bottom-color:rgba(255,255,255,.4);
+        }
+        .dtable th.sort-th.sort-asc .sort-ico,
+        .dtable th.sort-th.sort-desc .sort-ico{
+            background:#fff;
+            border-color:#fff;
+            box-shadow:0 2px 8px rgba(0,0,0,.15);
+        }
+        .dtable th.sort-th.sort-asc .sort-ico .arr-up{
+            color:#4f46e5;
+            font-size:14px;
+            transform:scale(1.25);
+            animation:sortPulse 1.4s ease-in-out infinite;
+        }
+        .dtable th.sort-th.sort-asc .sort-ico .arr-down{
+            color:#e2e8f0;
+            opacity:.5;
+        }
+        .dtable th.sort-th.sort-desc .sort-ico .arr-down{
+            color:#4f46e5;
+            font-size:14px;
+            transform:scale(1.25);
+            animation:sortPulse 1.4s ease-in-out infinite;
+        }
+        .dtable th.sort-th.sort-desc .sort-ico .arr-up{
+            color:#e2e8f0;
+            opacity:.5;
+        }
+        @keyframes sortPulse{
+            0%,100%{opacity:1;}
+            50%{opacity:.55;}
+        }
+        /* 우측 상단 정렬 상태 뱃지 */
+        .sort-active-badge{
+            display:inline-block;
+            margin-left:8px;
+            padding:2px 8px;
+            font-size:10px;
+            font-weight:700;
+            background:linear-gradient(135deg,#6366f1,#4f46e5);
+            color:#fff;
+            border-radius:10px;
+            box-shadow:0 2px 6px rgba(99,102,241,.35);
+            letter-spacing:.3px;
+            vertical-align:middle;
+        }
         /* Synonym chip */
         .syn-chip{display:inline-flex;align-items:center;gap:4px;background:#eef2ff;color:#4f46e5;font-size:11px;padding:3px 10px;border-radius:12px;margin:2px;border:1px solid #c7d2fe;transition:all .15s;}
         .syn-chip .syn-del{cursor:pointer;color:#a5b4fc;font-size:10px;margin-left:2px;transition:color .15s;}
@@ -304,6 +409,7 @@
                     <div class="flex items-center gap-3">
                         <h2 class="text-sm font-bold text-gray-800">Ontology 관리</h2>
                         <span class="badge badge-blue" id="ontologyCount">0개</span>
+                        <span id="ontSortBadge" class="sort-active-badge" style="display:none;cursor:pointer;" onclick="clearOntologySort()" title="클릭하면 정렬 해제"></span>
                     </div>
                     <div class="flex gap-2 flex-wrap items-center">
                         <span id="ragStatusText" style="font-size:12px;color:#94a3b8;"></span>
@@ -334,9 +440,9 @@
                             <thead>
                                 <tr>
                                     <th style="width:40px;">#</th>
-                                    <th class="sort-th" data-sort-key="column_name" onclick="toggleOntologySort('column_name')" title="컬럼명 기준 정렬">컬럼명<span class="sort-ico" id="ontSortIco_column_name"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
+                                    <th class="sort-th" data-sort-key="column_name" onclick="toggleOntologySort('column_name')" title="클릭하여 컬럼명 기준 정렬"><i class="fas fa-sort" style="font-size:10px;margin-right:4px;opacity:.7;"></i>컬럼명<span class="sort-ico" id="ontSortIco_column_name"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
                                     <th>테이블명</th>
-                                    <th class="sort-th" data-sort-key="description" onclick="toggleOntologySort('description')" title="설명 기준 정렬">설명<span class="sort-ico" id="ontSortIco_description"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
+                                    <th class="sort-th" data-sort-key="description" onclick="toggleOntologySort('description')" title="클릭하여 설명 기준 정렬"><i class="fas fa-sort" style="font-size:10px;margin-right:4px;opacity:.7;"></i>설명<span class="sort-ico" id="ontSortIco_description"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
                                     <th>데이터타입</th>
                                     <th style="width:90px;text-align:center;" title="비활성 컬럼은 자연어질의/비주얼쿼리빌더에 노출되지 않습니다.">활성</th>
                                     <th style="min-width:250px;">동의어</th>
@@ -1008,7 +1114,7 @@ function getSortedOntologyData() {
     return arr.map(x => x.item);
 }
 
-// 헤더 아이콘 상태 갱신
+// 헤더 아이콘 상태 갱신 + 정렬 상태 뱃지 표시
 function updateOntologySortIndicators() {
     const keys = ['column_name', 'description'];
     keys.forEach(k => {
@@ -1019,6 +1125,26 @@ function updateOntologySortIndicators() {
             th.classList.add(ontologySortDir === 'asc' ? 'sort-asc' : 'sort-desc');
         }
     });
+    // 상단 정렬 상태 뱃지
+    const badge = document.getElementById('ontSortBadge');
+    if (!badge) return;
+    if (ontologySortKey && ontologySortDir) {
+        const labelMap = { column_name: '컬럼명', description: '설명' };
+        const arrow = ontologySortDir === 'asc' ? '↑' : '↓';
+        const dirLabel = ontologySortDir === 'asc' ? '오름차순' : '내림차순';
+        badge.innerHTML = `<i class="fas fa-sort-amount-${ontologySortDir === 'asc' ? 'up-alt' : 'down'}" style="margin-right:4px;"></i>${labelMap[ontologySortKey]} ${arrow} ${dirLabel} <i class="fas fa-times-circle" style="margin-left:6px;opacity:.85;"></i>`;
+        badge.style.display = 'inline-block';
+    } else {
+        badge.style.display = 'none';
+        badge.innerHTML = '';
+    }
+}
+
+// 정렬 해제 (상단 뱃지 클릭 시)
+function clearOntologySort() {
+    ontologySortKey = null;
+    ontologySortDir = null;
+    renderOntology();
 }
 
 function renderOntology() {
