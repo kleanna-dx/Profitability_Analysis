@@ -429,11 +429,35 @@
                     </div>
                 </div>
                 <div class="card-body">
+                    <!-- ★ Ontology 검색 영역 (전체 / 컬럼명 / 설명) -->
+                    <div class="ont-search-wrap" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+                        <label for="ontSearchScope" style="font-size:12px;color:#475569;font-weight:600;">
+                            <i class="fas fa-search" style="margin-right:4px;color:#64748b;"></i>검색
+                        </label>
+                        <select id="ontSearchScope" onchange="onOntSearchChange()" style="
+                            padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;
+                            background:#fff;color:#0f172a;cursor:pointer;min-width:90px;
+                        ">
+                            <option value="all">전체</option>
+                            <option value="column_name">컬럼명</option>
+                            <option value="description">설명</option>
+                        </select>
+                        <div style="position:relative;flex:1;min-width:220px;max-width:420px;">
+                            <input type="text" id="ontSearchInput" placeholder="검색어를 입력하세요 (부분 일치)" oninput="onOntSearchChange()" style="
+                                width:100%;padding:6px 30px 6px 10px;border:1px solid #cbd5e1;border-radius:6px;
+                                font-size:13px;background:#fff;
+                            "/>
+                            <button id="ontSearchClearBtn" type="button" onclick="clearOntSearch()" title="검색어 지우기" style="
+                                display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);
+                                background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:14px;padding:2px 4px;
+                            "><i class="fas fa-times-circle"></i></button>
+                        </div>
+                        <span id="ontSearchResultInfo" style="font-size:12px;color:#64748b;display:none;"></span>
+                    </div>
                     <div class="table-scroll">
                         <table class="dtable" id="ontologyTable">
                             <thead>
                                 <tr>
-                                    <th style="width:40px;">#</th>
                                     <th class="sort-th" data-sort-key="column_name" onclick="toggleOntologySort('column_name')" title="클릭하여 컬럼명 기준 정렬"><i class="fas fa-sort" style="font-size:10px;margin-right:4px;opacity:.7;"></i>컬럼명<span class="sort-ico" id="ontSortIco_column_name"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
                                     <th>테이블명</th>
                                     <th class="sort-th" data-sort-key="description" onclick="toggleOntologySort('description')" title="클릭하여 설명 기준 정렬"><i class="fas fa-sort" style="font-size:10px;margin-right:4px;opacity:.7;"></i>설명<span class="sort-ico" id="ontSortIco_description"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
@@ -743,6 +767,9 @@ let ontologyData = [];
 // Ontology 정렬 상태: null/'asc'/'desc' 3단계 토글
 let ontologySortKey = null;   // 'column_name' | 'description' | null
 let ontologySortDir = null;   // 'asc' | 'desc' | null
+// Ontology 검색 상태
+let ontSearchScope = 'all';   // 'all' | 'column_name' | 'description'
+let ontSearchTerm  = '';      // 사용자 입력 (trim된 소문자)
 let metricData = [];
 // Metric 정렬 상태: null/'asc'/'desc' 3단계 토글
 let metricSortKey = null;   // 'metric_code' | 'description' | null
@@ -1094,13 +1121,33 @@ function toggleOntologySort(key) {
     renderOntology();
 }
 
-// 정렬된 데이터 반환 (원본 ontologyData 불변 유지)
+// ============================================================
+// Ontology 검색 (LIKE %term% — 전체 / 컬럼명 / 설명)
+// - 빈 검색어: 전체 목록 반환
+// - 대소문자 무시
+// - 검색 후 결과에 정렬 적용 (검색·정렬·활성/비활성 호환)
+// ============================================================
+function getFilteredOntologyData() {
+    const term = (ontSearchTerm || '').trim().toLowerCase();
+    if (!term) return ontologyData;
+    return ontologyData.filter(c => {
+        const col  = (c.column_name || '').toString().toLowerCase();
+        const desc = (c.description || '').toString().toLowerCase();
+        if (ontSearchScope === 'column_name') return col.includes(term);
+        if (ontSearchScope === 'description') return desc.includes(term);
+        // 'all'
+        return col.includes(term) || desc.includes(term);
+    });
+}
+
+// 검색 → 정렬 순서로 데이터 반환 (원본 ontologyData 불변 유지)
 function getSortedOntologyData() {
-    if (!ontologySortKey || !ontologySortDir) return ontologyData;
+    const base = getFilteredOntologyData();
+    if (!ontologySortKey || !ontologySortDir) return base;
     const key = ontologySortKey;
     const dir = ontologySortDir === 'asc' ? 1 : -1;
     // 안정 정렬을 위해 인덱스 보존 후 사본 정렬
-    const arr = ontologyData.map((item, idx) => ({ item, idx }));
+    const arr = base.map((item, idx) => ({ item, idx }));
     arr.sort((a, b) => {
         const va = (a.item[key] ?? '').toString();
         const vb = (b.item[key] ?? '').toString();
@@ -1110,6 +1157,25 @@ function getSortedOntologyData() {
         return a.idx - b.idx;  // tie-break: 원본 순서 유지
     });
     return arr.map(x => x.item);
+}
+
+// 검색 입력 변경 핸들러 (셀렉트 변경 / 입력 / 클리어 모두 진입)
+function onOntSearchChange() {
+    const inp = document.getElementById('ontSearchInput');
+    const sel = document.getElementById('ontSearchScope');
+    const clr = document.getElementById('ontSearchClearBtn');
+    ontSearchTerm = inp ? inp.value : '';
+    ontSearchScope = sel ? sel.value : 'all';
+    if (clr) clr.style.display = (ontSearchTerm.trim().length > 0) ? 'inline-block' : 'none';
+    renderOntology();
+}
+
+// 검색 해제
+function clearOntSearch() {
+    const inp = document.getElementById('ontSearchInput');
+    if (inp) inp.value = '';
+    ontSearchTerm = '';
+    onOntSearchChange();
 }
 
 // 헤더 아이콘 상태 갱신 + 정렬 상태 뱃지 표시
@@ -1198,14 +1264,38 @@ function clearMetricSort() {
 
 function renderOntology() {
     const tbody = document.getElementById('ontologyBody');
-    document.getElementById('ontologyCount').textContent = ontologyData.length + '개';
     updateOntologySortIndicators();
-    if (ontologyData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 Ontology 컬럼이 없습니다.</td></tr>';
+    // ★ 검색 + 정렬 적용된 결과
+    const rows = getSortedOntologyData();
+    // 카운트 뱃지: 검색 중이면 '필터/전체' 표기
+    const totalCount = ontologyData.length;
+    const isFiltering = (ontSearchTerm || '').trim().length > 0;
+    const countEl = document.getElementById('ontologyCount');
+    if (countEl) {
+        countEl.textContent = isFiltering ? `${rows.length}/${totalCount}개` : `${totalCount}개`;
+    }
+    // 검색 결과 안내문
+    const infoEl = document.getElementById('ontSearchResultInfo');
+    if (infoEl) {
+        if (isFiltering) {
+            const scopeLabel = ontSearchScope === 'column_name' ? '컬럼명'
+                             : ontSearchScope === 'description' ? '설명'
+                             : '전체';
+            infoEl.innerHTML = `<i class="fas fa-filter" style="margin-right:4px;color:#3b82f6;"></i>${scopeLabel} 검색: <b>${rows.length}</b>건 (전체 ${totalCount}건 중)`;
+            infoEl.style.display = 'inline-block';
+        } else {
+            infoEl.style.display = 'none';
+            infoEl.innerHTML = '';
+        }
+    }
+    if (totalCount === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">등록된 Ontology 컬럼이 없습니다.</td></tr>';
         return;
     }
-    // ★ 전체 Ontology 데이터에 정렬 적용 후 렌더링
-    const rows = getSortedOntologyData();
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">검색 결과가 없습니다. <button class="btn btn-outline btn-sm" style="margin-left:8px;" onclick="clearOntSearch()"><i class="fas fa-times"></i> 검색 해제</button></td></tr>';
+        return;
+    }
     tbody.innerHTML = rows.map((c, i) => {
         const existingSyns = (c.synonyms||[]).map(s => {
             const isDel = pendingOntDeletes.includes(s.id);
@@ -1224,7 +1314,6 @@ function renderOntology() {
         const lblTxt = isActive ? '활성' : '비활성';
         return `
         <tr class="${rowCls}" id="ont-row-${c.id}">
-            <td class="text-gray-400">${i+1}</td>
             <td class="mono font-semibold">${esc(c.column_name)}</td>
             <td class="text-xs text-gray-500">${esc(c.table_name || '')}</td>
             <td>${esc(c.description || '')}</td>
