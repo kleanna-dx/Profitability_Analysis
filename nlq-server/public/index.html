@@ -285,25 +285,69 @@
         .chart-type-select:hover{border-color:#94a3b8;}
         .chart-type-select:focus{border-color:#6366f1;box-shadow:0 0 0 2px rgba(99,102,241,0.15);}
 
-        /* Chart type radio buttons (replaces dropdown) */
+        /* ★ Chart type radio buttons — Segmented Control 스타일 */
         .chart-type-radios{
-            display:inline-flex;align-items:center;gap:14px;
-            font-size:12.5px;color:#1e293b;
-            padding:4px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;
+            display:inline-flex;align-items:center;gap:2px;
+            padding:4px;
+            background:#f1f5f9;
+            border:1px solid #e2e8f0;
+            border-radius:10px;
+            box-shadow:inset 0 1px 2px rgba(0,0,0,.04);
         }
         .chart-type-radios label{
-            display:inline-flex;align-items:center;gap:4px;cursor:pointer;
-            font-size:12.5px;color:#475569;font-weight:500;user-select:none;
-            padding:2px 4px;border-radius:4px;
-            transition:color .12s,background-color .12s;
+            display:inline-flex;align-items:center;justify-content:center;gap:6px;
+            cursor:pointer;user-select:none;
+            padding:6px 14px;
+            font-size:12.5px;font-weight:600;color:#64748b;
+            border-radius:7px;
+            transition:all .18s cubic-bezier(.4,0,.2,1);
+            position:relative;
+            white-space:nowrap;
         }
-        .chart-type-radios label:hover{color:#1e293b;background:#f1f5f9;}
+        .chart-type-radios label i{
+            font-size:12px;
+            color:#94a3b8;
+            transition:color .18s,transform .18s;
+        }
+        /* 라디오 동그라미는 시각적으로 숨김 (접근성/기능은 유지) */
         .chart-type-radios input[type=radio]{
-            margin:0;width:14px;height:14px;cursor:pointer;
-            accent-color:#6366f1;
+            position:absolute;opacity:0;pointer-events:none;
+            width:0;height:0;margin:0;
         }
-        .chart-type-radios input[type=radio]:checked + span{
-            color:#4f46e5;font-weight:700;
+        /* 호버 — 살짝 떠오르고 텍스트 진해짐 */
+        .chart-type-radios label:hover{
+            color:#1e293b;
+            background:rgba(255,255,255,.7);
+        }
+        .chart-type-radios label:hover i{color:#475569;}
+        /* 선택된 옵션 — 보라색 그라데이션 + 흰색 텍스트 + 부드러운 shadow */
+        .chart-type-radios label:has(input[type=radio]:checked){
+            background:linear-gradient(135deg,#6366f1,#4f46e5);
+            color:#fff;
+            box-shadow:0 2px 6px rgba(79,70,229,.28),0 1px 2px rgba(79,70,229,.18);
+            transform:translateY(-1px);
+        }
+        .chart-type-radios label:has(input[type=radio]:checked) i{
+            color:#fff;
+            transform:scale(1.1);
+        }
+        /* 키보드 포커스 — 접근성 */
+        .chart-type-radios input[type=radio]:focus-visible + i{
+            outline:2px solid #6366f1;outline-offset:2px;border-radius:4px;
+        }
+        /* Fallback for browsers without :has() — 라벨 안에 직접 클래스 토글하는 백업 (JS는 표준 :has 사용) */
+        .chart-type-radios label.is-checked{
+            background:linear-gradient(135deg,#6366f1,#4f46e5);
+            color:#fff;
+            box-shadow:0 2px 6px rgba(79,70,229,.28),0 1px 2px rgba(79,70,229,.18);
+            transform:translateY(-1px);
+        }
+        .chart-type-radios label.is-checked i{color:#fff;transform:scale(1.1);}
+        /* 차트 툴바 라벨 정렬 보정 */
+        .chart-toolbar label[for]:not(.chart-type-radios label),
+        .chart-toolbar > label{
+            font-size:12.5px;color:#64748b;font-weight:600;
+            display:inline-flex;align-items:center;
         }
 
         /* SQL display */
@@ -1379,10 +1423,10 @@ function appendBotMessage(data) {
                 <div class="chart-toolbar">
                     <label style="margin-right:4px;">차트 유형:</label>
                     <div class="chart-type-radios" id="${chartId}_type" role="radiogroup" aria-label="차트 유형 선택">
-                        <label><input type="radio" name="${chartId}_type" value="bar" onchange="changeChartType('${chartId}', this)"><span>막대형</span></label>
-                        <label><input type="radio" name="${chartId}_type" value="line" onchange="changeChartType('${chartId}', this)"><span>선형</span></label>
-                        <label><input type="radio" name="${chartId}_type" value="pie" onchange="changeChartType('${chartId}', this)"><span>원형</span></label>
-                        <label><input type="radio" name="${chartId}_type" value="doughnut" onchange="changeChartType('${chartId}', this)"><span>도넛형</span></label>
+                        <label title="막대형 차트"><input type="radio" name="${chartId}_type" value="bar" onchange="changeChartType('${chartId}', this)"><i class="fas fa-chart-bar"></i><span>막대형</span></label>
+                        <label title="선형 차트"><input type="radio" name="${chartId}_type" value="line" onchange="changeChartType('${chartId}', this)"><i class="fas fa-chart-line"></i><span>선형</span></label>
+                        <label title="원형 차트"><input type="radio" name="${chartId}_type" value="pie" onchange="changeChartType('${chartId}', this)"><i class="fas fa-chart-pie"></i><span>원형</span></label>
+                        <label title="도넛형 차트"><input type="radio" name="${chartId}_type" value="doughnut" onchange="changeChartType('${chartId}', this)"><i class="far fa-circle"></i><span>도넛형</span></label>
                     </div>
                 </div>
                 <div class="chart-container"><canvas id="${chartId}" height="300"></canvas></div>
@@ -1443,7 +1487,11 @@ function appendBotMessage(data) {
                 const supported = ['bar','line','pie','doughnut'];
                 const finalType = supported.includes(initialType) ? initialType : 'bar';
                 const radios = radioGroup.querySelectorAll('input[type=radio]');
-                radios.forEach(r => { r.checked = (r.value === finalType); });
+                radios.forEach(r => {
+                    r.checked = (r.value === finalType);
+                    // :has() 미지원 브라우저용 fallback — 부모 label 에 is-checked 직접 토글
+                    if (r.parentElement) r.parentElement.classList.toggle('is-checked', r.checked);
+                });
             }
             renderMsgChart(chartId, data);
         }, 100);
@@ -1666,6 +1714,15 @@ function changeChartType(canvasId, inputEl) {
     const canvas = document.getElementById(canvasId);
     if (!canvas || !canvas._nlqChartData) return;
     const newType = (inputEl && inputEl.value) || 'bar';
+    // :has() 미지원 브라우저용 fallback — 같은 그룹 내 모든 label 의 is-checked 클래스 갱신
+    if (inputEl && inputEl.name) {
+        const group = inputEl.closest('.chart-type-radios');
+        if (group) {
+            group.querySelectorAll('input[type=radio]').forEach(r => {
+                if (r.parentElement) r.parentElement.classList.toggle('is-checked', r.checked);
+            });
+        }
+    }
     renderMsgChart(canvasId, canvas._nlqChartData, newType);
 }
 
