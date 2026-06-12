@@ -2805,87 +2805,15 @@ function filterDummyRows(rows) {
 }
 
 // ============================================================
-// Helper: SQL 단계에서 Dummy 제외 조건 자동 주입
-// - bw_profitability_data 또는 그 별칭의 명칭(_NM) 컬럼들에 NOT LIKE '%Dummy%' AND ...
-// - 단순 SELECT (UNION/CTE 없는) 만 대상으로 안전 주입
-// - 이미 SQL 안에 'Dummy' 문자열을 다루는 경우 중복 주입 금지
-// - 실패해도 결과 후필터(filterDummyRows)가 백업
-// ============================================================
-function applyDummyFilter(inputSql) {
-  if (!inputSql) return inputSql;
-  // bw_profitability_data 를 직접 참조하지 않으면 대상 아님
-  if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
-  // 이미 Dummy 관련 조건이 있으면 중복 추가 금지
-  if (/dummy/i.test(inputSql)) return inputSql;
-  // UNION / CTE / 윈도우는 안전을 위해 자동주입 제외 (후필터로 처리)
-  if (/\bUNION\b/i.test(inputSql) || /\bWITH\b\s+\w+\s+AS\s*\(/i.test(inputSql)) return inputSql;
-
-  // FROM/JOIN bw_profitability_data [별칭?] 첫 매칭에서 별칭 추출
-  const reservedAfterFrom = /^(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|ON)$/i;
-  const tableRefRegex = /\b(?:FROM|JOIN)\s+bw_profitability_data\b(\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/i;
-  const refMatch = tableRefRegex.exec(inputSql);
-  if (!refMatch) return inputSql;
-  const alias = (refMatch[2] && !reservedAfterFrom.test(refMatch[2])) ? refMatch[2] : '';
-  const prefix = alias ? `${alias}.` : '';
-
-  // 대상 _NM 컬럼들 (사진의 손익센터명 + 일반적인 명칭 컬럼들)
-  // 보수적으로 자주 노출되는 핵심 4개만 자동주입 (PROFIT_CTR_NM, DIVISION_NM, PLANT_NM, MATERIAL_NM)
-  // 나머지는 결과 후필터로 충분히 커버됨
-  const nameCols = ['PROFIT_CTR_NM', 'DIVISION_NM', 'PLANT_NM', 'MATERIAL_NM'];
-  const dummyCond = nameCols
-    .map(c => `(${prefix}${c} IS NULL OR ${prefix}${c} NOT LIKE '%Dummy%')`)
-    .join(' AND ');
-
-  // WHERE 절 종료 토큰
-  const whereTerminator = /(\bGROUP\s+BY\b|\bHAVING\b|\bORDER\s+BY\b|\bLIMIT\b|\bUNION\b|\)|;|$)/i;
-  const whereRegex = /\bWHERE\b\s+/i;
-  const whereMatch = whereRegex.exec(inputSql);
-
-  let result;
-  if (whereMatch) {
-    const before = inputSql.slice(0, whereMatch.index + whereMatch[0].length);
-    const rest = inputSql.slice(whereMatch.index + whereMatch[0].length);
-    whereTerminator.lastIndex = 0;
-    const termMatch = whereTerminator.exec(rest);
-    let cond, tail;
-    if (termMatch && termMatch[0]) {
-      cond = rest.slice(0, termMatch.index).trim();
-      tail = rest.slice(termMatch.index);
-    } else {
-      cond = rest.trim();
-      tail = '';
-    }
-    const wrapped = cond ? `(${cond}) AND ${dummyCond}` : dummyCond;
-    const sep = tail && !tail.startsWith(' ') && !tail.startsWith(';') && !tail.startsWith(')') ? ' ' : '';
-    result = `${before}${wrapped}${sep}${tail}`;
-  } else {
-    // WHERE 없으면 FROM 절 뒤에 WHERE 추가
-    const fromRegex = /\bFROM\s+bw_profitability_data\b(\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/i;
-    const fromMatch = fromRegex.exec(inputSql);
-    if (!fromMatch) return inputSql;
-    let matchLen = fromMatch[0].length;
-    if (fromMatch[2] && reservedAfterFrom.test(fromMatch[2])) {
-      matchLen = fromMatch[0].length - fromMatch[1].length;
-    }
-    const insertPos = fromMatch.index + matchLen;
-    const before = inputSql.slice(0, insertPos);
-    const rest = inputSql.slice(insertPos);
-    whereTerminator.lastIndex = 0;
-    const termMatch = whereTerminator.exec(rest);
-    if (termMatch && termMatch.index > 0) {
-      const head = rest.slice(0, termMatch.index);
-      const tail = rest.slice(termMatch.index);
-      result = `${before}${head} WHERE ${dummyCond} ${tail}`;
-    } else if (termMatch && termMatch.index === 0) {
-      result = `${before} WHERE ${dummyCond} ${rest}`;
-    } else {
-      result = `${before} WHERE ${dummyCond}${rest}`;
-    }
-  }
-  if (result !== inputSql) console.log(`[NLQ] Dummy 제외 조건 자동 주입 (_NM ${nameCols.length}개)`);
-  return result;
-}
-
+// [REMOVED] applyDummyFilter() — SQL 단계 Dummy 제외 조건 자동 주입 제거
+// - 과거: PROFIT_CTR_NM/DIVISION_NM/PLANT_NM/MATERIAL_NM 4개 컬럼에
+//   하드코딩으로 NOT LIKE '%Dummy%' 조건을 무조건 주입했음
+// - 사유: 실제 DB 데이터 조사 결과 4개 컬럼 모두 Dummy 값이 0건이며,
+//   하드코딩된 컬럼 선정 근거도 "보수적으로 자주 노출되는 컬럼"이라는
+//   주관적 기준이었음. 불필요한 SQL 노이즈를 사용자에게 노출하므로 제거.
+// - 안전망 유지: filterDummyRows() 후필터가 모든 컬럼 값을 검사해
+//   값이 정확히 'Dummy' 인 행을 응답에서 제거하므로,
+//   미래에 어떤 컬럼에 Dummy 데이터가 들어오더라도 자동 차단됨.
 // ============================================================
 // Helper: 답변 문장의 "YYYY년 M월" 패턴을 **굵게** 처리
 // - 입력 예: "최신 마감월인 2026년 5월(CALMONTH='202605')을 기준으로..."
@@ -3148,8 +3076,7 @@ app.post('/api/nlq', async (req, res) => {
 
         // 도메인 필터 자동 주입
         let finalSql = applyDomainFilter(analysisSql, activeDomain);
-        // ★ Dummy 행 제외 조건 자동 주입
-        finalSql = applyDummyFilter(finalSql);
+        // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
         // DB 실행
         const startTime = Date.now();
@@ -3446,8 +3373,7 @@ app.post('/api/nlq', async (req, res) => {
     //   - 학습 경로/GPT 경로 모두 여기로 합류하므로 한 곳에서 적용
     //   - 이미 DIVISION 조건이 있으면 중복 추가하지 않음
     sql = applyDomainFilter(sql, activeDomain);
-    // ★ Dummy 행 제외 조건 자동 주입 (PROFIT_CTR_NM/DIVISION_NM 등 _NM 컬럼)
-    sql = applyDummyFilter(sql);
+    // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
     const sqlUpper = sql.toUpperCase().trim();
     if (!sqlUpper.startsWith('SELECT')) {
@@ -3510,7 +3436,7 @@ ${sqlValidation.reason}
         if (retryParsed.sql) {
           sql = await applyMetricFormulaReplacement(retryParsed.sql, activeDomain);
           sql = applyDomainFilter(sql, activeDomain);
-          sql = applyDummyFilter(sql);
+          // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
           // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
           const reval = validateSqlPreExecution(sql);
           if (!reval.valid) {
