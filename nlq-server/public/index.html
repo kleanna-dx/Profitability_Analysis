@@ -258,16 +258,47 @@
         .res-panel.active{display:block;}
 
         /* Data table */
-        .data-table{font-size:12px;border-collapse:collapse;width:100%;border:1px solid #e2e8f0;}
+        .data-table{font-size:12px;border-collapse:separate;border-spacing:0;width:100%;border:1px solid #e2e8f0;}
         .data-table th{
             background:#f8fafc;color:#475569;font-weight:600;padding:10px 14px;
             text-align:left;border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0;white-space:nowrap;
-            position:sticky;top:0;z-index:1;
+            position:sticky;top:0;z-index:2;
         }
         .data-table th:last-child{border-right:none;}
-        .data-table td{padding:10px 14px;border-bottom:1px solid #f1f5f9;border-right:1px solid #f1f5f9;white-space:nowrap;}
+        .data-table td{padding:10px 14px;border-bottom:1px solid #f1f5f9;border-right:1px solid #f1f5f9;white-space:nowrap;background:#ffffff;}
         .data-table td:last-child{border-right:none;}
-        .data-table tbody tr:hover{background:#f0f4ff;}
+        .data-table tbody tr:hover td{background:#f0f4ff;}
+
+        /* Column pin feature */
+        .data-table th.col-pinned,
+        .data-table td.col-pinned{
+            position:sticky;
+            z-index:3;
+            background:#ffffff;
+        }
+        .data-table th.col-pinned{
+            background:#eef2ff;
+            z-index:5;  /* th(sticky top) + col-pinned(sticky left) = 모서리에서 최상위 */
+            box-shadow:inset -1px 0 0 #c7d2fe;
+        }
+        .data-table tbody tr:hover td.col-pinned{background:#e0e7ff;}
+        .data-table th.col-pinned-last{
+            box-shadow:2px 0 4px -2px rgba(15,23,42,0.18), inset -1px 0 0 #c7d2fe;
+        }
+        .data-table td.col-pinned-last{
+            box-shadow:2px 0 4px -2px rgba(15,23,42,0.12);
+        }
+        .pin-btn{
+            display:inline-flex;align-items:center;justify-content:center;
+            margin-left:6px;width:18px;height:18px;border:none;background:transparent;
+            color:#94a3b8;cursor:pointer;border-radius:4px;font-size:11px;
+            transition:color .15s, background .15s, transform .15s;
+            vertical-align:middle;
+        }
+        .pin-btn:hover{color:#4f46e5;background:#eef2ff;}
+        .pin-btn.is-pinned{color:#4f46e5;transform:rotate(-30deg);}
+        .pin-btn.is-pinned:hover{color:#3730a3;background:#e0e7ff;}
+        .data-table th .th-label{display:inline-block;vertical-align:middle;}
 
         /* Chart container */
         .chart-container{padding:16px;min-height:320px;position:relative;}
@@ -1327,6 +1358,78 @@ function toggleRagItems(msgId) {
 }
 
 // ============================================================
+// Column Pin Feature (결과 테이블 누적 컬럼 고정)
+// ------------------------------------------------------------
+// 동작 규칙:
+//  - N번째 데이터 컬럼 핀 클릭 → 1~N 컬럼 누적 고정 (행번호 '#' 컬럼은 항상 함께 고정)
+//  - 이미 N개가 고정된 상태에서 N번째 컬럼을 다시 클릭 → N-1까지로 축소
+//  - 1번째 컬럼 핀 클릭(이미 1만 고정인 상태) → 전체 해제
+//  - 더 작은 M(M < 현재 N)을 클릭 → 1~M 으로 축소
+// ============================================================
+function togglePinColumn(btn, colIdx) {
+    const wrap = btn.closest('.table-scroll');
+    if (!wrap) return;
+    const table = wrap.querySelector('table.data-table');
+    if (!table) return;
+
+    const currentPinned = parseInt(wrap.dataset.pinnedCols || '0', 10);
+    let newPinned;
+    if (currentPinned === colIdx) {
+        // 같은 컬럼 재클릭: 하나 줄임 (콜idx-1)
+        newPinned = colIdx - 1;
+    } else {
+        // 다른 컬럼 클릭: 해당 컬럼까지 누적 고정
+        newPinned = colIdx;
+    }
+    applyColumnPin(wrap, table, newPinned);
+}
+
+function applyColumnPin(wrap, table, pinnedCols) {
+    // 0) 기존 상태 초기화
+    table.querySelectorAll('th.col-pinned, td.col-pinned').forEach(el => {
+        el.classList.remove('col-pinned', 'col-pinned-last');
+        el.style.left = '';
+    });
+    table.querySelectorAll('.pin-btn.is-pinned').forEach(b => b.classList.remove('is-pinned'));
+
+    wrap.dataset.pinnedCols = String(Math.max(0, pinnedCols));
+
+    if (pinnedCols < 1) return;  // 전체 해제
+
+    // 1) 각 컬럼의 누적 left offset 계산 (헤더 행 기준)
+    //    '#' 컬럼(idx=0)부터 pinnedCols 까지 함께 고정
+    const headerCells = table.querySelectorAll('thead th');
+    const offsets = {};   // colIdx -> left(px)
+    let acc = 0;
+    headerCells.forEach(th => {
+        const idx = parseInt(th.getAttribute('data-col-idx') || '-1', 10);
+        if (idx < 0) return;
+        if (idx <= pinnedCols) {
+            offsets[idx] = acc;
+            acc += th.offsetWidth;
+        }
+    });
+
+    // 2) th / td 모두에 클래스 + left 적용
+    for (let idx = 0; idx <= pinnedCols; idx++) {
+        const isLast = (idx === pinnedCols);
+        const cells = table.querySelectorAll(`[data-col-idx="${idx}"]`);
+        cells.forEach(cell => {
+            cell.classList.add('col-pinned');
+            if (isLast) cell.classList.add('col-pinned-last');
+            cell.style.left = (offsets[idx] || 0) + 'px';
+        });
+    }
+
+    // 3) 핀 버튼 상태 갱신 (1..pinnedCols 활성 표시)
+    table.querySelectorAll('thead .pin-btn').forEach(b => {
+        const th = b.closest('th');
+        const idx = parseInt(th && th.getAttribute('data-col-idx') || '-1', 10);
+        if (idx >= 1 && idx <= pinnedCols) b.classList.add('is-pinned');
+    });
+}
+
+// ============================================================
 // Append Bot Message (Result)
 // ============================================================
 function appendBotMessage(data) {
@@ -1366,18 +1469,25 @@ function appendBotMessage(data) {
         const cols = Object.keys(data.data[0]);
         // 컬럼 한국어 라벨 매핑 (서버에서 1순위 AS별칭 > 2순위 DB COMMENT > 3순위 ontology 적용된 결과)
         const colLabels = data.columnLabels || {};
-        let t = '<div class="table-scroll" style="max-height:400px;overflow:auto;"><table class="data-table"><thead><tr><th>#</th>';
-        cols.forEach(c => t += `<th>${esc(colLabels[c] || c)}</th>`);
+        // data-col-idx: 0 = '#' 행번호 컬럼, 1..N = 데이터 컬럼
+        // 핀 아이콘은 데이터 컬럼(idx >= 1)에만 부여; '#' 컬럼은 1열 이상 핀 시 자동으로 함께 고정
+        let t = '<div class="table-scroll" data-pin-host="1" style="max-height:400px;overflow:auto;"><table class="data-table"><thead><tr><th data-col-idx="0">#</th>';
+        cols.forEach((c, ci) => {
+            const idx = ci + 1;
+            t += `<th data-col-idx="${idx}"><span class="th-label">${esc(colLabels[c] || c)}</span>` +
+                 `<button type="button" class="pin-btn" title="이 컬럼까지 왼쪽 고정" ` +
+                 `onclick="togglePinColumn(this, ${idx})"><i class="fas fa-thumbtack"></i></button></th>`;
+        });
         t += '</tr></thead><tbody>';
         data.data.forEach((row, i) => {
-            t += `<tr><td class="text-gray-400">${i+1}</td>`;
-            cols.forEach(c => {
+            t += `<tr><td class="text-gray-400" data-col-idx="0">${i+1}</td>`;
+            cols.forEach((c, ci) => {
                 let v = row[c];
                 const isNum = typeof v === 'number' || (typeof v === 'string' && isNumericValue(v));
                 if (v === null || v === undefined) v = '-';
                 else if (typeof v === 'number') v = v.toLocaleString('ko-KR');
                 const align = isNum ? 'text-right font-mono' : '';
-                t += `<td class="${align}">${esc(String(v))}</td>`;
+                t += `<td class="${align}" data-col-idx="${ci+1}">${esc(String(v))}</td>`;
             });
             t += '</tr>';
         });
