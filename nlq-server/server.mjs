@@ -1339,6 +1339,18 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 - 사용자가 "수량" 이라고만 하면 기본 단위는 BOX(BIC_ZQTY_BOX). BAG/EA는 사용자가 명시적으로 요청할 때만 포함.
 - 사용자가 "모든 수량" 또는 "BOX, BAG, EA 수량"처럼 여러 단위를 명시한 경우에만 복수 수량 컬럼 사용.
 
+[★★★ 동의어 정확매칭 우선 — 매우 중요! (PR #140) ★★★]
+- 사용자가 "매출" 같은 짧은 단어로 질의했고, 동의어 매칭 결과에 그 단어가 **하나의 컬럼/Metric에 정확매칭** 되어 있으면:
+  → **그 정확매칭 결과만** SELECT 에 사용하세요. **유사한 다른 컬럼은 절대 추가하지 마세요.**
+  ✗ 금지: "매출" → ZAMT003(순매출) + ZAMT001(총매출) + ZAMT004(기타매출) + ZAMT005(매출원가) + ZAMT035(매출총이익) 전부 SELECT
+  ✓ 정답: "매출" → 동의어가 ZAMT003 에만 등록되어 있으면 ZAMT003 의 Metric 산식만 SELECT
+- 사용자가 명시적으로 다중 지표를 요청한 경우에만 관련 지표를 확장 노출하세요. 다중 지표 요청의 명시적 신호:
+  ① "관련 지표 전체", "주요 지표 전체", "전체 지표"
+  ② "수익성 분석", "수익성 진단", "손익 분석", "원가 분석" 등 도메인 분석형 표현
+  ③ "매출/원가/이익", "매출과 원가와 이익" 등 슬래시/콤마/그리고로 명시적으로 여러 지표를 나열
+  ④ "같이 보여줘", "함께 조회", "한꺼번에" 등 다중 노출 표현
+- 위 신호가 없는 단순 조회형 질의("SKU별 매출 TOP5", "월별 매출 추이")는 반드시 정확매칭 결과만 SELECT 하세요.
+
 [컬럼 별칭(alias) 작성 규칙 — ★★★ 매우 중요 ★★★]
 - **SELECT 절의 모든 컬럼**(차원/명칭/코드/집계 포함)에 **반드시 한국어 AS 별칭**을 붙이세요. 영문 원본 컬럼명을 별칭 없이 결과셋에 노출하는 것을 금지합니다.
 - 별칭은 작은따옴표(') 또는 백틱(\`)으로 감싸세요.
@@ -1614,6 +1626,55 @@ async function loadMetricMap(domainCode) {
  * @param {string} domainCode - 현재 선택된 도메인 코드 (PS/HL/MGMT)
  * @returns {Promise<Array<{synonym: string, column_name: string, description: string, data_type: string, source: string}>>}
  */
+
+/**
+ * 사용자가 명시적으로 "관련 지표 확장"을 요청했는지 감지
+ * - "매출 관련 지표 전체", "수익성 분석", "매출/원가/이익" 같은 패턴 감지
+ * - true 인 경우에만 description 부분매칭(3-B) 으로 후보 컬럼을 확장
+ * - false 면 동의어 정확매칭으로 찾은 컬럼만 사용 (불필요한 컬럼 폭주 방지)
+ *
+ * 정책:
+ *   ① 일반 질의 "SKU별 매출 TOP5" → false (정확매칭 컬럼만)
+ *   ② "매출 관련 지표 전체", "매출 관련", "관련 지표" → true
+ *   ③ "수익성 분석", "수익성 진단" → true
+ *   ④ "매출/원가/이익", "매출과 원가" 같이 슬래시/콤마/그리고로 명시 나열 → true
+ *   ⑤ 분석형 키워드(분석/요약/시사점/인사이트)는 그 자체로는 확장 트리거 아님
+ *      (단, "수익성 분석" 처럼 도메인 전체 키워드와 결합되면 true)
+ */
+function detectExpansionIntent(query) {
+  if (!query || typeof query !== 'string') return false;
+  const q = query.replace(/\s+/g, '');
+
+  // 1) 명시적 "관련 지표 / 전체 지표" 요청
+  const explicitMulti = [
+    '관련지표', '관련항목', '연관지표', '관련된지표', '관련된항목',
+    '전체지표', '모든지표', '주요지표', '핵심지표',
+    '지표전체', '지표모두', '지표일체',
+  ];
+  if (explicitMulti.some(kw => q.includes(kw))) return true;
+
+  // 2) 도메인 분석 키워드 (수익성 분석, 손익 분석 등)
+  const domainAnalysis = [
+    '수익성분석', '수익성진단', '수익성평가',
+    '손익분석', '손익진단', '손익평가',
+    '원가분석', '원가구조', '비용분석',
+  ];
+  if (domainAnalysis.some(kw => q.includes(kw))) return true;
+
+  // 3) 슬래시/콤마/그리고로 명시 나열된 다중 지표 요청
+  //    예: "매출/원가/이익", "매출, 원가, 이익", "매출과 원가와 이익"
+  //    단, "TOP5"의 콤마 같은 noise 방지를 위해 한글 명사 패턴만 검사
+  if (/[가-힣]{1,8}\/[가-힣]{1,8}/.test(query)) return true;  // 슬래시 나열
+  // "A와 B와 C" 또는 "A과 B과 C" 패턴 (한글 명사 2개 이상 연결)
+  if (/[가-힣]+(과|와)\s*[가-힣]+(과|와)\s*[가-힣]+/.test(query)) return true;
+
+  // 4) "같이 보여줘", "함께 조회", "한꺼번에" 같은 명시적 다중 노출 표현
+  const togetherExpr = ['같이보여', '함께보여', '함께조회', '같이조회', '한꺼번에', '동시에보여'];
+  if (togetherExpr.some(kw => q.includes(kw))) return true;
+
+  return false;
+}
+
 async function matchSynonymsDirectly(query, domainCode) {
   const matched = [];
   let filtered = [];
@@ -1634,25 +1695,63 @@ async function matchSynonymsDirectly(query, domainCode) {
     // ★ 사용자 질문에서 매칭된 동의어 키워드 추적 (다른 컬럼의 description 매칭에 활용)
     //   예: "소모품비" 키워드로 ZAMT049 동의어 매칭 → "소모품비"를 키워드로 기록
     //   → 3단계에서 ZAMT019의 description "수선/소모품비"에 "소모품비"가 포함되면 같은 그룹으로 매칭
+    //
+    // ★★★ 2026-06 Longest-Match Wins (PR #140) ★★★
+    // - 사용자 질의 "SKU별 총매출 TOP5" 에서 "총매출"(ZAMT001) 과 "매출"(ZAMT003) 두 동의어가 모두
+    //   query.includes(...) 로 매칭되면 의도(ZAMT001만)와 다르게 ZAMT003 도 끌려옴.
+    // - 정책: 더 긴 동의어가 매칭된 위치에 포함된 짧은 동의어 매칭은 제거 (longest match wins).
+    //   단, 두 동의어의 occurrence position 이 겹치지 않으면 둘 다 유효 (사용자가 두 단어를 모두 사용한 의도).
     const matchedKeywords = new Set();
+    const ontMatchCandidates = [];  // {row, lcStart, lcEnd, qStart, qEnd, matchedText, useUpper}
     for (const row of ontSyns) {
-      // 대소문자 무시 매칭 (영문 약어 대응: CAM, PC 등)
-      if (query.includes(row.synonym_text) || queryUpper.includes(row.synonym_text.toUpperCase())) {
-        matched.push({
-          synonym: row.synonym_text,
-          matchedKeyword: row.synonym_text,  // ★ 그룹핑 키 (사용자가 입력한 실제 단어)
-          column_name: row.column_name,
-          description: row.description || '',
-          data_type: row.data_type || '',
-          source: 'ontology',
-          priority: 3,  // Metric < Ontology 동의어
-        });
-        matchedKeywords.add(row.synonym_text);
+      const syn = row.synonym_text;
+      if (!syn) continue;
+      let qStart = -1, useUpper = false, matchedText = syn;
+      if (query.includes(syn)) {
+        qStart = query.indexOf(syn);
+        matchedText = syn;
+      } else if (queryUpper.includes(syn.toUpperCase())) {
+        qStart = queryUpper.indexOf(syn.toUpperCase());
+        useUpper = true;
+        matchedText = query.substring(qStart, qStart + syn.length);
       }
+      if (qStart < 0) continue;
+      ontMatchCandidates.push({
+        row,
+        qStart,
+        qEnd: qStart + syn.length,
+        synLen: syn.length,
+        matchedText,
+        useUpper,
+      });
+    }
+    // 길이 내림차순 정렬 → 긴 매칭을 먼저 채택
+    ontMatchCandidates.sort((a, b) => b.synLen - a.synLen);
+    const claimedSpans = [];  // [qStart, qEnd] 점유 구간 목록
+    for (const cand of ontMatchCandidates) {
+      // 이미 더 긴 동의어가 점유한 구간 안에 완전히 포함되면 스킵
+      const contained = claimedSpans.some(([s, e]) => s <= cand.qStart && cand.qEnd <= e);
+      if (contained) {
+        console.log(`[Synonym] longest-match-wins: "${cand.row.synonym_text}"→${cand.row.column_name} 스킵 (더 긴 동의어에 포함됨)`);
+        continue;
+      }
+      claimedSpans.push([cand.qStart, cand.qEnd]);
+      matched.push({
+        synonym: cand.row.synonym_text,
+        matchedKeyword: cand.row.synonym_text,
+        column_name: cand.row.column_name,
+        description: cand.row.description || '',
+        data_type: cand.row.data_type || '',
+        source: 'ontology',
+        priority: 3,
+      });
+      matchedKeywords.add(cand.row.synonym_text);
     }
 
     // =========================================================
     // 2단계: Metric 동의어 정확 매칭 (domain_code 필터)
+    //   ★ longest-match-wins: 더 긴 동의어가 점유한 구간에 포함되는 짧은 동의어는 제외
+    //     Ontology 1단계에서 이미 점유한 구간도 같이 고려.
     // =========================================================
     const [metSyns] = await pool.query(
       `SELECT s.synonym_text, m.metric_code, m.aggregation, m.formula, m.description
@@ -1660,43 +1759,63 @@ async function matchSynonymsDirectly(query, domainCode) {
        JOIN metric m ON s.metric_id = m.id
        WHERE m.domain_code = ?`, [dc]
     );
+    // 2단계 longest-match-wins 적용 (Ontology 1단계 점유 구간과 통합)
+    const metMatchCandidates = [];
     for (const row of metSyns) {
-      if (query.includes(row.synonym_text) || queryUpper.includes(row.synonym_text.toUpperCase())) {
-        // ★ 산식 내 다른 metric_code 참조를 재귀적으로 확장
-        const expandedFormula = expandMetricFormula(
-          row.formula,
-          metricMap,
-          new Set([row.metric_code]),  // 자기 자신 즉시 재참조 방지
-          0
-        );
-        // 확장 결과가 원본과 다르면 로그
-        if (expandedFormula !== row.formula) {
-          console.log(`[Metric] 산식 재귀 확장: ${row.metric_code} "${row.formula}" → "${expandedFormula}"`);
-        }
-        // column_name 형식: CALC면 (확장식) 그대로, SUM이면 SUM(확장식) — 단 확장된 산식 안에 이미 SUM이 들어있으면 그대로 둠
-        let columnName;
-        const aggUpper = (row.aggregation || '').toUpperCase();
-        const hasSumInside = /\bSUM\s*\(/i.test(expandedFormula);
-        if (aggUpper === 'CALC' || hasSumInside) {
-          columnName = `CALC(${expandedFormula})`;
-        } else {
-          columnName = `SUM(${expandedFormula})`;
-        }
-        // ★ 산식에 참여한 모든 metric_code 수집 (RAG 컨텍스트에서 단순 컬럼 차단용)
-        const referencedCodes = collectReferencedMetricCodes(row.formula, metricMap, new Set([row.metric_code]));
-        referencedCodes.add(row.metric_code);  // 자기 자신도 포함
-        matched.push({
-          synonym: row.synonym_text,
-          matchedKeyword: row.synonym_text,
-          column_name: columnName,
-          description: row.description || row.metric_code,
-          data_type: 'metric',
-          source: 'metric',
-          priority: 1,  // 최우선 (Metric 정확매칭)
-          metric_code: row.metric_code,
-          referenced_codes: [...referencedCodes],  // ZAMT035, ZAMT003, ZAMT034, ZAMT026, ZAMT005 등
-        });
+      const syn = row.synonym_text;
+      if (!syn) continue;
+      let qStart = -1;
+      if (query.includes(syn)) qStart = query.indexOf(syn);
+      else if (queryUpper.includes(syn.toUpperCase())) qStart = queryUpper.indexOf(syn.toUpperCase());
+      if (qStart < 0) continue;
+      metMatchCandidates.push({ row, qStart, qEnd: qStart + syn.length, synLen: syn.length });
+    }
+    metMatchCandidates.sort((a, b) => b.synLen - a.synLen);
+    for (const cand of metMatchCandidates) {
+      const row = cand.row;
+      // 같은 또는 더 긴 동의어가 이미 점유한 구간인지 검사
+      // (Ontology 1단계 claimedSpans 와 통합)
+      const contained = claimedSpans.some(([s, e]) => s <= cand.qStart && cand.qEnd <= e);
+      const sameSpan = claimedSpans.some(([s, e]) => s === cand.qStart && e === cand.qEnd);
+      // Metric 우선 정책: 동일 구간(sameSpan)이면 Metric 도 채택 — Ontology 는 5단계에서 제거됨
+      // 그러나 strict contained(짧은 동의어가 더 긴 동의어에 포함) 인 경우는 스킵
+      if (contained && !sameSpan) {
+        console.log(`[Metric] longest-match-wins: "${row.synonym_text}"→${row.metric_code} 스킵 (더 긴 동의어에 포함됨)`);
+        continue;
       }
+      if (!sameSpan) claimedSpans.push([cand.qStart, cand.qEnd]);
+
+      // ★ 산식 내 다른 metric_code 참조를 재귀적으로 확장
+      const expandedFormula = expandMetricFormula(
+        row.formula,
+        metricMap,
+        new Set([row.metric_code]),
+        0
+      );
+      if (expandedFormula !== row.formula) {
+        console.log(`[Metric] 산식 재귀 확장: ${row.metric_code} "${row.formula}" → "${expandedFormula}"`);
+      }
+      let columnName;
+      const aggUpper = (row.aggregation || '').toUpperCase();
+      const hasSumInside = /\bSUM\s*\(/i.test(expandedFormula);
+      if (aggUpper === 'CALC' || hasSumInside) {
+        columnName = `CALC(${expandedFormula})`;
+      } else {
+        columnName = `SUM(${expandedFormula})`;
+      }
+      const referencedCodes = collectReferencedMetricCodes(row.formula, metricMap, new Set([row.metric_code]));
+      referencedCodes.add(row.metric_code);
+      matched.push({
+        synonym: row.synonym_text,
+        matchedKeyword: row.synonym_text,
+        column_name: columnName,
+        description: row.description || row.metric_code,
+        data_type: 'metric',
+        source: 'metric',
+        priority: 1,
+        metric_code: row.metric_code,
+        referenced_codes: [...referencedCodes],
+      });
     }
 
     // =========================================================
@@ -1705,7 +1824,21 @@ async function matchSynonymsDirectly(query, domainCode) {
     //   3-B. ★ 1단계에서 매칭된 동의어 키워드가 다른 컬럼의 description에도 포함되는 경우
     //        예: "소모품비"가 ZAMT049 동의어로 매칭 → ZAMT019 description "수선/소모품비"에도 포함
     //        → 두 컬럼을 동일 키워드 그룹으로 묶어 모두 SELECT에 포함
+    //
+    //   ★★★ 2026-06 정확매칭 우선 정책 (PR #140) ★★★
+    //   - 3-B 는 짧고 보편적인 키워드(예: "매출")가 description 부분일치로
+    //     9개 이상의 컬럼을 끌어들이는 폭주 현상을 일으킴.
+    //   - 따라서 다음 두 조건 중 하나일 때만 3-B 를 활성화:
+    //     ① 사용자가 명시적 확장 의도를 표현한 경우 (detectExpansionIntent === true)
+    //     ② 동의어 키워드가 정확매칭으로 끌어들인 컬럼이 1건도 없는 경우
+    //        (즉, "매출" 동의어가 정확매칭으로 ZAMT003 을 이미 잡았으면 3-B 스킵)
+    //   - 또한 description 의 keyword 위치/경계 조건을 강화 (단순 includes 가 아닌
+    //     "다른 한글 토큰으로 둘러싸인 채 등장" 의 정상 형태소 매칭에 가깝게).
     // =========================================================
+    const expansionIntent = detectExpansionIntent(query);
+    // 이미 정확매칭(1단계 또는 2단계)된 키워드 집합
+    const exactMatchedKeywords = new Set(matchedKeywords);
+
     const [ontCols] = await pool.query(
       `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != '' AND domain_code = ? AND is_active = 1`, [dc]
     );
@@ -1726,26 +1859,43 @@ async function matchSynonymsDirectly(query, domainCode) {
         continue;  // 이미 매칭됐으면 3-B 검사 불필요
       }
       // 3-B: 1단계에서 매칭된 동의어 키워드가 이 컬럼의 description에 부분 포함되는지 검사
-      //      → 같은 키워드로 매칭된 다른 컬럼이 있으면 description 부분 일치만으로도 후보 추가
-      //      → 단, 키워드 길이가 2자 이상이어야 노이즈 방지
+      //   → ★ 사용자가 명시적 확장 의도를 표현한 경우에만 활성화
+      //   → ★ 그렇지 않으면 정확매칭 키워드로 description 부분매칭 스킵
       if (!matched.some(m => m.column_name === row.column_name)) {
         for (const kw of matchedKeywords) {
           if (kw.length < 2) continue;
-          if (row.description.includes(kw)) {
-            matched.push({
-              synonym: row.description,
-              matchedKeyword: kw,  // ★ 같은 키워드로 매칭 → 동일 그룹화
-              column_name: row.column_name,
-              description: row.description,
-              data_type: row.data_type || '',
-              source: 'ontology_desc_partial',
-              priority: 4,
-            });
-            console.log(`[Synonym] description 부분매칭: "${kw}" → ${row.column_name} (description: "${row.description}")`);
-            break;  // 한 키워드로 매칭되면 더 검사 안 함
+          if (!row.description.includes(kw)) continue;
+
+          // ── 게이트 1: 사용자가 명시적 확장 의도(전체/관련/수익성분석/슬래시나열)를 표시했는가?
+          //             아니라면, 이 키워드가 이미 정확매칭으로 컬럼을 잡았다면 3-B 폭주 방지
+          if (!expansionIntent && exactMatchedKeywords.has(kw)) {
+            // 정확매칭이 있는 키워드는 description 부분매칭을 스킵
+            // (예: "매출"이 ZAMT003 동의어로 정확매칭됨 → "총매출", "매출원가" 등 description 부분포함 컬럼 무시)
+            continue;
           }
+
+          // ── 게이트 2: description 이 keyword 정확매칭 (description == kw) 인 경우만 허용
+          //             ※ 이미 3-A 에서 처리됨. 여기서는 부분포함이지만 expansionIntent 가 true 인 경우만 진입
+          //             → 즉, 게이트 1을 통과한 경우 (확장 의도가 true 이거나 키워드가 정확매칭 안 된 경우) 만 추가
+
+          matched.push({
+            synonym: row.description,
+            matchedKeyword: kw,  // ★ 같은 키워드로 매칭 → 동일 그룹화
+            column_name: row.column_name,
+            description: row.description,
+            data_type: row.data_type || '',
+            source: 'ontology_desc_partial',
+            priority: 4,
+          });
+          console.log(`[Synonym] description 부분매칭: "${kw}" → ${row.column_name} (description: "${row.description}", expansionIntent=${expansionIntent})`);
+          break;  // 한 키워드로 매칭되면 더 검사 안 함
         }
       }
+    }
+    if (matchedKeywords.size > 0 && !expansionIntent) {
+      console.log(`[Synonym] 정확매칭 우선 모드: 정확매칭 키워드 [${[...matchedKeywords].join(', ')}] 로는 description 부분매칭(3-B) 스킵 — 명시적 확장 키워드("전체"/"관련 지표"/"수익성 분석"/"A/B/C") 없음`);
+    } else if (expansionIntent) {
+      console.log(`[Synonym] 확장 의도 감지: description 부분매칭(3-B) 활성화`);
     }
 
     // =========================================================
