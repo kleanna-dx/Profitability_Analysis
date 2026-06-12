@@ -2421,8 +2421,10 @@ function renderBuilderHistory(items) {
             // 도메인 배지
             const dc = item.domain_code;
             const domainBadge = dc ? `<span style="display:inline-block;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};">[${dc}]</span>` : '';
+            // 클릭 시 사이드바에 표시된 도메인을 hint 로 전달 → 상단 배지를 정확히 동기화
+            const hintArg = dc ? `,'${dc}'` : '';
             html += `
-                <div class="history-item" data-id="${item.id}" onclick="restoreBuilderHistory(${item.id})">
+                <div class="history-item" data-id="${item.id}" onclick="restoreBuilderHistory(${item.id}${hintArg})">
                     <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
                     <div class="history-item-text">
                         <div class="history-item-query">${domainBadge}${escHistHtml(item.title)}</div>
@@ -2463,7 +2465,12 @@ function escHistHtml(s) {
 
 // --- 이력 복원 시 도메인 전환 + 잠금 (자연어 질의와 동일 패턴) ---
 async function switchDomainForHistory(domainCode) {
-    if (!domainCode) return; // domain_code 없는 레거시 이력은 현재 도메인 유지
+    if (!domainCode) {
+        // domain_code 없는 레거시 이력 — 락 상태만 갱신하고 배지는 현재 도메인 유지
+        builderDomainLocked = true;
+        renderDomainSelectorBar();
+        return;
+    }
     if (domainCode !== currentDomain) {
         // 도메인이 다르면 전환 + 필드 목록 새로고침
         currentDomain = domainCode;
@@ -2472,10 +2479,14 @@ async function switchDomainForHistory(domainCode) {
     }
     builderDomainLocked = true;
     renderDomainSelectorBar();
+    updateDomainInfoBanner();
 }
 
 // --- 이력 복원 (최근이력/즐겨찾기) ---
-async function restoreBuilderHistory(id) {
+// hintDomain: 사이드바 이력 리스트가 표시한 도메인 코드 (renderHistoryList 에서 전달)
+//   - 옛날 이력의 domain_code 가 NULL 인 경우에도 상단 배지를 정확히 동기화하기 위함
+//   - 우선순위: hintDomain > item.domain_code > 현재 currentDomain 유지
+async function restoreBuilderHistory(id, hintDomain) {
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
     const target = document.querySelector(`.history-item[data-id="${id}"]`);
     if (target) target.classList.add('active');
@@ -2489,7 +2500,8 @@ async function restoreBuilderHistory(id) {
         }
         loadedHistoryId = id; // 기존 이력 → 재실행 시 UPDATE
         // 이력의 도메인으로 전환 + 잠금 (자연어 질의와 동일)
-        await switchDomainForHistory(item.domain_code);
+        // hintDomain 우선 사용 — item.domain_code 가 NULL 이어도 사이드바 배지와 일치
+        await switchDomainForHistory(hintDomain || item.domain_code);
         applyHistoryToBuilder(item);
     } catch(e) {
         alert('이력 불러오기 오류: ' + e.message);
