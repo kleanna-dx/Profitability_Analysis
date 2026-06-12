@@ -114,25 +114,20 @@ app.post('/api/login', async (req, res) => {
     if (user.password !== password) {
       return res.status(401).json({ success: false, message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     }
-    // 도메인 결정: admin은 전체(null) 유지, 일반 사용자는 users.domain_code → 없으면 조직도 탐색
+    // 도메인 결정: users.domain_code 에만 의존 (조직도 자동매핑 제거)
+    // - admin: DB 값 그대로 사용 (null이면 전체 영역)
+    // - 일반 사용자: DB 값 그대로 사용 (null이면 프론트에서 도메인 선택 모달 노출)
     let domainCode = null;
     try {
       const [uRow] = await pool.query('SELECT domain_code FROM users WHERE user_id=?', [user.user_id]);
-      if (user.role_code === 'admin') {
-        // admin: DB에 명시적으로 지정된 경우만 사용, 아니면 null (전체 영역)
-        domainCode = uRow[0]?.domain_code || null;
-      } else {
-        // 일반 사용자: DB → 조직도 탐색 → 캐시
-        domainCode = uRow[0]?.domain_code || await resolveDomainByOrg(user.user_id);
-        if (domainCode && !uRow[0]?.domain_code) {
-          await pool.query('UPDATE users SET domain_code=? WHERE user_id=?', [domainCode, user.user_id]);
-        }
-      }
-    } catch(e) { console.error('[Login] domain 해석 실패:', e.message); }
+      domainCode = uRow[0]?.domain_code || null;
+    } catch(e) { console.error('[Login] domain 조회 실패:', e.message); }
 
     req.session.user = {
       id: user.user_id, name: user.name, role: user.role_code,
-      domain_code: domainCode, active_domain: domainCode || 'PS',
+      domain_code: domainCode,
+      // ★ active_domain은 domain_code와 동일하게 설정 (null이면 null 유지 → 프론트 모달이 뜨게 함)
+      active_domain: domainCode,
       loginAt: new Date().toISOString(),
     };
     return res.json({ success: true, user: user.user_id, name: user.name, role: user.role_code, domain_code: domainCode });
@@ -224,19 +219,13 @@ app.post('/api/login/sendEncData', async (req, res) => {
       return res.status(200).type('html').send(buildSsoErrorHtml('비활성화된 계정입니다. 관리자에게 문의하세요.'));
     }
 
-    // 도메인 결정: admin은 전체(null) 유지, 일반 사용자는 DB → 조직도 탐색
+    // 도메인 결정: users.domain_code 에만 의존 (조직도 자동매핑 제거)
+    // null이면 프론트에서 도메인 선택 모달이 뜨고, 사용자가 선택하면 /api/me/domain 으로 저장됨
     let domainCode = null;
     try {
       const [uDom] = await pool.query('SELECT domain_code FROM users WHERE user_id=?', [userId]);
-      if (ssoUser.role_code === 'admin') {
-        domainCode = uDom[0]?.domain_code || null;
-      } else {
-        domainCode = uDom[0]?.domain_code || await resolveDomainByOrg(userId);
-        if (domainCode && !uDom[0]?.domain_code) {
-          await pool.query('UPDATE users SET domain_code=? WHERE user_id=?', [domainCode, userId]);
-        }
-      }
-    } catch(e) { console.error('[SSO] domain 해석 실패:', e.message); }
+      domainCode = uDom[0]?.domain_code || null;
+    } catch(e) { console.error('[SSO] domain 조회 실패:', e.message); }
 
     // 세션 생성 (SSO 로그인 성공)
     req.session.user = {
@@ -244,7 +233,8 @@ app.post('/api/login/sendEncData', async (req, res) => {
       name: ssoUser.name,
       role: ssoUser.role_code,
       domain_code: domainCode,
-      active_domain: domainCode || 'PS',
+      // ★ active_domain은 domain_code와 동일하게 설정 (null이면 null 유지 → 프론트 모달)
+      active_domain: domainCode,
       loginAt: new Date().toISOString(),
       sso: true,
       tenantId: ssoData?.body?.tenantId || null,
@@ -343,50 +333,17 @@ app.post('/api/logout', (req, res) => {
 });
 
 // ============================================================
-// 도메인(영역) 해석 — 조직도 상위 탐색으로 사용자 domain_code 결정
+// ☠️ [DEPRECATED] 조직도 기반 도메인 자동 매핑 제거
 // ============================================================
-/**
- * 사용자의 group_id에서 조직도를 타고 올라가서 domain_code를 결정
- * user_group_info.group_id → group_info.parent_group_id 반복 탐색
- * → domain_group_mapping에 매칭되는 group_id를 찾으면 해당 domain_code 반환
- */
-async function resolveDomainByOrg(userId) {
-  try {
-    // 1. user_group_info에서 사용자의 group_id 조회
-    const [ugRows] = await pool.query(
-      'SELECT group_id FROM user_group_info WHERE user_id = ? ORDER BY represent_group DESC LIMIT 1',
-      [userId]
-    );
-    if (ugRows.length === 0) return null;
-
-    let currentGroupId = ugRows[0].group_id;
-    const visited = new Set();
-
-    // 2. 조직도를 타고 올라가면서 domain_group_mapping 매칭
-    while (currentGroupId && !visited.has(currentGroupId)) {
-      visited.add(currentGroupId);
-
-      // domain_group_mapping에서 매칭 체크
-      const [mapRows] = await pool.query(
-        'SELECT domain_code FROM domain_group_mapping WHERE group_id = ? LIMIT 1',
-        [currentGroupId]
-      );
-      if (mapRows.length > 0) return mapRows[0].domain_code;
-
-      // 상위 그룹으로 이동
-      const [parentRows] = await pool.query(
-        'SELECT parent_group_id FROM group_info WHERE group_id = ? LIMIT 1',
-        [currentGroupId]
-      );
-      if (parentRows.length === 0 || !parentRows[0].parent_group_id) break;
-      currentGroupId = parentRows[0].parent_group_id;
-    }
-    return null;
-  } catch (e) {
-    console.error('[Domain] 조직도 탐색 실패:', e.message);
-    return null;
-  }
-}
+// 기존: users.domain_code가 NULL이면 user_group_info / domain_group_mapping / group_info 를
+//       조회해 조직도 기준으로 도메인 자동 매핑
+// 변경: 조직도 자동 매핑 로직 완전 제거.
+//       users.domain_code 에만 의존하며, NULL이면 사용자가 프론트에서 직접
+//       PS / HL / MGMT 중 하나를 선택하고, 선택값은 /api/me/domain 으로
+//       users.domain_code 에 영구저장 됨.
+// 관련 테이블: user_group_info / domain_group_mapping / group_info 는 도메인
+//       결정 목적으로는 이제 조회하지 않음 (다른 용도(조직도 경로 표시 등)
+//       은 buildOrgPath() 에서 계속 사용).
 
 /**
  * 사용자의 조직도 경로를 문자열로 구성 (예: "깨끗한나라 > CEO > COO > 페이퍼솔루션사업부 > PS기획팀")
@@ -461,12 +418,42 @@ app.get('/api/me', async (req, res) => {
 });
 
 // 도메인 전환 API (모든 사용자가 분석 영역 전환 가능)
-app.post('/api/me/domain', (req, res) => {
+// ★ 세션 active_domain 변경 + users.domain_code 에도 영구저장 (최초 선택 후 재접속 시 자동 진입)
+app.post('/api/me/domain', async (req, res) => {
   if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
   const { domain_code } = req.body;
   if (!domain_code) return res.status(400).json({ error: 'domain_code 필수' });
+
+  // 유효성 검증: domain_master에 존재하고 활성인 코드만 허용
+  try {
+    const [valid] = await pool.query(
+      'SELECT domain_code FROM domain_master WHERE domain_code = ? AND is_active = 1',
+      [domain_code]
+    );
+    if (valid.length === 0) {
+      return res.status(400).json({ error: '유효하지 않은 domain_code 입니다.' });
+    }
+  } catch (e) {
+    console.error('[/api/me/domain] domain_master 검증 실패:', e.message);
+  }
+
+  // 1) 세션 업데이트
   req.session.user.active_domain = domain_code;
-  res.json({ success: true, active_domain: domain_code });
+  req.session.user.domain_code = domain_code;
+
+  // 2) ★ users.domain_code 에 영구저장 (다음 로그인부터 자동 진입)
+  try {
+    await pool.query(
+      'UPDATE users SET domain_code = ? WHERE user_id = ?',
+      [domain_code, req.session.user.id]
+    );
+    console.log(`[Domain] 사용자 선택 저장: ${req.session.user.id} → ${domain_code}`);
+  } catch (e) {
+    console.error('[/api/me/domain] users.domain_code 저장 실패:', e.message);
+    // 세션은 이미 업데이트되었으므로 사용자에게는 성공 응답 (다음 로그인 시 다시 모달이 뜬 뿐)
+  }
+
+  res.json({ success: true, active_domain: domain_code, domain_code });
 });
 
 // 도메인 목록 API
@@ -486,7 +473,8 @@ function requireAdmin(req, res, next) {
 
 // 현재 세션의 active_domain 가져오기
 // active_domain(사용자가 명시적으로 선택한 도메인)을 최우선 사용
-// active_domain이 없으면 DB domain_code → 기본 'PS' 순서
+// active_domain이 없으면 DB domain_code 조회 → 여전히 없으면 null 반환
+// (기본 'PS' 폴백 제거 — 조직도 자동매핑 제거 정책에 따라 프론트 모달이 떨 때까지 대기)
 async function getActiveDomain(req) {
   const u = req.session?.user;
   if (!u) return null;
@@ -504,7 +492,8 @@ async function getActiveDomain(req) {
       }
     }
   } catch(e) { /* 실패 시 세션 값 사용 */ }
-  return 'PS'; // 기본값
+  // ★ 조직도 자동매핑 제거: 도메인이 설정되지 않은 상태면 null 반환 → 프론트가 모달로 선택 요구
+  return null;
 }
 
 // ============================================================
@@ -2857,6 +2846,14 @@ app.post('/api/nlq', async (req, res) => {
     return res.status(400).json({ error: '질의를 입력하세요.' });
   }
   const activeDomain = await getActiveDomain(req);
+  // ★ 도메인 미설정 방어: users.domain_code가 NULL이고 세션에도 active_domain이 없으면
+  //   프론트엔드에서 분석 영역 선택 모달을 띄우도록 안내 (조직도 자동매핑 제거 정책)
+  if (!activeDomain) {
+    return res.status(400).json({
+      error: '분석 영역이 설정되지 않았습니다. PS / HL / MGMT 중 하나를 먼저 선택해 주세요.',
+      need_domain_select: true,
+    });
+  }
   // ★ 질문 유형: 'aggregate'(현황집계: 표+SQL) | 'analysis'(분석질문: 텍스트만)
   //   기본값 'aggregate' — 프론트엔드 라디오에서 명시적으로 선택 (기존 자동 키워드 감지보다 우선)
   const userQueryMode = (queryMode === 'analysis') ? 'analysis' : 'aggregate';

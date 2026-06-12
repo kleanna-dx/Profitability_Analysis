@@ -854,9 +854,29 @@ function showDomainForceOverlay() {
 function hideDomainForceOverlay() { const o = document.getElementById('domainForceOverlay'); if (o) o.style.display = 'none'; }
 
 async function selectForceDomain(dc) {
+    // ★ 사용자가 모달에서 선택한 도메인을 users.domain_code 에 영구저장
+    //   (서버 /api/me/domain 가 세션 + DB 양쪽 모두 업데이트)
+    try {
+        const r = await fetch('/api/me/domain', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain_code: dc })
+        });
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            alert('분석 영역 저장에 실패했습니다: ' + (err.error || r.statusText));
+            return;
+        }
+    } catch (e) {
+        alert('분석 영역 저장 중 네트워크 오류가 발생했습니다.');
+        return;
+    }
+    // 저장 성공 → 로컬 상태 동기화 (재진입 시 모달이 다시 뜨지 않도록 userDefaultDomain도 갱신)
     currentDomain = dc;
-    await fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:dc}) }).catch(() => {});
-    hideDomainForceOverlay(); renderDomainSelectorBar(); updateDomainInfoBanner();
+    userDefaultDomain = dc;
+    hideDomainForceOverlay();
+    renderDomainSelectorBar();
+    updateDomainInfoBanner();
 }
 
 async function onDomainBtnClick(dc) {
