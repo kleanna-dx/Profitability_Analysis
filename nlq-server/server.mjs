@@ -2584,6 +2584,189 @@ ${whereClause}`;
 }
 
 // ============================================================
+// Helper: 분석형 질문용 "원인 분석 상세 SQL" 다중 생성 (LLM 기반)
+// ------------------------------------------------------------
+// 목적:
+//   고정 KPI 한 행짜리 합계 데이터만으로는 "특정 품목 매출이 왜 갑자기
+//   증가했어?" 같은 원인 질문에 답할 수 없음.
+//   이 함수는 사용자 질문 + 직전 SQL 컨텍스트 + 도메인 컬럼 카탈로그를
+//   LLM에 전달해, 원인 판단에 필요한 1~5개의 보조 SELECT 쿼리를 만든다.
+//
+// 안전장치:
+//   - 반드시 SELECT 만 허용 (다른 동사 발견 시 거부)
+//   - LIMIT 누락 시 자동으로 LIMIT 200 추가
+//   - validateSqlPreExecution() 통과해야 함
+//   - applyDomainFilter() 로 도메인 필터 자동 주입
+// ============================================================
+async function generateAnalysisSqls(query, domainCode, dateCtx, conversationContext) {
+  const dc = domainCode || 'PS';
+
+  // ── 1) 도메인 컬럼 카탈로그 (ontology_column.description 우선)
+  let columnCatalog = '';
+  try {
+    const [cols] = await pool.query(
+      `SELECT column_name, description, data_type
+         FROM ontology_column
+        WHERE domain_code = ? AND is_active = 1
+        ORDER BY column_name`,
+      [dc]
+    );
+    columnCatalog = cols
+      .map(c => `- ${c.column_name}${c.description ? ` (${c.description})` : ''}${c.data_type ? ` [${c.data_type}]` : ''}`)
+      .join('\n');
+  } catch (e) {
+    console.warn('[analysisSqls] 컬럼 카탈로그 로드 실패:', e.message);
+  }
+
+  // ── 2) 직전 턴 SQL (있으면 가장 최근 SELECT문 1개)
+  let prevSqlBlock = '';
+  if (Array.isArray(conversationContext) && conversationContext.length > 0) {
+    const lastWithSql = [...conversationContext].reverse().find(c => c && c.sql);
+    if (lastWithSql && lastWithSql.sql) {
+      prevSqlBlock = `\n[직전 턴 SQL — 사용자가 방금 본 결과 테이블의 출처]\n${lastWithSql.sql}\n`;
+    }
+  }
+
+  // ── 3) 기준 연월
+  const cm = dateCtx.latestMonth || '';
+  const prevCm = dateCtx.prevMonth || '';
+  const cmLabel = cm ? `${cm.substring(0,4)}년 ${parseInt(cm.substring(4,6))}월` : '';
+  const prevLabel = prevCm ? `${prevCm.substring(0,4)}년 ${parseInt(prevCm.substring(4,6))}월` : '';
+
+  const systemPrompt = `당신은 수익성 분석 데이터 엔지니어입니다.
+사용자의 분석/원인 질문에 답하기 위해 필요한 보조 SELECT 쿼리들을 생성하세요.
+
+[테이블]
+bw_profitability_data (단일 테이블)
+
+[기간 컨텍스트]
+- 당월: ${cmLabel} (CALMONTH='${cm}')
+- 전월: ${prevLabel} (CALMONTH='${prevCm}')
+
+[사용 가능 컬럼]
+${columnCatalog || '(카탈로그 없음 — 일반적인 BW 수익성 컬럼 사용)'}
+
+[당신의 임무]
+사용자 질문이 가리키는 **구체 대상**(특정 품목명, 거래처, 손익센터, 채널, 플랜트 등)을
+질문 텍스트와 직전 SQL에서 추출하여, 그 대상의 원인을 다각도로 진단할 수
+**1~5개의 보조 SELECT 쿼리**를 만드세요.
+
+[필수 규칙]
+1. 모든 쿼리는 SELECT만 사용 (DML/DDL 금지). 단일 테이블 bw_profitability_data 만 사용.
+2. 각 쿼리는 한 가지 분석 관점에 집중 (전월/당월 비교, 단가/수량 분해, 거래처별, 채널별, 신규/반복 여부 등).
+3. **반드시 사용자 질문의 구체 대상을 WHERE 조건으로 좁힐 것** (예: MATERIAL_NM LIKE '%Blanq-Bright%').
+   - 대상 이름이 모호하면 LIKE 부분 매칭 사용.
+4. 집계 함수와 일반 컬럼이 함께 있을 땐 반드시 GROUP BY 추가.
+5. 금액 컬럼(ZAMT*)은 SUM()으로 집계. 단가/평균은 SUM(금액)/NULLIF(SUM(수량),0) 형태로.
+6. 결과가 많아질 가능성이 있으면 LIMIT 50 정도로 제한, ORDER BY 명시.
+7. 컬럼 alias는 한글로 (예: AS '당월순매출').
+8. CALMONTH 비교는 문자열 '${cm}' / '${prevCm}' 사용.
+9. **분석에 도움 안 되는 일반 KPI 합계 쿼리는 만들지 말 것** — 이미 별도로 조회됨.
+
+[출력 형식 — 반드시 JSON 한 객체]
+{
+  "queries": [
+    { "label": "이 쿼리가 답하는 분석 관점 (한 문장)", "sql": "SELECT ..." },
+    ...
+  ]
+}
+queries 가 0~5개. 적절한 대상이 안 잡히면 빈 배열 가능.`;
+
+  let raw;
+  try {
+    const completion = await openai.chat.completions.create({
+      model: GPT_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `[사용자 질문]\n${query}${prevSqlBlock}` },
+      ],
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+    });
+    raw = completion.choices[0].message.content;
+  } catch (e) {
+    console.warn('[analysisSqls] LLM 호출 실패:', e.message);
+    return [];
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    console.warn('[analysisSqls] JSON 파싱 실패:', e.message, raw?.slice(0, 200));
+    return [];
+  }
+
+  const candidates = Array.isArray(parsed.queries) ? parsed.queries.slice(0, 5) : [];
+  const safe = [];
+
+  for (const q of candidates) {
+    let sql = (q && q.sql || '').trim();
+    const label = (q && q.label || '').trim() || '보조 쿼리';
+    if (!sql) continue;
+
+    // 마지막 세미콜론 제거 (LIMIT 추가/필터 주입 안전성)
+    sql = sql.replace(/;\s*$/, '');
+
+    // ── 위험 키워드 차단 (SELECT 외 동사)
+    if (/\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|GRANT|REVOKE|MERGE|CALL|EXEC|EXECUTE)\b/i.test(sql)) {
+      console.warn('[analysisSqls] 위험 키워드 차단:', label);
+      continue;
+    }
+    // ── 첫 토큰이 SELECT인지
+    if (!/^\s*SELECT\b/i.test(sql)) {
+      console.warn('[analysisSqls] SELECT 시작 아님:', label);
+      continue;
+    }
+    // ── 대상 테이블 사용 확인
+    if (!/\bbw_profitability_data\b/i.test(sql)) {
+      console.warn('[analysisSqls] bw_profitability_data 미참조:', label);
+      continue;
+    }
+    // ── 사전 검증
+    const v = validateSqlPreExecution(sql);
+    if (!v.valid) {
+      console.warn('[analysisSqls] 사전검증 실패:', label, '-', v.reason);
+      continue;
+    }
+    // ── 도메인 필터 자동 주입
+    sql = applyDomainFilter(sql, dc);
+    // ── LIMIT 미포함 시 추가
+    if (!/\bLIMIT\b/i.test(sql)) sql += ' LIMIT 200';
+
+    safe.push({ label, sql });
+  }
+
+  return safe;
+}
+
+// ============================================================
+// Helper: 분석 보조 SQL들을 순차 실행 (실패는 스킵)
+// ============================================================
+async function runAnalysisSqls(safeQueries) {
+  const out = [];
+  for (const q of safeQueries) {
+    try {
+      const t0 = Date.now();
+      let [rows] = await pool.query(q.sql);
+      rows = filterDummyRows(rows);
+      const ms = Date.now() - t0;
+      out.push({
+        label: q.label,
+        sql: q.sql,
+        rowCount: rows.length,
+        rows: rows.slice(0, 30),  // 프롬프트에 너무 많이 안 들어가게 상한
+        execMs: ms,
+      });
+    } catch (e) {
+      console.warn('[analysisSqls] 실행 실패 → 스킵:', q.label, '-', e.message);
+      out.push({ label: q.label, sql: q.sql, rowCount: 0, rows: [], error: e.message });
+    }
+  }
+  return out;
+}
+
+// ============================================================
 // Helper: SQL 사전 검증 (LLM이 생성한 SQL의 명백한 오류 패턴 탐지)
 // - LLM이 만들 수 있는 "Invalid use of group function" 같은 실행 시 오류를
 //   실행 전에 잡아내어 자동 재요청 또는 친절한 에러 메시지로 전환
@@ -3078,69 +3261,112 @@ app.post('/api/nlq', async (req, res) => {
         let finalSql = applyDomainFilter(analysisSql, activeDomain);
         // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
-        // DB 실행
+        // DB 실행 — 전체 KPI(overview)
         const startTime = Date.now();
-        let [rows] = await pool.query(finalSql);
-        // ★ Dummy 행 후필터 (SQL 자동주입이 안 닿은 케이스 안전망)
-        rows = filterDummyRows(rows);
+        let rows;
+        try {
+          const r = await pool.query(finalSql);
+          rows = filterDummyRows(r[0]);
+        } catch (e) {
+          console.warn('[NLQ] 전체 KPI 조회 실패 → 빈 결과로 진행:', e.message);
+          rows = [];
+        }
         const execTime = Date.now() - startTime;
-        console.log(`[NLQ] 분석용 SQL 실행 완료: ${execTime}ms, ${rows.length}행`);
+        console.log(`[NLQ] 분석용 KPI SQL 실행: ${execTime}ms, ${rows.length}행`);
+
+        // ★ NEW: 사용자 질문의 구체 대상을 좁혀 원인 분석용 보조 SQL을 LLM으로 생성·실행
+        //   "왜 Blanq-Bright ... 매출이 갑자기 증가됐어?" 같은 질문에서
+        //   품목/거래처/채널/단가/수량 등 다각도 데이터를 확보한다.
+        let detailQueries = [];
+        let detailResults = [];
+        try {
+          detailQueries = await generateAnalysisSqls(query, activeDomain, dc, conversationContext);
+          if (detailQueries.length > 0) {
+            console.log(`[NLQ] 원인분석 보조 SQL ${detailQueries.length}개 실행`);
+            detailResults = await runAnalysisSqls(detailQueries);
+          } else {
+            console.log('[NLQ] 원인분석 보조 SQL 생성 결과 0개 (질문에서 구체 대상 식별 실패)');
+          }
+        } catch (e) {
+          console.warn('[NLQ] 원인분석 보조 SQL 단계 전체 실패 (스킵):', e.message);
+        }
 
         // LLM 분석 답변 생성
         const dateInfo = `[기간 참고] 당월=${dc.latestLabel}, 전월=${dc.prevLabel}. "당월", "이번달", "전월" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기.`;
         // ★ 답변 출력 규칙 (전역 규칙) — analysis 경로
         const analysisFormatRule = `[답변 출력 규칙]\n- "YYYY년 M월" 형태의 년월 표현은 반드시 **굵게(마크다운 **)** 강조하세요. 예: **2026년 5월**\n- 조회 결과에 'Dummy' 값이 있으면 본문에 언급하지 마세요. (사용자에게 노출되지 않습니다)`;
         const dataForAnalysis = rows.slice(0, 50);
-        const dataText = JSON.stringify(dataForAnalysis, (key, val) =>
+        const overviewText = JSON.stringify(dataForAnalysis, (key, val) =>
           typeof val === 'bigint' ? Number(val) : val
         , 2);
+
+        // 상세 분석 결과 직렬화
+        const detailText = detailResults.length > 0
+          ? detailResults.map((d, i) => {
+              const rowsJson = JSON.stringify(d.rows, (k, v) => typeof v === 'bigint' ? Number(v) : v, 2);
+              return `### 보조 조회 ${i+1}: ${d.label}\n[SQL]\n${d.sql}\n[결과 ${d.rowCount}행${d.error ? ` — 실행 오류: ${d.error}` : ''}]\n${rowsJson}`;
+            }).join('\n\n')
+          : '';
+
         const cmLabel = calmonth ? `${calmonth.substring(0,4)}년 ${parseInt(calmonth.substring(4,6))}월` : dc.latestLabel;
 
         // ─────────────────────────────────────────────────────────
         // 의도별 시스템 프롬프트 분기
+        //   ★ 변경 핵심:
+        //   - 고정 KPI 멘트/고정 섹션 강제 금지
+        //   - 실제 조회 결과의 수치만으로 근거 작성
+        //   - 데이터 부족 시 "최대한 추측 + 확정 불가" 명시
         // ─────────────────────────────────────────────────────────
+        const commonRules = `[엄수 규칙 — 데이터 기반 답변]
+- 답변은 반드시 아래 제공된 **실제 조회 결과의 수치**에 기반해서 작성하세요.
+- "전체 KPI 기준", "일반적으로", "통상적으로" 같은 **고정 멘트/일반론 문구를 사용하지 마세요**.
+- 데이터에 해당 수치가 있으면 **반드시 원문 그대로 인용**하세요 (예: "당월 순매출 12,345,678원").
+- 상위/하위, 증가/감소, 비중 등을 말할 때 반드시 데이터의 구체 행을 근거로 들것.
+- **고정된 "긍정 시사점/부정 시사점/제언" 섹션 구조를 기계적으로 붙이지 마세요.** 질문이 요구하는 답변에 집중하세요.
+- 데이터에서 원인을 충분히 판단할 수 없으면, **현재 가용 데이터로 가능한 추측을 먼저 제시**한 뒤
+  마지막에 한 줄로 "**현재 데이터만으로는 원인 확정이 어렵다**"고 명시하고, 어떤 추가 데이터가 있으면
+  확정 가능한지(예: 거래처별 마진, 마케팅 캠페인 이력 등)를 1~2가지 제안하세요.
+- 금액은 억/만 단위로 변환 (예: 45,409,440,210원 → 약 454억원). 단, 원본 숫자가 작으면 그대로 표기.
+- 마크다운 형식(제목·볼드·리스트). 모든 문장은 완결되게 종료. 700자 내외.`;
+
         let analysisSystemPrompt;
         if (intent === 'data_analysis') {
-          // 데이터 분석: 사용자가 요청한 데이터 위주, 시사점/제언은 가볍게
           analysisSystemPrompt = `당신은 기업 수익성 분석 전문 컨설턴트입니다.
-사용자가 **특정 데이터의 조회/분석**을 요청했습니다. 데이터 수치 위주로 핵심을 명료하게 답변하세요.
+사용자가 **특정 데이터의 조회/분석**을 요청했습니다. 데이터 수치를 정확히 인용해 답변하세요.
 
-[답변 작성 규칙]
-1. 마크다운 형식 (제목·볼드·리스트 적절히)
-2. 사용자가 질문한 항목의 수치를 먼저 명확히 제시
-3. 데이터에 해당 항목이 없으면 "조회된 데이터에 X 정보가 포함되어 있지 않습니다"라고 솔직히 안내
-4. **"긍정적 시사점", "부정적 시사점", "제언" 같은 고정 섹션을 강제로 붙이지 말 것**
-5. 사용자가 명시적으로 시사점/제언을 요청한 경우에만 1~2줄 추가
-6. 금액은 억/만 단위 (예: 45,409,440,210원 → 약 454억원)
-7. 한국어 답변, 300~600자 이내
-8. 데이터에 없는 내용 추측 금지
-9. "당월", "전월", "이번달" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기
-10. 모든 문장은 완결된 형태로 종료`;
+${commonRules}
+
+[추가 지침]
+- 사용자가 묻는 항목의 수치를 먼저 명확히 제시한 뒤, 보조 데이터로 맥락을 더하세요.
+- 시사점/제언은 사용자가 명시적으로 요청했을 때만 1~2줄.`;
         } else {
-          // interpretation: 원인·시사점·제언 (기존 동작 유지)
+          // interpretation: 원인·시사점·제언
           analysisSystemPrompt = `당신은 기업 수익성 분석 전문 컨설턴트입니다.
-사용자가 **원인 분석/시사점/해석/제언**을 요청했습니다. 데이터를 기반으로 핵심 위주의 간결한 분석 답변을 작성하세요.
+사용자가 **원인 분석/시사점/해석**을 요청했습니다. 제공된 데이터에 입각해 원인을 추적·설명하세요.
 
-[답변 작성 규칙]
-1. 마크다운 형식 (제목, 볼드, 리스트)
-2. 핵심 수치 인용 (예: "총매출 454억원")
-3. 긍정/부정 시사점 균형 제시
-4. 실행 가능한 제언 1~3개
-5. 금액은 억/만 단위 (예: 45,409,440,210원 → 약 454억원)
-6. 한국어 답변
-7. 데이터에 없는 내용 추측 금지
-8. 조회 결과 0행: 원인과 대안을 간단히 제안
-9. "당월", "전월", "이번달" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기
+${commonRules}
 
-[★ 길이·완결성 규칙 — 반드시 준수]
-- 답변은 500~800자 이내로 핵심만 작성 (장황한 나열·반복 금지)
-- 모든 문장은 반드시 완결된 형태로 끝낼 것
-- 마지막 문장까지 깔끔하게 마무리한 뒤 종료`;
+[원인 분석 접근 방식 — 가능한 한 다음 관점을 데이터로 확인]
+1. 전월/당월 수치 비교 (절대값·증가액·증가율)
+2. 판매수량 변동 vs 단가 변동 (수량 효과 vs 가격 효과)
+3. 거래처/채널/플랜트/손익센터별 기여도 (특정 거래처가 견인했는가?)
+4. 신규 매출(전월 0)인지 vs 기존 거래처 반복 매출의 확대인지
+5. 일회성 대량 거래의 가능성
+
+각 관점 중 **데이터로 확인 가능한 것만** 짧게 근거 인용. 확인 불가한 관점은 가설로 1~2가지 제안.`;
         }
 
-        const userContent = rows.length > 0
-          ? `${dateInfo}\n\n${analysisFormatRule}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회된 핵심 KPI 데이터]\n${dataText}\n\n위 KPI 데이터를 기반으로 사용자의 질문에 대한 전문적인 답변을 작성해주세요.`
-          : `${dateInfo}\n\n${analysisFormatRule}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (해당 기간 데이터 없음)\n\n해당 기간에 데이터가 없습니다. 데이터가 적재되지 않은 가능성을 안내하고, 사용자가 다른 기간을 시도할 수 있도록 친절히 안내해주세요.`;
+        const hasAnyData = (rows && rows.length > 0) || detailResults.some(d => d.rowCount > 0);
+        const userContent = hasAnyData
+          ? `${dateInfo}\n\n${analysisFormatRule}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n` +
+            (rows.length > 0
+              ? `[참고용 — 도메인 전체 KPI 합계 (단일 행)]\n${overviewText}\n\n`
+              : '') +
+            (detailText
+              ? `[★ 원인 분석용 상세 조회 결과 — 이 데이터를 핵심 근거로 답변하세요]\n${detailText}\n\n`
+              : `[원인 분석용 상세 조회 결과 없음]\n질문에서 구체 대상(품목/거래처 등)을 식별하지 못했거나 조회 결과가 0행입니다. 가용 데이터만으로 답하되, 마지막에 "현재 데이터만으로는 원인 확정이 어렵다"고 명시하세요.\n\n`) +
+            `위 데이터에 입각해 사용자 질문에 답하세요. 고정 KPI 멘트나 일반론은 절대 쓰지 마세요.`
+          : `${dateInfo}\n\n${analysisFormatRule}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (전체 KPI·보조 조회 모두 결과 없음)\n\n해당 기간/대상의 데이터가 없습니다. 사용자에게 가능한 원인(미적재/대상명 불일치 등)을 친절히 안내하고, "**현재 데이터만으로는 원인 확정이 어렵다**"로 마무리하세요.`;
 
         const analysisCompletion = await openai.chat.completions.create({
           model: GPT_MODEL,
