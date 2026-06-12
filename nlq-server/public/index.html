@@ -285,6 +285,27 @@
         .chart-type-select:hover{border-color:#94a3b8;}
         .chart-type-select:focus{border-color:#6366f1;box-shadow:0 0 0 2px rgba(99,102,241,0.15);}
 
+        /* Chart type radio buttons (replaces dropdown) */
+        .chart-type-radios{
+            display:inline-flex;align-items:center;gap:14px;
+            font-size:12.5px;color:#1e293b;
+            padding:4px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;
+        }
+        .chart-type-radios label{
+            display:inline-flex;align-items:center;gap:4px;cursor:pointer;
+            font-size:12.5px;color:#475569;font-weight:500;user-select:none;
+            padding:2px 4px;border-radius:4px;
+            transition:color .12s,background-color .12s;
+        }
+        .chart-type-radios label:hover{color:#1e293b;background:#f1f5f9;}
+        .chart-type-radios input[type=radio]{
+            margin:0;width:14px;height:14px;cursor:pointer;
+            accent-color:#6366f1;
+        }
+        .chart-type-radios input[type=radio]:checked + span{
+            color:#4f46e5;font-weight:700;
+        }
+
         /* SQL display */
         .sql-display{
             background:#0f172a;color:#e2e8f0;font-size:13px;padding:20px;
@@ -1356,13 +1377,13 @@ function appendBotMessage(data) {
             </div>
             <div id="${id}_chart" class="res-panel" style="${!hasChart ? 'display:none' : ''}">
                 <div class="chart-toolbar">
-                    <label for="${chartId}_type">차트 유형:</label>
-                    <select id="${chartId}_type" class="chart-type-select" onchange="changeChartType('${chartId}', this)">
-                        <option value="bar">막대형</option>
-                        <option value="line">선형</option>
-                        <option value="pie">원형</option>
-                        <option value="doughnut">도넛형</option>
-                    </select>
+                    <label style="margin-right:4px;">차트 유형:</label>
+                    <div class="chart-type-radios" id="${chartId}_type" role="radiogroup" aria-label="차트 유형 선택">
+                        <label><input type="radio" name="${chartId}_type" value="bar" onchange="changeChartType('${chartId}', this)"><span>막대형</span></label>
+                        <label><input type="radio" name="${chartId}_type" value="line" onchange="changeChartType('${chartId}', this)"><span>선형</span></label>
+                        <label><input type="radio" name="${chartId}_type" value="pie" onchange="changeChartType('${chartId}', this)"><span>원형</span></label>
+                        <label><input type="radio" name="${chartId}_type" value="doughnut" onchange="changeChartType('${chartId}', this)"><span>도넛형</span></label>
+                    </div>
                 </div>
                 <div class="chart-container"><canvas id="${chartId}" height="300"></canvas></div>
             </div>
@@ -1415,12 +1436,14 @@ function appendBotMessage(data) {
             const canvasEl = document.getElementById(chartId);
             if (canvasEl) canvasEl._nlqChartData = data;
 
-            // 셀렉트 초기값을 백엔드 추천 유형(또는 기본 'bar')으로 동기화
-            const selectEl = document.getElementById(chartId + '_type');
+            // 라디오버튼 초기 선택값을 백엔드 추천 유형(또는 기본 'bar')으로 동기화
+            const radioGroup = document.getElementById(chartId + '_type');
             const initialType = (data.chartType && data.chartType !== 'table') ? data.chartType : 'bar';
-            if (selectEl) {
+            if (radioGroup) {
                 const supported = ['bar','line','pie','doughnut'];
-                selectEl.value = supported.includes(initialType) ? initialType : 'bar';
+                const finalType = supported.includes(initialType) ? initialType : 'bar';
+                const radios = radioGroup.querySelectorAll('input[type=radio]');
+                radios.forEach(r => { r.checked = (r.value === finalType); });
             }
             renderMsgChart(chartId, data);
         }, 100);
@@ -1636,11 +1659,13 @@ function renderMsgChart(canvasId, data, overrideType) {
     charts[canvasId] = chart;
 }
 
-// 사용자가 드롭다운으로 차트 유형을 변경했을 때 호출되는 핸들러
-function changeChartType(canvasId, selectEl) {
+// 사용자가 라디오버튼으로 차트 유형을 변경했을 때 호출되는 핸들러
+//   - 라디오: <input type="radio" value="bar|line|pie|doughnut"> 의 value 사용
+//   - (기존 호환) <select> 가 전달돼도 .value 로 동일하게 동작
+function changeChartType(canvasId, inputEl) {
     const canvas = document.getElementById(canvasId);
     if (!canvas || !canvas._nlqChartData) return;
-    const newType = (selectEl && selectEl.value) || 'bar';
+    const newType = (inputEl && inputEl.value) || 'bar';
     renderMsgChart(canvasId, canvas._nlqChartData, newType);
 }
 
