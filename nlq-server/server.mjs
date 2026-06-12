@@ -659,7 +659,9 @@ app.get('/api/users/:userId', verifyApiKey, async (req, res) => {
 
 /**
  * POST /api/users/bulk — Bulk 사용자 생성
- * Body: { users: [{ userId, name, email?, groupName?, groupId?, parentGroupId?, tenantId?, phone?, position?, role? }] }
+ * Body: { users: [{ userId, name, password?, email?, groupName?, groupId?, parentGroupId?, tenantId?, phone?, position?, role? }] }
+ * - password: 그룹웨어에서 전달되면 users.password 에 저장 (평문, 기존 로그인 키와 동일 동작)
+ * - password 생략 시 기본값 'kleannara1!' 로 설정
  */
 app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
   const { users } = req.body;
@@ -704,10 +706,18 @@ app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
                 if (rr.length > 0) reactivateRoleId = rr[0].id;
               } catch(e) {}
             }
-            await conn.query(
-              `UPDATE users SET name=?, email=?, group_name=?, group_id=?, parent_group_id=?, tenant_id=?, phone=?, position=?, role_id=?, is_active=1, sso_yn=1, updated_at=NOW() WHERE user_id=?`,
-              [u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, reactivateRoleId, u.userId]
-            );
+            // ★ password가 전달되면 함께 업데이트 (재활성화 시 패스워드 재설정 하는 일반적 패턴)
+            if (u.password && String(u.password).trim()) {
+              await conn.query(
+                `UPDATE users SET name=?, password=?, email=?, group_name=?, group_id=?, parent_group_id=?, tenant_id=?, phone=?, position=?, role_id=?, is_active=1, sso_yn=1, updated_at=NOW() WHERE user_id=?`,
+                [u.name, String(u.password).trim(), u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, reactivateRoleId, u.userId]
+              );
+            } else {
+              await conn.query(
+                `UPDATE users SET name=?, email=?, group_name=?, group_id=?, parent_group_id=?, tenant_id=?, phone=?, position=?, role_id=?, is_active=1, sso_yn=1, updated_at=NOW() WHERE user_id=?`,
+                [u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, reactivateRoleId, u.userId]
+              );
+            }
             results.push({ userId: u.userId, status: 'success', message: 'reactivated (기존 비활성 계정 재활성화)' });
             successCount++;
           } else {
@@ -731,9 +741,11 @@ app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
             if (rr.length > 0) newRoleId = rr[0].id;
           } catch(e) {}
         }
+        // ★ password 처리: 전달값이 있으면 사용, 없으면 기본값 사용
+        const newPassword = (u.password && String(u.password).trim()) ? String(u.password).trim() : 'kleannara1!';
         await conn.query(
-          `INSERT INTO users (user_id, name, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role_id, is_active, sso_yn) VALUES (?,?,?,?,?,?,?,?,?,?,1,1)`,
-          [u.userId, u.name, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, newRoleId]
+          `INSERT INTO users (user_id, name, password, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role_id, is_active, sso_yn) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,1)`,
+          [u.userId, u.name, newPassword, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, newRoleId]
         );
         results.push({ userId: u.userId, status: 'success', message: 'created' });
         successCount++;
@@ -764,8 +776,9 @@ app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
 
 /**
  * PUT /api/users/bulk — Bulk 사용자 수정
- * Body: { users: [{ userId, name?, email?, groupName?, groupId?, parentGroupId?, tenantId?, phone?, position?, role?, is_active? }] }
+ * Body: { users: [{ userId, name?, password?, email?, groupName?, groupId?, parentGroupId?, tenantId?, phone?, position?, role?, is_active? }] }
  * - is_active: 1 → 비활성 사용자 복구, 0 → 비활성화 (DELETE /api/users/bulk와 동일 효과)
+ * - password: 전달되면 users.password 갱신 (비어 문자열 '' 는 무시)
  */
 app.put('/api/users/bulk', verifyApiKey, async (req, res) => {
   const { users } = req.body;
@@ -810,6 +823,10 @@ app.put('/api/users/bulk', verifyApiKey, async (req, res) => {
         if (u.tenantId !== undefined)       { updates.push('tenant_id=?');       vals.push(u.tenantId); }
         if (u.phone !== undefined)      { updates.push('phone=?');      vals.push(u.phone); }
         if (u.position !== undefined)   { updates.push('position=?');   vals.push(u.position); }
+        // ★ password: 전달되고 비어 문자열이 아니면 갱신
+        if (u.password !== undefined && u.password !== null && String(u.password).trim() !== '') {
+          updates.push('password=?'); vals.push(String(u.password).trim());
+        }
         if (u.role !== undefined) {
           // role 문자열 → role_id로 변환
           try {
