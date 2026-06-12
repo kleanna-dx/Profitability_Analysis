@@ -2114,8 +2114,11 @@ function renderHistoryList(items) {
         const isBookmarked = !!item.is_bookmarked;
         const starCls = isBookmarked ? 'bookmarked' : '';
         const starStyle = isBookmarked ? 'fas' : 'far';
+        // 클릭 시 사이드바에 표시된 도메인 코드를 hint 로 전달
+        // → restoreSession 이 이력 데이터의 NULL/누락 케이스에도 상단 배지를 정확히 동기화
+        const hintArg = dc ? `,'${esc(dc)}'` : '';
         html += `
-            <div class="history-item${activeCls}" data-session="${esc(sessionKey)}" onclick="restoreSession('${esc(sessionKey)}')">
+            <div class="history-item${activeCls}" data-session="${esc(sessionKey)}" onclick="restoreSession('${esc(sessionKey)}'${hintArg})">
                 <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
                 <div class="history-item-text">
                     <div class="history-item-query">${domainBadge}${esc(title)}</div>
@@ -2168,7 +2171,10 @@ function formatHistoryTime(dateStr) {
     return (d.getMonth()+1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
 }
 
-async function restoreSession(sessionKey) {
+// hintDomain: 사이드바 이력 리스트에 표시된 도메인 코드 (renderHistoryList 에서 전달)
+//   - 옛날 이력의 domain_code 가 NULL 인 경우에도 상단 배지를 정확히 동기화하기 위함
+//   - 우선순위: hintDomain > items 중 첫 non-null domain_code > 현재 currentDomain 유지
+async function restoreSession(sessionKey, hintDomain) {
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
     const target = document.querySelector(`.history-item[data-session="${sessionKey}"]`);
     if (target) target.classList.add('active');
@@ -2195,11 +2201,24 @@ async function restoreSession(sessionKey) {
             chatSessionId = items[0].session_id;
         }
 
-        if (items[0].domain_code) {
-            currentDomain = items[0].domain_code;
+        // ★ 상단 도메인 배지를 클릭한 이력의 실제 도메인과 일치시키기
+        //   1순위: 클릭 시 전달된 hintDomain (사이드바 리스트가 표시 중인 도메인)
+        //   2순위: 이력 데이터 items 안에서 첫 번째 non-null domain_code
+        //   둘 다 없으면 현재 currentDomain 유지 (안전한 fallback)
+        const sessionDomain = hintDomain
+            || (items.find(it => it && it.domain_code) || {}).domain_code
+            || null;
+        if (sessionDomain && sessionDomain !== currentDomain) {
+            currentDomain = sessionDomain;
             sessionDomainLocked = true;
             renderDomainSelectorBar();
+            updateDomainInfoBanner();
+            // users.domain_code 영구 저장 — 다음 진입 시 자동 복원
             fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:currentDomain}) }).catch(() => {});
+        } else if (sessionDomain) {
+            // 같은 도메인이라도 lock 상태와 배지 갱신은 보장
+            sessionDomainLocked = true;
+            renderDomainSelectorBar();
         }
 
         items.forEach(item => {
