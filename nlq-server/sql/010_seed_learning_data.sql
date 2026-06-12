@@ -191,6 +191,8 @@ INSERT IGNORE INTO ontology_synonym (column_id, synonym_text) VALUES
 ((SELECT id FROM ontology_column WHERE domain_code='PS' AND column_name='ZAMT001'),      '총매출'),
 ((SELECT id FROM ontology_column WHERE domain_code='PS' AND column_name='ZAMT001'),      '매출액'),
 ((SELECT id FROM ontology_column WHERE domain_code='PS' AND column_name='ZAMT003'),      '순매출'),
+((SELECT id FROM ontology_column WHERE domain_code='PS' AND column_name='ZAMT003'),      '매출'),
+((SELECT id FROM ontology_column WHERE domain_code='PS' AND column_name='ZAMT003'),      '판매액'),
 ((SELECT id FROM ontology_column WHERE domain_code='PS' AND column_name='ZAMT034'),      '매출원가'),
 ((SELECT id FROM ontology_column WHERE domain_code='PS' AND column_name='ZAMT035'),      '매출총이익'),
 ((SELECT id FROM ontology_column WHERE domain_code='PS' AND column_name='ZAMT036'),      '판관비'),
