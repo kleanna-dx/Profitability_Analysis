@@ -1213,9 +1213,12 @@ async function sendQuery(query) {
     scrollToBottom();
 
     try {
-        // AbortController로 타임아웃 설정 (GPT 호출이 오래 걸릴 수 있으므로 120초)
+        // AbortController로 타임아웃 설정
+        // - 현황집계(aggregate): 120초
+        // - 분석질문(analysis): 300초 (보조 SQL 다중 생성·실행 + LLM 답변 생성에 시간 필요)
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 120000);
+        const timeoutMs = (queryMode === 'analysis') ? 300000 : 120000;
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         const res = await fetch('/api/nlq', {
             method: 'POST',
@@ -1272,7 +1275,8 @@ async function sendQuery(query) {
     } catch(err) {
         typingEl.remove();
         if (err.name === 'AbortError') {
-            appendErrorMessage('요청 시간이 초과되었습니다 (2분). AI 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.');
+            const limitMin = (queryMode === 'analysis') ? 5 : 2;
+            appendErrorMessage(`요청 시간이 초과되었습니다 (${limitMin}분). AI 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.`);
         } else {
             appendErrorMessage('서버 연결 오류: ' + err.message + '\n잠시 후 다시 시도해주세요.');
         }

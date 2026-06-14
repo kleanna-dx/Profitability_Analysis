@@ -2601,18 +2601,38 @@ ${whereClause}`;
 async function generateAnalysisSqls(query, domainCode, dateCtx, conversationContext) {
   const dc = domainCode || 'PS';
 
-  // ── 1) 도메인 컬럼 카탈로그 (ontology_column.description 우선)
+  // ── 1) 실제 테이블의 컬럼 목록을 INFORMATION_SCHEMA에서 직접 추출
+  //   - LLM이 SAP BW 일반 명명규칙(/BIC/Z* 등)으로 추측한 잘못된 컬럼명을 만들지 못하도록
+  //     "DB에 실제로 존재하는 컬럼만" 보여주는 게 핵심.
+  //   - description은 ontology_column 또는 COLUMN_COMMENT 어느 쪽이든 우선 사용.
   let columnCatalog = '';
   try {
-    const [cols] = await pool.query(
-      `SELECT column_name, description, data_type
-         FROM ontology_column
-        WHERE domain_code = ? AND is_active = 1
-        ORDER BY column_name`,
-      [dc]
+    const [actualCols] = await pool.query(
+      `SELECT COLUMN_NAME, COLUMN_COMMENT, DATA_TYPE
+         FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'bw_profitability_data'
+        ORDER BY ORDINAL_POSITION`
     );
-    columnCatalog = cols
-      .map(c => `- ${c.column_name}${c.description ? ` (${c.description})` : ''}${c.data_type ? ` [${c.data_type}]` : ''}`)
+    // ontology_column.description으로 보완 (있을 때만)
+    const ontoDesc = {};
+    try {
+      const [ontoRows] = await pool.query(
+        `SELECT column_name, description
+           FROM ontology_column
+          WHERE domain_code = ? AND is_active = 1`,
+        [dc]
+      );
+      for (const r of ontoRows) {
+        if (r.description) ontoDesc[r.column_name.toUpperCase()] = r.description;
+      }
+    } catch (_) { /* ignore */ }
+
+    columnCatalog = actualCols
+      .map(c => {
+        const desc = ontoDesc[c.COLUMN_NAME.toUpperCase()] || c.COLUMN_COMMENT || '';
+        return `- ${c.COLUMN_NAME}${desc ? ` (${desc})` : ''} [${c.DATA_TYPE}]`;
+      })
       .join('\n');
   } catch (e) {
     console.warn('[analysisSqls] 컬럼 카탈로그 로드 실패:', e.message);
@@ -2643,25 +2663,36 @@ bw_profitability_data (단일 테이블)
 - 당월: ${cmLabel} (CALMONTH='${cm}')
 - 전월: ${prevLabel} (CALMONTH='${prevCm}')
 
-[사용 가능 컬럼]
-${columnCatalog || '(카탈로그 없음 — 일반적인 BW 수익성 컬럼 사용)'}
+[★★★ 사용 가능한 실제 컬럼 — 아래 목록에 없는 컬럼명은 절대 사용하지 마세요 ★★★]
+${columnCatalog || '(카탈로그 없음)'}
+
+[★ 컬럼명 절대 규칙]
+- 위 목록에 적힌 컬럼명 외에는 어떤 컬럼도 만들어내지 마세요.
+- 특히 'BIC_*', '/BIC/*' 같은 SAP BW 일반 명명규칙은 **이 DB에 존재하지 않습니다**. 사용 금지.
+- 수량은 ZQTY_BOX / ZQTY_BAG / ZQTY_KE 중 적합한 것을 선택. (BIC_ZQTY* 아님)
+- 브랜드는 ZBRAND / ZBRAND_NM (BIC_ZBRAND 아님).
+- 거래처/고객은 CUSTOMER / CUSTOMER_NM, 영업사원은 ZKUNN2 / ZKUNN2_NM.
+- 유통경로는 DISTR_CHAN / DISTR_CHAN_NM (BIC_ZDISTCHAN 아님).
+- 컬럼이 위 목록에 정확히 존재하는지 한 번 더 확인한 뒤 SQL을 작성하세요.
 
 [당신의 임무]
 사용자 질문이 가리키는 **구체 대상**(특정 품목명, 거래처, 손익센터, 채널, 플랜트 등)을
 질문 텍스트와 직전 SQL에서 추출하여, 그 대상의 원인을 다각도로 진단할 수
-**1~5개의 보조 SELECT 쿼리**를 만드세요.
+**최대 3개의 보조 SELECT 쿼리**를 만드세요. (적을수록 좋음)
 
 [필수 규칙]
 1. 모든 쿼리는 SELECT만 사용 (DML/DDL 금지). 단일 테이블 bw_profitability_data 만 사용.
-2. 각 쿼리는 한 가지 분석 관점에 집중 (전월/당월 비교, 단가/수량 분해, 거래처별, 채널별, 신규/반복 여부 등).
-3. **반드시 사용자 질문의 구체 대상을 WHERE 조건으로 좁힐 것** (예: MATERIAL_NM LIKE '%Blanq-Bright%').
+2. 각 쿼리는 한 가지 분석 관점에 집중 (전월/당월 비교, 단가/수량 분해, 거래처별 기여, 신규/반복 여부 등).
+3. **반드시 사용자 질문의 구체 대상을 WHERE 조건으로 좁힐 것** (예: MATERIAL_NM LIKE '%Blanq-Bright%', CUSTOMER_NM LIKE '%메디프렌즈%').
    - 대상 이름이 모호하면 LIKE 부분 매칭 사용.
+   - 대상이 '항상 ~ 낮다/높다' 같은 추세 질문이면 최근 3~6개월 CALMONTH로 확장 가능 (CALMONTH >= '20YYMM').
 4. 집계 함수와 일반 컬럼이 함께 있을 땐 반드시 GROUP BY 추가.
 5. 금액 컬럼(ZAMT*)은 SUM()으로 집계. 단가/평균은 SUM(금액)/NULLIF(SUM(수량),0) 형태로.
 6. 결과가 많아질 가능성이 있으면 LIMIT 50 정도로 제한, ORDER BY 명시.
 7. 컬럼 alias는 한글로 (예: AS '당월순매출').
 8. CALMONTH 비교는 문자열 '${cm}' / '${prevCm}' 사용.
 9. **분석에 도움 안 되는 일반 KPI 합계 쿼리는 만들지 말 것** — 이미 별도로 조회됨.
+10. **한 쿼리 실행 시간이 길어지지 않도록 WHERE 조건을 충분히 좁히고 LIMIT 도 작게(예: 20~50).**
 
 [출력 형식 — 반드시 JSON 한 객체]
 {
@@ -2670,7 +2701,7 @@ ${columnCatalog || '(카탈로그 없음 — 일반적인 BW 수익성 컬럼 �
     ...
   ]
 }
-queries 가 0~5개. 적절한 대상이 안 잡히면 빈 배열 가능.`;
+queries 가 0~3개. 적절한 대상이 안 잡히면 빈 배열 가능.`;
 
   let raw;
   try {
@@ -2697,7 +2728,7 @@ queries 가 0~5개. 적절한 대상이 안 잡히면 빈 배열 가능.`;
     return [];
   }
 
-  const candidates = Array.isArray(parsed.queries) ? parsed.queries.slice(0, 5) : [];
+  const candidates = Array.isArray(parsed.queries) ? parsed.queries.slice(0, 3) : [];
   const safe = [];
 
   for (const q of candidates) {
@@ -2741,29 +2772,42 @@ queries 가 0~5개. 적절한 대상이 안 잡히면 빈 배열 가능.`;
 }
 
 // ============================================================
-// Helper: 분석 보조 SQL들을 순차 실행 (실패는 스킵)
+// Helper: 분석 보조 SQL들을 병렬 실행 (실패는 스킵, 응답 시간 단축)
+// - 실패한 쿼리는 결과 배열에서 제외하여 LLM이 잘못된 오류 메시지를
+//   근거로 답변하지 않도록 함 (단, 콘솔 경고는 유지)
+// - 쿼리당 5초 타임아웃 (전체가 너무 오래 걸리지 않도록 안전장치)
 // ============================================================
 async function runAnalysisSqls(safeQueries) {
-  const out = [];
-  for (const q of safeQueries) {
+  if (safeQueries.length === 0) return [];
+
+  // 쿼리당 타임아웃 5초
+  const QUERY_TIMEOUT_MS = 5000;
+
+  const tasks = safeQueries.map(async (q) => {
+    const t0 = Date.now();
     try {
-      const t0 = Date.now();
-      let [rows] = await pool.query(q.sql);
-      rows = filterDummyRows(rows);
-      const ms = Date.now() - t0;
-      out.push({
+      const queryPromise = pool.query(q.sql);
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`쿼리 타임아웃 (${QUERY_TIMEOUT_MS}ms)`)), QUERY_TIMEOUT_MS)
+      );
+      const result = await Promise.race([queryPromise, timeoutPromise]);
+      const rows = filterDummyRows(result[0]);
+      return {
         label: q.label,
         sql: q.sql,
         rowCount: rows.length,
-        rows: rows.slice(0, 30),  // 프롬프트에 너무 많이 안 들어가게 상한
-        execMs: ms,
-      });
+        rows: rows.slice(0, 30),  // LLM 프롬프트 입력 상한
+        execMs: Date.now() - t0,
+      };
     } catch (e) {
-      console.warn('[analysisSqls] 실행 실패 → 스킵:', q.label, '-', e.message);
-      out.push({ label: q.label, sql: q.sql, rowCount: 0, rows: [], error: e.message });
+      console.warn('[analysisSqls] 실행 실패 → 결과에서 제외:', q.label, '-', e.message);
+      // ★ 실패한 쿼리는 null 반환 → 필터링 후 LLM에 전달 안 함
+      return null;
     }
-  }
-  return out;
+  });
+
+  const settled = await Promise.all(tasks);
+  return settled.filter(r => r !== null);
 }
 
 // ============================================================
