@@ -377,6 +377,43 @@
         }
         .dl-btn.excel:hover { background:#059669; }
         .dl-btn i { font-size:0.9rem; }
+
+        /* [2026-06-15] 결과 즐겨찾기 별 버튼
+           - 결과 툴바 우측, CSV 버튼 좌측에 위치
+           - 빈 별(far fa-star) ↔ 채워진 별(fas fa-star) 토글
+           - loadedHistoryId 가 있어야 활성화 (피벗 생성 직후 또는 이력 복원 후) */
+        .favorite-result-btn {
+            display:inline-flex; align-items:center; justify-content:center;
+            width:38px; height:38px; padding:0;
+            background:#fff; border:1px solid var(--border);
+            border-radius:10px; cursor:pointer;
+            font-size:1.1rem; color:#cbd5e1;
+            transition:all 0.18s ease;
+            margin-right:6px;
+        }
+        .favorite-result-btn:hover:not(:disabled) {
+            background:#fffbeb; border-color:#fcd34d; color:#f59e0b;
+            transform:translateY(-1px);
+            box-shadow:0 4px 12px rgba(245,158,11,0.18);
+        }
+        .favorite-result-btn.bookmarked {
+            color:#f59e0b; border-color:#fcd34d; background:#fffbeb;
+        }
+        .favorite-result-btn.bookmarked:hover {
+            background:#fef3c7;
+        }
+        .favorite-result-btn:disabled {
+            opacity:0.4; cursor:not-allowed;
+        }
+        /* 클릭 직후 살짝 튕기는 효과 */
+        @keyframes favStarPop {
+            0%   { transform:scale(1); }
+            40%  { transform:scale(1.35); }
+            70%  { transform:scale(0.92); }
+            100% { transform:scale(1); }
+        }
+        .favorite-result-btn.pop i { animation: favStarPop 0.36s ease; }
+
         .reset-btn {
             display:inline-flex; align-items:center; gap:4px;
             padding:8px 14px; background:none; border:none;
@@ -1024,6 +1061,16 @@
                         <span class="info-chip" id="resultInfoChip"></span>
                     </div>
                     <div class="result-toolbar-right">
+                        <!-- [2026-06-15] 결과 즐겨찾기 별 버튼
+                             - 클릭 시 현재 결과(loadedHistoryId)를 즐겨찾기에 등록/해제
+                             - 채워진 별(노랑) = 즐겨찾기됨 / 빈 별(회색) = 미등록
+                             - 페이지 로드 직후엔 비활성, 피벗 생성 또는 이력 복원 후 활성화 -->
+                        <button id="favoriteResultBtn" class="favorite-result-btn"
+                                onclick="toggleResultFavorite()"
+                                title="이 결과를 즐겨찾기에 추가/제거"
+                                disabled>
+                            <i class="far fa-star"></i>
+                        </button>
                         <button class="dl-btn csv" onclick="downloadCSV()">
                             <i class="fas fa-file-csv"></i> CSV
                         </button>
@@ -1074,6 +1121,11 @@ let valuesCache = {};
 let lastResultColumns = [];
 let lastResultRows = [];
 let loadedHistoryId = null; // 기존 이력 클릭 시 설정 → 재실행 시 UPDATE 용
+// [2026-06-15] 현재 결과의 즐겨찾기 상태 — 결과 툴바 별 아이콘과 동기화
+//   - null: 결과 없음 (별 비활성)
+//   - false: 결과 있음, 즐겨찾기 X (빈 별)
+//   - true: 결과 있음, 즐겨찾기 O (채워진 별)
+let loadedIsBookmarked = null;
 
 // 날짜 조건 상태
 let compareYoY = false;
@@ -1202,6 +1254,9 @@ function newQueryBuilder(){
     // 8) 도메인 잠금 해제 + 이력 ID 초기화
     builderDomainLocked = false;
     loadedHistoryId = null;
+    // [2026-06-15] 결과 즐겨찾기 별도 리셋
+    loadedIsBookmarked = null;
+    renderFavoriteResultBtn();
     renderDomainSelectorBar();
 
     // 9) 정렬/제한 초기화
@@ -2023,6 +2078,20 @@ async function executeQuery() {
         // 서버가 반환한 history_id 저장 (다음 재실행 시 UPDATE 용)
         if (data.history_id) loadedHistoryId = data.history_id;
 
+        // [2026-06-15] 결과 즐겨찾기 별 상태 동기화
+        //   - 서버 응답에 is_bookmarked 가 포함되면 그 값 사용 (재실행한 기존 이력일 수 있음)
+        //   - 없으면 기본 false (방금 새로 생성한 이력은 미등록 상태로 출발)
+        if (typeof data.is_bookmarked !== 'undefined') {
+            loadedIsBookmarked = !!data.is_bookmarked;
+        } else if (loadedHistoryId) {
+            // 사이드 메뉴 캐시에서 동기화 시도 (이미 즐겨찾기였던 이력을 재실행한 경우)
+            const cached = builderHistoryCache.find(h => h.id === loadedHistoryId);
+            loadedIsBookmarked = cached ? !!cached.is_bookmarked : false;
+        } else {
+            loadedIsBookmarked = false;
+        }
+        renderFavoriteResultBtn();
+
         if (data.sql) {
             document.getElementById('sqlPreviewText').innerHTML = highlightSQL(data.sql);
             document.getElementById('sqlPreview').classList.add('active');
@@ -2101,6 +2170,9 @@ function resetResults() {
     document.getElementById('resultsSection').classList.remove('active');
     document.getElementById('sqlPreview').classList.remove('active');
     document.getElementById('errorBox').classList.remove('active');
+    // [2026-06-15] 결과 영역 닫혔으므로 별도 비활성화
+    loadedIsBookmarked = null;
+    renderFavoriteResultBtn();
 }
 
 // ─── CSV Download ───────────────────────
@@ -2499,6 +2571,10 @@ async function restoreBuilderHistory(id, hintDomain) {
             alert('이력을 불러올 수 없습니다: ' + item.error); return;
         }
         loadedHistoryId = id; // 기존 이력 → 재실행 시 UPDATE
+        // [2026-06-15] 즐겨찾기 상태 동기화 — 사용자가 즐겨찾기 목록에서 클릭해서 들어왔으면
+        //   별이 채워진 상태로 보여야 함 (사용자 요청 핵심 요구사항)
+        loadedIsBookmarked = !!item.is_bookmarked;
+        renderFavoriteResultBtn();
         // 이력의 도메인으로 전환 + 잠금 (자연어 질의와 동일)
         // hintDomain 우선 사용 — item.domain_code 가 NULL 이어도 사이드바 배지와 일치
         await switchDomainForHistory(hintDomain || item.domain_code);
@@ -2608,8 +2684,85 @@ async function toggleBookmark(id) {
             const item = builderHistoryCache.find(h => h.id === id);
             if (item) item.is_bookmarked = data.is_bookmarked;
             renderBuilderHistory(builderHistoryCache);
+            // 현재 로드된 이력이라면 결과 툴바 별도 동기화
+            if (loadedHistoryId === id) {
+                loadedIsBookmarked = !!data.is_bookmarked;
+                renderFavoriteResultBtn();
+            }
         }
     } catch(e) { alert('북마크 변경 실패: ' + e.message); }
+}
+
+// ============================================================
+// [2026-06-15] 결과 영역 즐겨찾기 별 — 상태 동기화 + 토글
+// ------------------------------------------------------------
+//   - 데이터 소스: builder_query_history.is_bookmarked (PATCH /api/builder/history/:id/bookmark 가 서버 토글)
+//   - UI 상태 3종:
+//       loadedIsBookmarked === null   → 결과 없음 (버튼 disabled, 빈 별 회색)
+//       loadedIsBookmarked === false  → 결과 있음, 미등록 (빈 별, 호버 시 노랑)
+//       loadedIsBookmarked === true   → 결과 있음, 등록됨 (채워진 별 노랑)
+//   - executeQuery() 직후, restoreBuilderHistory() 후, resetResults() 후에 호출되어 갱신됨
+// ============================================================
+function renderFavoriteResultBtn() {
+    const btn = document.getElementById('favoriteResultBtn');
+    if (!btn) return;
+    const icon = btn.querySelector('i');
+    if (loadedIsBookmarked === null || !loadedHistoryId) {
+        btn.disabled = true;
+        btn.classList.remove('bookmarked');
+        icon.className = 'far fa-star';
+        btn.title = '피벗을 생성하면 즐겨찾기 등록이 가능합니다';
+    } else if (loadedIsBookmarked === true) {
+        btn.disabled = false;
+        btn.classList.add('bookmarked');
+        icon.className = 'fas fa-star';
+        btn.title = '즐겨찾기 해제 (다시 클릭)';
+    } else {
+        btn.disabled = false;
+        btn.classList.remove('bookmarked');
+        icon.className = 'far fa-star';
+        btn.title = '이 결과를 즐겨찾기에 추가';
+    }
+}
+
+async function toggleResultFavorite() {
+    if (!loadedHistoryId) {
+        alert('먼저 [피벗 생성] 으로 결과를 만들어주세요.');
+        return;
+    }
+    const btn = document.getElementById('favoriteResultBtn');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true; // 중복 클릭 방지
+    try {
+        const res = await fetch(`/api/builder/history/${loadedHistoryId}/bookmark`, { method: 'PATCH' });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            alert('즐겨찾기 변경 실패: ' + (data.error || res.statusText));
+            return;
+        }
+        loadedIsBookmarked = !!data.is_bookmarked;
+        // 사이드 메뉴 캐시도 동기화
+        const item = builderHistoryCache.find(h => h.id === loadedHistoryId);
+        if (item) item.is_bookmarked = data.is_bookmarked;
+        renderFavoriteResultBtn();
+        // 팝 애니메이션
+        btn.classList.remove('pop');
+        // reflow → restart animation
+        void btn.offsetWidth;
+        btn.classList.add('pop');
+        // 사이드 메뉴(즐겨찾기 탭이면) 갱신
+        if (typeof currentHistoryTab !== 'undefined' && currentHistoryTab === 'bookmarked') {
+            loadBuilderHistory().catch(() => {});
+        } else {
+            // 일반 이력 탭이어도 별 모양 반영
+            renderBuilderHistory(builderHistoryCache);
+        }
+    } catch(e) {
+        alert('즐겨찾기 변경 오류: ' + e.message);
+    } finally {
+        // 상태 재반영 (renderFavoriteResultBtn 이 disabled 풀어줌)
+        renderFavoriteResultBtn();
+    }
 }
 
 // --- 공유 모달 ---
