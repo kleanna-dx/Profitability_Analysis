@@ -379,7 +379,7 @@
         .dl-btn i { font-size:0.9rem; }
 
         /* [2026-06-15] 결과 즐겨찾기 별 버튼
-           - 결과 툴바 우측, CSV 버튼 좌측에 위치
+           - [피벗 생성] 버튼이 있는 .execute-area 의 맨 오른쪽에 위치 (margin-left:auto)
            - 빈 별(far fa-star) ↔ 채워진 별(fas fa-star) 토글
            - loadedHistoryId 가 있어야 활성화 (피벗 생성 직후 또는 이력 복원 후) */
         .favorite-result-btn {
@@ -389,7 +389,7 @@
             border-radius:10px; cursor:pointer;
             font-size:1.1rem; color:#cbd5e1;
             transition:all 0.18s ease;
-            margin-right:6px;
+            margin-left:auto;  /* .execute-area 의 flex container 안에서 맨 오른쪽으로 밀어냄 */
         }
         .favorite-result-btn:hover:not(:disabled) {
             background:#fffbeb; border-color:#fcd34d; color:#f59e0b;
@@ -1037,6 +1037,17 @@
                                 <option value="5000">5,000건</option>
                             </select>
                         </div>
+                        <!-- [2026-06-15] 결과 즐겨찾기 별 버튼 — [피벗 생성] 행의 맨 오른쪽
+                             - 클릭 시 현재 결과(loadedHistoryId)를 즐겨찾기에 등록/해제
+                             - 채워진 별(노랑) = 즐겨찾기됨 / 빈 별(회색) = 미등록
+                             - 페이지 로드 직후엔 비활성, 피벗 생성 또는 이력 복원 후 활성화
+                             - .execute-area 의 flex 컨테이너 안에서 margin-left:auto 로 맨 오른쪽 정렬 -->
+                        <button id="favoriteResultBtn" class="favorite-result-btn"
+                                onclick="toggleResultFavorite()"
+                                title="이 결과를 즐겨찾기에 추가/제거"
+                                disabled>
+                            <i class="far fa-star"></i>
+                        </button>
                     </div>
                     <div class="sql-preview" id="sqlPreview">
                         <span class="label">생성된 SQL</span>
@@ -1061,16 +1072,8 @@
                         <span class="info-chip" id="resultInfoChip"></span>
                     </div>
                     <div class="result-toolbar-right">
-                        <!-- [2026-06-15] 결과 즐겨찾기 별 버튼
-                             - 클릭 시 현재 결과(loadedHistoryId)를 즐겨찾기에 등록/해제
-                             - 채워진 별(노랑) = 즐겨찾기됨 / 빈 별(회색) = 미등록
-                             - 페이지 로드 직후엔 비활성, 피벗 생성 또는 이력 복원 후 활성화 -->
-                        <button id="favoriteResultBtn" class="favorite-result-btn"
-                                onclick="toggleResultFavorite()"
-                                title="이 결과를 즐겨찾기에 추가/제거"
-                                disabled>
-                            <i class="far fa-star"></i>
-                        </button>
+                        <!-- [2026-06-15] 결과 즐겨찾기 별 버튼은 위쪽 [피벗 생성] 행 우측으로 이동
+                             (사용자 요청: 별표 표시를 [피벗 생성] 버튼 있는 쪽 맨 오른쪽에 배치) -->
                         <button class="dl-btn csv" onclick="downloadCSV()">
                             <i class="fas fa-file-csv"></i> CSV
                         </button>
