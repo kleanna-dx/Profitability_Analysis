@@ -3551,8 +3551,12 @@ ${commonRules}
           chartConfig: {},
         });
       } catch (analysisErr) {
-        console.error('[NLQ] 분석 경로 실패:', analysisErr.message);
-        // 분석 경로가 실패해도 일반 경로로 fallthrough하지 않고 친절한 안내로 마무리
+        // ★ 분석 경로 실패 시: 친절한 안내 + 진단용 상세 에러 정보 함께 반환
+        //   클라이언트의 "오류 상세보기" 토글에서 원인을 직접 확인할 수 있도록.
+        console.error('[NLQ] 분석 경로 실패:', analysisErr);
+        const errMsg = analysisErr?.sqlMessage || analysisErr?.message || String(analysisErr);
+        const errStack = analysisErr?.stack ? String(analysisErr.stack).split('\n').slice(0, 5).join('\n') : '';
+        const errCode = analysisErr?.code || analysisErr?.errno || analysisErr?.status || '';
         return res.json({
           success: false,
           isAnalysisAnswer: true,
@@ -3561,6 +3565,20 @@ ${commonRules}
           rowCount: 0,
           sql: null,
           error_user_friendly: true,
+          // ★ 상세 진단 정보 (클라이언트 "오류 상세보기"에서 표시)
+          error_detail: {
+            stage: 'analysis_path',
+            phase: 'analysis_path',     // (deprecated alias)
+            message: errMsg,
+            code: errCode || null,
+            stack: errStack || null,
+            query,
+            queryMode: userQueryMode,
+            intent: typeof intent !== 'undefined' ? intent : null,
+            calmonth: typeof calmonth !== 'undefined' ? calmonth : null,
+            domain: activeDomain,
+            timestamp: new Date().toISOString(),
+          },
         });
       }
     }
@@ -4022,13 +4040,30 @@ ${formatRule}
   } catch (err) {
     console.error('[NLQ] Error:', err);
     const msg = err.sqlMessage || err.message || String(err);
+    const errStack = err?.stack ? String(err.stack).split('\n').slice(0, 5).join('\n') : '';
+    const errCode = err?.code || err?.errno || err?.status || '';
 
     // 실패 이력도 저장
     const nlqUserId = req.session?.user?.id || null;
     saveHistory(nlqUserId, query, null, null, null, null, null, 0, 0, 'FAILED', msg, session_id || null, activeDomain)
       .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
-    return res.status(500).json({ error: msg, query });
+    // ★ 상세 진단 정보 함께 반환 (클라이언트 "오류 상세보기"에서 표시)
+    return res.status(500).json({
+      error: msg,
+      query,
+      error_detail: {
+        stage: 'top_level',
+        phase: 'top_level',
+        message: msg,
+        code: errCode || null,
+        stack: errStack || null,
+        query,
+        queryMode: userQueryMode,
+        domain: activeDomain,
+        timestamp: new Date().toISOString(),
+      },
+    });
   }
 });
 
