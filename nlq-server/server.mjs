@@ -13,6 +13,7 @@ import XLSX from 'xlsx-js-style';
 import session from 'express-session';
 import expressMySQLSession from 'express-mysql-session';
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import {
   buildRagIndex,
   searchRelevantMeta,
@@ -26,6 +27,209 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// ============================================================
+// [2026-06-15] Request-scoped 로그 캡처 + requestId 미들웨어
+// ------------------------------------------------------------
+// 목적: 자연어 질의 오류 발생 시, 그 요청 처리 중에 찍힌 console.log/error
+//       라인들을 응답 본문에 함께 실어줘서 화면 "오류 상세" 영역에서
+//       module-profit.log 를 따로 안 봐도 원인 추적 가능하게 함.
+//
+// 동작 개요:
+//   1) NLQ 같은 진단 대상 라우트는 captureLogsMiddleware 를 통과시켜
+//      각 요청마다 고유 requestId 발급 + AsyncLocalStorage 컨텍스트 진입
+//   2) 컨텍스트 안의 console.log/info/warn/error 호출은 모두
+//      해당 요청의 링버퍼(최근 200줄)에 저장 + 기존 콘솔 출력(PM2 로그)은 그대로 유지
+//   3) 라우트 핸들러에서 응답 직전에 ctx.logLines / ctx.requestId 를 꺼내
+//      error_detail.requestId / error_detail.logLines 로 클라이언트에 전달
+//   4) 모든 요청의 로그는 메모리 LRU(최근 200건) 에 보관 →
+//      클라이언트가 504 같은 비-JSON 응답을 받았을 때
+//      `/api/nlq/error-log/:requestId` 로 사후 조회 가능
+// ============================================================
+const REQ_LOG_RING_SIZE = parseInt(process.env.NLQ_REQ_LOG_RING_SIZE || '200', 10);
+const REQ_LOG_LRU_SIZE = parseInt(process.env.NLQ_REQ_LOG_LRU_SIZE || '200', 10);
+const requestLogStorage = new AsyncLocalStorage();
+// 최근 처리된 요청들의 로그를 보관 (Map = 삽입 순서 유지 → LRU 구현)
+const requestLogLRU = new Map();
+
+function generateRequestId() {
+  // ex) 20260615-141523-abc1d2 (정렬가능 + 가독성)
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const ts = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const rand = crypto.randomBytes(3).toString('hex');
+  return `req-${ts}-${rand}`;
+}
+
+function rememberRequestLog(requestId, ctxObj) {
+  if (!requestId || !ctxObj) return;
+  if (requestLogLRU.has(requestId)) requestLogLRU.delete(requestId); // 갱신
+  requestLogLRU.set(requestId, ctxObj);
+  // LRU 초과 시 가장 오래된 것 제거
+  while (requestLogLRU.size > REQ_LOG_LRU_SIZE) {
+    const firstKey = requestLogLRU.keys().next().value;
+    requestLogLRU.delete(firstKey);
+  }
+}
+
+/** 현재 요청 컨텍스트 (없으면 null) */
+function getRequestCtx() {
+  return requestLogStorage.getStore() || null;
+}
+
+/** 현재 요청 컨텍스트의 logLines (사본) — 라우트 핸들러에서 응답 생성용 */
+function getCurrentLogLines() {
+  const ctx = getRequestCtx();
+  if (!ctx) return [];
+  return ctx.logLines.slice();
+}
+
+/** 현재 요청 컨텍스트의 requestId */
+function getCurrentRequestId() {
+  return getRequestCtx()?.requestId || null;
+}
+
+/** 현재 요청 컨텍스트에 stage 기록 (가장 최근 stage 가 응답에 노출됨) */
+function setRequestStage(stage) {
+  const ctx = getRequestCtx();
+  if (ctx) ctx.lastStage = stage;
+}
+
+// 원본 console 메서드 보관 (한 번만 wrap)
+const _origConsole = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+};
+function _fmtArg(a) {
+  if (a instanceof Error) return `${a.message}\n${a.stack || ''}`;
+  if (typeof a === 'object') {
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }
+  return String(a);
+}
+function _captureLine(level, args) {
+  const ctx = getRequestCtx();
+  if (!ctx) return;
+  const line = `[${new Date().toISOString()}] [${level}] ${args.map(_fmtArg).join(' ')}`;
+  ctx.logLines.push(line);
+  // 링버퍼 — 200줄 초과 시 앞쪽 제거
+  if (ctx.logLines.length > REQ_LOG_RING_SIZE) {
+    ctx.logLines.splice(0, ctx.logLines.length - REQ_LOG_RING_SIZE);
+  }
+}
+console.log = (...args) => { _captureLine('LOG', args); _origConsole.log(...args); };
+console.info = (...args) => { _captureLine('INFO', args); _origConsole.info(...args); };
+console.warn = (...args) => { _captureLine('WARN', args); _origConsole.warn(...args); };
+console.error = (...args) => { _captureLine('ERROR', args); _origConsole.error(...args); };
+
+/**
+ * requestId 부여 + 로그 캡처 컨텍스트 진입 미들웨어
+ * — NLQ 같은 진단 대상 라우트에서만 사용 (전역 적용하지 않음)
+ */
+function captureLogsMiddleware(req, res, next) {
+  const requestId = (req.headers['x-request-id'] && String(req.headers['x-request-id']).trim()) || generateRequestId();
+  const ctx = {
+    requestId,
+    startedAt: Date.now(),
+    logLines: [],
+    lastStage: null,
+    method: req.method,
+    url: req.originalUrl || req.url,
+    userId: req.session?.user?.id || null,
+    userRole: req.session?.user?.role || null,
+  };
+  // 응답 헤더로 노출 (CORS 환경에서도 브라우저가 읽을 수 있도록 expose)
+  res.setHeader('X-Request-Id', requestId);
+  // 응답 완료 시 LRU 에 기록
+  res.on('finish', () => {
+    ctx.finishedAt = Date.now();
+    ctx.statusCode = res.statusCode;
+    rememberRequestLog(requestId, ctx);
+  });
+  res.on('close', () => {
+    if (!ctx.finishedAt) {
+      // 클라이언트가 끊었거나 nginx 가 504 로 끊은 경우 — 끊긴 시점까지의 로그는 남김
+      ctx.finishedAt = Date.now();
+      ctx.statusCode = res.statusCode || 0;
+      ctx.aborted = true;
+      rememberRequestLog(requestId, ctx);
+    }
+  });
+  requestLogStorage.run(ctx, () => next());
+}
+
+/**
+ * 사용자에게 보낼 errorDetail 객체 생성
+ * - 관리자(role === 'admin') 만 stack, logLines 등 민감 정보 노출
+ * - 일반 사용자는 stage / errorType / message / requestId 까지만
+ */
+function buildErrorDetail({ req, stage, errorType, err, extra }) {
+  const isAdmin = req?.session?.user?.role === 'admin';
+  const requestId = getCurrentRequestId();
+  const message = err?.sqlMessage || err?.message || (err ? String(err) : '');
+  const code = err?.code || err?.errno || err?.status || null;
+  const detail = {
+    requestId,
+    stage: stage || getRequestCtx()?.lastStage || 'unknown',
+    errorType: errorType || classifyErrorType(err, stage),
+    message,
+    code: code || null,
+    timestamp: new Date().toISOString(),
+    isAdmin,
+  };
+  if (extra && typeof extra === 'object') Object.assign(detail, extra);
+  if (isAdmin) {
+    // 관리자에게만 상세 로그 제공
+    detail.stack = err?.stack ? String(err.stack).split('\n').slice(0, 8).join('\n') : null;
+    detail.logLines = getCurrentLogLines();
+    detail.logHint = `tail -f /home/user/.pm2/logs/nlq-server-out-0.log | grep ${requestId}`;
+  } else {
+    // 일반 사용자에게는 로그 라인 수만 노출 (관리자 문의 시 인용 가능)
+    detail.logLineCount = getCurrentLogLines().length;
+  }
+  return detail;
+}
+
+/**
+ * 오류를 단계/유형별로 분류
+ *   sql_generation : LLM 이 SQL 생성에 실패 (JSON 파싱, validateSqlPreExecution 등)
+ *   db_execution   : MariaDB 실행 단계 오류 (ER_xxx, ECONNREFUSED 등)
+ *   llm_response   : OpenAI API 자체 오류 (429, 5xx, 응답 형식 깨짐)
+ *   timeout        : 타임아웃 (AbortError, ETIMEDOUT 등)
+ *   system         : 기타 시스템 오류
+ */
+function classifyErrorType(err, stage) {
+  if (!err && !stage) return 'system';
+  const msg = String(err?.message || err || '').toLowerCase();
+  const code = String(err?.code || err?.errno || '').toLowerCase();
+  const sql = String(err?.sqlMessage || '').toLowerCase();
+  // timeout
+  if (err?.name === 'AbortError' || code === 'etimedout' || code === 'esockettimedout' || msg.includes('timeout') || msg.includes('timed out')) {
+    return 'timeout';
+  }
+  // DB execution
+  if (sql || code.startsWith('er_') || code === 'econnrefused' || code === 'epipe' || code === 'protocol_connection_lost') {
+    return 'db_execution';
+  }
+  // LLM (OpenAI)
+  if (err?.constructor?.name === 'APIError' || err?.constructor?.name === 'OpenAIError' || msg.includes('openai') || (err?.status && Number(err.status) >= 500 && msg.includes('api'))) {
+    return 'llm_response';
+  }
+  // SQL generation (LLM 이 JSON 깨거나 validateSqlPreExecution 실패)
+  if (msg.includes('json') || msg.includes('parse') || msg.includes('sql 검증') || msg.includes('validatesqlpreexecution')) {
+    return 'sql_generation';
+  }
+  // stage 힌트 활용
+  if (stage) {
+    if (stage.includes('sql_gen') || stage.includes('llm_parse')) return 'sql_generation';
+    if (stage.includes('db_') || stage.includes('execute')) return 'db_execution';
+    if (stage.includes('llm') || stage.includes('openai') || stage.includes('analysis_path')) return 'llm_response';
+    if (stage.includes('timeout')) return 'timeout';
+  }
+  return 'system';
+}
 
 // ============================================================
 // 세션 설정 (MariaDB 영구 저장소 — PM2 재시작 시에도 세션 유지)
@@ -3102,11 +3306,12 @@ async function resolveColumnLabels(rows, sql, domainCode) {
 // ============================================================
 // API: 자연어 질의 실행
 // ============================================================
-app.post('/api/nlq', async (req, res) => {
+app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   const { query, conversationContext, session_id, queryMode } = req.body;
   if (!query || !query.trim()) {
-    return res.status(400).json({ error: '질의를 입력하세요.' });
+    return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
   }
+  setRequestStage('nlq_entry');
   const activeDomain = await getActiveDomain(req);
   // ★ 도메인 미설정 방어: users.domain_code가 NULL이고 세션에도 active_domain이 없으면
   //   프론트엔드에서 분석 영역 선택 모달을 띄우도록 안내 (조직도 자동매핑 제거 정책)
@@ -3164,11 +3369,13 @@ app.post('/api/nlq', async (req, res) => {
     }
     if (!matchedSql && isAnalysisMode) {
       console.log(`[NLQ] 🧠 분석형 질문 처리 → 의도 분류 → 경로 분기`);
+      setRequestStage('analysis_intent_classify');
       try {
         // ============================================================
         // ★ 의도 분류: 사용자 질문이 개념설명 / 데이터분석 / 해석 중 무엇인지 판단
         // ============================================================
         const intent = await classifyAnalysisIntent(query, openai, GPT_MODEL);
+        setRequestStage(`analysis_${intent || 'unknown'}`);
 
         // ─────────────────────────────────────────────────────────
         // 경로 1: 개념/용어 설명 (concept) — DB 조회 없이 정의만
@@ -3443,9 +3650,20 @@ ${commonRules}
         // ★ 분석 경로 실패 시: 친절한 안내 + 진단용 상세 에러 정보 함께 반환
         //   클라이언트의 "오류 상세보기" 토글에서 원인을 직접 확인할 수 있도록.
         console.error('[NLQ] 분석 경로 실패:', analysisErr);
-        const errMsg = analysisErr?.sqlMessage || analysisErr?.message || String(analysisErr);
-        const errStack = analysisErr?.stack ? String(analysisErr.stack).split('\n').slice(0, 5).join('\n') : '';
-        const errCode = analysisErr?.code || analysisErr?.errno || analysisErr?.status || '';
+        setRequestStage('analysis_path');
+        const errorDetail = buildErrorDetail({
+          req,
+          stage: 'analysis_path',
+          err: analysisErr,
+          extra: {
+            phase: 'analysis_path',
+            query,
+            queryMode: userQueryMode,
+            intent: typeof intent !== 'undefined' ? intent : null,
+            calmonth: typeof calmonth !== 'undefined' ? calmonth : null,
+            domain: activeDomain,
+          },
+        });
         return res.json({
           success: false,
           isAnalysisAnswer: true,
@@ -3453,26 +3671,15 @@ ${commonRules}
           rows: [],
           rowCount: 0,
           sql: null,
+          requestId: errorDetail.requestId,
           error_user_friendly: true,
-          // ★ 상세 진단 정보 (클라이언트 "오류 상세보기"에서 표시)
-          error_detail: {
-            stage: 'analysis_path',
-            phase: 'analysis_path',     // (deprecated alias)
-            message: errMsg,
-            code: errCode || null,
-            stack: errStack || null,
-            query,
-            queryMode: userQueryMode,
-            intent: typeof intent !== 'undefined' ? intent : null,
-            calmonth: typeof calmonth !== 'undefined' ? calmonth : null,
-            domain: activeDomain,
-            timestamp: new Date().toISOString(),
-          },
+          error_detail: errorDetail,
         });
       }
     }
 
     if (matchedSql) {
+      setRequestStage('learned_sql');
       // 학습 데이터 매칭 → AI 호출 없이 직접 사용
       // ★ Metric 산식 자동 치환 (헬퍼 함수 사용)
       matchedSql = await applyMetricFormulaReplacement(matchedSql, activeDomain);
@@ -3558,6 +3765,7 @@ ${commonRules}
       }
       messages.push({ role: 'user', content: query });
 
+      setRequestStage('llm_sql_generate');
       const completion = await openai.chat.completions.create({
         model: GPT_MODEL,
         messages,
@@ -3605,6 +3813,7 @@ ${commonRules}
       }
 
       sql = parsed.sql;
+      setRequestStage('sql_generated');
       // ★ GPT 생성 SQL에도 Metric 산식 자동 치환 적용 (GPT가 프롬프트를 무시하고 단순 컬럼 사용 시 안전장치)
       sql = await applyMetricFormulaReplacement(sql, activeDomain);
       // answer는 1단계에서 무시 — SQL 실행 후 결과 기반으로 4-A에서 생성
@@ -3730,6 +3939,7 @@ ${sqlValidation.reason}
     }
 
     // 3. DB 실행
+    setRequestStage('db_execution');
     const startTime = Date.now();
     let rows;
     try {
@@ -3759,6 +3969,19 @@ ${sqlValidation.reason}
       saveHistory(failUserId, query, sql, null, null, null, null, 0, 0, 'FAILED', errMsg, session_id || null, activeDomain)
         .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
+      // ★ 상세 진단 정보 포함 (DB 실행 단계 오류)
+      const errorDetail = buildErrorDetail({
+        req,
+        stage: 'db_execution',
+        errorType: 'db_execution',
+        err: dbErr,
+        extra: {
+          query,
+          queryMode: userQueryMode,
+          domain: activeDomain,
+          failedSql: sql,
+        },
+      });
       return res.json({
         success: false,
         sql,
@@ -3766,10 +3989,13 @@ ${sqlValidation.reason}
         rowCount: 0,
         answer: friendly,
         explanation: `DB 실행 오류: ${errMsg}`,
+        requestId: errorDetail.requestId,
         error_user_friendly: true,
+        error_detail: errorDetail,
       });
     }
     const execTime = Date.now() - startTime;
+    setRequestStage('db_execution_done');
 
     console.log(`[NLQ] SQL 실행: ${execTime}ms, ${rows.length}행`);
 
@@ -3784,6 +4010,7 @@ ${sqlValidation.reason}
       // ★ 답변 출력 규칙 (전역 규칙)
       const formatRule = `[답변 출력 규칙]\n- "YYYY년 M월" 형태의 년월 표현은 반드시 **굵게(마크다운 **)** 강조하세요. 예: **2026년 5월**\n- 조회 결과에 'Dummy' 값이 있으면 본문에 언급하지 마세요. (사용자에게 노출되지 않습니다)`;
 
+      setRequestStage('llm_answer_generate');
       const answerCompletion = await openai.chat.completions.create({
         model: GPT_MODEL,
         messages: [
@@ -3929,8 +4156,6 @@ ${formatRule}
   } catch (err) {
     console.error('[NLQ] Error:', err);
     const msg = err.sqlMessage || err.message || String(err);
-    const errStack = err?.stack ? String(err.stack).split('\n').slice(0, 5).join('\n') : '';
-    const errCode = err?.code || err?.errno || err?.status || '';
 
     // 실패 이력도 저장
     const nlqUserId = req.session?.user?.id || null;
@@ -3938,22 +4163,79 @@ ${formatRule}
       .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
     // ★ 상세 진단 정보 함께 반환 (클라이언트 "오류 상세보기"에서 표시)
-    return res.status(500).json({
-      error: msg,
-      query,
-      error_detail: {
-        stage: 'top_level',
+    const errorDetail = buildErrorDetail({
+      req,
+      stage: getRequestCtx()?.lastStage || 'top_level',
+      err,
+      extra: {
         phase: 'top_level',
-        message: msg,
-        code: errCode || null,
-        stack: errStack || null,
         query,
         queryMode: userQueryMode,
         domain: activeDomain,
-        timestamp: new Date().toISOString(),
       },
     });
+    return res.status(500).json({
+      error: msg,
+      query,
+      requestId: errorDetail.requestId,
+      error_detail: errorDetail,
+    });
   }
+});
+
+// ============================================================
+// [2026-06-15] 요청별 로그 사후 조회 API
+// ------------------------------------------------------------
+// 클라이언트가 504(게이트웨이 타임아웃) 등으로 응답 본문을 받지 못한 경우,
+// 응답 헤더의 X-Request-Id 를 기반으로 메모리에 남아있는 로그를 조회한다.
+//
+// 권한 정책:
+//   - 자신의 요청(userId 일치): logLineCount, stage 까지 노출
+//   - 관리자(role='admin'): logLines 전체 + stack 등 상세까지 노출
+//   - 비로그인: 거부
+// ============================================================
+app.get('/api/nlq/error-log/:requestId', async (req, res) => {
+  if (!req.session?.user) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  const requestId = String(req.params.requestId || '').trim();
+  if (!requestId) return res.status(400).json({ error: 'requestId 가 필요합니다.' });
+  const ctx = requestLogLRU.get(requestId);
+  if (!ctx) {
+    return res.status(404).json({
+      error: '해당 requestId 의 로그를 찾을 수 없습니다.',
+      hint: '메모리에는 최근 ' + REQ_LOG_LRU_SIZE + '건만 보관됩니다. PM2 로그를 확인하세요: tail -f /home/user/.pm2/logs/nlq-server-out-0.log | grep ' + requestId,
+      requestId,
+    });
+  }
+  const isAdmin = req.session.user.role === 'admin';
+  const isOwner = ctx.userId && ctx.userId === req.session.user.id;
+  if (!isAdmin && !isOwner) {
+    return res.status(403).json({ error: '다른 사용자의 요청 로그는 조회할 수 없습니다.' });
+  }
+  const base = {
+    requestId,
+    stage: ctx.lastStage,
+    method: ctx.method,
+    url: ctx.url,
+    statusCode: ctx.statusCode || null,
+    startedAt: new Date(ctx.startedAt).toISOString(),
+    finishedAt: ctx.finishedAt ? new Date(ctx.finishedAt).toISOString() : null,
+    elapsedMs: ctx.finishedAt ? (ctx.finishedAt - ctx.startedAt) : (Date.now() - ctx.startedAt),
+    aborted: !!ctx.aborted,
+    logLineCount: ctx.logLines.length,
+  };
+  if (isAdmin) {
+    base.logLines = ctx.logLines.slice();
+    base.userId = ctx.userId;
+    base.userRole = ctx.userRole;
+  } else {
+    // 일반 사용자(자기 요청): 민감 정보 제외, 최근 30줄만
+    base.logLines = ctx.logLines.slice(-30).map(line => {
+      // 비밀번호/세션 토큰 같은 패턴 마스킹 (단순 규칙)
+      return line.replace(/password['"]?\s*[:=]\s*['"][^'"]*['"]/gi, 'password="***"')
+                 .replace(/Bearer\s+[A-Za-z0-9._\-]+/g, 'Bearer ***');
+    });
+  }
+  return res.json(base);
 });
 
 // ============================================================
