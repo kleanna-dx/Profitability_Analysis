@@ -1519,7 +1519,8 @@ async function sendQuery(query) {
         } finally {
             isLoading = false;
             btn.disabled = false;
-            loadHistory().catch(() => {});
+            // [2026-06-15] 질문 실행 후엔 항상 [최근] 탭으로 정규화 (탭/목록 동기화 보장)
+            refreshSidebarAfterSend().catch(() => {});
         }
         return;
     }
@@ -1594,7 +1595,8 @@ async function sendQuery(query) {
             if (xRequestId) {
                 fetchErrorLogAndAppend(xRequestId, details);
             }
-            loadHistory().catch(() => {});
+            // [2026-06-15] 실패해도 사이드바를 [최근] 탭으로 정규화 (에러 이력도 최근에 기록됨)
+            refreshSidebarAfterSend().catch(() => {});
             return;
         }
 
@@ -1624,7 +1626,8 @@ async function sendQuery(query) {
             };
             appendErrorMessage('서버 응답을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.', details);
             if (xRequestId) fetchErrorLogAndAppend(xRequestId, details);
-            loadHistory().catch(() => {});
+            // [2026-06-15] 실패해도 사이드바를 [최근] 탭으로 정규화
+            refreshSidebarAfterSend().catch(() => {});
             return;
         }
 
@@ -1705,8 +1708,9 @@ async function sendQuery(query) {
             // 최근 5턴만 유지 (토큰 절약)
             if (conversationContext.length > 5) conversationContext.shift();
         }
-        // 이력 새로고침 (비동기)
-        loadHistory().catch(() => {});
+        // [2026-06-15] 사이드바 동기화 — 질문 실행 후엔 항상 [최근] 탭으로 정규화
+        //   (자주질문 탭에서 질문 실행 시 탭/목록 불일치 방지)
+        refreshSidebarAfterSend().catch(() => {});
     } catch(err) {
         typingEl.remove();
         const elapsedMs = Date.now() - reqStartMs;
@@ -1740,7 +1744,8 @@ async function sendQuery(query) {
                 stack: err.stack ? String(err.stack).split('\n').slice(0,5).join('\n') : null,
             });
         }
-        loadHistory().catch(() => {});
+        // [2026-06-15] 사이드바 동기화 — 실패 시에도 [최근] 탭으로 정규화
+        refreshSidebarAfterSend().catch(() => {});
     } finally {
         isLoading = false;
         btn.disabled = false;
@@ -3152,6 +3157,37 @@ function switchHistoryTab(tab) {
     }
 }
 
+// ============================================================
+// [2026-06-15] 사이드바 탭/목록 동기화 헬퍼
+//   - refreshSidebarList()      : 현재 탭에 맞는 로더를 호출 (탭 유지)
+//   - refreshSidebarAfterSend() : 질문 실행 후 [최근] 탭으로 자동 전환 + 최근 목록 로드
+//                                 (자주질문 탭에서 질문 실행 시 탭/목록 불일치 방지)
+// ----------------------------------------------------------------
+// 사용자 요구사항(2026-06-15):
+//   "활성 탭 상태와 하단 목록 데이터가 항상 동일한 기준으로 동기화되어야 한다"
+//   "질문 실행 후 탭이 [최근]으로 자동 전환되는 것은 상관없다"
+// → 질문 실행 후에는 항상 [최근] 탭으로 정규화 (방금 한 질문이 사이드바 최상단에 자연스럽게 노출)
+// → 삭제 등 다른 컨텍스트에서는 현재 탭 유지 + 그 탭의 데이터 새로고침
+// ============================================================
+function refreshSidebarList() {
+    // 현재 탭의 의미에 맞는 데이터로 새로고침
+    if (currentHistoryTab === 'favorite') {
+        return loadFavoriteQuestions();
+    }
+    // 'recent' | 'bookmarked' 는 둘 다 /api/history 로 처리
+    return loadHistory();
+}
+
+function refreshSidebarAfterSend() {
+    // 질문 실행 직후: [최근] 탭이 아니라면 자동 전환 → 탭/목록 동기화 보장
+    if (currentHistoryTab !== 'recent') {
+        // switchHistoryTab 가 내부적으로 loadHistory() 까지 호출함
+        switchHistoryTab('recent');
+        return Promise.resolve();
+    }
+    return loadHistory();
+}
+
 async function loadHistory() {
     try {
         const res = await fetch(`/api/history?limit=30&tab=${currentHistoryTab}`);
@@ -3349,7 +3385,8 @@ async function deleteSession(sessionKey) {
     if (!confirm('이 대화 이력을 삭제하시겠습니까?')) return;
     try {
         await fetch('/api/history/' + encodeURIComponent(sessionKey), { method: 'DELETE' });
-        await loadHistory();
+        // [2026-06-15] 현재 탭 유지 + 해당 탭의 데이터로 새로고침
+        await refreshSidebarList();
     } catch(e) { alert('삭제 실패: ' + e.message); }
 }
 
@@ -3361,7 +3398,9 @@ async function clearAllHistory() {
     if (!confirm('전체 질의 이력을 삭제하시겠습니까?')) return;
     try {
         await fetch('/api/history', { method: 'DELETE' });
-        await loadHistory();
+        // [2026-06-15] 전체 삭제는 [최근] 탭에서만 노출되므로 (clearBtn 조건)
+        //   현재 탭(=recent) 기준으로 새로고침 → 빈 이력이 표시됨
+        await refreshSidebarList();
     } catch(e) { alert('삭제 실패: ' + e.message); }
 }
 
