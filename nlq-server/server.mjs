@@ -4284,10 +4284,18 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
     if (originalRequestId) headers['X-Original-Request-Id'] = originalRequestId;
     headers['X-Async-Job-Id'] = jobId;
 
+    // [2026-06-15] self-fetch 에 명시적 10분 timeout 부여.
+    //   배경: Node 20 의 글로벌 fetch(undici) 는 headersTimeout 기본값이 300초(5분)이라,
+    //   분석형 질의가 5분을 넘기면 self-fetch 만 'fetch failed' 로 abort 되고
+    //   백엔드 /api/nlq 본체는 끝까지 진행되어 DB 에는 답변이 저장되지만
+    //   클라이언트에는 async_job_failed 가 뜨는 현상이 발생함 (이력에서는 답변 보임).
+    //   클라이언트 폴링 max-wait (NLQ_ASYNC_MAX_WAIT_MS = 6분) 보다 충분히 큰 값으로 늘려
+    //   5~6분 구간의 정상 응답이 실패로 둔갑하지 않도록 함.
     const r = await fetch(`http://127.0.0.1:${PORT}/api/nlq`, {
       method: 'POST',
       headers,
       body,
+      signal: AbortSignal.timeout(10 * 60 * 1000), // 10분
     });
     const contentType = r.headers.get('content-type') || '';
     let data = null;
