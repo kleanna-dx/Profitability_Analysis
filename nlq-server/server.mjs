@@ -2172,86 +2172,30 @@ async function buildFallbackContext(domainCode) {
 }
 
 // ============================================================
-// Helper: Metric 산식 자동 치환 (SUM(단순컬럼) → Metric 산식)
-// 학습 데이터 경로 + GPT 생성 경로 양쪽에서 재사용
+// Helper: SQL 후처리 (FORMAT 인자 누락 보정만 수행)
+//
+// ★★★ [2026-06-15 정책 — 사용자 요청] ★★★
+// "치환되게 하지마! 내가 산식에 쓴 것만 그대로 sql쿼리로 표현해"
+//
+// - 이전: 등록된 모든 metric_code 에 대해 SQL 안의 SUM(metric_code) / 단독 토큰을
+//         산식으로 치환했음.
+// - 문제: 사용자가 "영업이익" 산식에 SUM(ZAMT047) 을 명시적으로 써 두었는데,
+//         ZAMT047 도 별도 metric 으로 등록되어 있다 보니, 영업이익 SQL 안의
+//         SUM(ZAMT047) 부분이 다시 ZAMT047 의 산식(SUM(ZAMT048)+...+SUM(ZAMT054))
+//         으로 치환되어 들어가는 부작용 발생.
+// - 정책: Metric 자동 치환을 전면 비활성화한다.
+//         · LLM 프롬프트에는 matchSynonymsDirectly 가 이미 metric 산식을 전달함
+//           (column_name = "CALC(<사용자 산식 그대로>)" 형태).
+//         · 따라서 GPT 가 생성한 SQL 안에는 이미 사용자 산식이 그대로 들어가 있고,
+//           이 단계에서 추가 치환을 하면 안 된다.
+//         · 학습 데이터 경로(matchedSql) 도 사용자가 직접 작성/검증한 SQL 이므로
+//           건드리지 않는다.
+// - 남기는 후처리: FORMAT() 인자 누락 보정 (운영 안전장치).
 // ============================================================
-async function applyMetricFormulaReplacement(inputSql, domainCode) {
+async function applyMetricFormulaReplacement(inputSql, _domainCode) {
   if (!inputSql) return inputSql;
   try {
-    const dc = domainCode || 'PS';
-    // 도메인의 모든 CALC/SUM 산식 metric 로드 (TOTAL_XXX 패턴 제한 제거 — 운영은 ZAMT### 형태)
-    const metricMap = await loadMetricMap(dc);
-    if (!metricMap || Object.keys(metricMap).length === 0) return inputSql;
-
     let result = inputSql;
-    const replacedCodes = [];
-
-    // ★ [2026-06-15 정책] 산식 내부 재치환 방지
-    // - 한 metric을 산식으로 치환한 직후, 그 산식 안에 또 다른 metric_code (예: ZAMT047) 가
-    //   들어있더라도 후속 순회에서 다시 치환되지 않도록 placeholder 로 마스킹한다.
-    // - 학습관리에 등록된 산식을 "그대로" SQL 에 반영하는 것이 정책.
-    const protectedFormulas = [];
-    const protectFormula = (expanded) => {
-      const idx = protectedFormulas.length;
-      protectedFormulas.push(`(${expanded})`);
-      return `__MFR_PROT_${idx}__`;
-    };
-
-    // ★ [2026-06-15 추가 보강] raw DB 컬럼명을 metric_code 로 등록한 항목은 자동 치환 제외
-    //   배경: 학습관리에 metric_code='ZAMT047' (raw 컬럼명과 동일) + formula='SUM(ZAMT048)+...+SUM(ZAMT054)' 를
-    //         등록한 경우, 다른 metric (예: 영업이익) 산식 안의 SUM(ZAMT047) 까지 마케팅비 산식으로
-    //         치환되어 거대 산식이 만들어지는 부작용 발생.
-    //   정책: "사용자가 등록한 산식을 그대로 사용"하는 PR #154 정책의 자연스러운 확장 —
-    //         산식 안의 ZAMT### 토큰은 항상 raw DB 컬럼으로 취급하므로,
-    //         metric_code 가 ZAMT### 형식이어도 그 코드 자체를 산식으로 치환하지 않는다.
-    //   영향: ZAMT### 형식의 metric_code 는 SUM(ZAMTxxx) → SUM(ZAMTxxx) 그대로 유지.
-    //         일반 metric_code (OPERATING_PROFIT, MARKETING_COST 등) 는 정상 치환됨.
-    const RAW_COLUMN_CODE_PATTERN = /^ZAMT\d+$/i;
-
-    // 각 metric_code에 대해 SQL 안에서 단순 합산 패턴을 찾아 등록된 산식으로 치환
-    // (산식 내부의 다른 metric_code 는 재귀 확장하지 않음 — expandMetricFormula 비-재귀화)
-    for (const [code, meta] of Object.entries(metricMap)) {
-      if (!meta || !meta.formula) continue;
-      // ★ raw DB 컬럼명을 그대로 metric_code 로 등록한 항목은 자동 치환 제외
-      if (RAW_COLUMN_CODE_PATTERN.test(code)) {
-        console.log(`[NLQ] Metric 자동 치환 제외 (raw 컬럼 패턴): ${code} → SUM(${code}) 그대로 유지`);
-        continue;
-      }
-      // 학습관리에 등록된 산식 그대로 (재귀 확장 없음)
-      const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
-      if (!expanded || expanded === code) continue;
-
-      // 패턴 1: SUM(METRIC_CODE) 같은 단순 합산 형태 → 등록된 산식으로 치환
-      const sumPattern = new RegExp(`SUM\\s*\\(\\s*${code}\\s*\\)`, 'gi');
-      if (sumPattern.test(result)) {
-        const before = result;
-        // 치환 후 즉시 placeholder 로 보호하여 후속 metric 순회 영향 차단
-        result = result.replace(sumPattern, () => protectFormula(expanded));
-        if (before !== result) {
-          replacedCodes.push(`SUM(${code})`);
-        }
-      }
-
-      // 패턴 2: 단독 토큰 형태 (예: SELECT METRIC_CODE ... 또는 FORMAT(METRIC_CODE, 0))
-      // — 다른 metric_code의 부분 문자열로 매칭되지 않도록 \b 사용
-      const bareTokenPattern = new RegExp(`\\b${code}\\b(?!\\s*\\()`, 'g');
-      // SUM(...) 안의 코드는 위 패턴1에서 처리됐으므로 여기선 SUM 바깥의 것만 잡음
-      if (bareTokenPattern.test(result)) {
-        const before = result;
-        // 남은 토큰을 등록된 산식으로 치환 후 placeholder 로 보호
-        result = result.replace(bareTokenPattern, () => protectFormula(expanded));
-        if (before !== result) {
-          replacedCodes.push(code);
-        }
-      }
-    }
-
-    // placeholder 복원 — 보호된 산식을 원형 그대로 되돌림
-    result = result.replace(/__MFR_PROT_(\d+)__/g, (_, i) => protectedFormulas[Number(i)] || '');
-
-    if (replacedCodes.length > 0) {
-      console.log(`[NLQ] Metric 자동 치환 적용: ${replacedCodes.join(', ')}`);
-    }
 
     // FORMAT() 인자 누락 같은 명백한 오류 SQL 사전 차단
     // 예: FORMAT(SUM(ZAMT035))  → 두 번째 인자 없음 → 운영에서 "Incorrect parameter count" 에러
