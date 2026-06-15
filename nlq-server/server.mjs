@@ -2197,15 +2197,31 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
       return `__MFR_PROT_${idx}__`;
     };
 
+    // ★ [2026-06-15 추가 보강] raw DB 컬럼명을 metric_code 로 등록한 항목은 자동 치환 제외
+    //   배경: 학습관리에 metric_code='ZAMT047' (raw 컬럼명과 동일) + formula='SUM(ZAMT048)+...+SUM(ZAMT054)' 를
+    //         등록한 경우, 다른 metric (예: 영업이익) 산식 안의 SUM(ZAMT047) 까지 마케팅비 산식으로
+    //         치환되어 거대 산식이 만들어지는 부작용 발생.
+    //   정책: "사용자가 등록한 산식을 그대로 사용"하는 PR #154 정책의 자연스러운 확장 —
+    //         산식 안의 ZAMT### 토큰은 항상 raw DB 컬럼으로 취급하므로,
+    //         metric_code 가 ZAMT### 형식이어도 그 코드 자체를 산식으로 치환하지 않는다.
+    //   영향: ZAMT### 형식의 metric_code 는 SUM(ZAMTxxx) → SUM(ZAMTxxx) 그대로 유지.
+    //         일반 metric_code (OPERATING_PROFIT, MARKETING_COST 등) 는 정상 치환됨.
+    const RAW_COLUMN_CODE_PATTERN = /^ZAMT\d+$/i;
+
     // 각 metric_code에 대해 SQL 안에서 단순 합산 패턴을 찾아 등록된 산식으로 치환
     // (산식 내부의 다른 metric_code 는 재귀 확장하지 않음 — expandMetricFormula 비-재귀화)
     for (const [code, meta] of Object.entries(metricMap)) {
       if (!meta || !meta.formula) continue;
+      // ★ raw DB 컬럼명을 그대로 metric_code 로 등록한 항목은 자동 치환 제외
+      if (RAW_COLUMN_CODE_PATTERN.test(code)) {
+        console.log(`[NLQ] Metric 자동 치환 제외 (raw 컬럼 패턴): ${code} → SUM(${code}) 그대로 유지`);
+        continue;
+      }
       // 학습관리에 등록된 산식 그대로 (재귀 확장 없음)
       const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
       if (!expanded || expanded === code) continue;
 
-      // 패턴 1: SUM(ZAMT035) 같은 단순 합산 형태 → 등록된 산식으로 치환
+      // 패턴 1: SUM(METRIC_CODE) 같은 단순 합산 형태 → 등록된 산식으로 치환
       const sumPattern = new RegExp(`SUM\\s*\\(\\s*${code}\\s*\\)`, 'gi');
       if (sumPattern.test(result)) {
         const before = result;
@@ -2216,7 +2232,7 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
         }
       }
 
-      // 패턴 2: 단독 컬럼 형태 (예: SELECT ZAMT035 ... 또는 FORMAT(ZAMT035, 0))
+      // 패턴 2: 단독 토큰 형태 (예: SELECT METRIC_CODE ... 또는 FORMAT(METRIC_CODE, 0))
       // — 다른 metric_code의 부분 문자열로 매칭되지 않도록 \b 사용
       const bareTokenPattern = new RegExp(`\\b${code}\\b(?!\\s*\\()`, 'g');
       // SUM(...) 안의 코드는 위 패턴1에서 처리됐으므로 여기선 SUM 바깥의 것만 잡음
