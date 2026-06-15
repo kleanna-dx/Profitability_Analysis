@@ -4239,6 +4239,197 @@ app.get('/api/nlq/error-log/:requestId', async (req, res) => {
 });
 
 // ============================================================
+// 비동기 분석 Job 시스템 (POST /api/nlq/async + GET /api/nlq/job/:jobId)
+// ------------------------------------------------------------
+// 배경:
+//   - 분석형 질의는 LLM 보조 SQL 다중 생성 + 답변 생성으로 최대 5분 소요
+//   - nginx / 사내 게이트웨이가 60s 또는 180s 에서 504 를 띄우면
+//     "백엔드는 정상 처리 중인데 화면에는 실패로 보이는" 문제 발생
+//
+// 해법:
+//   - 클라이언트는 POST /api/nlq/async 로 jobId 만 즉시 받고 (수십 ms)
+//   - 백엔드가 자기 자신의 /api/nlq 를 self-fetch 로 처리
+//     (세션 쿠키만 forward → 기존 captureLogsMiddleware / 권한분리 / error_detail 그대로 동작)
+//   - 클라이언트는 GET /api/nlq/job/:jobId 로 1~2초 간격 폴링
+//   - TTL 1시간 후 자동 정리
+//
+// 보안:
+//   - 비로그인: 401
+//   - 다른 사용자의 jobId: 403 (admin 만 예외)
+// ============================================================
+const NLQ_JOB_TTL_MS = 60 * 60 * 1000;       // 완료 후 1시간 보관
+const NLQ_JOB_MAX_LIFE_MS = 10 * 60 * 1000;  // 시작 후 10분 이상 미완료시 좀비로 간주
+const nlqJobs = new Map(); // jobId → job 객체
+
+function generateNlqJobId() {
+  const ts = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+  return 'job-' + ts + '-' + crypto.randomBytes(3).toString('hex');
+}
+
+// 백그라운드: 자기 자신의 /api/nlq 를 fetch (세션 쿠키 forward)
+async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) {
+  const job = nlqJobs.get(jobId);
+  if (!job) return;
+  job.status = 'running';
+  job.runningAt = Date.now();
+  try {
+    const body = JSON.stringify({
+      query: job.query,
+      conversationContext: job.conversationContext,
+      session_id: job.session_id,
+      queryMode: job.queryMode,
+    });
+    const headers = { 'Content-Type': 'application/json' };
+    if (forwardedCookie) headers['Cookie'] = forwardedCookie;
+    if (originalRequestId) headers['X-Original-Request-Id'] = originalRequestId;
+    headers['X-Async-Job-Id'] = jobId;
+
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/nlq`, {
+      method: 'POST',
+      headers,
+      body,
+    });
+    const contentType = r.headers.get('content-type') || '';
+    let data = null;
+    let rawText = null;
+    if (contentType.includes('application/json')) {
+      data = await r.json().catch(() => null);
+    } else {
+      rawText = await r.text().catch(() => null);
+    }
+    job.statusCode = r.status;
+    job.innerRequestId = r.headers.get('x-request-id') || null;
+    if (r.ok && data && data.success !== false) {
+      job.status = 'done';
+      job.result = data;
+    } else {
+      job.status = 'failed';
+      job.result = data;
+      job.error = {
+        message: data?.error || data?.message || `내부 호출 실패 (HTTP ${r.status})`,
+        statusCode: r.status,
+        contentType,
+        rawTextPreview: rawText ? rawText.slice(0, 500) : null,
+      };
+    }
+    job.finishedAt = Date.now();
+  } catch (e) {
+    job.status = 'failed';
+    job.error = { message: e?.message || String(e), code: e?.code || null };
+    job.finishedAt = Date.now();
+    console.error(`[nlq-async] job ${jobId} failed:`, e);
+  }
+}
+
+app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
+  if (!req.session?.user) {
+    return res.status(401).json({ error: '로그인이 필요합니다.', requestId: getCurrentRequestId() });
+  }
+  const userId = req.session.user.id;
+  const { query, queryMode, conversationContext, session_id } = req.body || {};
+  if (!query || !String(query).trim()) {
+    return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
+  }
+
+  setRequestStage('async_job_accepted');
+  const jobId = generateNlqJobId();
+  const requestId = getCurrentRequestId();
+  const job = {
+    jobId,
+    status: 'pending',
+    userId,
+    userRole: req.session.user.role || 'user',
+    requestId,
+    query: String(query),
+    queryMode: queryMode || 'analysis',
+    conversationContext: conversationContext || null,
+    session_id: session_id || null,
+    startedAt: Date.now(),
+    runningAt: null,
+    finishedAt: null,
+    result: null,
+    error: null,
+    statusCode: null,
+    innerRequestId: null,
+  };
+  nlqJobs.set(jobId, job);
+
+  const forwardedCookie = req.headers.cookie || '';
+  // await 하지 않음 — 백그라운드 실행
+  runNlqJobInBackground(jobId, forwardedCookie, requestId).catch((e) => {
+    console.error(`[nlq-async] uncaught in job ${jobId}:`, e);
+  });
+
+  console.log(`[nlq-async] 📥 accepted jobId=${jobId} user=${userId} mode=${job.queryMode} query="${job.query.slice(0, 60)}..."`);
+  return res.json({
+    success: true,
+    jobId,
+    status: 'pending',
+    requestId,
+    startedAt: new Date(job.startedAt).toISOString(),
+    pollUrl: `/api/nlq/job/${jobId}`,
+    recommendedPollIntervalMs: 1500,
+  });
+});
+
+app.get('/api/nlq/job/:jobId', async (req, res) => {
+  if (!req.session?.user) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
+  }
+  const jobId = String(req.params.jobId || '').trim();
+  const job = nlqJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({
+      error: 'job 을 찾을 수 없거나 만료되었습니다.',
+      hint: '완료된 job 은 ' + Math.round(NLQ_JOB_TTL_MS / 60000) + '분 후 자동 삭제됩니다.',
+      jobId,
+    });
+  }
+  const isAdmin = req.session.user.role === 'admin';
+  const isOwner = job.userId === req.session.user.id;
+  if (!isAdmin && !isOwner) {
+    return res.status(403).json({ error: '다른 사용자의 작업에는 접근할 수 없습니다.' });
+  }
+  const now = Date.now();
+  const elapsedMs = (job.finishedAt || now) - job.startedAt;
+  const payload = {
+    success: true,
+    jobId: job.jobId,
+    status: job.status,        // pending | running | done | failed
+    requestId: job.requestId,
+    innerRequestId: job.innerRequestId,
+    statusCode: job.statusCode,
+    queryMode: job.queryMode,
+    startedAt: new Date(job.startedAt).toISOString(),
+    runningAt: job.runningAt ? new Date(job.runningAt).toISOString() : null,
+    finishedAt: job.finishedAt ? new Date(job.finishedAt).toISOString() : null,
+    elapsedMs,
+    result: (job.status === 'done' || job.status === 'failed') ? job.result : null,
+    error: job.error,
+  };
+  return res.json(payload);
+});
+
+// TTL cleanup: 완료된 job 은 1시간 후, 미완료 좀비는 시작 후 10분에 정리
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [id, j] of nlqJobs.entries()) {
+    if (j.finishedAt && (now - j.finishedAt) > NLQ_JOB_TTL_MS) {
+      nlqJobs.delete(id);
+      cleaned++;
+    } else if (!j.finishedAt && (now - j.startedAt) > NLQ_JOB_MAX_LIFE_MS) {
+      // 좀비: 10분 이상 실행중 (실제로는 끝났을 가능성)
+      j.status = 'failed';
+      j.error = { message: 'job 이 시간 내(10분) 완료되지 않았습니다 (좀비 정리).' };
+      j.finishedAt = now;
+      console.warn(`[nlq-async] 🧟 zombie job ${id} forcibly failed`);
+    }
+  }
+  if (cleaned > 0) console.log(`[nlq-async] 🧹 cleaned ${cleaned} expired jobs (remaining=${nlqJobs.size})`);
+}, 60_000);
+
+// ============================================================
 // 이력 보관 정책 (자연어질의 / nl_query_history)
 // ============================================================
 // - 시간 기준: 보관기간(NLQ_HISTORY_RETENTION_DAYS, 기본 31일) 초과 행은 자동 DELETE

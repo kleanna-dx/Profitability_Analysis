@@ -1220,6 +1220,246 @@ function handleSend() {
     }
 }
 
+// ============================================================
+// [2026-06-15] 분석형 질의 비동기 처리 — POST /api/nlq/async + 폴링
+//   - 게이트웨이 504 영향을 받지 않도록 즉시 jobId 만 받고,
+//     1.5초 간격으로 GET /api/nlq/job/:jobId 로 진행상태 폴링.
+//   - 진행 중에는 typingEl 영역에 경과시간 + '분석 중' 안내 표시.
+//   - 완료(done/failed) 되면 일반 응답 처리 로직과 동일한 분기를 탄다.
+// ============================================================
+const NLQ_ASYNC_POLL_INTERVAL_MS = 1500;
+const NLQ_ASYNC_MAX_WAIT_MS = 6 * 60 * 1000;   // 최대 6분 — 백엔드 5분 timeout + 안전 마진
+
+function buildAnalysisProgressHtml(elapsedSec, statusLabel) {
+    return `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#fbbf24,#d97706);">
+                <i class="fas fa-cogs fa-spin" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#fffbeb;border:1px solid #fde68a;padding:10px 14px;border-radius:12px;flex:1;">
+                <p style="color:#92400e;font-size:13px;font-weight:600;margin-bottom:4px;">
+                    <i class="fas fa-brain" style="margin-right:5px;"></i>분석 중입니다…
+                </p>
+                <p style="color:#78350f;font-size:11.5px;line-height:1.55;">
+                    AI 가 보조 SQL 을 생성하고 데이터를 해석하는 중입니다. 최대 5분까지 소요될 수 있어요.
+                </p>
+                <div style="margin-top:6px;display:flex;align-items:center;gap:10px;font-size:11px;color:#92400e;">
+                    <span><i class="fas fa-clock" style="margin-right:4px;"></i>경과: <b>${elapsedSec}초</b></span>
+                    <span><i class="fas fa-signal" style="margin-right:4px;"></i>상태: <b>${statusLabel}</b></span>
+                </div>
+            </div>
+        </div>`;
+}
+
+async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
+    // typingEl 을 '분석 중' UI 로 교체 (계속 갱신)
+    typingEl.innerHTML = buildAnalysisProgressHtml(0, '요청 접수 중');
+
+    // Step 1. jobId 발급
+    let jobId, asyncRequestId;
+    try {
+        const r = await fetch('/api/nlq/async', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, conversationContext, session_id: chatSessionId, queryMode: 'analysis' }),
+        });
+        const ct = r.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+            const text = await r.text();
+            typingEl.remove();
+            const isHtml = ct.includes('text/html') || /<html[\s>]/i.test(text);
+            const inferredType = (r.status === 504 || r.status === 408) && isHtml ? 'gateway_timeout' : 'system';
+            appendErrorMessage('분석 요청 접수 단계에서 게이트웨이 오류가 발생했습니다. (HTTP ' + r.status + ')', {
+                requestId: r.headers.get('x-request-id') || null,
+                stage: 'async_accept_failed',
+                errorType: inferredType,
+                httpStatus: r.status,
+                statusText: r.statusText,
+                contentType: ct,
+                responseSnippet: text.substring(0, 1500),
+                queryMode: 'analysis',
+                timeoutMs,
+                elapsedMs: Date.now() - reqStartMs,
+                query,
+                timestamp: new Date().toISOString(),
+            });
+            return;
+        }
+        const ack = await r.json();
+        if (!r.ok || !ack.success || !ack.jobId) {
+            typingEl.remove();
+            appendErrorMessage(ack.error || '분석 요청을 접수하지 못했습니다.', {
+                requestId: ack.requestId || null,
+                stage: 'async_accept_failed',
+                errorType: 'system',
+                httpStatus: r.status,
+                queryMode: 'analysis',
+                timeoutMs,
+                elapsedMs: Date.now() - reqStartMs,
+                query,
+                timestamp: new Date().toISOString(),
+            });
+            return;
+        }
+        jobId = ack.jobId;
+        asyncRequestId = ack.requestId || null;
+        console.log('[NLQ async] 📥 jobId=' + jobId + ' requestId=' + asyncRequestId);
+    } catch (e) {
+        typingEl.remove();
+        appendErrorMessage('분석 요청 접수 실패: ' + (e.message || String(e)), {
+            requestId: null,
+            stage: 'async_accept_network_failed',
+            errorType: 'system',
+            errorName: e.name,
+            queryMode: 'analysis',
+            timeoutMs,
+            elapsedMs: Date.now() - reqStartMs,
+            query,
+            timestamp: new Date().toISOString(),
+        });
+        return;
+    }
+
+    // Step 2. 폴링 (1.5초 간격, 최대 6분)
+    const pollStart = Date.now();
+    let pollData = null;
+    while (Date.now() - pollStart < NLQ_ASYNC_MAX_WAIT_MS) {
+        // 진행 UI 갱신
+        const elapsedSec = Math.floor((Date.now() - reqStartMs) / 1000);
+        const statusLabel = pollData ? (pollData.status === 'running' ? '분석 진행 중' : pollData.status) : '대기 중';
+        typingEl.innerHTML = buildAnalysisProgressHtml(elapsedSec, statusLabel);
+
+        await new Promise(r => setTimeout(r, NLQ_ASYNC_POLL_INTERVAL_MS));
+        try {
+            const r = await fetch('/api/nlq/job/' + encodeURIComponent(jobId), {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+            });
+            const ct = r.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) {
+                // 폴링 단계는 게이트웨이 timeout 영향 받기 어려움 — 만에 하나 발생해도 retry
+                console.warn('[NLQ async poll] 비JSON 응답 status=' + r.status + ' — 재시도');
+                continue;
+            }
+            pollData = await r.json();
+            if (!r.ok) {
+                typingEl.remove();
+                appendErrorMessage(pollData.error || '작업 상태 조회 실패', {
+                    requestId: asyncRequestId,
+                    stage: 'async_poll_failed',
+                    errorType: 'system',
+                    httpStatus: r.status,
+                    queryMode: 'analysis',
+                    timeoutMs,
+                    elapsedMs: Date.now() - reqStartMs,
+                    query,
+                    timestamp: new Date().toISOString(),
+                });
+                return;
+            }
+            if (pollData.status === 'done' || pollData.status === 'failed') {
+                break;
+            }
+            // 아직 pending/running — 계속
+        } catch (e) {
+            console.warn('[NLQ async poll] 일시 오류, 재시도:', e.message);
+            // 일시적인 네트워크 오류는 무시하고 다음 폴링
+        }
+    }
+
+    // Step 3. 결과 처리
+    if (!pollData || (pollData.status !== 'done' && pollData.status !== 'failed')) {
+        typingEl.remove();
+        appendErrorMessage('분석 작업이 시간 내 완료되지 않았습니다. 잠시 후 [최근 이력] 에서 결과를 확인해 주세요.', {
+            requestId: asyncRequestId,
+            stage: 'async_poll_timeout',
+            errorType: 'timeout',
+            queryMode: 'analysis',
+            timeoutMs: NLQ_ASYNC_MAX_WAIT_MS,
+            elapsedMs: Date.now() - reqStartMs,
+            query,
+            timestamp: new Date().toISOString(),
+            jobId,
+        });
+        return;
+    }
+
+    // 정상/실패 결과를 받았으니 typingEl 제거 후 기존 응답 처리 로직과 동일하게 분기
+    typingEl.remove();
+    const data = pollData.result || {};
+    const finalRequestId = data.requestId || data.error_detail?.requestId || pollData.innerRequestId || asyncRequestId || null;
+    const innerStatus = pollData.statusCode || 200;
+
+    if (pollData.status === 'failed' || data.error || !data.success && !data.answer && !data.results) {
+        // 실패 경로 — 동기 호출의 !res.ok 분기와 동일
+        const serverDetail = data.error_detail || {};
+        appendErrorMessage(data.error || pollData.error?.message || '서버 오류가 발생했습니다.', {
+            requestId: finalRequestId,
+            stage: serverDetail.stage || pollData.error?.stage || 'async_job_failed',
+            errorType: serverDetail.errorType || 'system',
+            httpStatus: innerStatus,
+            contentType: pollData.error?.contentType || 'application/json',
+            message: serverDetail.message || data.error || pollData.error?.message || '',
+            code: serverDetail.code || null,
+            stack: serverDetail.stack || null,
+            intent: serverDetail.intent || null,
+            domain: serverDetail.domain || null,
+            calmonth: serverDetail.calmonth || null,
+            failedSql: serverDetail.failedSql || null,
+            logLines: serverDetail.logLines || null,
+            logLineCount: serverDetail.logLineCount || null,
+            logHint: serverDetail.logHint || null,
+            isAdmin: serverDetail.isAdmin || false,
+            queryMode: 'analysis',
+            timeoutMs,
+            elapsedMs: pollData.elapsedMs || (Date.now() - reqStartMs),
+            query,
+            timestamp: serverDetail.timestamp || new Date().toISOString(),
+            jobId,
+        });
+        return;
+    }
+
+    // 성공 경로 — 동기 호출의 success 분기와 동일
+    if (data.error_user_friendly && data.error_detail) {
+        const sd = data.error_detail;
+        appendErrorMessage(data.answer || data.explanation || '답변을 생성하지 못했습니다.', {
+            requestId: finalRequestId,
+            stage: sd.stage || 'analysis_path',
+            errorType: sd.errorType || 'system',
+            httpStatus: innerStatus,
+            contentType: 'application/json',
+            message: sd.message || data.answer || '',
+            code: sd.code || null,
+            stack: sd.stack || null,
+            intent: sd.intent || null,
+            domain: sd.domain || null,
+            calmonth: sd.calmonth || null,
+            failedSql: sd.failedSql || null,
+            logLines: sd.logLines || null,
+            logLineCount: sd.logLineCount || null,
+            logHint: sd.logHint || null,
+            isAdmin: sd.isAdmin || false,
+            queryMode: 'analysis',
+            timeoutMs,
+            elapsedMs: pollData.elapsedMs || (Date.now() - reqStartMs),
+            query,
+            timestamp: sd.timestamp || new Date().toISOString(),
+            jobId,
+        });
+    } else if (data.isUnknownTerm) {
+        appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
+    } else if (data.isAnalysisAnswer) {
+        appendAnalysisOnlyMessage(data.answer || data.analysis || '분석 답변을 생성하지 못했습니다.');
+        conversationContext.push({ query, sql: null });
+        if (conversationContext.length > 5) conversationContext.shift();
+    } else {
+        appendBotMessage(data);
+        conversationContext.push({ query, sql: data.sql });
+        if (conversationContext.length > 5) conversationContext.shift();
+    }
+}
+
 async function sendQuery(query) {
     if (isLoading) return;
     isLoading = true;
@@ -1265,6 +1505,25 @@ async function sendQuery(query) {
     const reqStartMs = Date.now();
     const timeoutMs = (queryMode === 'analysis') ? 300000 : 120000;
 
+    // ============================================================
+    // [2026-06-15] 분석형(analysis) 질의는 자동으로 비동기 모드(/api/nlq/async + 폴링)로 전환.
+    //   - 분석형은 300초까지 걸릴 수 있는데, 운영 nginx/게이트웨이 idle timeout 이 60s/180s 면
+    //     백엔드는 정상 처리 중인데 사용자 화면에는 504 가 떠서 실패로 보이는 문제 발생.
+    //   - 비동기 모드는 즉시 jobId 만 받고 1.5초 간격으로 폴링하므로,
+    //     게이트웨이 timeout 영향을 받지 않음 (각 요청이 모두 짧음).
+    //   - 현황집계(aggregate) 는 보통 1~2초 안에 끝나므로 기존 동기 방식 유지.
+    // ============================================================
+    if (queryMode === 'analysis') {
+        try {
+            await runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs });
+        } finally {
+            isLoading = false;
+            btn.disabled = false;
+            loadHistory().catch(() => {});
+        }
+        return;
+    }
+
     try {
         // AbortController로 타임아웃 설정
         // - 현황집계(aggregate): 120초
@@ -1289,17 +1548,40 @@ async function sendQuery(query) {
             const text = await res.text();
             console.error('[NLQ] 비정상 응답 (JSON 아님):', text.substring(0, 200));
             typingEl.remove();
-            // ★ 504/502 등 게이트웨이 오류일 가능성이 높음 → errorType 'timeout' or 'system' 으로 분류
-            const inferredType = (res.status === 504 || res.status === 408) ? 'timeout'
-                              : (res.status === 502 || res.status === 503) ? 'system'
-                              : 'system';
+            // ★ [2026-06-15] 504/502/503 + text/html 응답을 'gateway_timeout' 으로 별도 분류
+            //   - 백엔드(Node.js)는 정상 동작 중인데 nginx/게이트웨이/LB 의 idle timeout 에서 끊긴 경우
+            //   - 'timeout'(앱 자체 timeout) 과 메시지를 다르게 노출하여 사용자가 원인을 이해하기 쉽게
+            //   - 단계명도 'response_not_json'(파싱 실패) → 'gateway_or_proxy_timeout' 으로 변경
+            const isHtml = contentType.includes('text/html') || /<html[\s>]/i.test(text);
+            let inferredType, inferredStage, userMessage;
+            if ((res.status === 504 || res.status === 408) && isHtml) {
+                inferredType = 'gateway_timeout';
+                inferredStage = 'gateway_or_proxy_timeout';
+                userMessage = '게이트웨이/프록시 타임아웃이 발생했습니다. (HTTP ' + res.status + ')\n' +
+                              '백엔드는 분석을 계속 수행 중일 수 있습니다. 잠시 후 [최근 이력] 에서 결과를 확인해주세요.';
+            } else if (res.status === 504 || res.status === 408) {
+                inferredType = 'timeout';
+                inferredStage = 'response_not_json';
+                userMessage = '요청 시간이 초과되었습니다. (HTTP ' + res.status + ')';
+            } else if (res.status === 502 || res.status === 503) {
+                inferredType = 'system';
+                inferredStage = 'upstream_unavailable';
+                userMessage = '서버를 일시적으로 사용할 수 없습니다. (HTTP ' + res.status + ') 잠시 후 다시 시도해주세요.';
+            } else {
+                inferredType = 'system';
+                inferredStage = 'response_not_json';
+                userMessage = '서버 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (서버가 재시작 중일 수 있습니다)';
+            }
             const details = {
                 requestId: xRequestId,
-                stage: 'response_not_json',
+                stage: inferredStage,
                 errorType: inferredType,
                 httpStatus: res.status,
                 statusText: res.statusText,
                 contentType,
+                // [2026-06-15] 응답 본문을 raw 그대로 보존. JSON.stringify 절대 적용 X (이중 escape 방지).
+                //   - render 시 sanitizeResponseBodyForDisplay() 로 literal "\n" 시퀀스를 실제 줄바꿈으로 정규화
+                //   - <pre> + white-space:pre-wrap 로 안전하게 표시
                 responseSnippet: text.substring(0, 1500),
                 queryMode,
                 timeoutMs,
@@ -1307,7 +1589,7 @@ async function sendQuery(query) {
                 query,
                 timestamp: new Date().toISOString(),
             };
-            appendErrorMessage('서버 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (서버가 재시작 중일 수 있습니다)', details);
+            appendErrorMessage(userMessage, details);
             // ★ requestId 가 있으면 비동기로 서버 로그 조회 시도 (Node.js 까지 도달은 했던 경우만 성공)
             if (xRequestId) {
                 fetchErrorLogAndAppend(xRequestId, details);
@@ -1799,11 +2081,14 @@ function appendBotMessage(data) {
 //   system         : 기타 시스템/네트워크 오류
 // ============================================================
 const ERROR_TYPE_META = {
-    sql_generation: { label: 'SQL 생성 오류', color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe', icon: 'fas fa-code' },
-    db_execution:   { label: 'DB 실행 오류',  color: '#0369a1', bg: '#f0f9ff', border: '#bae6fd', icon: 'fas fa-database' },
-    llm_response:   { label: 'AI 응답 오류',  color: '#c2410c', bg: '#fff7ed', border: '#fed7aa', icon: 'fas fa-robot' },
-    timeout:        { label: '타임아웃',      color: '#a16207', bg: '#fefce8', border: '#fde68a', icon: 'fas fa-clock' },
-    system:         { label: '시스템 오류',   color: '#b91c1c', bg: '#fef2f2', border: '#fecaca', icon: 'fas fa-exclamation-triangle' },
+    sql_generation:  { label: 'SQL 생성 오류',     color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe', icon: 'fas fa-code' },
+    db_execution:    { label: 'DB 실행 오류',      color: '#0369a1', bg: '#f0f9ff', border: '#bae6fd', icon: 'fas fa-database' },
+    llm_response:    { label: 'AI 응답 오류',      color: '#c2410c', bg: '#fff7ed', border: '#fed7aa', icon: 'fas fa-robot' },
+    timeout:         { label: '타임아웃',          color: '#a16207', bg: '#fefce8', border: '#fde68a', icon: 'fas fa-clock' },
+    // [2026-06-15] 504/502/503 + text/html 응답을 별도 분류 — 백엔드는 정상 동작 중인 경우가 많고,
+    // 운영 nginx / 게이트웨이 / LB 의 idle timeout 에서 잘림. 사용자에게 안내 메시지가 달라야 함.
+    gateway_timeout: { label: '게이트웨이 타임아웃', color: '#b45309', bg: '#fffbeb', border: '#fcd34d', icon: 'fas fa-network-wired' },
+    system:          { label: '시스템 오류',       color: '#b91c1c', bg: '#fef2f2', border: '#fecaca', icon: 'fas fa-exclamation-triangle' },
 };
 function getErrorTypeBadgeHtml(errorType) {
     const meta = ERROR_TYPE_META[errorType] || ERROR_TYPE_META.system;
@@ -1903,9 +2188,21 @@ function appendErrorMessage(msg, details) {
 
             // 보기 좋게 정리된 key:value 행
             const rows = [];
+            // [2026-06-15] 응답 본문/문자열에 literal "\n", "\t", "\r" 시퀀스(역슬래시+문자 2바이트)가
+            //   섞여 있으면 — 어떤 중간 계층에서 한 번 더 JSON.stringify 된 흔적 — 실제 줄바꿈/탭으로 정규화.
+            //   이 함수는 멱등(idempotent)이며, 진짜 backslash 가 필요한 경우는 \\\\ 로 들어옴.
+            const normalizeEscapes = (s) => {
+                if (typeof s !== 'string') return s;
+                // 끝쪽에 \n\n\n 같은 trailing escape sequence 가 흔하므로 먼저 trim
+                let t = s;
+                // \\n / \\r / \\t → 실제 문자
+                t = t.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+                return t;
+            };
             const fmt = (label, value) => {
                 if (value === undefined || value === null || value === '') return;
                 let v = (typeof value === 'object') ? JSON.stringify(value, null, 2) : String(value);
+                v = normalizeEscapes(v);
                 if (v.length > 4000) v = v.substring(0, 4000) + ' …(생략)';
                 rows.push(`<div style="display:grid;grid-template-columns:130px 1fr;gap:8px;padding:4px 0;border-bottom:1px dashed #fecaca;">
                     <div style="color:#991b1b;font-weight:600;font-size:11.5px;">${esc(label)}</div>

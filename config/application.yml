@@ -108,10 +108,20 @@ http {
             proxy_set_header Connection "";
 
             # ── 타임아웃 ──
-            # NLQ AI 분석 + PPT 보고서 생성은 시간이 걸림
+            # NLQ AI 분석형 질의는 LLM 보조 SQL 다중 생성 + 답변 생성으로
+            # 최대 300초(5분)까지 소요. 백엔드 AbortController 한도(300s)에
+            # 약간의 여유를 둬서 nginx 가 먼저 끊지 않도록 310s 로 설정.
+            #
+            # ⚠️ 이 값이 60s/180s 였을 때 운영에서 504 게이트웨이 타임아웃이 발생.
+            #     백엔드는 정상 처리되고 있지만 화면에는 504 가 표시되어
+            #     사용자 입장에서 실패로 보이는 문제가 있었음.
+            #     (대안으로 /api/nlq/async + GET /api/nlq/job/:jobId 비동기 패턴 제공)
             proxy_connect_timeout 10s;
-            proxy_read_timeout    180s;    # 최대 3분 (PPT 생성 타임아웃)
-            proxy_send_timeout    60s;
+            proxy_read_timeout    310s;    # 최대 5분 10초 (분석형 질의 + PPT 생성)
+            proxy_send_timeout    310s;    # 업스트림으로 요청 전송 타임아웃도 동일하게
+
+            # 분석형 응답은 한 번에 큰 본문 → 버퍼링 비활성화로 메모리 부담 완화 안 함
+            # (현재 응답이 수~수십KB 수준이라 기본 버퍼링 유지)
 
             # ── 버퍼링 ──
             proxy_buffering on;
