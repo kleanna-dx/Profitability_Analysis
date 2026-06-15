@@ -2601,6 +2601,43 @@ ${whereClause}`;
 async function generateAnalysisSqls(query, domainCode, dateCtx, conversationContext) {
   const dc = domainCode || 'PS';
 
+  // ── 0) 학습관리(Metric) 산식 카탈로그 로드
+  //   ★ 핵심: 영업이익/매출총이익/매출원가 등 "지표성 컬럼"은 raw DB 컬럼(ZAMT055 등)을
+  //   직접 SUM 하면 안 되고, 학습관리에서 사용자가 등록한 metric의 산식을 사용해야 함.
+  //   예: 영업이익 산식이 "ZAMT035 - ZAMT036 - 마케팅비합계"로 등록되어 있으면
+  //   SUM(ZAMT055)가 아니라 그 산식대로 SQL을 만들어야 한다.
+  //   여기서 metric을 재귀적으로 확장한 "최종 SQL 표현식"까지 만들어 LLM에 제공한다.
+  let metricCatalog = '';
+  const metricSqlMap = {};   // description(한글) → 최종 SQL 표현식
+  try {
+    const metricMap = await loadMetricMap(dc);                    // { metric_code: { aggregation, formula, description } }
+    const metricLines = [];
+    for (const [code, meta] of Object.entries(metricMap)) {
+      if (!meta || !meta.description) continue;
+      // 산식을 재귀 확장 (다른 metric_code 참조까지 풀어 raw 컬럼 수준의 식으로)
+      const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
+      // 집계 함수 적용된 최종 SQL 표현식
+      let sqlExpr;
+      if (meta.aggregation === 'CALC') {
+        // formula 자체가 이미 SUM(...) 형태를 포함한 산식
+        sqlExpr = expanded;
+      } else if (meta.aggregation === 'SUM') {
+        sqlExpr = `SUM(${expanded})`;
+      } else if (meta.aggregation === 'AVG' || meta.aggregation === 'COUNT' || meta.aggregation === 'MAX' || meta.aggregation === 'MIN') {
+        sqlExpr = `${meta.aggregation}(${expanded})`;
+      } else {
+        sqlExpr = expanded;
+      }
+      metricLines.push(`- ${meta.description} (코드 ${code}): \`${sqlExpr}\``);
+      metricSqlMap[meta.description] = sqlExpr;
+    }
+    if (metricLines.length > 0) {
+      metricCatalog = metricLines.join('\n');
+    }
+  } catch (e) {
+    console.warn('[analysisSqls] Metric 카탈로그 로드 실패:', e.message);
+  }
+
   // ── 1) 실제 테이블의 컬럼 목록을 INFORMATION_SCHEMA에서 직접 추출
   //   - LLM이 SAP BW 일반 명명규칙(/BIC/Z* 등)으로 추측한 잘못된 컬럼명을 만들지 못하도록
   //     "DB에 실제로 존재하는 컬럼만" 보여주는 게 핵심.
@@ -2663,6 +2700,19 @@ bw_profitability_data (단일 테이블)
 - 당월: ${cmLabel} (CALMONTH='${cm}')
 - 전월: ${prevLabel} (CALMONTH='${prevCm}')
 
+[★★★★★ 학습관리에 등록된 지표(Metric) 산식 — 지표성 컬럼은 반드시 이 산식 사용 ★★★★★]
+${metricCatalog || '(등록된 metric 없음)'}
+
+[★ 지표 사용 절대 규칙 — 가장 중요]
+- 위 목록에 있는 지표(영업이익, 매출총이익, 순매출, 매출원가 계, 판매관리비, 마케팅비합계 등)를 답변·SQL에 쓸 때는
+  **반드시 위에 적힌 SQL 표현식을 그대로 사용**하세요. 사용자가 학습관리 화면에서 등록·수정한 산식이며,
+  여기서 벗어나면 사용자가 의도한 정의와 다른 잘못된 결과가 됩니다.
+- 예: 영업이익이 \`SUM(ZAMT035) - SUM(ZAMT036) - (SUM(ZAMT047)+...)\` 처럼 산식으로 등록되어 있다면
+  절대로 \`SUM(ZAMT055)\`만 쓰지 말고 등록된 산식 그대로 사용. (학습관리 우선)
+- 위 목록에 영업이익 산식이 \`SUM(ZAMT055)\` 단일 컬럼으로 등록되어 있다면 그건 그대로 사용해도 됨.
+  **단, 등록된 산식을 임의로 변경/축약/추측하지 마세요.**
+- 위 목록에 없는 지표(예: "수익률", "기여도" 등)는 raw 컬럼이 아니라 위에 등록된 지표끼리 조합해서 만드세요.
+
 [★★★ 사용 가능한 실제 컬럼 — 아래 목록에 없는 컬럼명은 절대 사용하지 마세요 ★★★]
 ${columnCatalog || '(카탈로그 없음)'}
 
@@ -2687,9 +2737,10 @@ ${columnCatalog || '(카탈로그 없음)'}
    - 대상 이름이 모호하면 LIKE 부분 매칭 사용.
    - 대상이 '항상 ~ 낮다/높다' 같은 추세 질문이면 최근 3~6개월 CALMONTH로 확장 가능 (CALMONTH >= '20YYMM').
 4. 집계 함수와 일반 컬럼이 함께 있을 땐 반드시 GROUP BY 추가.
-5. 금액 컬럼(ZAMT*)은 SUM()으로 집계. 단가/평균은 SUM(금액)/NULLIF(SUM(수량),0) 형태로.
+5. **금액 지표는 반드시 위 [Metric 산식]에 적힌 표현식을 그대로 사용**. raw ZAMT 컬럼을 임의로 SUM하지 말 것.
+   단가/평균 등 등록되지 않은 비율은 (등록된 금액 산식) / NULLIF(SUM(수량),0) 형태로.
 6. 결과가 많아질 가능성이 있으면 LIMIT 50 정도로 제한, ORDER BY 명시.
-7. 컬럼 alias는 한글로 (예: AS '당월순매출').
+7. 컬럼 alias는 한글로 (예: AS '당월순매출', AS '영업이익').
 8. CALMONTH 비교는 문자열 '${cm}' / '${prevCm}' 사용.
 9. **분석에 도움 안 되는 일반 KPI 합계 쿼리는 만들지 말 것** — 이미 별도로 조회됨.
 10. **한 쿼리 실행 시간이 길어지지 않도록 WHERE 조건을 충분히 좁히고 LIMIT 도 작게(예: 20~50).**
@@ -3339,6 +3390,31 @@ app.post('/api/nlq', async (req, res) => {
         const dateInfo = `[기간 참고] 당월=${dc.latestLabel}, 전월=${dc.prevLabel}. "당월", "이번달", "전월" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기.`;
         // ★ 답변 출력 규칙 (전역 규칙) — analysis 경로
         const analysisFormatRule = `[답변 출력 규칙]\n- "YYYY년 M월" 형태의 년월 표현은 반드시 **굵게(마크다운 **)** 강조하세요. 예: **2026년 5월**\n- 조회 결과에 'Dummy' 값이 있으면 본문에 언급하지 마세요. (사용자에게 노출되지 않습니다)`;
+
+        // ★ Metric(학습관리 산식) 정의 — 답변에서 지표명을 언급할 때 이 정의를 따르도록 LLM에 전달
+        //   사용자가 학습관리에서 영업이익/매출총이익 등의 산식을 수정하면 즉시 반영됨.
+        let metricDefinitionsBlock = '';
+        try {
+          const answerMetricMap = await loadMetricMap(activeDomain);
+          const lines = [];
+          for (const [code, meta] of Object.entries(answerMetricMap)) {
+            if (!meta || !meta.description) continue;
+            const expanded = expandMetricFormula(meta.formula, answerMetricMap, new Set([code]), 0);
+            let sqlExpr;
+            if (meta.aggregation === 'CALC') sqlExpr = expanded;
+            else if (meta.aggregation === 'SUM') sqlExpr = `SUM(${expanded})`;
+            else if (['AVG','COUNT','MAX','MIN'].includes(meta.aggregation)) sqlExpr = `${meta.aggregation}(${expanded})`;
+            else sqlExpr = expanded;
+            lines.push(`- **${meta.description}** = \`${sqlExpr}\``);
+          }
+          if (lines.length > 0) {
+            metricDefinitionsBlock = `[★ 학습관리 등록 지표 정의 — 답변에서 아래 지표를 언급할 때 이 정의 그대로 따를 것]\n${lines.join('\n')}\n\n` +
+              `※ 위 정의는 사용자가 학습관리 화면에서 등록한 산식입니다. 답변에서 영업이익/매출총이익 등의 수치를 인용할 때, 보조 조회 SQL이 위 정의대로 계산되었는지 확인하고 인용하세요. 만약 raw 컬럼(예: ZAMT055)을 단순 SUM한 결과를 가져왔는데 위 산식과 다르면, **그 수치를 답변에 그대로 옮기지 말고** "해당 지표는 학습관리 산식 기준으로 재계산이 필요합니다"로 안내하세요.`;
+          }
+        } catch (e) {
+          console.warn('[NLQ] 답변용 metric 정의 로드 실패:', e.message);
+        }
+
         const dataForAnalysis = rows.slice(0, 50);
         const overviewText = JSON.stringify(dataForAnalysis, (key, val) =>
           typeof val === 'bigint' ? Number(val) : val
@@ -3371,7 +3447,14 @@ app.post('/api/nlq', async (req, res) => {
   마지막에 한 줄로 "**현재 데이터만으로는 원인 확정이 어렵다**"고 명시하고, 어떤 추가 데이터가 있으면
   확정 가능한지(예: 거래처별 마진, 마케팅 캠페인 이력 등)를 1~2가지 제안하세요.
 - 금액은 억/만 단위로 변환 (예: 45,409,440,210원 → 약 454억원). 단, 원본 숫자가 작으면 그대로 표기.
-- 마크다운 형식(제목·볼드·리스트). 모든 문장은 완결되게 종료. 700자 내외.`;
+- 마크다운 형식(제목·볼드·리스트). 모든 문장은 완결되게 종료. 700자 내외.
+
+[★ 지표 인용 규칙 — 학습관리 산식 준수]
+- 영업이익, 매출총이익, 매출원가, 판매관리비, 마케팅비, 순매출 등 **학습관리에 등록된 지표**를 답변에서 언급할 때,
+  사용자 메시지에 함께 제공된 [학습관리 등록 지표 정의]의 산식을 기준으로만 해석·인용하세요.
+- 보조 조회 SQL이 지표 정의와 다르게(예: 등록된 산식은 \`SUM(ZAMT035)-SUM(ZAMT036)-...\` 인데 보조 조회는 \`SUM(ZAMT055)\` 만 사용) 계산된 경우,
+  **그 수치를 답변에 그대로 옮기지 말고** "해당 지표는 학습관리 산식 기준으로 재계산이 필요합니다"로 안내하세요.
+- 임의로 지표 산식을 추측해서 새로 만들어 인용하지 마세요. 등록된 정의에 없는 지표는 raw 데이터로만 설명하세요.`;
 
         let analysisSystemPrompt;
         if (intent === 'data_analysis') {
@@ -3401,16 +3484,17 @@ ${commonRules}
         }
 
         const hasAnyData = (rows && rows.length > 0) || detailResults.some(d => d.rowCount > 0);
+        const metricBlockForUser = metricDefinitionsBlock ? `${metricDefinitionsBlock}\n\n` : '';
         const userContent = hasAnyData
-          ? `${dateInfo}\n\n${analysisFormatRule}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n` +
+          ? `${dateInfo}\n\n${analysisFormatRule}\n\n${metricBlockForUser}[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n` +
             (rows.length > 0
               ? `[참고용 — 도메인 전체 KPI 합계 (단일 행)]\n${overviewText}\n\n`
               : '') +
             (detailText
               ? `[★ 원인 분석용 상세 조회 결과 — 이 데이터를 핵심 근거로 답변하세요]\n${detailText}\n\n`
               : `[원인 분석용 상세 조회 결과 없음]\n질문에서 구체 대상(품목/거래처 등)을 식별하지 못했거나 조회 결과가 0행입니다. 가용 데이터만으로 답하되, 마지막에 "현재 데이터만으로는 원인 확정이 어렵다"고 명시하세요.\n\n`) +
-            `위 데이터에 입각해 사용자 질문에 답하세요. 고정 KPI 멘트나 일반론은 절대 쓰지 마세요.`
-          : `${dateInfo}\n\n${analysisFormatRule}\n\n[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (전체 KPI·보조 조회 모두 결과 없음)\n\n해당 기간/대상의 데이터가 없습니다. 사용자에게 가능한 원인(미적재/대상명 불일치 등)을 친절히 안내하고, "**현재 데이터만으로는 원인 확정이 어렵다**"로 마무리하세요.`;
+            `위 데이터에 입각해 사용자 질문에 답하세요. 고정 KPI 멘트나 일반론은 절대 쓰지 마세요. 영업이익/매출총이익/매출원가 등 학습관리에 등록된 지표는 위 [학습관리 등록 지표 정의]의 산식 기준으로만 인용하세요.`
+          : `${dateInfo}\n\n${analysisFormatRule}\n\n${metricBlockForUser}[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (전체 KPI·보조 조회 모두 결과 없음)\n\n해당 기간/대상의 데이터가 없습니다. 사용자에게 가능한 원인(미적재/대상명 불일치 등)을 친절히 안내하고, "**현재 데이터만으로는 원인 확정이 어렵다**"로 마무리하세요.`;
 
         const analysisCompletion = await openai.chat.completions.create({
           model: GPT_MODEL,
