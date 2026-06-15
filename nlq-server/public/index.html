@@ -1212,12 +1212,15 @@ async function sendQuery(query) {
     chatArea.appendChild(typingEl);
     scrollToBottom();
 
+    // ★ 진단용 메타데이터 수집 (오류 상세보기에서 사용)
+    const reqStartMs = Date.now();
+    const timeoutMs = (queryMode === 'analysis') ? 300000 : 120000;
+
     try {
         // AbortController로 타임아웃 설정
         // - 현황집계(aggregate): 120초
         // - 분석질문(analysis): 300초 (보조 SQL 다중 생성·실행 + LLM 답변 생성에 시간 필요)
         const controller = new AbortController();
-        const timeoutMs = (queryMode === 'analysis') ? 300000 : 120000;
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         const res = await fetch('/api/nlq', {
@@ -1234,18 +1237,44 @@ async function sendQuery(query) {
             const text = await res.text();
             console.error('[NLQ] 비정상 응답 (JSON 아님):', text.substring(0, 200));
             typingEl.remove();
-            appendErrorMessage('서버 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (서버가 재시작 중일 수 있습니다)');
+            appendErrorMessage('서버 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (서버가 재시작 중일 수 있습니다)', {
+                stage: 'response_not_json',
+                httpStatus: res.status,
+                statusText: res.statusText,
+                contentType,
+                responseSnippet: text.substring(0, 1500),
+                queryMode,
+                timeoutMs,
+                elapsedMs: Date.now() - reqStartMs,
+                query,
+                timestamp: new Date().toISOString(),
+            });
             loadHistory().catch(() => {});
             return;
         }
 
         let data;
+        let rawBodyText = '';
         try {
-            data = await res.json();
+            // ★ 진단을 위해 본문을 텍스트로 받아두고 다시 파싱
+            rawBodyText = await res.text();
+            data = JSON.parse(rawBodyText);
         } catch (parseErr) {
             console.error('[NLQ] JSON 파싱 실패:', parseErr.message);
             typingEl.remove();
-            appendErrorMessage('서버 응답을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.');
+            appendErrorMessage('서버 응답을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.', {
+                stage: 'json_parse_failed',
+                httpStatus: res.status,
+                statusText: res.statusText,
+                contentType,
+                message: parseErr.message,
+                responseSnippet: rawBodyText.substring(0, 1500),
+                queryMode,
+                timeoutMs,
+                elapsedMs: Date.now() - reqStartMs,
+                query,
+                timestamp: new Date().toISOString(),
+            });
             loadHistory().catch(() => {});
             return;
         }
@@ -1254,7 +1283,47 @@ async function sendQuery(query) {
         typingEl.remove();
 
         if (!res.ok || data.error) {
-            appendErrorMessage(data.error || '서버 오류가 발생했습니다.');
+            // 서버 측에서 보낸 진단 정보(error_detail)가 있으면 우선 사용, 없으면 기본 진단 만들기
+            const serverDetail = data.error_detail || {};
+            appendErrorMessage(data.error || '서버 오류가 발생했습니다.', {
+                stage: serverDetail.stage || 'server_error',
+                httpStatus: res.status,
+                statusText: res.statusText,
+                contentType,
+                message: serverDetail.message || data.error || data.explanation || '',
+                code: serverDetail.code || null,
+                stack: serverDetail.stack || null,
+                intent: serverDetail.intent || null,
+                domain: serverDetail.domain || null,
+                calmonth: serverDetail.calmonth || null,
+                queryMode,
+                timeoutMs,
+                elapsedMs: Date.now() - reqStartMs,
+                query,
+                timestamp: serverDetail.timestamp || new Date().toISOString(),
+                responseSnippet: rawBodyText.substring(0, 1500),
+            });
+        } else if (data.error_user_friendly && data.error_detail) {
+            // ★ 분석 경로 등에서 success:false + error_user_friendly:true + error_detail 로 온 경우
+            //   HTTP 200 이지만 실제로는 실패이므로, 친절 메시지와 함께 진단 정보를 표시
+            const sd = data.error_detail;
+            appendErrorMessage(data.answer || '분석 답변을 생성하지 못했습니다.', {
+                stage: sd.stage || 'analysis_path',
+                httpStatus: res.status,
+                statusText: res.statusText,
+                contentType,
+                message: sd.message || data.answer || '',
+                code: sd.code || null,
+                stack: sd.stack || null,
+                intent: sd.intent || null,
+                domain: sd.domain || null,
+                calmonth: sd.calmonth || null,
+                queryMode,
+                timeoutMs,
+                elapsedMs: Date.now() - reqStartMs,
+                query,
+                timestamp: sd.timestamp || new Date().toISOString(),
+            });
         } else if (data.isUnknownTerm) {
             appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
         } else if (data.isAnalysisAnswer) {
@@ -1274,11 +1343,32 @@ async function sendQuery(query) {
         loadHistory().catch(() => {});
     } catch(err) {
         typingEl.remove();
+        const elapsedMs = Date.now() - reqStartMs;
         if (err.name === 'AbortError') {
             const limitMin = (queryMode === 'analysis') ? 5 : 2;
-            appendErrorMessage(`요청 시간이 초과되었습니다 (${limitMin}분). AI 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.`);
+            appendErrorMessage(`요청 시간이 초과되었습니다 (${limitMin}분). AI 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.`, {
+                stage: 'client_timeout_abort',
+                message: '클라이언트 fetch가 AbortController로 중단됨 (응답 도착 전 timeout 초과)',
+                errorName: err.name,
+                queryMode,
+                timeoutMs,
+                elapsedMs,
+                query,
+                timestamp: new Date().toISOString(),
+                stack: err.stack ? String(err.stack).split('\n').slice(0,5).join('\n') : null,
+            });
         } else {
-            appendErrorMessage('서버 연결 오류: ' + err.message + '\n잠시 후 다시 시도해주세요.');
+            appendErrorMessage('서버 연결 오류: ' + err.message + '\n잠시 후 다시 시도해주세요.', {
+                stage: 'network_or_fetch_failed',
+                message: err.message,
+                errorName: err.name,
+                queryMode,
+                timeoutMs,
+                elapsedMs,
+                query,
+                timestamp: new Date().toISOString(),
+                stack: err.stack ? String(err.stack).split('\n').slice(0,5).join('\n') : null,
+            });
         }
         loadHistory().catch(() => {});
     } finally {
@@ -1614,11 +1704,82 @@ function appendBotMessage(data) {
 
 // ============================================================
 // Append Error Message
+//   - 두 번째 인자(details)로 진단 정보를 받으면 "오류 상세보기" 토글을 함께 표시
+//   - details 객체에 stage/message/httpStatus/contentType/responseSnippet/queryMode/
+//     elapsedMs/timeoutMs/query/timestamp/code/stack 등 자유롭게 넣을 수 있음
 // ============================================================
-function appendErrorMessage(msg) {
+function appendErrorMessage(msg, details) {
     const chatArea = document.getElementById('chatArea');
     const el = document.createElement('div');
     el.className = 'msg-bot fade-in';
+
+    // 상세 진단 패널 (있을 때만)
+    let detailsHtml = '';
+    if (details && typeof details === 'object') {
+        try {
+            const detailId = 'err-detail-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+
+            // 보기 좋게 정리된 key:value 행
+            const rows = [];
+            const fmt = (label, value) => {
+                if (value === undefined || value === null || value === '') return;
+                let v = (typeof value === 'object') ? JSON.stringify(value, null, 2) : String(value);
+                if (v.length > 4000) v = v.substring(0, 4000) + ' …(생략)';
+                rows.push(`<div style="display:grid;grid-template-columns:130px 1fr;gap:8px;padding:4px 0;border-bottom:1px dashed #fecaca;">
+                    <div style="color:#991b1b;font-weight:600;font-size:11.5px;">${esc(label)}</div>
+                    <div style="color:#450a0a;font-size:11.5px;word-break:break-all;white-space:pre-wrap;font-family:'SF Mono', Menlo, monospace;">${esc(v)}</div>
+                </div>`);
+            };
+            fmt('단계(stage)',     details.stage);
+            fmt('HTTP 상태',       details.httpStatus);
+            fmt('Status Text',     details.statusText);
+            fmt('Content-Type',    details.contentType);
+            fmt('에러 코드',       details.code);
+            fmt('서버 메시지',     details.message);
+            fmt('응답 본문(앞부분)', details.responseSnippet);
+            fmt('질의 모드',       details.queryMode);
+            fmt('의도',            details.intent);
+            fmt('도메인',          details.domain);
+            fmt('CALMONTH',        details.calmonth);
+            fmt('타임아웃 한도',   details.timeoutMs ? `${details.timeoutMs} ms (${Math.round(details.timeoutMs/1000)}초)` : '');
+            fmt('경과 시간',       details.elapsedMs ? `${details.elapsedMs} ms (${(details.elapsedMs/1000).toFixed(1)}초)` : '');
+            fmt('요청 질문',       details.query);
+            fmt('발생 시각',       details.timestamp);
+            fmt('스택',            details.stack);
+            fmt('네트워크 에러명', details.errorName);
+
+            const rawJson = JSON.stringify(details, null, 2);
+
+            detailsHtml = `
+                <div style="margin-top:10px;">
+                    <button type="button" onclick="(function(btn){
+                        const box = btn.nextElementSibling;
+                        const isHidden = box.style.display === 'none' || !box.style.display;
+                        box.style.display = isHidden ? 'block' : 'none';
+                        btn.innerHTML = isHidden
+                            ? '<i class=\\'fas fa-chevron-up\\' style=\\'margin-right:5px;\\'></i>오류 상세 숨기기'
+                            : '<i class=\\'fas fa-chevron-down\\' style=\\'margin-right:5px;\\'></i>오류 상세보기';
+                    })(this)" style="background:#fff;border:1px solid #fca5a5;color:#b91c1c;font-size:11.5px;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:500;">
+                        <i class="fas fa-chevron-down" style="margin-right:5px;"></i>오류 상세보기
+                    </button>
+                    <div id="${detailId}" style="display:none;margin-top:8px;background:#fff;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;max-height:380px;overflow:auto;">
+                        ${rows.join('')}
+                        <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+                            <button type="button" onclick="(function(){navigator.clipboard.writeText(${JSON.stringify(rawJson)}).then(()=>{this.textContent='복사됨';setTimeout(()=>{this.innerHTML='<i class=\\'far fa-copy\\' style=\\'margin-right:4px;\\'></i>JSON 복사';},1500);}).catch(()=>{});}).call(this)" style="background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;font-size:11px;padding:4px 8px;border-radius:5px;cursor:pointer;">
+                                <i class="far fa-copy" style="margin-right:4px;"></i>JSON 복사
+                            </button>
+                            <button type="button" onclick="console.error('[NLQ 오류 상세]', ${JSON.stringify(rawJson)}); alert('브라우저 콘솔(F12)에 출력했습니다.');" style="background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;font-size:11px;padding:4px 8px;border-radius:5px;cursor:pointer;">
+                                <i class="fas fa-terminal" style="margin-right:4px;"></i>콘솔 출력
+                            </button>
+                        </div>
+                    </div>
+                </div>`;
+        } catch (e) {
+            console.error('[appendErrorMessage] 상세 패널 렌더 실패:', e);
+            detailsHtml = '';
+        }
+    }
+
     el.innerHTML = `
         <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
             <div class="bot-avatar" style="background:linear-gradient(135deg,#ef4444,#dc2626);">
@@ -1627,6 +1788,7 @@ function appendErrorMessage(msg) {
             <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px 16px;border-radius:12px;flex:1;">
                 <p style="color:#dc2626;font-size:13px;font-weight:500;margin-bottom:2px;">오류가 발생했습니다</p>
                 <p style="color:#991b1b;font-size:12px;">${esc(msg)}</p>
+                ${detailsHtml}
             </div>
         </div>`;
     chatArea.appendChild(el);
