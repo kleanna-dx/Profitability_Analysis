@@ -1464,131 +1464,49 @@ chartType 기준: bar(카테고리 비교), line(시계열), pie(비율), table(
 /**
  * 동의어 직접 매칭 (DB 조회 기반)
 /**
- * Metric 산식 재귀 확장
- * - 산식 내부에서 다른 metric_code를 참조하는 경우 해당 산식까지 풀어서 최종 산식 반환
- * - 예: ZAMT035 산식 "ZAMT003-ZAMT034" → ZAMT003, ZAMT034도 metric이면 각각의 산식으로 치환
- *        → "(SUM(ZAMT001)-SUM(ZAMT002)-SUM(ZAMT004))-(SUM(ZAMT026)+SUM(ZAMT025)+SUM(ZAMT005))"
- * - 무한 루프 방지: visited Set으로 순환 참조 차단
- * - 최대 깊이 제한: 5단계 (안전장치)
+ * Metric 산식 → 최종 SQL 표현식 변환 (★ 비-재귀, 산식 그대로 사용)
  *
- * 규칙:
- *  1) 산식 내 토큰 중 metricMap에 존재하는 metric_code가 있으면 해당 산식으로 치환
- *  2) 치환 시 하위 산식도 동일 규칙으로 재귀 확장
- *  3) aggregation == 'CALC' (이미 SUM() 등 포함된 산식)이면 그대로 사용
- *  4) aggregation == 'SUM' (단일 컬럼/단순 식)이면 산식 그대로 사용 (상위에서 SUM()으로 감싸짐)
- *  5) 토큰이 metric_code도 아니고 SQL 키워드도 아니면 그대로 둠 (원시 DB 컬럼)
+ * [정책 변경 — 2026-06-15]
+ * 사용자가 학습관리에서 등록한 산식 문자열을 그대로 SQL에 적용한다.
+ * 산식 안에 포함된 다른 metric_code(예: ZAMT047)는 또 다른 Metric으로 재해석하지 않고
+ * DB 원시 컬럼으로만 취급한다. (재귀 확장 금지)
  *
- * @param {string} formula - 원본 산식 문자열
- * @param {Object} metricMap - { metric_code: { formula, aggregation } } 형태의 전체 Metric 맵
- * @param {Set<string>} [visited] - 이미 방문한 metric_code 집합 (순환 방지)
- * @param {number} [depth] - 현재 재귀 깊이
- * @returns {string} 확장된 최종 산식
+ * - aggregation == 'CALC': formula 가 이미 SUM(...) 등을 포함한 완성된 SQL 표현식 →
+ *     그대로 반환 (호출 측에서 필요 시 괄호로 감쌈)
+ * - aggregation == 'SUM' (또는 기타): formula 가 단순 컬럼이거나 산술식이면 그대로 반환.
+ *     호출 측에서 단일 컬럼인지 판단하여 SUM(col)로 감싸거나 (...) 처리 가능.
+ *
+ * 즉, 이 함수는 "산식 안의 다른 metric_code를 다시 풀어주지" 않는다.
+ * "영업이익" 산식 안의 ZAMT047 은 다른 Metric으로 풀리지 않고 그대로 ZAMT047로 남는다.
+ *
+ * @param {string} formula - 학습관리에 등록된 원본 산식 문자열
+ * @param {Object} _metricMap - (미사용 — API 호환을 위해 시그니처는 유지)
+ * @param {Set<string>} _visited - (미사용)
+ * @param {number} _depth - (미사용)
+ * @returns {string} 등록된 산식 그대로 (재귀 확장 없음)
  */
-function expandMetricFormula(formula, metricMap, visited = new Set(), depth = 0) {
+function expandMetricFormula(formula, _metricMap, _visited = new Set(), _depth = 0) {
   if (!formula || typeof formula !== 'string') return formula || '';
-  if (depth >= 5) {
-    console.warn(`[Metric] expandMetricFormula 최대 깊이(5) 도달, 추가 확장 중단: ${formula}`);
-    return formula;
-  }
-
-  // SQL 키워드 및 집계 함수
-  const SQL_KEYWORDS = new Set([
-    'SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'NULLIF', 'COALESCE', 'IFNULL',
-    'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT', 'NULL', 'AS',
-    'CAST', 'CONVERT', 'ROUND', 'FLOOR', 'CEIL', 'ABS', 'DISTINCT'
-  ]);
-
-  // ★ 보호 구간 추출: 이미 SUM(...) 등 집계 함수로 감싸진 부분은 풀지 않음
-  // 예: "SUM(ZAMT001)-SUM(ZAMT002)" 에서 SUM(...) 안의 ZAMT001은 metric이라도 그대로 둠
-  // 방식: 집계함수(...)를 placeholder로 치환 → 재귀 확장 → 다시 복원
-  const protected_ = [];
-  const AGGREGATE_FN_PATTERN = /\b(SUM|AVG|COUNT|MAX|MIN|IFNULL|COALESCE|NULLIF|CAST|CONVERT|ROUND|FLOOR|CEIL|ABS)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi;
-  let masked = formula.replace(AGGREGATE_FN_PATTERN, (whole) => {
-    const idx = protected_.length;
-    protected_.push(whole);
-    return `__PROT${idx}__`;
-  });
-
-  // 마스킹된 산식에서 식별자 치환 (함수 호출 뒤의 '('는 placeholder엔 없으므로 안전)
-  masked = masked.replace(/\b([A-Z][A-Z0-9_]*)\b(?!\s*\()/g, (match) => {
-    // placeholder는 건드리지 않음
-    if (/^__PROT\d+__$/.test(match)) return match;
-    if (SQL_KEYWORDS.has(match)) return match;
-
-    // metric_code로 등록되어 있는가?
-    const meta = metricMap[match];
-    if (!meta) return match; // 원시 DB 컬럼이거나 알 수 없는 토큰 → 그대로
-
-    // 순환 참조 방지
-    if (visited.has(match)) {
-      console.warn(`[Metric] 순환 참조 감지, 확장 중단: ${match} (이미 방문: ${[...visited].join(',')})`);
-      return match;
-    }
-
-    const nextVisited = new Set(visited);
-    nextVisited.add(match);
-
-    // 하위 산식 재귀 확장
-    const subFormula = expandMetricFormula(meta.formula, metricMap, nextVisited, depth + 1);
-
-    let replacement;
-    if ((meta.aggregation || '').toUpperCase() === 'CALC') {
-      // CALC: 이미 SUM() 등 포함된 완성 산식 → 괄호로만 감쌈
-      replacement = `(${subFormula})`;
-    } else {
-      // SUM 등 단일 집계: 산식이 단순 컬럼 1개면 SUM(col), 산술식이면 각 토큰을 SUM()으로 감쌈
-      const isSimpleCol = /^[A-Z][A-Z0-9_]*$/.test(subFormula.trim());
-      if (isSimpleCol) {
-        replacement = `SUM(${subFormula.trim()})`;
-      } else {
-        const wrapped = subFormula.replace(/\b([A-Z][A-Z0-9_]*)\b(?!\s*\()/g, (tok) => {
-          if (SQL_KEYWORDS.has(tok)) return tok;
-          if (/^__PROT\d+__$/.test(tok)) return tok;
-          return `SUM(${tok})`;
-        });
-        replacement = `(${wrapped})`;
-      }
-    }
-    return replacement;
-  });
-
-  // placeholder 복원
-  return masked.replace(/__PROT(\d+)__/g, (_, i) => protected_[Number(i)]);
+  // ★ 재귀 확장 제거: 학습관리에 등록된 산식을 변형 없이 그대로 반환
+  return formula;
 }
 
 /**
- * 산식 내에 등장하는 모든 metric_code를 재귀적으로 수집
- * - expandMetricFormula의 트리거가 되는 토큰들을 추적
- * - RAG 컨텍스트에서 해당 컬럼들의 단순 정의를 차단하기 위한 용도
- * - 예: ZAMT035 산식 "ZAMT003-ZAMT034" → ZAMT003, ZAMT034
- *       ZAMT034 산식 "ZAMT026+SUM(ZAMT025)+ZAMT005" → ZAMT026, ZAMT005 추가
- *       최종 Set: { ZAMT003, ZAMT034, ZAMT026, ZAMT005 }
+ * 산식이 직접 참조하는 metric_code 수집 (★ 비-재귀)
  *
- * @param {string} formula - 원본 산식
- * @param {Object} metricMap - 도메인 전체 Metric 맵
- * @param {Set<string>} [visited] - 이미 방문한 metric_code (순환 방지)
- * @returns {Set<string>} 산식이 참조하는 모든 metric_code
+ * [정책 변경 — 2026-06-15]
+ * 산식 안의 토큰들은 더 이상 "다른 Metric"으로 풀리지 않고 raw DB 컬럼으로 취급되므로,
+ * RAG에서 "Metric 대체 컬럼"으로 제외해야 할 대상은 **자기 자신의 metric_code 뿐**이다.
+ * 산식 내부의 ZAMT### 같은 토큰은 raw 컬럼이므로 RAG 컨텍스트에서 정상적으로 노출되어야 한다.
+ *
+ * 따라서 이 함수는 더 이상 산식 내부를 재귀적으로 따라가지 않고 빈 Set을 반환한다.
+ * (호출 측에서 자기 metric_code 는 별도로 add 한다.)
+ *
+ * @returns {Set<string>} 빈 Set
  */
-function collectReferencedMetricCodes(formula, metricMap, visited = new Set()) {
-  const result = new Set();
-  if (!formula || typeof formula !== 'string') return result;
-  // 모든 식별자 토큰 추출 (함수 호출 포함 — SUM(ZAMT001)도 ZAMT001 잡혀야 함)
-  const tokens = formula.match(/\b([A-Z][A-Z0-9_]+)\b/g) || [];
-  const SQL_KEYWORDS = new Set([
-    'SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'NULLIF', 'COALESCE', 'IFNULL',
-    'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT', 'NULL', 'AS',
-    'CAST', 'CONVERT', 'ROUND', 'FLOOR', 'CEIL', 'ABS', 'DISTINCT'
-  ]);
-  for (const tok of tokens) {
-    if (SQL_KEYWORDS.has(tok)) continue;
-    if (metricMap[tok] && !visited.has(tok)) {
-      result.add(tok);
-      const next = new Set(visited); next.add(tok);
-      const subRefs = collectReferencedMetricCodes(metricMap[tok].formula, metricMap, next);
-      for (const sr of subRefs) result.add(sr);
-    }
-  }
-  return result;
+function collectReferencedMetricCodes(_formula, _metricMap, _visited = new Set()) {
+  // ★ 비-재귀화: 산식 내부의 토큰은 모두 raw DB 컬럼으로 간주 → 추가 수집하지 않음
+  return new Set();
 }
 
 /**
@@ -2268,22 +2186,31 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
     let result = inputSql;
     const replacedCodes = [];
 
-    // 각 metric_code에 대해 SQL 안에서 단순 합산 패턴을 찾아 풀린 산식으로 치환
+    // ★ [2026-06-15 정책] 산식 내부 재치환 방지
+    // - 한 metric을 산식으로 치환한 직후, 그 산식 안에 또 다른 metric_code (예: ZAMT047) 가
+    //   들어있더라도 후속 순회에서 다시 치환되지 않도록 placeholder 로 마스킹한다.
+    // - 학습관리에 등록된 산식을 "그대로" SQL 에 반영하는 것이 정책.
+    const protectedFormulas = [];
+    const protectFormula = (expanded) => {
+      const idx = protectedFormulas.length;
+      protectedFormulas.push(`(${expanded})`);
+      return `__MFR_PROT_${idx}__`;
+    };
+
+    // 각 metric_code에 대해 SQL 안에서 단순 합산 패턴을 찾아 등록된 산식으로 치환
+    // (산식 내부의 다른 metric_code 는 재귀 확장하지 않음 — expandMetricFormula 비-재귀화)
     for (const [code, meta] of Object.entries(metricMap)) {
       if (!meta || !meta.formula) continue;
-      // 재귀 확장된 산식 (모든 하위 metric_code까지 전부 풀림)
+      // 학습관리에 등록된 산식 그대로 (재귀 확장 없음)
       const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
       if (!expanded || expanded === code) continue;
 
-      // 안전한 SQL 표현식으로 감싸기 (괄호 포함)
-      // expandMetricFormula는 이미 SUM(콜럼) 형태를 포함한 풀린 산식을 반환
-      const replacement = `(${expanded})`;
-
-      // 패턴 1: SUM(ZAMT035) 같은 단순 합산 형태
+      // 패턴 1: SUM(ZAMT035) 같은 단순 합산 형태 → 등록된 산식으로 치환
       const sumPattern = new RegExp(`SUM\\s*\\(\\s*${code}\\s*\\)`, 'gi');
       if (sumPattern.test(result)) {
         const before = result;
-        result = result.replace(sumPattern, replacement);
+        // 치환 후 즉시 placeholder 로 보호하여 후속 metric 순회 영향 차단
+        result = result.replace(sumPattern, () => protectFormula(expanded));
         if (before !== result) {
           replacedCodes.push(`SUM(${code})`);
         }
@@ -2293,16 +2220,18 @@ async function applyMetricFormulaReplacement(inputSql, domainCode) {
       // — 다른 metric_code의 부분 문자열로 매칭되지 않도록 \b 사용
       const bareTokenPattern = new RegExp(`\\b${code}\\b(?!\\s*\\()`, 'g');
       // SUM(...) 안의 코드는 위 패턴1에서 처리됐으므로 여기선 SUM 바깥의 것만 잡음
-      // 간단하게: SUM(...) 표현은 이미 처리된 상태이므로 남은 토큰만 치환
       if (bareTokenPattern.test(result)) {
         const before = result;
-        // 남은 토큰을 풀린 산식으로 치환 (괄호 보존)
-        result = result.replace(bareTokenPattern, replacement);
+        // 남은 토큰을 등록된 산식으로 치환 후 placeholder 로 보호
+        result = result.replace(bareTokenPattern, () => protectFormula(expanded));
         if (before !== result) {
           replacedCodes.push(code);
         }
       }
     }
+
+    // placeholder 복원 — 보호된 산식을 원형 그대로 되돌림
+    result = result.replace(/__MFR_PROT_(\d+)__/g, (_, i) => protectedFormulas[Number(i)] || '');
 
     if (replacedCodes.length > 0) {
       console.log(`[NLQ] Metric 자동 치환 적용: ${replacedCodes.join(', ')}`);
