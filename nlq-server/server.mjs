@@ -6482,7 +6482,17 @@ app.post('/api/builder/query', async (req, res) => {
 
     // 비교모드일 때 compare_info 포함
     const hid = await savedId;
-    const responseObj = { success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart, history_id: hid || null };
+    // [2026-06-15] 결과 즐겨찾기 별 동기화를 위해 저장된 이력의 is_bookmarked 값을 함께 반환
+    //   - 기존 이력 재실행 시(history_id 가 있을 때) 이미 즐겨찾기였다면 별이 채워진 상태로 보여야 함
+    //   - 신규 이력이면 0 (미등록)
+    let isBookmarked = 0;
+    if (hid) {
+      try {
+        const [bmRows] = await pool.query('SELECT is_bookmarked FROM builder_query_history WHERE id=? LIMIT 1', [hid]);
+        isBookmarked = bmRows.length > 0 ? (bmRows[0].is_bookmarked ? 1 : 0) : 0;
+      } catch (e) { /* 조회 실패는 무시 — 프론트가 캐시로 폴백 */ }
+    }
+    const responseObj = { success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart, history_id: hid || null, is_bookmarked: isBookmarked };
     if (hasCompare && measureFields.length > 0) {
       // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
       const allDimAliases = fields.filter(f => {
@@ -6713,14 +6723,26 @@ app.delete('/api/builder/history', async (req, res) => {
 
 // ============================================================
 // API: 북마크 토글
+// ------------------------------------------------------------
+// [2026-06-15] 권한 분리 강화 — 기존 핸들러는 user_id 검사를 안 해서
+//   다른 사용자의 이력 북마크 상태를 바꿀 수 있는 보안 결함이 있었음.
+//   이제 본인 소유(owner) 또는 user_id=NULL(레거시 이력, 처음 클릭 시 소유권 귀속) 만 토글 허용.
+//   admin 은 어떤 이력이든 토글 가능.
 // ============================================================
 app.patch('/api/builder/history/:id/bookmark', async (req, res) => {
   try {
     const userId = req.session?.user?.id;
     if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
-    // 현재 상태 조회 후 토글
-    const [rows] = await pool.query('SELECT is_bookmarked FROM builder_query_history WHERE id=?', [req.params.id]);
+    const isAdmin = req.session.user.role === 'admin';
+    // 현재 상태 + 소유자 조회 후 권한 검증
+    const [rows] = await pool.query('SELECT is_bookmarked, user_id FROM builder_query_history WHERE id=?', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: '이력을 찾을 수 없습니다.' });
+    const ownerId = rows[0].user_id;
+    const isOwner = ownerId && ownerId === userId;
+    const isOrphan = !ownerId; // user_id=NULL 인 레거시 이력 — 처음 클릭한 사용자에게 귀속
+    if (!isAdmin && !isOwner && !isOrphan) {
+      return res.status(403).json({ error: '다른 사용자의 이력은 변경할 수 없습니다.' });
+    }
     const newVal = rows[0].is_bookmarked ? 0 : 1;
     await pool.query('UPDATE builder_query_history SET is_bookmarked=?, user_id=COALESCE(user_id,?) WHERE id=?', [newVal, userId, req.params.id]);
     res.json({ success: true, is_bookmarked: newVal });
