@@ -4471,6 +4471,170 @@ app.delete('/api/history', async (req, res) => {
 });
 
 // ============================================================
+// API: 자주질문(즐겨찾기) — 사이드 메뉴 "자주질문" 탭
+// ============================================================
+// 정책:
+// - 사용자별 보관 (user_favorite_questions)
+// - 같은 사용자/같은 질문 중복 방지 (UNIQUE KEY: user_id + SHA1(LOWER(TRIM(text))))
+// - 토글: 존재하면 DELETE, 없으면 INSERT (단순화)
+// - 클릭 재사용 시 use_count++, last_used_at 갱신
+// - 질문 길이 1000자 제한 (긴 텍스트 방지)
+// ============================================================
+
+// 질문 정규화 → SHA1 해시 (UNIQUE KEY 매칭용)
+function normalizeAndHashQuery(text) {
+  const normalized = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return crypto.createHash('sha1').update(normalized, 'utf8').digest('hex');
+}
+
+// [GET] /api/favorite-questions
+// → 본인의 자주질문 목록 (최근 추가 / 사용 빈도 순서 선택 가능)
+app.get('/api/favorite-questions', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const sortBy = (req.query.sort === 'used') ? 'used' : 'recent';
+    const limit = Math.min(parseInt(req.query.limit || '100', 10) || 100, 500);
+    let orderClause;
+    if (sortBy === 'used') {
+      orderClause = 'ORDER BY use_count DESC, COALESCE(last_used_at, created_at) DESC, id DESC';
+    } else {
+      orderClause = 'ORDER BY created_at DESC, id DESC';
+    }
+    const [rows] = await pool.query(
+      `SELECT id, query_text, query_hash, domain_code, query_mode,
+              last_used_at, use_count, created_at
+       FROM user_favorite_questions
+       WHERE user_id = ?
+       ${orderClause}
+       LIMIT ?`,
+      [userId, limit]
+    );
+    res.json({ success: true, items: rows, count: rows.length, sort: sortBy });
+  } catch (err) {
+    console.error('[GET /api/favorite-questions] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// [POST] /api/favorite-questions
+// body: { query_text, domain_code?, query_mode? }
+// → 신규 추가 (이미 존재하면 멱등하게 success=true, alreadyExists=true)
+app.post('/api/favorite-questions', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const { query_text, domain_code, query_mode } = req.body || {};
+    const text = String(query_text || '').trim();
+    if (!text) return res.status(400).json({ error: '질문 내용이 비어 있습니다.' });
+    if (text.length > 1000) return res.status(400).json({ error: '질문이 너무 깁니다. (최대 1000자)' });
+    const hash = normalizeAndHashQuery(text);
+    // 이미 있는지 확인
+    const [existing] = await pool.query(
+      'SELECT id, query_text FROM user_favorite_questions WHERE user_id=? AND query_hash=? LIMIT 1',
+      [userId, hash]
+    );
+    if (existing.length > 0) {
+      return res.json({ success: true, alreadyExists: true, id: existing[0].id, query_hash: hash });
+    }
+    const [result] = await pool.query(
+      `INSERT INTO user_favorite_questions
+         (user_id, query_text, query_hash, domain_code, query_mode)
+       VALUES (?, ?, ?, ?, ?)`,
+      [userId, text, hash, domain_code || null, query_mode || null]
+    );
+    res.json({ success: true, id: result.insertId, query_hash: hash, alreadyExists: false });
+  } catch (err) {
+    console.error('[POST /api/favorite-questions] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// [DELETE] /api/favorite-questions
+// query string 또는 body 의 query_text 또는 query_hash 로 삭제
+// (id 기반은 /api/favorite-questions/:id 로 별도 지원)
+app.delete('/api/favorite-questions', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const text = (req.query.query_text || req.body?.query_text || '').toString().trim();
+    let hash = (req.query.query_hash || req.body?.query_hash || '').toString().trim();
+    if (!hash && text) hash = normalizeAndHashQuery(text);
+    if (!hash) return res.status(400).json({ error: 'query_text 또는 query_hash 가 필요합니다.' });
+    const [result] = await pool.query(
+      'DELETE FROM user_favorite_questions WHERE user_id=? AND query_hash=?',
+      [userId, hash]
+    );
+    res.json({ success: true, deleted: result.affectedRows, query_hash: hash });
+  } catch (err) {
+    console.error('[DELETE /api/favorite-questions] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// [DELETE] /api/favorite-questions/:id
+// 본인 소유 id 기준 삭제
+app.delete('/api/favorite-questions/:id', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'id 가 잘못되었습니다.' });
+    const [result] = await pool.query(
+      'DELETE FROM user_favorite_questions WHERE id=? AND user_id=?',
+      [id, userId]
+    );
+    res.json({ success: true, deleted: result.affectedRows });
+  } catch (err) {
+    console.error('[DELETE /api/favorite-questions/:id] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// [POST] /api/favorite-questions/:id/use
+// → 사용자가 자주질문 클릭 시 use_count++ / last_used_at 갱신
+//   (재질의 시점 호출 — 통계용)
+app.post('/api/favorite-questions/:id/use', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'id 가 잘못되었습니다.' });
+    const [result] = await pool.query(
+      `UPDATE user_favorite_questions
+         SET use_count = use_count + 1,
+             last_used_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+      [id, userId]
+    );
+    res.json({ success: true, updated: result.affectedRows });
+  } catch (err) {
+    console.error('[POST /api/favorite-questions/:id/use] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// [GET] /api/favorite-questions/check?query_text=...
+// → 특정 질문이 이미 자주질문에 저장되어 있는지 확인 (말풍선 하트 초기 상태 동기화)
+app.get('/api/favorite-questions/check', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const text = String(req.query.query_text || '').trim();
+    if (!text) return res.json({ success: true, exists: false });
+    const hash = normalizeAndHashQuery(text);
+    const [rows] = await pool.query(
+      'SELECT id FROM user_favorite_questions WHERE user_id=? AND query_hash=? LIMIT 1',
+      [userId, hash]
+    );
+    res.json({ success: true, exists: rows.length > 0, id: rows[0]?.id || null, query_hash: hash });
+  } catch (err) {
+    console.error('[GET /api/favorite-questions/check] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // API: DB 상태 확인
 // ============================================================
 app.get('/api/status', async (req, res) => {
@@ -8525,6 +8689,39 @@ async function ensureBookmarkShareTables() {
   }
 }
 
+// ============================================================
+// 자주질문(즐겨찾기) 마이그레이션
+// ============================================================
+// - 사용자가 자연어 질의 말풍선의 하트 아이콘으로 저장한 질문을
+//   사용자별로 보관 (사이드 메뉴 "자주질문" 탭에서 재사용)
+// - 같은 사용자/같은 질문은 1건만 보관 (UNIQUE KEY)
+//   → 동일 텍스트 중복 저장 방지, 토글 시점에 INSERT/DELETE 로 단순 처리
+// - query_hash: SHA1(LOWER(TRIM(query_text))) → UNIQUE KEY로 사용 (긴 질문 인덱싱 회피)
+// - domain_code: 저장 시점의 활성 도메인 (PS/HL/MGMT) — 다중 도메인 사용자가 구분하기 위함
+async function ensureFavoriteQuestionsTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_favorite_questions (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        user_id         VARCHAR(50)  NOT NULL              COMMENT '소유자 user_id',
+        query_text      TEXT         NOT NULL              COMMENT '저장된 질문 본문',
+        query_hash      CHAR(40)     NOT NULL              COMMENT 'SHA1(LOWER(TRIM(query_text))) — 중복 방지용',
+        domain_code     VARCHAR(20)  DEFAULT NULL          COMMENT '저장 시점의 도메인 (PS/HL/MGMT)',
+        query_mode      VARCHAR(20)  DEFAULT NULL          COMMENT '저장 시점의 모드 (aggregate/analysis)',
+        last_used_at    TIMESTAMP    NULL DEFAULT NULL     COMMENT '최근 클릭/재사용 시각',
+        use_count       INT          NOT NULL DEFAULT 0    COMMENT '클릭/재사용 횟수',
+        created_at      TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_user_query (user_id, query_hash),
+        INDEX idx_user_created   (user_id, created_at DESC),
+        INDEX idx_user_lastused  (user_id, last_used_at DESC)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='자연어 질의 자주질문(즐겨찾기) 저장'
+    `);
+    console.log('[Migration] 자주질문 테이블 준비 완료');
+  } catch (e) {
+    console.error('[Migration] 자주질문 마이그레이션 실패:', e.message);
+  }
+}
+
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 NLQ Server running on http://0.0.0.0:${PORT}`);
 
@@ -8539,6 +8736,9 @@ app.listen(PORT, '0.0.0.0', async () => {
 
   // 빌더 히스토리 북마크/공유 마이그레이션
   await ensureBookmarkShareTables();
+
+  // 자주질문(즐겨찾기) 테이블 마이그레이션
+  await ensureFavoriteQuestionsTable();
 
   // 서버 시작 시 RAG 인덱스 자동 빌드 (비동기, 서버 응답에 영향 없음)
   try {

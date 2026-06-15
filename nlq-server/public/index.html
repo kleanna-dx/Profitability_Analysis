@@ -118,7 +118,55 @@
             background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;
             padding:12px 18px;border-radius:18px 18px 4px 18px;
             font-size:14px;line-height:1.6;box-shadow:0 2px 8px rgba(79,70,229,0.15);
+            white-space:pre-wrap;word-break:break-word;
         }
+        /* 사용자 질문 + 자주질문 하트 row */
+        .msg-user-row{
+            align-self:flex-end;display:flex;align-items:center;gap:8px;
+            max-width:calc(600px + 40px);
+        }
+        .fav-heart-btn{
+            width:30px;height:30px;border-radius:50%;
+            display:flex;align-items:center;justify-content:center;
+            cursor:pointer;transition:all .15s;
+            background:rgba(244,63,94,0.06);color:#cbd5e1;font-size:14px;
+            border:1px solid rgba(244,63,94,0.0);flex-shrink:0;
+            user-select:none;
+        }
+        .fav-heart-btn:hover{background:rgba(244,63,94,0.12);color:#f43f5e;}
+        .fav-heart-btn.active{color:#e11d48;background:rgba(244,63,94,0.14);border-color:rgba(244,63,94,0.25);}
+        .fav-heart-btn.active:hover{background:rgba(244,63,94,0.22);}
+        .fav-heart-btn.busy{opacity:0.5;pointer-events:none;}
+        .fav-heart-btn .pop{animation:fav-pop .3s ease-out;}
+        @keyframes fav-pop{0%{transform:scale(1)}50%{transform:scale(1.35)}100%{transform:scale(1)}}
+
+        /* 자주질문 사이드 패널 아이템 */
+        .fav-item{
+            display:flex;align-items:flex-start;gap:8px;padding:9px 10px;
+            border-radius:8px;cursor:pointer;transition:all .15s;
+            border:1px solid transparent;margin-bottom:4px;
+        }
+        .fav-item:hover{background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.08);}
+        .fav-item-icon{
+            width:26px;height:26px;border-radius:6px;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;
+            font-size:11px;margin-top:1px;
+            background:rgba(244,63,94,0.18);color:#fb7185;
+        }
+        .fav-item-text{flex:1;min-width:0;}
+        .fav-item-query{
+            font-size:12px;color:#e0e7ff;line-height:1.4;
+            overflow:hidden;text-overflow:ellipsis;display:-webkit-box;
+            -webkit-line-clamp:2;-webkit-box-orient:vertical;
+        }
+        .fav-item-meta{font-size:10px;color:#818cf8;margin-top:3px;opacity:0.7;}
+        .fav-item-del{
+            opacity:0;width:20px;height:20px;border-radius:4px;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;
+            color:#f87171;font-size:10px;cursor:pointer;transition:all .15s;margin-top:2px;
+        }
+        .fav-item:hover .fav-item-del{opacity:1;}
+        .fav-item-del:hover{background:rgba(239,68,68,0.2);}
         .msg-bot{
             align-self:flex-start;max-width:820px;min-width:340px;width:100%;
         }
@@ -688,10 +736,11 @@
                 <span>31일이 지나면 자동으로 내역이 삭제됩니다</span>
             </span>
         </div>
-        <!-- 최근 / 즐겨찾기 탭 (비주얼 쿼리 빌더와 동일 UX) -->
+        <!-- 최근 / 즐겨찾기 / 자주질문 탭 (비주얼 쿼리 빌더와 동일 UX) -->
         <div class="history-tabs">
             <div class="history-tab active" data-tab="recent" onclick="switchHistoryTab('recent')"><i class="fas fa-clock" style="margin-right:3px;"></i>최근</div>
             <div class="history-tab" data-tab="bookmarked" onclick="switchHistoryTab('bookmarked')"><i class="fas fa-star" style="margin-right:3px;"></i>즐겨찾기</div>
+            <div class="history-tab" data-tab="favorite" onclick="switchHistoryTab('favorite')"><i class="fas fa-heart" style="margin-right:3px;"></i>자주질문</div>
         </div>
         <div id="historyList" class="history-list">
             <div class="history-empty"><i class="fas fa-inbox"></i><br>아직 질의 이력이 없습니다</div>
@@ -1073,6 +1122,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     // 최근 이력 로드
     await loadHistory();
 
+    // 자주질문 인덱스 초기 로드 (말풍선 하트 초기 상태 동기화)
+    refreshFavoriteIndex().catch(() => {});
+
     // 이력 보관 정책 안내 문구 동적 갱신 (백엔드 정책값 반영)
     try {
         const r = await fetch('/api/history/retention');
@@ -1191,11 +1243,8 @@ async function sendQuery(query) {
 
     const chatArea = document.getElementById('chatArea');
 
-    // User message
-    const userMsg = document.createElement('div');
-    userMsg.className = 'msg-user fade-in';
-    userMsg.textContent = query;
-    chatArea.appendChild(userMsg);
+    // User message (말풍선 + 자주질문 하트)
+    chatArea.appendChild(buildUserMessageRow(query, queryMode, currentDomain));
 
     // Typing indicator
     const typingEl = document.createElement('div');
@@ -2503,19 +2552,282 @@ async function executeEditedSql(msgId) {
 }
 
 // ============================================================
-// History (이력 관리 + 즐겨찾기)
+// History (이력 관리 + 즐겨찾기) + 자주질문(하트)
 // ============================================================
-let currentHistoryTab = 'recent'; // 'recent' | 'bookmarked'
+let currentHistoryTab = 'recent'; // 'recent' | 'bookmarked' | 'favorite'
+
+// 자주질문(자주쓰는질문) 캐시 + 인덱스
+//   favoriteSet: Set<query_hash 소문자>  → O(1) 멤버십 체크
+//   favoriteByText: Map<normalizedText, {id, query_hash}> → 토글 후 동기화
+//   favoriteListCache: 최근 GET 응답 items (사이드 탭 렌더용)
+let favoriteSet = new Set();
+let favoriteByText = new Map();
+let favoriteListCache = [];
+
+// 정규화 → 백엔드 SHA1 규칙과 동일하게 맞춤
+function _normalizeFavQueryText(text) {
+    return String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+// 브라우저용 SHA1 (Web Crypto API)
+async function _sha1Hex(text) {
+    const buf = new TextEncoder().encode(text);
+    const hashBuf = await crypto.subtle.digest('SHA-1', buf);
+    return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 서버에서 자주질문 목록을 받아 캐시 + 인덱스 재구축
+async function refreshFavoriteIndex() {
+    try {
+        const res = await fetch('/api/favorite-questions?sort=recent&limit=200', { credentials: 'same-origin' });
+        if (!res.ok) {
+            // 비로그인 등은 조용히 무시
+            favoriteSet = new Set();
+            favoriteByText = new Map();
+            favoriteListCache = [];
+            return;
+        }
+        const data = await res.json();
+        const items = Array.isArray(data?.items) ? data.items : [];
+        favoriteListCache = items;
+        favoriteSet = new Set(items.map(it => String(it.query_hash || '').toLowerCase()));
+        favoriteByText = new Map(items.map(it => [_normalizeFavQueryText(it.query_text), { id: it.id, query_hash: it.query_hash }]));
+    } catch (e) {
+        console.warn('[favorite] index refresh 실패:', e?.message);
+    }
+}
+
+// 사용자 질문 말풍선 row 빌더 — 말풍선 + 우측 하트
+function buildUserMessageRow(query, qMode, domainCode) {
+    const row = document.createElement('div');
+    row.className = 'msg-user-row fade-in';
+    row.dataset.queryText = query;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-user';
+    bubble.textContent = query;
+
+    const heart = document.createElement('div');
+    heart.className = 'fav-heart-btn';
+    heart.title = '자주질문에 저장 (다시 클릭하면 해제)';
+    heart.setAttribute('role', 'button');
+    heart.setAttribute('aria-label', '자주질문 토글');
+    heart.innerHTML = '<i class="far fa-heart"></i>';
+
+    // 초기 상태: favoriteSet 으로 동기 판정 → 비동기로 보강
+    const normalized = _normalizeFavQueryText(query);
+    if (favoriteByText.has(normalized)) {
+        heart.classList.add('active');
+        heart.innerHTML = '<i class="fas fa-heart"></i>';
+    } else {
+        // 캐시에 없으면 비동기 체크 (다른 탭/세션에서 미리 저장된 경우 보강)
+        _sha1Hex(normalized).then(h => {
+            if (favoriteSet.has(h)) {
+                heart.classList.add('active');
+                heart.innerHTML = '<i class="fas fa-heart"></i>';
+            }
+        }).catch(() => {});
+    }
+
+    heart.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        await toggleFavoriteQuestionFromBubble(heart, query, qMode, domainCode);
+    });
+
+    // 사용자 메시지는 우측 정렬 → row 안에서 [말풍선][하트] 순서로 두면
+    // 시각상 "말풍선 우측에 하트"가 됨 (사용자 요구사항 1번)
+    row.appendChild(bubble);
+    row.appendChild(heart);
+    return row;
+}
+
+// 하트 토글 — 즉시 UI 반응 + 서버 동기화
+async function toggleFavoriteQuestionFromBubble(heartEl, queryText, qMode, domainCode) {
+    if (!queryText || !queryText.trim()) return;
+    if (heartEl.classList.contains('busy')) return;
+    heartEl.classList.add('busy');
+
+    const normalized = _normalizeFavQueryText(queryText);
+    const wasActive = heartEl.classList.contains('active');
+    try {
+        if (!wasActive) {
+            // 추가
+            const res = await fetch('/api/favorite-questions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    query_text: queryText,
+                    domain_code: domainCode || null,
+                    query_mode: qMode || null,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error || '저장 실패');
+            }
+            heartEl.classList.add('active');
+            heartEl.innerHTML = '<i class="fas fa-heart pop"></i>';
+            // 인덱스 동기화
+            const h = data.query_hash || await _sha1Hex(normalized);
+            favoriteSet.add(String(h).toLowerCase());
+            favoriteByText.set(normalized, { id: data.id, query_hash: h });
+        } else {
+            // 해제
+            const res = await fetch('/api/favorite-questions?query_text=' + encodeURIComponent(queryText), {
+                method: 'DELETE',
+                credentials: 'same-origin',
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error || '삭제 실패');
+            }
+            heartEl.classList.remove('active');
+            heartEl.innerHTML = '<i class="far fa-heart"></i>';
+            const h = data.query_hash || await _sha1Hex(normalized);
+            favoriteSet.delete(String(h).toLowerCase());
+            favoriteByText.delete(normalized);
+        }
+        // 동일 텍스트의 다른 말풍선들도 즉시 동기화 (같은 질문 여러 번 입력했을 때)
+        document.querySelectorAll('.msg-user-row').forEach(row => {
+            if (_normalizeFavQueryText(row.dataset.queryText || '') === normalized) {
+                const h = row.querySelector('.fav-heart-btn');
+                if (!h) return;
+                if (favoriteByText.has(normalized)) {
+                    h.classList.add('active');
+                    h.innerHTML = '<i class="fas fa-heart"></i>';
+                } else {
+                    h.classList.remove('active');
+                    h.innerHTML = '<i class="far fa-heart"></i>';
+                }
+            }
+        });
+        // 자주질문 탭이 열려 있으면 즉시 갱신
+        if (currentHistoryTab === 'favorite') {
+            loadFavoriteQuestions();
+        }
+    } catch (e) {
+        console.error('[favorite] toggle 실패:', e);
+        alert('자주질문 처리 실패: ' + e.message);
+    } finally {
+        heartEl.classList.remove('busy');
+    }
+}
+
+// 사이드 메뉴 "자주질문" 탭 로드
+async function loadFavoriteQuestions() {
+    try {
+        const res = await fetch('/api/favorite-questions?sort=recent&limit=200', { credentials: 'same-origin' });
+        const data = await res.json();
+        const items = Array.isArray(data?.items) ? data.items : [];
+        favoriteListCache = items;
+        // 인덱스도 같이 새로고침 (캐시 신뢰도 유지)
+        favoriteSet = new Set(items.map(it => String(it.query_hash || '').toLowerCase()));
+        favoriteByText = new Map(items.map(it => [_normalizeFavQueryText(it.query_text), { id: it.id, query_hash: it.query_hash }]));
+        renderFavoriteQuestionsList(items);
+    } catch (e) {
+        console.error('[favorite] 목록 로드 실패:', e);
+        const container = document.getElementById('historyList');
+        if (container) container.innerHTML = `<div class="history-empty"><i class="fas fa-exclamation-triangle"></i><br>자주질문 로드 실패</div>`;
+    }
+}
+
+function renderFavoriteQuestionsList(items) {
+    const container = document.getElementById('historyList');
+    if (!container) return;
+    if (!items || items.length === 0) {
+        container.innerHTML = `<div class="history-empty"><i class="fas fa-heart"></i><br>아직 자주질문이 없습니다<br><span style="font-size:11px;opacity:0.8;">질문 옆 하트(♡) 클릭으로 저장</span></div>`;
+        return;
+    }
+    let html = '';
+    items.forEach(it => {
+        const text = it.query_text || '';
+        const dc = it.domain_code;
+        const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${dc}]</span>` : '';
+        const useBadge = (it.use_count > 0) ? `<span style="display:inline-block;background:rgba(244,63,94,0.18);color:#fb7185;font-size:9px;padding:1px 5px;border-radius:8px;margin-left:4px;">${it.use_count}회 사용</span>` : '';
+        const created = formatHistoryTime(it.created_at);
+        const last = it.last_used_at ? ` · 최근사용 ${formatHistoryTime(it.last_used_at)}` : '';
+        const meta = `${created}${last}${useBadge}`;
+        const safeText = esc(text);
+        html += `
+            <div class="fav-item" data-fav-id="${it.id}" data-fav-text="${safeText}" data-fav-mode="${esc(it.query_mode || '')}" onclick="useFavoriteQuestion(${it.id})" title="클릭하면 입력창에 자동 입력됩니다">
+                <div class="fav-item-icon"><i class="fas fa-heart"></i></div>
+                <div class="fav-item-text">
+                    <div class="fav-item-query">${domainBadge}${safeText}</div>
+                    <div class="fav-item-meta">${meta}</div>
+                </div>
+                <div class="fav-item-del" onclick="event.stopPropagation();deleteFavoriteQuestion(${it.id})" title="자주질문에서 제거">
+                    <i class="fas fa-times"></i>
+                </div>
+            </div>`;
+    });
+    container.innerHTML = html;
+}
+
+// 자주질문 클릭 → 입력창 자동 입력 + 포커스 (사용자 요구사항 6번)
+// - "바로 재질의"는 사용자가 의도치 않게 비용 발생 가능 → 입력창에 채워두고 [전송] 버튼을 누르게 함
+//   (입력창 자동 입력 + 포커스 + 사이드바 자동 닫기 → 1~2번 클릭으로 즉시 재질의 가능)
+async function useFavoriteQuestion(id) {
+    const item = favoriteListCache.find(it => it.id === id);
+    if (!item) return;
+    const text = item.query_text || '';
+    const input = document.getElementById('queryInput');
+    if (input) {
+        input.value = text;
+        input.focus();
+        // 끝으로 캐럿 이동
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch(_) {}
+        // 자동 높이 조정 (textarea 인 경우)
+        if (typeof autoResize === 'function') {
+            try { autoResize(input); } catch(_) {}
+        }
+    }
+    // 모바일/오버레이 사이드바인 경우 자동으로 닫아 입력창 노출
+    try { closeSidebar(); } catch(_) {}
+    // 사용 통계 (실패해도 UX 영향 없음)
+    fetch(`/api/favorite-questions/${id}/use`, { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+}
+
+async function deleteFavoriteQuestion(id) {
+    if (!confirm('이 자주질문을 삭제하시겠습니까?')) return;
+    try {
+        const res = await fetch(`/api/favorite-questions/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || '삭제 실패');
+        // 캐시 갱신 + 화면 갱신
+        await loadFavoriteQuestions();
+        // 화면의 동일 텍스트 말풍선 하트 상태도 즉시 해제
+        const removed = favoriteListCache.find(it => it.id === id); // (이미 캐시 갱신된 후엔 못 찾을 수도 있음)
+        // 안전망: 전체 말풍선의 하트 상태를 favoriteSet 기준으로 재동기화
+        document.querySelectorAll('.msg-user-row').forEach(row => {
+            const t = _normalizeFavQueryText(row.dataset.queryText || '');
+            const h = row.querySelector('.fav-heart-btn');
+            if (!h) return;
+            if (favoriteByText.has(t)) {
+                h.classList.add('active');
+                h.innerHTML = '<i class="fas fa-heart"></i>';
+            } else {
+                h.classList.remove('active');
+                h.innerHTML = '<i class="far fa-heart"></i>';
+            }
+        });
+    } catch (e) {
+        alert('자주질문 삭제 실패: ' + e.message);
+    }
+}
 
 function switchHistoryTab(tab) {
     currentHistoryTab = tab;
     document.querySelectorAll('.history-tab').forEach(el => {
         el.classList.toggle('active', el.dataset.tab === tab);
     });
-    // 전체 삭제 버튼은 '최근' 탭에서만 노출 (즐겨찾기 탭에선 의미 모호)
+    // 전체 삭제 버튼은 '최근' 탭에서만 노출 (즐겨찾기/자주질문 탭에선 의미 모호)
     const clearBtn = document.getElementById('historyClearBtn');
     if (clearBtn) clearBtn.style.display = tab === 'recent' ? '' : 'none';
-    loadHistory();
+    if (tab === 'favorite') {
+        loadFavoriteQuestions();
+    } else {
+        loadHistory();
+    }
 }
 
 async function loadHistory() {
@@ -2664,10 +2976,12 @@ async function restoreSession(sessionKey, hintDomain) {
         }
 
         items.forEach(item => {
-            const userMsg = document.createElement('div');
-            userMsg.className = 'msg-user fade-in';
-            userMsg.textContent = item.query_text;
-            chatArea.appendChild(userMsg);
+            // 사용자 질문 말풍선 + 자주질문 하트 (이력 복원 시에도 동일하게)
+            chatArea.appendChild(buildUserMessageRow(
+                item.query_text || '',
+                item.query_mode || null,
+                item.domain_code || null
+            ));
 
             if (item.status === 'SUCCESS') {
                 // ★ 분석형 답변(chartType='analysis')은 표/SQL 없이 텍스트만 노출
