@@ -1231,14 +1231,23 @@ async function sendQuery(query) {
         });
         clearTimeout(timeoutId);
 
-        // 응답이 JSON인지 확인 (서버 오류 시 HTML이 반환될 수 있음)
+        // ★ 응답 헤더에서 X-Request-Id 추출 (모든 오류 진단의 핵심 키)
+        const xRequestId = res.headers.get('x-request-id') || null;
+
+        // 응답이 JSON인지 확인 (서버 오류 시 HTML이 반환될 수 있음 — nginx 504 등)
         const contentType = res.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {
             const text = await res.text();
             console.error('[NLQ] 비정상 응답 (JSON 아님):', text.substring(0, 200));
             typingEl.remove();
-            appendErrorMessage('서버 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (서버가 재시작 중일 수 있습니다)', {
+            // ★ 504/502 등 게이트웨이 오류일 가능성이 높음 → errorType 'timeout' or 'system' 으로 분류
+            const inferredType = (res.status === 504 || res.status === 408) ? 'timeout'
+                              : (res.status === 502 || res.status === 503) ? 'system'
+                              : 'system';
+            const details = {
+                requestId: xRequestId,
                 stage: 'response_not_json',
+                errorType: inferredType,
                 httpStatus: res.status,
                 statusText: res.statusText,
                 contentType,
@@ -1248,7 +1257,12 @@ async function sendQuery(query) {
                 elapsedMs: Date.now() - reqStartMs,
                 query,
                 timestamp: new Date().toISOString(),
-            });
+            };
+            appendErrorMessage('서버 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (서버가 재시작 중일 수 있습니다)', details);
+            // ★ requestId 가 있으면 비동기로 서버 로그 조회 시도 (Node.js 까지 도달은 했던 경우만 성공)
+            if (xRequestId) {
+                fetchErrorLogAndAppend(xRequestId, details);
+            }
             loadHistory().catch(() => {});
             return;
         }
@@ -1262,8 +1276,10 @@ async function sendQuery(query) {
         } catch (parseErr) {
             console.error('[NLQ] JSON 파싱 실패:', parseErr.message);
             typingEl.remove();
-            appendErrorMessage('서버 응답을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.', {
+            const details = {
+                requestId: xRequestId,
                 stage: 'json_parse_failed',
+                errorType: 'system',
                 httpStatus: res.status,
                 statusText: res.statusText,
                 contentType,
@@ -1274,7 +1290,9 @@ async function sendQuery(query) {
                 elapsedMs: Date.now() - reqStartMs,
                 query,
                 timestamp: new Date().toISOString(),
-            });
+            };
+            appendErrorMessage('서버 응답을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.', details);
+            if (xRequestId) fetchErrorLogAndAppend(xRequestId, details);
             loadHistory().catch(() => {});
             return;
         }
@@ -1282,11 +1300,16 @@ async function sendQuery(query) {
         // Remove typing
         typingEl.remove();
 
+        // ★ 응답 body 에 requestId 가 있으면 헤더보다 우선 (서버가 발급한 정식 id)
+        const finalRequestId = data.requestId || data.error_detail?.requestId || xRequestId || null;
+
         if (!res.ok || data.error) {
             // 서버 측에서 보낸 진단 정보(error_detail)가 있으면 우선 사용, 없으면 기본 진단 만들기
             const serverDetail = data.error_detail || {};
             appendErrorMessage(data.error || '서버 오류가 발생했습니다.', {
+                requestId: finalRequestId,
                 stage: serverDetail.stage || 'server_error',
+                errorType: serverDetail.errorType || 'system',
                 httpStatus: res.status,
                 statusText: res.statusText,
                 contentType,
@@ -1296,6 +1319,11 @@ async function sendQuery(query) {
                 intent: serverDetail.intent || null,
                 domain: serverDetail.domain || null,
                 calmonth: serverDetail.calmonth || null,
+                failedSql: serverDetail.failedSql || null,
+                logLines: serverDetail.logLines || null,
+                logLineCount: serverDetail.logLineCount || null,
+                logHint: serverDetail.logHint || null,
+                isAdmin: serverDetail.isAdmin || false,
                 queryMode,
                 timeoutMs,
                 elapsedMs: Date.now() - reqStartMs,
@@ -1304,11 +1332,13 @@ async function sendQuery(query) {
                 responseSnippet: rawBodyText.substring(0, 1500),
             });
         } else if (data.error_user_friendly && data.error_detail) {
-            // ★ 분석 경로 등에서 success:false + error_user_friendly:true + error_detail 로 온 경우
+            // ★ 분석 경로 / DB 실행 오류 등에서 success:false + error_user_friendly:true + error_detail 로 온 경우
             //   HTTP 200 이지만 실제로는 실패이므로, 친절 메시지와 함께 진단 정보를 표시
             const sd = data.error_detail;
-            appendErrorMessage(data.answer || '분석 답변을 생성하지 못했습니다.', {
+            appendErrorMessage(data.answer || data.explanation || '답변을 생성하지 못했습니다.', {
+                requestId: finalRequestId,
                 stage: sd.stage || 'analysis_path',
+                errorType: sd.errorType || 'system',
                 httpStatus: res.status,
                 statusText: res.statusText,
                 contentType,
@@ -1318,6 +1348,11 @@ async function sendQuery(query) {
                 intent: sd.intent || null,
                 domain: sd.domain || null,
                 calmonth: sd.calmonth || null,
+                failedSql: sd.failedSql || null,
+                logLines: sd.logLines || null,
+                logLineCount: sd.logLineCount || null,
+                logHint: sd.logHint || null,
+                isAdmin: sd.isAdmin || false,
                 queryMode,
                 timeoutMs,
                 elapsedMs: Date.now() - reqStartMs,
@@ -1347,7 +1382,9 @@ async function sendQuery(query) {
         if (err.name === 'AbortError') {
             const limitMin = (queryMode === 'analysis') ? 5 : 2;
             appendErrorMessage(`요청 시간이 초과되었습니다 (${limitMin}분). AI 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.`, {
+                requestId: null,  // 응답이 도착하지 않았으므로 헤더에서 받지 못함
                 stage: 'client_timeout_abort',
+                errorType: 'timeout',
                 message: '클라이언트 fetch가 AbortController로 중단됨 (응답 도착 전 timeout 초과)',
                 errorName: err.name,
                 queryMode,
@@ -1359,7 +1396,9 @@ async function sendQuery(query) {
             });
         } else {
             appendErrorMessage('서버 연결 오류: ' + err.message + '\n잠시 후 다시 시도해주세요.', {
+                requestId: null,
                 stage: 'network_or_fetch_failed',
+                errorType: 'system',
                 message: err.message,
                 errorName: err.name,
                 queryMode,
@@ -1703,15 +1742,109 @@ function appendBotMessage(data) {
 }
 
 // ============================================================
+// [2026-06-15] 오류 유형별 배지 메타데이터
+//   sql_generation : LLM이 SQL 생성에 실패 (JSON 파싱, 검증 실패)
+//   db_execution   : MariaDB 실행 단계 오류 (Unknown column, 문법 오류 등)
+//   llm_response   : OpenAI API 자체 오류 (429/5xx, 응답 형식 깨짐)
+//   timeout        : 타임아웃 (서버/클라이언트/게이트웨이)
+//   system         : 기타 시스템/네트워크 오류
+// ============================================================
+const ERROR_TYPE_META = {
+    sql_generation: { label: 'SQL 생성 오류', color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe', icon: 'fas fa-code' },
+    db_execution:   { label: 'DB 실행 오류',  color: '#0369a1', bg: '#f0f9ff', border: '#bae6fd', icon: 'fas fa-database' },
+    llm_response:   { label: 'AI 응답 오류',  color: '#c2410c', bg: '#fff7ed', border: '#fed7aa', icon: 'fas fa-robot' },
+    timeout:        { label: '타임아웃',      color: '#a16207', bg: '#fefce8', border: '#fde68a', icon: 'fas fa-clock' },
+    system:         { label: '시스템 오류',   color: '#b91c1c', bg: '#fef2f2', border: '#fecaca', icon: 'fas fa-exclamation-triangle' },
+};
+function getErrorTypeBadgeHtml(errorType) {
+    const meta = ERROR_TYPE_META[errorType] || ERROR_TYPE_META.system;
+    return `<span style="display:inline-flex;align-items:center;gap:4px;background:${meta.bg};border:1px solid ${meta.border};color:${meta.color};font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;">
+        <i class="${meta.icon}" style="font-size:10px;"></i>${esc(meta.label)}
+    </span>`;
+}
+
+// ============================================================
+// [2026-06-15] requestId 기반 서버 로그 사후 조회
+//   - 504 등으로 응답 본문에 logLines 가 없는 경우, 별도 API 로 조회 시도
+//   - 성공하면 기존 오류 패널 안에 "서버 로그" 영역을 추가 렌더
+//   - 메모리 LRU 만료 / 404 인 경우 안내 메시지 표시
+// ============================================================
+async function fetchErrorLogAndAppend(requestId, baseDetails) {
+    try {
+        const res = await fetch('/api/nlq/error-log/' + encodeURIComponent(requestId), {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            // 404 / 403 — 안내만 표시
+            const hint = data.hint || data.error || '서버 로그를 찾을 수 없습니다.';
+            appendServerLogPanel(requestId, { error: hint, logLines: [] });
+            return;
+        }
+        appendServerLogPanel(requestId, data);
+    } catch (e) {
+        console.warn('[error-log fetch 실패]', e.message);
+    }
+}
+
+function appendServerLogPanel(requestId, data) {
+    const chatArea = document.getElementById('chatArea');
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+    const logLines = Array.isArray(data.logLines) ? data.logLines : [];
+    const errorText = data.error ? `<p style="color:#92400e;font-size:11.5px;margin-bottom:6px;"><i class="fas fa-info-circle" style="margin-right:4px;"></i>${esc(data.error)}</p>` : '';
+    const linesHtml = logLines.length > 0
+        ? logLines.map(line => `<div style="color:#1e293b;">${esc(line)}</div>`).join('')
+        : '<div style="color:#94a3b8;font-style:italic;">서버 메모리에 보관된 로그가 없습니다.</div>';
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#64748b,#475569);">
+                <i class="fas fa-file-alt" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#f8fafc;border:1px solid #cbd5e1;padding:10px 14px;border-radius:12px;flex:1;">
+                <p style="color:#334155;font-size:12px;font-weight:600;margin-bottom:4px;">
+                    <i class="fas fa-server" style="margin-right:5px;"></i>서버 로그 (requestId: <code style="background:#e2e8f0;padding:1px 5px;border-radius:3px;">${esc(requestId)}</code>)
+                </p>
+                ${errorText}
+                <div style="background:#0f172a;color:#cbd5e1;font-family:'SF Mono', Menlo, monospace;font-size:11px;padding:8px 10px;border-radius:6px;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-all;">
+                    ${linesHtml.replace(/color:#1e293b/g, 'color:#cbd5e1')}
+                </div>
+                <p style="color:#64748b;font-size:10.5px;margin-top:6px;">
+                    <i class="fas fa-info-circle"></i> 로그가 부족하다면 운영서버에서:
+                    <code style="background:#e2e8f0;padding:1px 5px;border-radius:3px;font-size:10.5px;">grep ${esc(requestId)} /data/analytics/logs/nlq-server.log</code>
+                </p>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+    scrollToBottom();
+}
+
+// ============================================================
 // Append Error Message
 //   - 두 번째 인자(details)로 진단 정보를 받으면 "오류 상세보기" 토글을 함께 표시
-//   - details 객체에 stage/message/httpStatus/contentType/responseSnippet/queryMode/
-//     elapsedMs/timeoutMs/query/timestamp/code/stack 등 자유롭게 넣을 수 있음
+//   - details 객체에 requestId/stage/errorType/message/httpStatus/contentType/
+//     responseSnippet/queryMode/elapsedMs/timeoutMs/query/timestamp/code/stack/
+//     logLines/logLineCount/logHint/isAdmin 등 자유롭게 넣을 수 있음
 // ============================================================
 function appendErrorMessage(msg, details) {
     const chatArea = document.getElementById('chatArea');
     const el = document.createElement('div');
     el.className = 'msg-bot fade-in';
+
+    // ★ 오류 유형 배지 (헤더에 노출)
+    const errorType = (details && details.errorType) || 'system';
+    const badgeHtml = getErrorTypeBadgeHtml(errorType);
+
+    // ★ requestId — 사용자가 운영팀에 문의할 때 인용할 수 있도록 헤더에 노출
+    const requestId = details && details.requestId;
+    const requestIdHtml = requestId
+        ? `<div style="font-size:11px;color:#7f1d1d;margin-top:4px;">
+                <i class="fas fa-fingerprint" style="margin-right:4px;"></i>요청 ID:
+                <code style="background:#fee2e2;padding:1px 6px;border-radius:3px;font-size:10.5px;cursor:pointer;" onclick="navigator.clipboard.writeText('${esc(requestId)}').then(()=>{this.style.background='#bbf7d0';setTimeout(()=>{this.style.background='#fee2e2';},800);}).catch(()=>{});" title="클릭하면 복사됩니다">${esc(requestId)}</code>
+                <span style="color:#9f1239;font-size:10.5px;margin-left:4px;">(서버 로그 매칭용)</span>
+           </div>`
+        : '';
 
     // 상세 진단 패널 (있을 때만)
     let detailsHtml = '';
@@ -1730,12 +1863,15 @@ function appendErrorMessage(msg, details) {
                     <div style="color:#450a0a;font-size:11.5px;word-break:break-all;white-space:pre-wrap;font-family:'SF Mono', Menlo, monospace;">${esc(v)}</div>
                 </div>`);
             };
+            fmt('요청 ID',         details.requestId);
+            fmt('오류 유형',       details.errorType ? (ERROR_TYPE_META[details.errorType]?.label || details.errorType) : null);
             fmt('단계(stage)',     details.stage);
             fmt('HTTP 상태',       details.httpStatus);
             fmt('Status Text',     details.statusText);
             fmt('Content-Type',    details.contentType);
             fmt('에러 코드',       details.code);
             fmt('서버 메시지',     details.message);
+            fmt('실패 SQL',        details.failedSql);
             fmt('응답 본문(앞부분)', details.responseSnippet);
             fmt('질의 모드',       details.queryMode);
             fmt('의도',            details.intent);
@@ -1747,8 +1883,33 @@ function appendErrorMessage(msg, details) {
             fmt('발생 시각',       details.timestamp);
             fmt('스택',            details.stack);
             fmt('네트워크 에러명', details.errorName);
+            if (details.logLineCount && !details.logLines) {
+                fmt('서버 로그',     `${details.logLineCount}줄 보관됨 (관리자에게 requestId 와 함께 문의해 주세요)`);
+            }
+
+            // ★ 서버 로그 라인 (관리자 권한 시 서버가 직접 보내준 경우)
+            let serverLogsHtml = '';
+            if (Array.isArray(details.logLines) && details.logLines.length > 0) {
+                const linesEsc = details.logLines.map(l => esc(l)).join('\n');
+                serverLogsHtml = `
+                    <div style="margin-top:10px;padding-top:10px;border-top:1px solid #fecaca;">
+                        <div style="color:#7f1d1d;font-weight:600;font-size:11.5px;margin-bottom:6px;">
+                            <i class="fas fa-server" style="margin-right:4px;"></i>서버 로그 (${details.logLines.length}줄)
+                            ${details.isAdmin ? '<span style="background:#dc2626;color:#fff;font-size:9.5px;padding:1px 6px;border-radius:8px;margin-left:4px;">관리자</span>' : ''}
+                        </div>
+                        <div style="background:#0f172a;color:#cbd5e1;font-family:'SF Mono', Menlo, monospace;font-size:10.5px;padding:10px 12px;border-radius:6px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all;line-height:1.55;">${linesEsc}</div>
+                        ${details.logHint ? `<p style="color:#64748b;font-size:10.5px;margin-top:6px;"><i class="fas fa-terminal" style="margin-right:4px;"></i><code style="background:#e2e8f0;padding:1px 5px;border-radius:3px;">${esc(details.logHint)}</code></p>` : ''}
+                    </div>`;
+            }
 
             const rawJson = JSON.stringify(details, null, 2);
+
+            // ★ 비-관리자이고 서버가 로그를 안 보낸 경우, requestId 로 사후 조회 버튼 노출
+            const fetchLogButtonHtml = (details.requestId && !Array.isArray(details.logLines))
+                ? `<button type="button" onclick="fetchErrorLogAndAppend('${esc(details.requestId)}', ${JSON.stringify({requestId: details.requestId})})" style="background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;font-size:11px;padding:4px 8px;border-radius:5px;cursor:pointer;">
+                       <i class="fas fa-download" style="margin-right:4px;"></i>서버 로그 조회
+                   </button>`
+                : '';
 
             detailsHtml = `
                 <div style="margin-top:10px;">
@@ -1762,8 +1923,9 @@ function appendErrorMessage(msg, details) {
                     })(this)" style="background:#fff;border:1px solid #fca5a5;color:#b91c1c;font-size:11.5px;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:500;">
                         <i class="fas fa-chevron-down" style="margin-right:5px;"></i>오류 상세보기
                     </button>
-                    <div id="${detailId}" style="display:none;margin-top:8px;background:#fff;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;max-height:380px;overflow:auto;">
+                    <div id="${detailId}" style="display:none;margin-top:8px;background:#fff;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;max-height:520px;overflow:auto;">
                         ${rows.join('')}
+                        ${serverLogsHtml}
                         <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
                             <button type="button" onclick="(function(){navigator.clipboard.writeText(${JSON.stringify(rawJson)}).then(()=>{this.textContent='복사됨';setTimeout(()=>{this.innerHTML='<i class=\\'far fa-copy\\' style=\\'margin-right:4px;\\'></i>JSON 복사';},1500);}).catch(()=>{});}).call(this)" style="background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;font-size:11px;padding:4px 8px;border-radius:5px;cursor:pointer;">
                                 <i class="far fa-copy" style="margin-right:4px;"></i>JSON 복사
@@ -1771,6 +1933,7 @@ function appendErrorMessage(msg, details) {
                             <button type="button" onclick="console.error('[NLQ 오류 상세]', ${JSON.stringify(rawJson)}); alert('브라우저 콘솔(F12)에 출력했습니다.');" style="background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;font-size:11px;padding:4px 8px;border-radius:5px;cursor:pointer;">
                                 <i class="fas fa-terminal" style="margin-right:4px;"></i>콘솔 출력
                             </button>
+                            ${fetchLogButtonHtml}
                         </div>
                     </div>
                 </div>`;
@@ -1786,8 +1949,11 @@ function appendErrorMessage(msg, details) {
                 <i class="fas fa-exclamation-triangle" style="font-size:13px;"></i>
             </div>
             <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px 16px;border-radius:12px;flex:1;">
-                <p style="color:#dc2626;font-size:13px;font-weight:500;margin-bottom:2px;">오류가 발생했습니다</p>
+                <p style="color:#dc2626;font-size:13px;font-weight:500;margin-bottom:2px;">
+                    오류가 발생했습니다${badgeHtml}
+                </p>
                 <p style="color:#991b1b;font-size:12px;">${esc(msg)}</p>
+                ${requestIdHtml}
                 ${detailsHtml}
             </div>
         </div>`;
