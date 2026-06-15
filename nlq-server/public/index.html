@@ -3040,6 +3040,13 @@ function renderFavoriteQuestionsList(items) {
         const text = it.query_text || '';
         const dc = it.domain_code;
         const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${dc}]</span>` : '';
+        // [2026-06-15] 저장 당시의 질의 유형 배지 — 클릭 전에 어떤 모드로 복원될지 미리 안내
+        const qm = it.query_mode;
+        const modeBadge = (qm === 'analysis')
+            ? `<span style="display:inline-block;background:rgba(99,102,241,0.18);color:#a5b4fc;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-right:4px;"><i class="fas fa-lightbulb" style="font-size:8px;margin-right:2px;"></i>분석</span>`
+            : (qm === 'aggregate')
+                ? `<span style="display:inline-block;background:rgba(16,185,129,0.18);color:#6ee7b7;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-right:4px;"><i class="fas fa-table" style="font-size:8px;margin-right:2px;"></i>집계</span>`
+                : '';
         const useBadge = (it.use_count > 0) ? `<span style="display:inline-block;background:rgba(244,63,94,0.18);color:#fb7185;font-size:9px;padding:1px 5px;border-radius:8px;margin-left:4px;">${it.use_count}회 사용</span>` : '';
         const created = formatHistoryTime(it.created_at);
         const last = it.last_used_at ? ` · 최근사용 ${formatHistoryTime(it.last_used_at)}` : '';
@@ -3049,7 +3056,7 @@ function renderFavoriteQuestionsList(items) {
             <div class="fav-item" data-fav-id="${it.id}" data-fav-text="${safeText}" data-fav-mode="${esc(it.query_mode || '')}" onclick="useFavoriteQuestion(${it.id})" title="클릭하면 입력창에 자동 입력됩니다">
                 <div class="fav-item-icon"><i class="fas fa-heart"></i></div>
                 <div class="fav-item-text">
-                    <div class="fav-item-query">${domainBadge}${safeText}</div>
+                    <div class="fav-item-query">${domainBadge}${modeBadge}${safeText}</div>
                     <div class="fav-item-meta">${meta}</div>
                 </div>
                 <div class="fav-item-del" onclick="event.stopPropagation();deleteFavoriteQuestion(${it.id})" title="자주질문에서 제거">
@@ -3060,13 +3067,31 @@ function renderFavoriteQuestionsList(items) {
     container.innerHTML = html;
 }
 
-// 자주질문 클릭 → 입력창 자동 입력 + 포커스 (사용자 요구사항 6번)
+// 자주질문 클릭 → 입력창 자동 입력 + 포커스 + 저장 당시의 질의 유형(현황집계/분석질문) 복원
 // - "바로 재질의"는 사용자가 의도치 않게 비용 발생 가능 → 입력창에 채워두고 [전송] 버튼을 누르게 함
 //   (입력창 자동 입력 + 포커스 + 사이드바 자동 닫기 → 1~2번 클릭으로 즉시 재질의 가능)
+// - [2026-06-15] 저장 시점의 query_mode(aggregate/analysis) 까지 함께 복원하여
+//   현황집계/분석질문 라디오를 자동 선택 (사용자 요구사항)
 async function useFavoriteQuestion(id) {
     const item = favoriteListCache.find(it => it.id === id);
     if (!item) return;
     const text = item.query_text || '';
+
+    // [1] 저장 당시의 질의 유형 복원 — 라디오 + 전역 상태 + 라벨 시각화 동기화
+    //     query_mode 가 NULL/빈값인 레거시 항목은 기본값(aggregate) 으로 둠
+    const savedMode = (item.query_mode === 'analysis') ? 'analysis' : 'aggregate';
+    try {
+        // 라디오 input 의 .checked 도 같이 바꿔야 라벨/state 양쪽이 일관됨
+        const radioInput = document.querySelector(`input[name="queryMode"][value="${savedMode}"]`);
+        if (radioInput) radioInput.checked = true;
+        if (typeof onQueryModeChange === 'function') {
+            onQueryModeChange(savedMode); // 전역 queryMode + 라벨 .checked + placeholder 갱신
+        }
+    } catch (e) {
+        console.warn('[favorite] query_mode 복원 실패:', e?.message);
+    }
+
+    // [2] 질문 텍스트 자동 입력 + 포커스
     const input = document.getElementById('queryInput');
     if (input) {
         input.value = text;
