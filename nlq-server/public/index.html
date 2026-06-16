@@ -747,7 +747,9 @@
     <!-- Recent History / Bookmarks -->
     <div>
         <div class="history-header">
-            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>쿼리 이력</p>
+            <!-- [2026-06-16] 사용자 요청: 자연어 질의 화면의 사이드바 라벨을 '쿼리 이력' → '질의 이력' 으로 변경.
+                 자연어 질의 화면 전용 용어 정정 (비주얼 쿼리 빌더는 '쿼리 이력' 유지). -->
+            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>질의 이력</p>
             <span id="historyClearBtn" class="history-clear-btn" onclick="clearAllHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
         </div>
         <div id="historyRetentionNotice" class="text-[10px] text-indigo-300/70 leading-snug" style="margin:-2px 12px 4px 12px;display:flex;align-items:flex-start;gap:6px;">
