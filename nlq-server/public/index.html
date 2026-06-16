@@ -12,19 +12,36 @@
         *{font-family:'Noto Sans KR',sans-serif;box-sizing:border-box;margin:0;padding:0;}
         html,body{height:100%;overflow:hidden;}
         body{background:#f5f7fb;}
+        /* [2026-06-15] PC 에서 사이드바가 항상 고정 노출되므로, 본문이 사이드바 뒤에
+           깔리지 않도록 body 좌측에 사이드바 폭만큼 padding 부여.
+           모바일은 사이드바가 transform:translateX(-100%) 로 숨겨져 있으므로 패딩 없음. */
+        @media (min-width:901px){
+            body{padding-left:280px;}
+        }
 
-        /* Sidebar */
+        /* Sidebar
+           [2026-06-15] 사용자 요청: PC 에서는 사이드바가 항상 고정 노출되도록 변경.
+             - PC (>= 901px): 기본 펼침 (transform 없음)
+             - 모바일 (<= 900px): 기존 햄버거 토글 방식 (transform:translateX) */
         .sidebar{
             position:fixed;left:0;top:0;bottom:0;width:280px;
             background:#1e1b4b;color:#fff;z-index:100;
-            transform:translateX(-100%);transition:transform .3s ease;
+            transition:transform .3s ease;
         }
-        .sidebar.open{transform:translateX(0);}
+        @media (max-width:900px){
+            .sidebar{transform:translateX(-100%);}
+            .sidebar.open{transform:translateX(0);}
+        }
         .sidebar-overlay{
             position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:99;
             opacity:0;pointer-events:none;transition:opacity .3s;
         }
         .sidebar-overlay.active{opacity:1;pointer-events:auto;}
+        /* PC 에서는 오버레이도, 사이드바 X 닫기 버튼도 의미가 없으므로 숨김 */
+        @media (min-width:901px){
+            .sidebar-overlay{display:none;}
+            .sidebar-close-x{display:none;}
+        }
         .sidebar-menu-item{
             display:flex;align-items:center;gap:12px;padding:12px 20px;
             font-size:14px;color:#c7d2fe;cursor:pointer;transition:all .15s;
@@ -51,6 +68,10 @@
             transition:all .15s;color:#475569;font-size:16px;
         }
         .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        /* [2026-06-15] PC 에서는 사이드바가 항상 고정 노출되므로 햄버거 버튼 숨김 (모바일에서만 등장) */
+        @media (min-width:901px){
+            .hamburger-btn{display:none;}
+        }
         .status-pill{
             display:flex;align-items:center;gap:6px;
             font-size:12px;color:#64748b;background:#f8fafc;
@@ -703,7 +724,7 @@
     <div class="p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
             <h2 class="text-lg font-bold">수익성분석 AI</h2>
-            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
         </div>
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>

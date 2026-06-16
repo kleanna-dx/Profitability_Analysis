@@ -10,12 +10,24 @@
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
         body{margin:0;background:#f1f5f9;display:flex;height:100vh;overflow:hidden;}
+        /* [2026-06-15] PC 에서 사이드바 항상 고정 노출 → 본문에 좌측 패딩 부여 */
+        @media (min-width:901px){
+            body{padding-left:280px;}
+        }
 
-        /* Sidebar */
+        /* Sidebar
+           [2026-06-15] PC: 항상 노출 (left:0), 모바일: 햄버거 토글 (left:-300px ↔ 0) */
         .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;}
         .sidebar-overlay.active{display:block;}
-        .sidebar{position:fixed;top:0;left:-300px;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
-        .sidebar.open{left:0;}
+        .sidebar{position:fixed;top:0;left:0;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
+        @media (max-width:900px){
+            .sidebar{left:-300px;}
+            .sidebar.open{left:0;}
+        }
+        @media (min-width:901px){
+            .sidebar-overlay{display:none !important;}
+            .sidebar-close-x{display:none;}
+        }
         .sidebar-divider{height:1px;background:rgba(255,255,255,.1);margin:0 16px;}
         .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:10px 24px;color:#c7d2fe;cursor:pointer;transition:all .15s;text-decoration:none;}
         .sidebar-menu-item:hover,.sidebar-menu-item.active{background:rgba(255,255,255,.1);color:#fff;}
@@ -25,6 +37,10 @@
         .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
         .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
         .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        /* [2026-06-15] PC 에서는 햄버거 버튼 숨김 */
+        @media (min-width:901px){
+            .hamburger-btn{display:none;}
+        }
         .content-area{flex:1;overflow-y:auto;padding:24px;}
 
         /* Card */
@@ -136,7 +152,7 @@
     <div class="p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
             <h2 class="text-lg font-bold">수익성분석 AI</h2>
-            <button onclick="closeSidebar()" class="text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
         </div>
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>
