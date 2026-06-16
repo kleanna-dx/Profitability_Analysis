@@ -359,20 +359,42 @@
         .order-controls { display:flex; gap:6px; align-items:center; }
 
         /* SQL Preview */
+        /* [2026-06-16] 사용자 요청: 생성된 SQL 영역은 기본 접힘 처리, 토글 버튼으로만 펼침/접힘
+           - .sql-preview          : 결과가 있을 때만 표시 (active 클래스)
+           - .sql-preview-toggle   : 토글 버튼 (항상 보임)
+           - .sql-preview-body     : SQL 본문 (기본 접힘, .expanded 일 때만 펼침)
+           - 피벗 재생성/이력 복원 시에도 항상 접힘 상태로 시작 */
         .sql-preview {
-            background:#0f172a; border-radius:12px; padding:16px 20px; margin-top:12px;
-            display:none; position:relative;
+            background:#0f172a; border-radius:12px; margin-top:12px;
+            display:none; position:relative; overflow:hidden;
         }
         .sql-preview.active { display:block; }
-        .sql-preview pre {
+        .sql-preview-toggle {
+            display:flex; align-items:center; justify-content:space-between;
+            padding:10px 16px; cursor:pointer; user-select:none;
+            color:#cbd5e1; font-size:0.85rem; font-weight:600;
+            background:transparent; border:none; width:100%; text-align:left;
+            font-family:inherit; transition:background .15s;
+        }
+        .sql-preview-toggle:hover { background:rgba(255,255,255,0.04); }
+        .sql-preview-toggle-label { display:flex; align-items:center; gap:8px; }
+        .sql-preview-toggle-label .badge {
+            background:#1e293b; color:#7dd3fc; font-size:0.68rem;
+            padding:3px 10px; border-radius:6px; font-weight:600;
+        }
+        .sql-preview-toggle .chevron { transition:transform .2s ease; color:#94a3b8; font-size:0.85rem; }
+        .sql-preview.expanded .sql-preview-toggle .chevron { transform:rotate(180deg); }
+        .sql-preview-body {
+            display:none; padding:0 20px 16px;
+            border-top:1px solid rgba(255,255,255,0.06);
+        }
+        .sql-preview.expanded .sql-preview-body { display:block; }
+        .sql-preview-body pre {
             color:#e2e8f0; font-family:'Fira Code',monospace; font-size:0.82rem;
             white-space:pre-wrap; word-break:break-all; line-height:1.6;
+            margin:12px 0 0;
         }
-        .sql-preview pre .kw { color:#7dd3fc; font-weight:bold; }
-        .sql-preview .label {
-            position:absolute; top:8px; right:12px; background:#1e293b;
-            color:#7dd3fc; font-size:0.68rem; padding:3px 10px; border-radius:6px; font-weight:600;
-        }
+        .sql-preview-body pre .kw { color:#7dd3fc; font-weight:bold; }
 
         /* Results */
         /* [2026-06-15] min-width:0 + max-width:100%: 결과 영역이 자식 테이블의
@@ -1098,9 +1120,24 @@
                             <i class="far fa-star"></i>
                         </button>
                     </div>
+                    <!-- [2026-06-16] 사용자 요청: 생성된 SQL 영역은 기본 접힘.
+                         일반 사용자는 SQL 을 직접 볼 필요가 없으므로 토글 버튼만 노출.
+                         클릭 시에만 SQL 본문 펼침. -->
                     <div class="sql-preview" id="sqlPreview">
-                        <span class="label">생성된 SQL</span>
-                        <pre id="sqlPreviewText"></pre>
+                        <button type="button" class="sql-preview-toggle"
+                                id="sqlPreviewToggle"
+                                onclick="toggleSqlPreview()"
+                                aria-expanded="false"
+                                aria-controls="sqlPreviewBody">
+                            <span class="sql-preview-toggle-label">
+                                <span class="badge">생성된 SQL</span>
+                                <span id="sqlPreviewToggleText">보기</span>
+                            </span>
+                            <i class="fas fa-chevron-down chevron"></i>
+                        </button>
+                        <div class="sql-preview-body" id="sqlPreviewBody">
+                            <pre id="sqlPreviewText"></pre>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1298,7 +1335,11 @@ function newQueryBuilder(){
     const resultsSection = document.getElementById('resultsSection');
     if(resultsSection) resultsSection.classList.remove('active');
     const sqlPreview = document.getElementById('sqlPreview');
-    if(sqlPreview) sqlPreview.classList.remove('active');
+    if(sqlPreview) {
+        sqlPreview.classList.remove('active');
+        sqlPreview.classList.remove('expanded'); // [2026-06-16] 접힘 상태로 리셋
+        if (typeof syncSqlPreviewToggle === 'function') syncSqlPreviewToggle();
+    }
     const errorBox = document.getElementById('errorBox');
     if(errorBox) errorBox.classList.remove('active');
 
@@ -2148,7 +2189,11 @@ async function executeQuery() {
 
         if (data.sql) {
             document.getElementById('sqlPreviewText').innerHTML = highlightSQL(data.sql);
-            document.getElementById('sqlPreview').classList.add('active');
+            const sp = document.getElementById('sqlPreview');
+            sp.classList.add('active');
+            // [2026-06-16] 피벗 재생성 시에도 SQL 영역은 항상 접힘 상태로 시작
+            sp.classList.remove('expanded');
+            syncSqlPreviewToggle();
         }
         displayResults(data);
     } catch(e) {
@@ -2222,11 +2267,36 @@ function displayResults(data) {
 function resetResults() {
     lastResultColumns = []; lastResultRows = [];
     document.getElementById('resultsSection').classList.remove('active');
-    document.getElementById('sqlPreview').classList.remove('active');
+    const sp = document.getElementById('sqlPreview');
+    sp.classList.remove('active');
+    sp.classList.remove('expanded'); // [2026-06-16] 접힘 상태 리셋
+    syncSqlPreviewToggle();
     document.getElementById('errorBox').classList.remove('active');
     // [2026-06-15] 결과 영역 닫혔으므로 별도 비활성화
     loadedIsBookmarked = null;
     renderFavoriteResultBtn();
+}
+
+// [2026-06-16] 사용자 요청: 생성된 SQL 영역 토글
+// - 기본 접힘 상태(.expanded 없음) 에서 클릭하면 펼침
+// - 다시 클릭하면 접힘
+// - 표/그래프/CSV/엑셀 다운로드와 무관하게 SQL 영역만 토글
+function toggleSqlPreview() {
+    const sp = document.getElementById('sqlPreview');
+    if (!sp) return;
+    sp.classList.toggle('expanded');
+    syncSqlPreviewToggle();
+}
+
+// 토글 버튼의 label / aria-expanded 동기화
+function syncSqlPreviewToggle() {
+    const sp = document.getElementById('sqlPreview');
+    if (!sp) return;
+    const btn = document.getElementById('sqlPreviewToggle');
+    const label = document.getElementById('sqlPreviewToggleText');
+    const expanded = sp.classList.contains('expanded');
+    if (btn) btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    if (label) label.textContent = expanded ? '숨기기' : '보기';
 }
 
 // ─── CSV Download ───────────────────────
@@ -2713,11 +2783,17 @@ function applyHistoryToBuilder(item) {
     document.getElementById('promptInput').value = item.prompt || '';
 
     // 6. SQL 표시
-    if (item.generated_sql) {
-        document.getElementById('sqlPreviewText').innerHTML = highlightSQL(item.generated_sql);
-        document.getElementById('sqlPreview').classList.add('active');
-    } else {
-        document.getElementById('sqlPreview').classList.remove('active');
+    // [2026-06-16] 이력 복원 시에도 SQL 영역은 항상 접힘 상태로 시작
+    {
+        const sp = document.getElementById('sqlPreview');
+        if (item.generated_sql) {
+            document.getElementById('sqlPreviewText').innerHTML = highlightSQL(item.generated_sql);
+            sp.classList.add('active');
+        } else {
+            sp.classList.remove('active');
+        }
+        sp.classList.remove('expanded');
+        syncSqlPreviewToggle();
     }
 
     // 7. 결과 초기화
