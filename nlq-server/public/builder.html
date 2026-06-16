@@ -1025,7 +1025,11 @@
                         <select id="dateEndYear"></select>
                         <select id="dateEndMonth"></select>
                     </div>
-                    <div class="compare-buttons" id="compareButtons">
+                    <!-- [2026-06-16] 사용자 요청: 전년대비/전월대비 버튼 숨김 (사용 미정)
+                         - 추후 부활 시 아래 style="display:none" 만 제거하면 됨
+                         - JS 로직(toggleCompare, compareYoY/MoM 변수, payload 전송)은
+                           모두 유지되므로 다른 기능에 영향 없음 (기본값 false 로 비교모드 진입 안 함) -->
+                    <div class="compare-buttons" id="compareButtons" style="display:none;">
                         <div class="compare-btn-wrap">
                             <span class="compare-selected-label" id="labelYoY">✓ 선택됨</span>
                             <button class="compare-btn yoy" id="btnYoY" onclick="toggleCompare('yoy')" title="전년 동기 대비 비교 컬럼 추가">
@@ -1040,10 +1044,11 @@
                         </div>
                     </div>
                 </div>
-                <div class="date-info-text" id="dateInfoText">
+                <!-- [2026-06-16] 사용자 요청: 비교 안내 텍스트도 숨김 (전년대비/전월대비 버튼 비공개) -->
+                <div class="date-info-text" id="dateInfoText" style="display:none;">
                     <i class="fas fa-info-circle"></i> 동일 년월 선택 시 전년대비·전월대비 비교가 가능합니다.
                 </div>
-                <!-- 비교 기준 DIM 선택 패널 -->
+                <!-- 비교 기준 DIM 선택 패널 (전년대비/전월대비 클릭 시에만 노출되므로 자동 숨김 상태) -->
                 <div class="compare-dim-panel" id="compareDimPanel">
                     <div class="compare-dim-header">
                         <i class="fas fa-key"></i> 비교 기준 필드 선택
