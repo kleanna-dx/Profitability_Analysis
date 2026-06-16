@@ -3066,6 +3066,79 @@ function validateSqlPreExecution(sql) {
   return { valid: true };
 }
 
+// ============================================================
+// [2026-06-16] Helper: 기존 DIVISION 조건을 SQL 에서 제거 (학습 SQL 재사용 대응)
+// ------------------------------------------------------------
+// 학습된 SQL 은 검증 당시의 도메인에 박혀있을 수 있음 (예: PS 에서 검증되면 DIVISION='10').
+// 사용자가 도메인을 변경하면 (HL/MGMT) 기존 DIVISION 조건이 오작동의 원인이 됨.
+// → applyDomainFilter 직전에 이 함수로 기존 DIVISION 조건을 안전하게 제거하고,
+//   현재 선택 도메인 기준으로 재주입하도록 함.
+//
+// 대응 패턴 (대소문자 무시):
+//   - DIVISION = '10'           → 삭제
+//   - DIVISION = "10"           → 삭제
+//   - DIVISION IN ('10','20')   → 삭제
+//   - DIVISION <> '10'          → 삭제
+//   - DIVISION_NM 같은 다른 컬럼은 단어경계(\b)로 보호되므로 영향 없음
+//
+// 안전장치:
+//   - bw_profitability_data 미참조 SQL 은 그대로 반환
+//   - 조건 제거 후 WHERE 만 남거나 AND/OR 가 노출되면 정리
+//   - 서브쿼리/JOIN 안의 DIVISION 도 동일하게 제거 (SQL 전체 대상)
+// ============================================================
+function scrubDivisionFilter(inputSql) {
+  if (!inputSql) return inputSql;
+  if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
+  if (!/\bDIVISION\b/i.test(inputSql)) return inputSql;
+
+  let s = inputSql;
+
+  // 패턴 1: DIVISION <op> '값' 또는 "값" 또는 숫자
+  //   예) DIVISION = '10' / DIVISION <> '20' / DIVISION = 10
+  const opValuePattern = /\bDIVISION\s*(?:=|<>|!=|<|>|<=|>=)\s*(?:'[^']*'|"[^"]*"|\d+)/gi;
+  // 패턴 2: DIVISION IN ('10','20') 또는 DIVISION NOT IN (...)
+  const inPattern = /\bDIVISION\s+(?:NOT\s+)?IN\s*\([^)]*\)/gi;
+  // 패턴 3: DIVISION LIKE '...' / DIVISION BETWEEN x AND y
+  const likePattern = /\bDIVISION\s+LIKE\s+(?:'[^']*'|"[^"]*")/gi;
+  const betweenPattern = /\bDIVISION\s+BETWEEN\s+\S+\s+AND\s+\S+/gi;
+
+  // 각 패턴을 자리표시자로 치환 후, 주변 AND/OR 와 함께 정리
+  // → "AND DIVISION = '10'" / "DIVISION = '10' AND" / "(DIVISION = '10')" 등 모두 케어
+  const placeholders = [opValuePattern, inPattern, likePattern, betweenPattern];
+  for (const p of placeholders) {
+    s = s.replace(p, '__DIVCOND__');
+  }
+
+  // 주변 정리:
+  // (1) "AND __DIVCOND__"  →  ""
+  // (2) "__DIVCOND__ AND"  →  ""
+  // (3) "OR __DIVCOND__"   →  ""  (드물지만 안전망)
+  // (4) "__DIVCOND__ OR"   →  ""
+  // (5) "(__DIVCOND__)"    →  ""  (괄호로 단독 감싸진 경우)
+  // (6) 그래도 남으면 그냥 제거
+  s = s.replace(/\(\s*__DIVCOND__\s*\)/g, '__DIVCOND__'); // 단독 괄호 평탄화
+  s = s.replace(/\bAND\s+__DIVCOND__\b/gi, '');
+  s = s.replace(/\b__DIVCOND__\s+AND\b/gi, '');
+  s = s.replace(/\bOR\s+__DIVCOND__\b/gi, '');
+  s = s.replace(/\b__DIVCOND__\s+OR\b/gi, '');
+  s = s.replace(/__DIVCOND__/g, '');
+
+  // 빈 WHERE 정리:
+  //   WHERE  GROUP BY / ORDER BY / LIMIT / HAVING / UNION / ) / ;  →  WHERE 제거
+  s = s.replace(/\bWHERE\s+(?=(GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION|\)|;|$))/gi, '');
+  // WHERE AND ... → WHERE ...
+  s = s.replace(/\bWHERE\s+AND\b/gi, 'WHERE');
+  // WHERE OR ... → WHERE ...
+  s = s.replace(/\bWHERE\s+OR\b/gi, 'WHERE');
+  // 연속 공백 정리
+  s = s.replace(/\s{2,}/g, ' ').trim();
+
+  if (s !== inputSql) {
+    console.log('[NLQ] 기존 DIVISION 조건 제거 (scrubDivisionFilter)');
+  }
+  return s;
+}
+
 function applyDomainFilter(inputSql, domainCode) {
   if (!inputSql) return inputSql;
   const dc = (domainCode || '').toUpperCase();
@@ -3079,6 +3152,8 @@ function applyDomainFilter(inputSql, domainCode) {
 
   // 이미 DIVISION 조건이 SQL 어딘가에 있으면 중복 추가 금지
   // (DIVISION_NM 같은 다른 컬럼은 단어경계로 구분되므로 영향 없음)
+  // ※ 학습 SQL 재사용 시 도메인 변경 케이스는 호출측에서 scrubDivisionFilter() 로
+  //   먼저 기존 조건을 제거한 뒤 이 함수를 호출해야 함.
   if (/\bDIVISION\b\s*(=|<>|!=|<|>|\sIN\b|\sLIKE\b|\sBETWEEN\b)/i.test(inputSql)) {
     return inputSql;
   }
@@ -3842,6 +3917,15 @@ ${commonRules}
     // ★ 도메인별 DIVISION 자동 필터 주입 (PS→'10', HL→'20', MGMT→no-op)
     //   - 학습 경로/GPT 경로 모두 여기로 합류하므로 한 곳에서 적용
     //   - 이미 DIVISION 조건이 있으면 중복 추가하지 않음
+    //
+    // [2026-06-16] 사용자 요청 (학습된 SQL 재사용 시 도메인 오작동 수정):
+    //   - 학습된 SQL 은 검증 시점의 도메인 조건이 박혀있을 수 있음
+    //     (예: PS 에서 "정확해요" 검증 → DIVISION='10' 이 SQL 에 포함됨)
+    //   - 이후 HL/MGMT 에서 같은 질문 → 학습 SQL 재사용 시 PS 도메인 데이터가 잘못 조회됨
+    //   - 해결: applyDomainFilter 호출 전에 scrubDivisionFilter 로 기존 DIVISION 조건을
+    //     모두 제거한 뒤, 현재 선택 도메인 기준으로 새로 주입
+    //   - 정책: "학습 SQL 은 쿼리 구조만 재사용, DIVISION 은 실행 시점에 동적 주입"
+    sql = scrubDivisionFilter(sql);
     sql = applyDomainFilter(sql, activeDomain);
     // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
@@ -6467,10 +6551,15 @@ app.post('/api/builder/query', async (req, res) => {
     // - MGMT → 적용 안 함 (PS+HL 전체 조회)
     // - 세션의 active_domain 사용 (사용자가 상단에서 선택한 도메인)
     // - GPT 보완 이후 호출되어, GPT 가 SQL 을 교체한 경우에도 정상 적용
-    // - applyDomainFilter 자체 안전장치: bw_profitability_data 미참조 SQL / 이미 DIVISION 조건 존재 SQL 은 원본 그대로 반환
+    //
+    // [2026-06-16 추가] 사용자 요청 (학습 SQL 재사용 도메인 오작동 수정의 확장 적용):
+    // - GPT 보완 SQL 안에 도메인과 무관한 DIVISION 조건이 박혀있을 수 있으므로,
+    //   scrubDivisionFilter 로 기존 DIVISION 조건을 모두 제거한 뒤 현재 도메인으로 재주입
+    // - 정책: "도메인은 항상 상단 선택값 우선" (자연어 질의와 동일 정책)
     try {
       const activeDomainForBuilder = await getActiveDomain(req);
       const sqlBefore = sql;
+      sql = scrubDivisionFilter(sql);
       sql = applyDomainFilter(sql, activeDomainForBuilder);
       if (sql !== sqlBefore) {
         console.log(`[Builder] 도메인 필터 적용: domain=${activeDomainForBuilder}`);
