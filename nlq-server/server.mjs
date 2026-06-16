@@ -6461,6 +6461,24 @@ app.post('/api/builder/query', async (req, res) => {
       }
     }
 
+    // [2026-06-16] 사용자 요청: 비주얼 쿼리 빌더도 자연어 질의(L3452) 와 동일하게 상단 도메인 필터 적용
+    // - PS   → AND DIVISION = '10'
+    // - HL   → AND DIVISION = '20'
+    // - MGMT → 적용 안 함 (PS+HL 전체 조회)
+    // - 세션의 active_domain 사용 (사용자가 상단에서 선택한 도메인)
+    // - GPT 보완 이후 호출되어, GPT 가 SQL 을 교체한 경우에도 정상 적용
+    // - applyDomainFilter 자체 안전장치: bw_profitability_data 미참조 SQL / 이미 DIVISION 조건 존재 SQL 은 원본 그대로 반환
+    try {
+      const activeDomainForBuilder = await getActiveDomain(req);
+      const sqlBefore = sql;
+      sql = applyDomainFilter(sql, activeDomainForBuilder);
+      if (sql !== sqlBefore) {
+        console.log(`[Builder] 도메인 필터 적용: domain=${activeDomainForBuilder}`);
+      }
+    } catch (dfErr) {
+      console.error('[Builder] 도메인 필터 적용 실패 (원본 SQL 유지):', dfErr.message);
+    }
+
     // SQL 실행
     const [rows] = finalParams.length > 0
       ? await pool.query(sql, finalParams)
