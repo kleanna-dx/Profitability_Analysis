@@ -29,6 +29,41 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ============================================================
+// [2026-06-16] 비밀번호 SHA-256 해싱 헬퍼
+// ------------------------------------------------------------
+// 사용자 요청:
+//   - users.password 컬럼에 평문 저장 금지
+//   - 그룹웨어 bulk INSERT/UPDATE, 사용자 수정 API, 로그인 검증 모두 동일 정책
+//   - 동일 입력 → 동일 해시 (deterministic, salt 없음 — 운영 DB 일괄 마이그레이션 필요)
+//   - 인코딩 UTF-8 통일
+//   - SHA-256 결과: 64자 16진수 소문자
+//
+// 정책:
+//   1) hashPassword(plain): UTF-8 → SHA-256 → hex lowercase
+//   2) isSha256Hex(s): 이미 해시된 값인지 판별 (64자 16진수)
+//      - 멱등성 보장: 이미 해시된 값을 다시 해시하지 않도록 보호
+//      - bulk API 가 외부에서 해시된 값을 직접 보내는 케이스도 통과
+//   3) toStoredPassword(input): 저장용 정규화
+//      - 빈 문자열/null → null 반환 (호출측에서 처리)
+//      - 이미 SHA-256 해시 형식 → 그대로 반환
+//      - 평문 → SHA-256 해싱 후 반환
+// ============================================================
+function hashPassword(plain) {
+  return crypto.createHash('sha256').update(String(plain), 'utf8').digest('hex');
+}
+function isSha256Hex(s) {
+  return typeof s === 'string' && /^[0-9a-f]{64}$/i.test(s);
+}
+function toStoredPassword(input) {
+  if (input === undefined || input === null) return null;
+  const v = String(input).trim();
+  if (v === '') return null;
+  // 이미 SHA-256 해시 형식이면 그대로 (멱등성)
+  if (isSha256Hex(v)) return v.toLowerCase();
+  return hashPassword(v);
+}
+
+// ============================================================
 // [2026-06-15] Request-scoped 로그 캡처 + requestId 미들웨어
 // ------------------------------------------------------------
 // 목적: 자연어 질의 오류 발생 시, 그 요청 처리 중에 찍힌 console.log/error
@@ -315,7 +350,27 @@ app.post('/api/login', async (req, res) => {
     if (!user.is_active) {
       return res.status(401).json({ success: false, message: '비활성화된 계정입니다. 관리자에게 문의하세요.' });
     }
-    if (user.password !== password) {
+    // [2026-06-16] 비밀번호 SHA-256 비교
+    //  - DB의 users.password 는 SHA-256 해시(64자 hex)로 저장됨
+    //  - 사용자가 입력한 평문을 SHA-256 해싱 후 DB 값과 비교
+    //  - 하위호환: DB에 평문이 아직 남아있는 경우(마이그레이션 누락 등)에도
+    //    평문 == 평문 매칭으로 로그인 허용 → 다음 로그인 시 자동 해시 마이그레이션
+    const hashedInput = hashPassword(password);
+    const dbPwd = String(user.password || '');
+    let passwordOk = false;
+    if (dbPwd === hashedInput) {
+      passwordOk = true;
+    } else if (!isSha256Hex(dbPwd) && dbPwd === password) {
+      // 레거시 평문 매칭 → 즉시 해시로 업그레이드 (best-effort, 실패해도 로그인은 진행)
+      passwordOk = true;
+      try {
+        await pool.query('UPDATE users SET password=? WHERE user_id=?', [hashedInput, user.user_id]);
+        console.log(`[Login] 레거시 평문 비번 → SHA-256 자동 업그레이드 완료: user_id=${user.user_id}`);
+      } catch (upErr) {
+        console.error('[Login] 평문 → SHA-256 자동 업그레이드 실패:', upErr.message);
+      }
+    }
+    if (!passwordOk) {
       return res.status(401).json({ success: false, message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     }
     // 도메인 결정: users.domain_code 에만 의존 (조직도 자동매핑 제거)
@@ -911,10 +966,12 @@ app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
               } catch(e) {}
             }
             // ★ password가 전달되면 함께 업데이트 (재활성화 시 패스워드 재설정 하는 일반적 패턴)
+            // [2026-06-16] 평문 → SHA-256 해싱 후 저장 (toStoredPassword 가 멱등성 보장)
             if (u.password && String(u.password).trim()) {
+              const hashedReactivatePwd = toStoredPassword(u.password);
               await conn.query(
                 `UPDATE users SET name=?, password=?, email=?, group_name=?, group_id=?, parent_group_id=?, tenant_id=?, phone=?, position=?, role_id=?, is_active=1, sso_yn=1, updated_at=NOW() WHERE user_id=?`,
-                [u.name, String(u.password).trim(), u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, reactivateRoleId, u.userId]
+                [u.name, hashedReactivatePwd, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, reactivateRoleId, u.userId]
               );
             } else {
               await conn.query(
@@ -946,7 +1003,11 @@ app.post('/api/users/bulk', verifyApiKey, async (req, res) => {
           } catch(e) {}
         }
         // ★ password 처리: 전달값이 있으면 사용, 없으면 기본값 사용
-        const newPassword = (u.password && String(u.password).trim()) ? String(u.password).trim() : 'kleannara1!';
+        // [2026-06-16] 평문 → SHA-256 해싱 후 저장 (UTF-8 / 64자 hex)
+        //   - 그룹웨어가 'kleannara12#' 같은 평문을 보내도 DB 에는 SHA-256 해시만 저장
+        //   - 외부에서 이미 SHA-256 해시 형태로 보낸 경우 toStoredPassword 가 그대로 통과 (멱등성)
+        const rawPassword = (u.password && String(u.password).trim()) ? String(u.password).trim() : 'kleannara1!';
+        const newPassword = toStoredPassword(rawPassword);
         await conn.query(
           `INSERT INTO users (user_id, name, password, email, group_name, group_id, parent_group_id, tenant_id, phone, position, role_id, is_active, sso_yn) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,1)`,
           [u.userId, u.name, newPassword, u.email || null, u.groupName || null, u.groupId || null, u.parentGroupId || null, u.tenantId || null, u.phone || null, u.position || null, newRoleId]
@@ -1028,8 +1089,9 @@ app.put('/api/users/bulk', verifyApiKey, async (req, res) => {
         if (u.phone !== undefined)      { updates.push('phone=?');      vals.push(u.phone); }
         if (u.position !== undefined)   { updates.push('position=?');   vals.push(u.position); }
         // ★ password: 전달되고 비어 문자열이 아니면 갱신
+        // [2026-06-16] 평문 → SHA-256 해싱 후 저장 (toStoredPassword 가 멱등성 보장)
         if (u.password !== undefined && u.password !== null && String(u.password).trim() !== '') {
-          updates.push('password=?'); vals.push(String(u.password).trim());
+          updates.push('password=?'); vals.push(toStoredPassword(u.password));
         }
         if (u.role !== undefined) {
           // role 문자열 → role_id로 변환
@@ -7278,6 +7340,65 @@ app.get('/report', (req, res) => {
 // ============================================================
 // RBAC 테이블 자동 생성 + 시드 데이터
 // ============================================================
+// ============================================================
+// [2026-06-16] users.password 평문 → SHA-256 일괄 마이그레이션
+// ------------------------------------------------------------
+// 사용자 요청: 운영 DB 에 평문으로 저장된 사용자들도 SHA-256 해시값으로 일괄 업데이트
+//
+// 멱등성 보장:
+//   - SHA-256 해시는 항상 64자 16진수
+//   - DB 의 password 가 64자 16진수가 아닌 행만 평문으로 간주하고 해싱
+//   - 여러 번 실행해도 안전 (이미 해시된 행은 건너뜀)
+//
+// 안전성:
+//   - 빈 문자열/null password 는 건드리지 않음
+//   - 트랜잭션 없이 행 단위 UPDATE (대규모 lock 방지)
+//   - 실패해도 서버 기동 자체는 진행 (best-effort)
+// ============================================================
+async function migrateUserPasswordsToSha256() {
+  try {
+    // 1) users 테이블 존재 확인
+    const [tbl] = await pool.query(
+      `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.TABLES
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
+    );
+    if (tbl[0].cnt === 0) {
+      console.log('[Migration] users 테이블이 없어 password 마이그레이션 건너뜀');
+      return;
+    }
+
+    // 2) 평문으로 추정되는 행 조회
+    //    - password IS NOT NULL AND password != ''
+    //    - LENGTH(password) != 64  OR  password 가 hex 가 아님
+    const [rows] = await pool.query(
+      `SELECT user_id, password FROM users
+       WHERE password IS NOT NULL AND password <> ''
+         AND NOT (LENGTH(password) = 64 AND password REGEXP '^[0-9a-fA-F]{64}$')`
+    );
+
+    if (rows.length === 0) {
+      console.log('[Migration] users.password: 평문 사용자 없음 (모두 이미 SHA-256 해시) ✅');
+      return;
+    }
+
+    console.log(`[Migration] users.password: 평문 ${rows.length}건 발견 → SHA-256 해싱 시작`);
+    let success = 0, fail = 0;
+    for (const r of rows) {
+      try {
+        const hashed = hashPassword(r.password);
+        await pool.query('UPDATE users SET password=? WHERE user_id=?', [hashed, r.user_id]);
+        success++;
+      } catch (e) {
+        fail++;
+        console.error(`[Migration] user_id=${r.user_id} 해싱 실패:`, e.message);
+      }
+    }
+    console.log(`[Migration] users.password SHA-256 일괄 변환 완료: 성공 ${success} / 실패 ${fail} / 총 ${rows.length}`);
+  } catch (e) {
+    console.error('[Migration] users.password 마이그레이션 전체 오류 (무시하고 서버 기동 진행):', e.message);
+  }
+}
+
 async function ensureRbacTables() {
   try {
     // 1) roles 테이블
@@ -9061,6 +9182,9 @@ app.listen(PORT, '0.0.0.0', async () => {
 
   // RBAC 테이블 자동 생성 + 시드 데이터
   await ensureRbacTables();
+
+  // [2026-06-16] users.password 평문 → SHA-256 일괄 마이그레이션 (멱등성 보장)
+  await migrateUserPasswordsToSha256();
 
   // 빌더 히스토리 북마크/공유 마이그레이션
   await ensureBookmarkShareTables();
