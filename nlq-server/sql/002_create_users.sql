@@ -8,7 +8,7 @@
 CREATE TABLE IF NOT EXISTS `users` (
   `id`               int(11)      NOT NULL AUTO_INCREMENT,
   `user_id`          varchar(50)  NOT NULL           COMMENT '로그인 아이디 (SSO sproId와 동일)',
-  `password`         varchar(255) DEFAULT NULL        COMMENT '비밀번호 (bcrypt 해시, SSO 유저는 NULL 가능)',
+  `password`         varchar(255) DEFAULT NULL        COMMENT '비밀번호 (SHA-256 해시 hex 64자, SSO 유저는 NULL 가능)',
   `name`             varchar(100) NOT NULL            COMMENT '사용자 이름',
   `email`            varchar(150) DEFAULT NULL        COMMENT '이메일',
   `group_name`       varchar(100) DEFAULT NULL        COMMENT '부서(그룹) 이름',
