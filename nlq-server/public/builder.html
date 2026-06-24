@@ -1250,6 +1250,55 @@ const DATE_FIELDS = ['CALYEAR', 'CALMONTH', 'CALDAY'];  // 날짜 필드 — UI 
 // 권장 비교기준 DIM (월별 변동이 적은 필드)
 const RECOMMENDED_COMPARE_DIMS = ['MATERIAL_NM','MATERIAL','DIVISION','PROFIT_CTR','MATL_GROUP','MATL_TYPE'];
 
+// [2026-06-18] 비주얼 쿼리 빌더 사이드 [필드목록] 화면 한정 숨김 컬럼
+// ------------------------------------------------------------
+// 사용자 요청:
+//   - 아래 코드 컬럼들은 대응하는 *_NM(명칭) 컬럼이 별도로 있어,
+//     사이드 [필드목록]에 코드/명칭이 동시 노출되면 사용자 혼란.
+//   - 학습관리/Ontology 에서 비활성화/삭제는 절대 금지 (NLQ/SQL 생성 로직 영향).
+//   - 따라서 백엔드 응답은 그대로 두고, 이 화면(사이드 [필드목록])에서만 숨김.
+//
+// 영향 범위:
+//   - renderFieldList(): 사이드 패널 렌더 시 제외
+//   - filterFields(): 검색 결과에서도 제외 (검색해도 안 나옴)
+//   - addField()/dragStart() 등 다른 함수는 손대지 않음 →
+//     학습된 SQL 로딩 / 백엔드에서 push 된 필드는 정상 사용 가능
+//   - /api/builder/columns 응답은 그대로 유지 (NLQ, 학습관리 등 무영향)
+const BUILDER_HIDDEN_SIDEBAR_FIELDS = new Set([
+    'CO_AREA',     // 관리회계 영역코드
+    'PROFIT_CTR',  // 손익센터코드
+    'DIVISION',    // 제품군 코드
+    'PLANT',       // 플랜트 코드
+    'DISTR_CHAN',  // 유통 경로 코드
+    'ZORG_TEAM',   // 영업팀코드
+    'MATL_TYPE',   // 자재유형코드
+    'PRODH1',      // 제품계층구조레벨 1 코드
+    'PRODH2',      // 제품계층구조레벨 2 코드
+    'PRODH3',      // 제품계층구조레벨 3 코드
+    'PRODH4',      // 제품계층구조레벨 4 코드
+    'ZJPCODE',     // 지종/제품구분 코드
+    'ZBRAND',      // 브랜드 1 코드
+    'MATERIAL',    // 자재 코드
+    'BILL_TYPE',   // 대금청구유형 코드
+    'INCOTERMS',   // 인도 조건 코드
+    'CUST_GROUP',  // 고객 그룹 코드
+    'COUNTRY',     // 국가 코드
+    'ZKUNN2',      // 영업사원 코드
+    'CUSTOMER',    // 고객 코드
+]);
+// 컬럼명 매칭은 대소문자/접두사(`BIC_Z...`) 차이를 모두 흡수
+function isHiddenInBuilderSidebar(name) {
+    if (!name) return false;
+    const u = String(name).toUpperCase();
+    if (BUILDER_HIDDEN_SIDEBAR_FIELDS.has(u)) return true;
+    // 일부 환경에서 BW 컬럼이 'BIC_Z...' prefix 로 노출되는 경우 대응
+    if (u.startsWith('BIC_')) {
+        const stripped = u.replace(/^BIC_/, '');
+        if (BUILDER_HIDDEN_SIDEBAR_FIELDS.has(stripped)) return true;
+    }
+    return false;
+}
+
 const CATEGORY_NAMES = {
     period: '기간', org: '조직/사업부', product: '자재/제품',
     trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액', metric: '계산지표', other: '기타', system: '시스템'
@@ -1411,8 +1460,13 @@ async function loadColumns() {
 }
 
 function renderFieldList(cols) {
+    // [2026-06-18] 사이드 [필드목록]에서만 숨길 컬럼 제외
+    //   - 학습관리/Ontology 는 손대지 않음 (NLQ/SQL 생성에서는 정상 사용)
+    //   - 검색/렌더 양쪽 모두에서 일관되게 빠지도록 여기서 필터링
+    const visibleColsForSidebar = (cols || []).filter(c => !isHiddenInBuilderSidebar(c.name));
+
     const grouped = {};
-    cols.forEach(c => {
+    visibleColsForSidebar.forEach(c => {
         if (!grouped[c.category]) grouped[c.category] = [];
         grouped[c.category].push(c);
     });
