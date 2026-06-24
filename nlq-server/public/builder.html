@@ -447,6 +447,61 @@
         }
         .sql-preview-body pre .kw { color:#7dd3fc; font-weight:bold; }
 
+        /* [2026-06-24] 사용자 요청: 생성된 SQL 직접 편집/재실행 기능
+           - .sql-edit-actions  : 편집/실행/취소 버튼 그룹 (SQL 본문 하단)
+           - .sql-edit-textarea : 편집 모드 진입 시 <pre> 대신 노출되는 textarea
+           - .sql-edit-error    : 편집 SQL 실행 오류 메시지 박스 (편집 영역 안에 표시) */
+        .sql-edit-actions {
+            display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+            margin-top:12px; padding-top:12px;
+            border-top:1px dashed rgba(255,255,255,0.08);
+        }
+        .sql-edit-actions .sql-edit-hint {
+            color:#64748b; font-size:0.72rem; margin-left:auto; font-style:italic;
+        }
+        .sql-edit-btn {
+            display:inline-flex; align-items:center; gap:6px;
+            padding:7px 14px; border-radius:8px; cursor:pointer;
+            font-size:0.78rem; font-weight:600; font-family:inherit;
+            border:1px solid transparent; transition:all .15s;
+        }
+        .sql-edit-btn.btn-edit {
+            background:rgba(125,211,252,0.1); color:#7dd3fc;
+            border-color:rgba(125,211,252,0.25);
+        }
+        .sql-edit-btn.btn-edit:hover { background:rgba(125,211,252,0.18); }
+        .sql-edit-btn.btn-run {
+            background:#0ea5e9; color:#fff; border-color:#0ea5e9;
+        }
+        .sql-edit-btn.btn-run:hover { background:#0284c7; border-color:#0284c7; }
+        .sql-edit-btn.btn-cancel {
+            background:transparent; color:#94a3b8;
+            border-color:rgba(148,163,184,0.3);
+        }
+        .sql-edit-btn.btn-cancel:hover { background:rgba(148,163,184,0.1); color:#cbd5e1; }
+        .sql-edit-btn:disabled { opacity:0.5; cursor:not-allowed; }
+        .sql-edit-textarea {
+            display:none;
+            width:100%; box-sizing:border-box; resize:vertical;
+            min-height:200px; max-height:500px;
+            margin-top:12px; padding:12px;
+            background:#020617; color:#e2e8f0;
+            border:1px solid rgba(125,211,252,0.3); border-radius:8px;
+            font-family:'Fira Code',monospace; font-size:0.82rem; line-height:1.6;
+            outline:none;
+        }
+        .sql-edit-textarea:focus { border-color:#7dd3fc; box-shadow:0 0 0 2px rgba(125,211,252,0.15); }
+        .sql-preview.editing .sql-edit-textarea { display:block; }
+        .sql-preview.editing #sqlPreviewText { display:none; }
+        .sql-edit-error {
+            display:none; margin-top:10px; padding:10px 12px;
+            background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3);
+            border-radius:8px; color:#fca5a5; font-size:0.78rem;
+            white-space:pre-wrap; word-break:break-word; line-height:1.5;
+        }
+        .sql-edit-error.active { display:block; }
+        .sql-edit-error b { color:#fecaca; }
+
         /* Results */
         /* [2026-06-15] min-width:0 + max-width:100%: 결과 영역이 자식 테이블의
            자연 폭만큼 늘어나지 않도록 — 페이지 전체 가로 스크롤 방지의 핵심 안전망. */
@@ -1199,6 +1254,35 @@
                         </button>
                         <div class="sql-preview-body" id="sqlPreviewBody">
                             <pre id="sqlPreviewText"></pre>
+                            <!-- [2026-06-24] SQL 직접 편집/실행 기능
+                                 - 보기 모드: <pre> 표시
+                                 - 편집 모드(.editing): <textarea> 표시
+                                 - SQL 수정하기 → enterSqlEditMode()
+                                 - 수정 SQL 실행 → executeEditedSql()
+                                 - 취소 → exitSqlEditMode(true) : 원본 SQL 로 복원 -->
+                            <textarea id="sqlEditTextarea" class="sql-edit-textarea"
+                                      spellcheck="false" autocomplete="off"
+                                      placeholder="SELECT ... FROM bw_profitability_data WHERE ..."></textarea>
+                            <div class="sql-edit-error" id="sqlEditError"></div>
+                            <div class="sql-edit-actions">
+                                <button type="button" class="sql-edit-btn btn-edit"
+                                        id="sqlEditBtn" onclick="enterSqlEditMode()">
+                                    <i class="fas fa-pen"></i> SQL 수정하기
+                                </button>
+                                <button type="button" class="sql-edit-btn btn-run"
+                                        id="sqlRunEditBtn" onclick="executeEditedSql()"
+                                        style="display:none;">
+                                    <i class="fas fa-play"></i> 수정 SQL 실행
+                                </button>
+                                <button type="button" class="sql-edit-btn btn-cancel"
+                                        id="sqlCancelEditBtn" onclick="exitSqlEditMode(true)"
+                                        style="display:none;">
+                                    <i class="fas fa-times"></i> 취소
+                                </button>
+                                <span class="sql-edit-hint" id="sqlEditHint" style="display:none;">
+                                    SELECT 문만 허용 · 최대 5,000행
+                                </span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1273,6 +1357,10 @@ let chartInstance = null;
 let valuesCache = {};
 let lastResultColumns = [];
 let lastResultRows = [];
+// [2026-06-24] 사용자 요청: 생성된 SQL 직접 편집/재실행 기능
+//   - 피벗 생성 시 서버에서 받은 원본 SQL 을 보존 → 편집 취소 시 복원에 사용
+//   - highlightSQL(sql) 의 HTML 결과가 아니라 raw SQL 문자열을 보관
+let lastGeneratedSql = '';
 let loadedHistoryId = null; // 기존 이력 클릭 시 설정 → 재실행 시 UPDATE 용
 // [2026-06-15] 현재 결과의 즐겨찾기 상태 — 결과 툴바 별 아이콘과 동기화
 //   - null: 결과 없음 (별 비활성)
@@ -1462,14 +1550,19 @@ function newQueryBuilder(){
 
     // 6) 결과 영역 초기화
     lastResultColumns = []; lastResultRows = [];
+    lastGeneratedSql = ''; // [2026-06-24] 편집용 원본 SQL 도 초기화
     const resultsSection = document.getElementById('resultsSection');
     if(resultsSection) resultsSection.classList.remove('active');
     const sqlPreview = document.getElementById('sqlPreview');
     if(sqlPreview) {
         sqlPreview.classList.remove('active');
         sqlPreview.classList.remove('expanded'); // [2026-06-16] 접힘 상태로 리셋
+        sqlPreview.classList.remove('editing');  // [2026-06-24] 편집 모드도 리셋
         if (typeof syncSqlPreviewToggle === 'function') syncSqlPreviewToggle();
+        if (typeof syncSqlEditButtons === 'function') syncSqlEditButtons(false);
     }
+    const sqlEditErr = document.getElementById('sqlEditError');
+    if (sqlEditErr) { sqlEditErr.classList.remove('active'); sqlEditErr.innerHTML = ''; }
     const errorBox = document.getElementById('errorBox');
     if(errorBox) errorBox.classList.remove('active');
 
@@ -2335,12 +2428,19 @@ async function executeQuery() {
         renderFavoriteResultBtn();
 
         if (data.sql) {
+            // [2026-06-24] 원본 SQL 별도 보존 — 편집 모드 진입/취소 시 사용
+            lastGeneratedSql = data.sql;
             document.getElementById('sqlPreviewText').innerHTML = highlightSQL(data.sql);
             const sp = document.getElementById('sqlPreview');
             sp.classList.add('active');
             // [2026-06-16] 피벗 재생성 시에도 SQL 영역은 항상 접힘 상태로 시작
             sp.classList.remove('expanded');
+            // [2026-06-24] 편집 모드도 초기화 (피벗 재생성 시)
+            sp.classList.remove('editing');
+            const errBox = document.getElementById('sqlEditError');
+            if (errBox) errBox.classList.remove('active');
             syncSqlPreviewToggle();
+            syncSqlEditButtons(false);
         }
         displayResults(data);
     } catch(e) {
@@ -2413,11 +2513,16 @@ function displayResults(data) {
 
 function resetResults() {
     lastResultColumns = []; lastResultRows = [];
+    lastGeneratedSql = ''; // [2026-06-24] 편집용 원본 SQL 도 초기화
     document.getElementById('resultsSection').classList.remove('active');
     const sp = document.getElementById('sqlPreview');
     sp.classList.remove('active');
     sp.classList.remove('expanded'); // [2026-06-16] 접힘 상태 리셋
+    sp.classList.remove('editing');  // [2026-06-24] 편집 모드도 리셋
     syncSqlPreviewToggle();
+    if (typeof syncSqlEditButtons === 'function') syncSqlEditButtons(false);
+    const sqlEditErr = document.getElementById('sqlEditError');
+    if (sqlEditErr) { sqlEditErr.classList.remove('active'); sqlEditErr.innerHTML = ''; }
     document.getElementById('errorBox').classList.remove('active');
     // [2026-06-15] 결과 영역 닫혔으므로 별도 비활성화
     loadedIsBookmarked = null;
@@ -2444,6 +2549,155 @@ function syncSqlPreviewToggle() {
     const expanded = sp.classList.contains('expanded');
     if (btn) btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     if (label) label.textContent = expanded ? '숨기기' : '보기';
+}
+
+// ============================================================
+// [2026-06-24] 사용자 요청: 생성된 SQL 직접 편집/재실행 기능
+// ------------------------------------------------------------
+// 1) SQL 수정하기 버튼 → enterSqlEditMode()
+//    - <pre> 숨기고 <textarea> 노출 + 원본 SQL 채워넣음
+//    - 버튼 그룹을 [수정 SQL 실행][취소] 로 전환
+// 2) 수정 SQL 실행 → executeEditedSql()
+//    - POST /api/builder/execute-sql 호출
+//    - 성공 시: <pre> 갱신, displayResults() 호출 → lastResultColumns/Rows 자동 갱신 → CSV/Excel 다운로드 호환
+//    - 실패 시: showError() 또는 #sqlEditError 박스에 상세 에러 표시 (편집 모드 유지)
+// 3) 취소 → exitSqlEditMode(true) : 원본 SQL 로 복원
+// 4) 도메인/권한/LIMIT 제한 유지: limitSelect 값을 limit 으로 전송, 백엔드에서 safeLimit 캡 적용
+// ============================================================
+
+// SQL 편집 모드 진입 (수정 가능)
+function enterSqlEditMode() {
+    if (!lastGeneratedSql) return;
+    const sp = document.getElementById('sqlPreview');
+    if (!sp) return;
+    // 펼침 상태로 강제 (편집 시작 시 자동 펼침)
+    if (!sp.classList.contains('expanded')) {
+        sp.classList.add('expanded');
+        syncSqlPreviewToggle();
+    }
+    sp.classList.add('editing');
+    const ta = document.getElementById('sqlEditTextarea');
+    if (ta) {
+        ta.value = lastGeneratedSql;
+        // 포커스 + 커서 끝으로
+        setTimeout(() => { try { ta.focus(); } catch(_){} }, 50);
+    }
+    // 에러 박스 초기화
+    const errBox = document.getElementById('sqlEditError');
+    if (errBox) { errBox.classList.remove('active'); errBox.innerHTML = ''; }
+    syncSqlEditButtons(true);
+}
+
+// SQL 편집 모드 종료
+//   restore=true  : 원본 SQL 로 <pre> 복원 (취소 시)
+//   restore=false : 현재 <pre> 유지 (실행 성공 후 SQL 갱신 시)
+function exitSqlEditMode(restore) {
+    const sp = document.getElementById('sqlPreview');
+    if (!sp) return;
+    sp.classList.remove('editing');
+    if (restore && lastGeneratedSql) {
+        document.getElementById('sqlPreviewText').innerHTML = highlightSQL(lastGeneratedSql);
+    }
+    const errBox = document.getElementById('sqlEditError');
+    if (errBox) { errBox.classList.remove('active'); errBox.innerHTML = ''; }
+    syncSqlEditButtons(false);
+}
+
+// 편집 버튼 그룹 표시 상태 동기화
+//   editing=true  : [수정 SQL 실행][취소][hint] 표시, [SQL 수정하기] 숨김
+//   editing=false : [SQL 수정하기] 표시, 나머지 숨김
+function syncSqlEditButtons(editing) {
+    const editBtn = document.getElementById('sqlEditBtn');
+    const runBtn  = document.getElementById('sqlRunEditBtn');
+    const cancelBtn = document.getElementById('sqlCancelEditBtn');
+    const hint = document.getElementById('sqlEditHint');
+    if (editBtn) editBtn.style.display = editing ? 'none' : '';
+    if (runBtn) runBtn.style.display = editing ? '' : 'none';
+    if (cancelBtn) cancelBtn.style.display = editing ? '' : 'none';
+    if (hint) hint.style.display = editing ? '' : 'none';
+}
+
+// 사용자가 편집한 SQL 실행
+async function executeEditedSql() {
+    const ta = document.getElementById('sqlEditTextarea');
+    if (!ta) return;
+    const editedSql = (ta.value || '').trim();
+    if (!editedSql) {
+        showSqlEditError('SQL이 비어 있습니다.');
+        return;
+    }
+
+    const runBtn = document.getElementById('sqlRunEditBtn');
+    const cancelBtn = document.getElementById('sqlCancelEditBtn');
+    const errBox = document.getElementById('sqlEditError');
+    if (errBox) { errBox.classList.remove('active'); errBox.innerHTML = ''; }
+    if (runBtn) { runBtn.disabled = true; runBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 실행 중...'; }
+    if (cancelBtn) cancelBtn.disabled = true;
+
+    // 전역 로딩 인디케이터도 표시
+    document.getElementById('loading').classList.add('active');
+    // 기존 에러 박스(전역)도 초기화
+    document.getElementById('errorBox').classList.remove('active');
+
+    // [요구사항 #7] 도메인/권한은 서버 세션에서 자동 반영, 최대 조회 건수는 limitSelect 사용
+    const limitVal = document.getElementById('limitSelect')?.value || '1000';
+
+    try {
+        const res = await fetch('/api/builder/execute-sql', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sql: editedSql, limit: limitVal })
+        });
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+            // 편집 모드 유지 → 에러 박스에 표시 (textarea 내용은 보존)
+            showSqlEditError(data.error || `HTTP ${res.status}`, data);
+            return;
+        }
+
+        // 성공: 갱신된 SQL 을 새 lastGeneratedSql 로 설정 → 차후 편집 취소 시 이 값으로 복원
+        lastGeneratedSql = data.sql || editedSql;
+        document.getElementById('sqlPreviewText').innerHTML = highlightSQL(lastGeneratedSql);
+        // 편집 모드 종료 (성공 시 restore=false → 방금 갱신한 SQL 유지)
+        exitSqlEditMode(false);
+
+        // 결과 재표시 (displayResults 내부에서 lastResultColumns/Rows 자동 갱신 → CSV/Excel 다운로드 호환)
+        displayResults(data);
+
+    } catch (e) {
+        showSqlEditError('네트워크 오류: ' + e.message);
+    } finally {
+        document.getElementById('loading').classList.remove('active');
+        if (runBtn) { runBtn.disabled = false; runBtn.innerHTML = '<i class="fas fa-play"></i> 수정 SQL 실행'; }
+        if (cancelBtn) cancelBtn.disabled = false;
+    }
+}
+
+// 편집 모드 안에서만 노출되는 에러 메시지
+function showSqlEditError(msg, data) {
+    const errBox = document.getElementById('sqlEditError');
+    if (!errBox) return;
+    let html = `<b><i class="fas fa-exclamation-triangle"></i> SQL 실행 오류</b><br>${escapeHtml(msg)}`;
+    if (data && (data.code || data.sqlState)) {
+        const parts = [];
+        if (data.code) parts.push(`code=${data.code}`);
+        if (data.sqlState) parts.push(`sqlState=${data.sqlState}`);
+        if (parts.length) html += `<br><span style="opacity:0.75;">${parts.join(' · ')}</span>`;
+    }
+    errBox.innerHTML = html;
+    errBox.classList.add('active');
+}
+
+// HTML escape 헬퍼 (전역 중복 정의 가드)
+if (typeof window.escapeHtml !== 'function') {
+    window.escapeHtml = function(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    };
 }
 
 // ─── CSV Download ───────────────────────
