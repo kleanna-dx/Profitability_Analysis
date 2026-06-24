@@ -2071,8 +2071,10 @@ function updateOrderByOptions() {
 
 // ─── Condition Management ────────────────────
 function addConditionRow(presetCol) {
-    // 날짜 필드는 필터 조건에 추가 차단
-    if (presetCol && DATE_FIELDS.includes(presetCol)) return;
+    // [2026-06-18] 사용자 요청: 날짜 필드(CALYEAR/CALMONTH/CALDAY)도 필터 조건으로
+    // 자유롭게 추가할 수 있도록 차단 해제. 상단 [날짜 조건] 섹션의 기간 범위는
+    // 그대로 유지되고, 여기에 추가로 = / IN / BETWEEN 등으로 세부 필터 가능.
+    // (이전: if (presetCol && DATE_FIELDS.includes(presetCol)) return;)
     const idx = conditions.length;
     conditions.push({ column: presetCol || '', operator: '=', value: '', logic: 'AND' });
     renderConditions();
@@ -2118,8 +2120,10 @@ function renderConditions() {
         }
         html += `<select onchange="setCondColumn(${i}, this.value)" style="min-width:140px;">
             <option value="">필드 선택</option>`;
+        // [2026-06-18] 사용자 요청: 날짜 필드(달력연도/달력연도월/달력일)도 필터 조건의
+        // [필드 선택] 드롭다운에 노출. (이전: !DATE_FIELDS.includes(c.name) 으로 제외)
         CATEGORY_ORDER.forEach(cat => {
-            const cols = allColumns.filter(c => c.category === cat && !DATE_FIELDS.includes(c.name));
+            const cols = allColumns.filter(c => c.category === cat);
             if (cols.length === 0) return;
             html += `<optgroup label="${CATEGORY_NAMES[cat]}">`;
             cols.forEach(c => {
