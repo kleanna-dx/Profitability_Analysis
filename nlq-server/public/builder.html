@@ -104,12 +104,16 @@
         .new-builder-btn i{font-size:11px;}
 
         /* ===== Main Layout ===== */
-        /* [2026-06-18] 컨테이너 max-width 1440 → 1920 으로 확장
-           사유: 1920px QHD 모니터 등 큰 화면에서 좌우 약 25% 가 빈 여백으로 남는다는
-           사용자 피드백. 노트북(1280~1440px)에서는 max-width 가 화면 폭보다 커서
-           자연스럽게 무시되므로 가로 스크롤이 추가로 발생하지 않음.
-           본문 그리드는 이미 minmax(0,1fr) 이라 메인 작업 영역만 확장됨. */
-        .container { max-width:1920px; margin:0 auto; padding:20px 16px; }
+        /* [2026-06-18] 큰 모니터(2560px QHD, 3440px 울트라와이드 등) 에서 좌우 여백을
+           남기지 않도록 .container 의 max-width 제거.
+           - 이전: max-width:1920px → 1920px 이상 모니터에서는 양옆에 여백이 남음
+           - 변경: max-width 없음 → body 사용가능 폭(화면폭 - 사이드바280px) 을 모두 채움
+           - 사이드바(280px)는 position:fixed + body padding-left:280px 로 별개라
+             메인 영역만 모니터 폭에 맞춰 늘어남.
+           - 본문 그리드는 grid-template-columns:360px minmax(0,1fr) 이라
+             [필드 목록] 패널은 360px 고정, [메인 작업 영역] 만 확장됨.
+           - 노트북(1280~1440px)에서는 원래도 화면 폭에 맞춰 동작했으므로 영향 없음. */
+        .container { margin:0 auto; padding:20px 16px; }
         /* [2026-06-15] 결과 테이블 컬럼이 많을 때 페이지 전체가 가로로 늘어나는 문제 수정.
            grid 의 1fr 트랙은 기본 min-width:auto 라 자식 콘텐츠 폭만큼 그리드가 늘어남.
            minmax(0,1fr) 로 트랙 최소폭을 0 으로 고정하여, 결과 영역 자체에서만 가로 스크롤이 생기도록 함. */
