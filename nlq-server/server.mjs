@@ -6669,7 +6669,24 @@ app.post('/api/builder/query', async (req, res) => {
         isBookmarked = bmRows.length > 0 ? (bmRows[0].is_bookmarked ? 1 : 0) : 0;
       } catch (e) { /* 조회 실패는 무시 — 프론트가 캐시로 폴백 */ }
     }
-    const responseObj = { success: true, sql, columns: cols, rows: clean, row_count: clean.length, chart, history_id: hid || null, is_bookmarked: isBookmarked };
+    // [2026-06-24] 응답 SQL 에 prepared statement 의 `?` 플레이스홀더를 실제 값으로 인라인
+    //   - 사용자가 '생성된 SQL' 영역에서 본 SQL 을 그대로 '수정 SQL 실행' 으로 재실행할 수 있어야 함
+    //   - 인라인하지 않으면 `?` 가 남아 ER_PARSE_ERROR 발생
+    //   - SQL injection 위험 없음: 서버 내부에서 검증된 값(날짜/조건 등)만 인라인,
+    //     문자열은 single-quote escape, 숫자/null 만 허용
+    let sqlForResponse = sql;
+    if (finalParams && finalParams.length > 0) {
+      let paramIdx = 0;
+      sqlForResponse = sql.replace(/\?/g, () => {
+        if (paramIdx >= finalParams.length) return '?'; // 안전망: 파라미터 부족 시 원본 유지
+        const v = finalParams[paramIdx++];
+        if (v === null || v === undefined) return 'NULL';
+        if (typeof v === 'number') return String(v);
+        if (typeof v === 'boolean') return v ? '1' : '0';
+        return `'${String(v).replace(/'/g, "''")}'`;
+      });
+    }
+    const responseObj = { success: true, sql: sqlForResponse, columns: cols, rows: clean, row_count: clean.length, chart, history_id: hid || null, is_bookmarked: isBookmarked };
     if (hasCompare && measureFields.length > 0) {
       // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
       const allDimAliases = fields.filter(f => {
