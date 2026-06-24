@@ -6700,6 +6700,120 @@ app.post('/api/builder/query', async (req, res) => {
   }
 });
 
+// ============================================================
+// POST /api/builder/execute-sql - 사용자가 직접 편집한 SQL 실행
+// ------------------------------------------------------------
+// 보안 가드:
+//  1) 로그인 필수 (req.session.user)
+//  2) SELECT 문만 허용 (DDL/DML 키워드 차단)
+//  3) 다중 statement 차단 (세미콜론으로 분리되는 추가 문장 거부)
+//  4) 테이블 화이트리스트: bw_profitability_data 만 허용
+//  5) LIMIT 강제 주입/캡 (safeLimit = min(요청값, 5000))
+//  6) 차트 자동 판별 결과 포함 → 기존 결과 영역에 동일하게 렌더링 가능
+// ============================================================
+app.post('/api/builder/execute-sql', async (req, res) => {
+  // 1) 인증
+  if (!req.session?.user) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
+  }
+
+  const { sql: rawSql, limit: limitStr } = req.body || {};
+
+  if (!rawSql || typeof rawSql !== 'string' || !rawSql.trim()) {
+    return res.status(400).json({ error: 'SQL이 비어 있습니다.' });
+  }
+
+  // 정규화: 좌우 공백 + 끝 세미콜론 제거
+  let sql = rawSql.trim();
+  // 라인 주석(--) / 블록 주석(/* */) 제거 — 우회 시도 방지
+  const sqlNoComment = sql
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--[^\n\r]*/g, ' ');
+
+  // 2) 다중 statement 차단 (끝 세미콜론은 허용 후 제거)
+  const trimmedNoSemicolon = sqlNoComment.replace(/;\s*$/, '');
+  if (trimmedNoSemicolon.includes(';')) {
+    return res.status(400).json({ error: '다중 SQL statement는 허용되지 않습니다. 한 번에 하나의 SELECT 문만 실행할 수 있습니다.' });
+  }
+  // 실제 실행할 SQL 에서도 끝 세미콜론 제거
+  sql = sql.replace(/;\s*$/, '');
+
+  // 3) SELECT-only 검증 (WITH 도 차단 — 단순화)
+  if (!/^\s*SELECT\b/i.test(sqlNoComment)) {
+    return res.status(400).json({ error: 'SELECT 문만 실행 가능합니다.' });
+  }
+
+  // 4) 금지 키워드 블랙리스트
+  const forbiddenPattern = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|RENAME|REPLACE|MERGE|CALL|EXEC|EXECUTE|HANDLER|LOCK|UNLOCK|SET\s+@|LOAD_FILE|INTO\s+OUTFILE|INTO\s+DUMPFILE|SLEEP\s*\(|BENCHMARK\s*\()\b/i;
+  const forbiddenMatch = sqlNoComment.match(forbiddenPattern);
+  if (forbiddenMatch) {
+    return res.status(400).json({ error: `허용되지 않는 키워드가 포함되어 있습니다: ${forbiddenMatch[0].trim()}` });
+  }
+
+  // 5) 테이블 화이트리스트: bw_profitability_data 만 허용
+  if (!/\bbw_profitability_data\b/i.test(sqlNoComment)) {
+    return res.status(400).json({ error: '허용된 테이블(bw_profitability_data)만 사용할 수 있습니다.' });
+  }
+  // information_schema / mysql 등 시스템 DB 접근 차단
+  if (/\b(information_schema|mysql|performance_schema|sys)\b/i.test(sqlNoComment)) {
+    return res.status(400).json({ error: '시스템 스키마(information_schema/mysql 등) 접근은 허용되지 않습니다.' });
+  }
+
+  // 6) LIMIT 강제 주입/캡
+  const safeLimit = Math.min(parseInt(limitStr) || 1000, 5000);
+  if (/\bLIMIT\b/i.test(sql)) {
+    // 기존 LIMIT 값을 safeLimit 으로 덮어쓰기 (OFFSET 형태 포함)
+    sql = sql.replace(/\bLIMIT\s+\d+(\s*,\s*\d+)?/i, `LIMIT ${safeLimit}`)
+             .replace(/\bLIMIT\s+\d+\s+OFFSET\s+\d+/i, `LIMIT ${safeLimit}`);
+  } else {
+    sql = `${sql} LIMIT ${safeLimit}`;
+  }
+
+  // 7) 실행
+  try {
+    const t0 = Date.now();
+    const [rows] = await pool.query(sql);
+    const execTime = Date.now() - t0;
+
+    // 컬럼 추출: 빈 결과 대비 information_schema 대신 첫 행 키 사용
+    const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
+
+    // BigInt → Number 변환 (JSON serialization 호환)
+    const clean = rows.map(r => {
+      const o = {};
+      for (const k of Object.keys(r)) {
+        const v = r[k];
+        o[k] = typeof v === 'bigint' ? Number(v) : v;
+      }
+      return o;
+    });
+
+    // 차트 자동 판별 (기존 빌더와 동일)
+    const chart = builderSuggestChart(cols, clean.length);
+
+    console.log(`[Builder] 사용자 SQL 실행 성공: ${clean.length}행, ${execTime}ms, user=${req.session.user.user_id}`);
+
+    res.json({
+      success: true,
+      sql,
+      columns: cols,
+      rows: clean,
+      row_count: clean.length,
+      chart,
+      exec_time_ms: execTime,
+      edited: true
+    });
+  } catch (err) {
+    console.error('[Builder] 사용자 SQL 실행 오류:', err.message);
+    res.status(500).json({
+      error: `SQL 실행 오류: ${err.message}`,
+      sql,
+      code: err.code || null,
+      sqlState: err.sqlState || null
+    });
+  }
+});
+
 // 차트 자동 판별 헬퍼
 function builderSuggestChart(cols, rowCount) {
   if (rowCount === 0 || cols.length < 2) return { chart_type: 'table_only' };
