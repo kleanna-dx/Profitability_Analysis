@@ -108,7 +108,11 @@
         /* [2026-06-15] 결과 테이블 컬럼이 많을 때 페이지 전체가 가로로 늘어나는 문제 수정.
            grid 의 1fr 트랙은 기본 min-width:auto 라 자식 콘텐츠 폭만큼 그리드가 늘어남.
            minmax(0,1fr) 로 트랙 최소폭을 0 으로 고정하여, 결과 영역 자체에서만 가로 스크롤이 생기도록 함. */
-        .builder-layout { display:grid; grid-template-columns:280px minmax(0, 1fr); gap:20px; margin-bottom:20px; }
+        /* [2026-06-18] 사이드 [필드 목록] 패널 가로폭 확장 (280 → 360)
+           사유: 각 필드 우측에 컬럼 영문명 대신 학습관리 [동의어] 목록을 표시하게 되어
+           기본 폭(280)이 좁다고 사용자 요청. 본문 그리드는 minmax(0,1fr)이라 본문 영역이
+           자연스럽게 축소됨. */
+        .builder-layout { display:grid; grid-template-columns:360px minmax(0, 1fr); gap:20px; margin-bottom:20px; }
 
         /* ===== Left Panel: Field List ===== */
         .field-panel {
@@ -135,8 +139,11 @@
             margin-top:0; position:sticky; top:0; z-index:3;
             box-shadow:0 1px 2px rgba(0,0,0,0.05);
         }
+        /* [2026-06-18] 필드 우측에 동의어 멀티라인 표시 가능하도록 레이아웃 변경
+           - align-items: center → flex-start  (높이가 늘어나도 아이콘/이름이 상단 정렬)
+           - 행 자체는 가로 폭 안에서 자동 줄바꿈 (동의어 영역이 wrap 함) */
         .field-item {
-            display:flex; align-items:center; gap:8px;
+            display:flex; align-items:flex-start; gap:8px;
             padding:7px 16px; cursor:grab; font-size:0.82rem;
             transition:background 0.15s; user-select:none; border-bottom:1px solid #f8fafc;
         }
@@ -163,7 +170,8 @@
             z-index:2;
         }
         .field-item.period-required-blink .fname { color:#991b1b; font-weight:700; }
-        .field-item.period-required-blink .fcode { color:#dc2626; font-weight:700; }
+        .field-item.period-required-blink .fcode,
+        .field-item.period-required-blink .fsynonyms { color:#dc2626; font-weight:700; }
         .field-item.period-required-blink .icon { background:#dc2626 !important; }
 
         /* ── 경고 모달 ── */
@@ -208,11 +216,32 @@
         .field-item .icon {
             width:22px; height:22px; border-radius:6px; display:flex; align-items:center;
             justify-content:center; font-size:0.65rem; font-weight:700; color:white; flex-shrink:0;
+            margin-top:2px; /* 동의어가 여러 줄일 때도 아이콘이 첫 줄 근처에 위치 */
         }
         .field-item .icon.text { background:#6366f1; }
         .field-item .icon.number { background:#7c3aed; }
         .field-item .icon.metric { background:linear-gradient(135deg,#7c3aed,#a855f7); font-style:italic; }
-        .field-item .fname { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        /* 필드명: 한 줄 유지 (긴 라벨은 …으로 잘림) */
+        .field-item .fname {
+            flex:0 0 auto; max-width:42%;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+            font-weight:500;
+        }
+        /* [2026-06-18] 우측 동의어 표시 영역 (예전의 fcode 자리)
+           - 우측 정렬, 멀티라인 허용, 길면 자동 줄바꿈
+           - 동의어 영역이 늘어나면 행 전체 높이가 따라서 늘어남 (flex-start 정렬 덕분에 윗줄 정렬) */
+        .field-item .fsynonyms {
+            flex:1 1 auto; min-width:0;
+            font-size:0.72rem; color:#64748b;
+            text-align:right; line-height:1.45;
+            /* 한글/영문/숫자 어디서든 적절히 줄바꿈, 단어 중간이 어쩔 수 없이 길면 break-word 로 처리 */
+            white-space:normal; overflow-wrap:anywhere; word-break:break-word;
+            padding-left:8px;
+        }
+        .field-item .fsynonyms.empty {
+            color:#cbd5e1; font-style:italic;
+        }
+        /* 레거시 .fcode 클래스 호환 (Metric 필드의 metric_code 표시는 그대로 유지) */
         .field-item .fcode { font-size:0.68rem; color:#94a3b8; font-family:'Fira Code',monospace; flex-shrink:0; }
 
         /* ── Metric 필드: 두 줄 레이아웃 ── */
@@ -1299,6 +1328,23 @@ function isHiddenInBuilderSidebar(name) {
     return false;
 }
 
+// [2026-06-18] HTML/attribute escape 헬퍼 (필드 목록에 동의어 텍스트를 안전하게 삽입)
+//   - 동의어는 학습관리에서 사용자가 입력하므로 ', " , <, >, & 등 특수문자 포함 가능
+//   - innerHTML 으로 렌더하므로 XSS 방지 차원에서 항상 escape 후 삽입
+function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+function escapeAttr(s) {
+    // title 속성 등 attribute value 용 (escapeHtml 과 동일 정책)
+    return escapeHtml(s);
+}
+
 const CATEGORY_NAMES = {
     period: '기간', org: '조직/사업부', product: '자재/제품',
     trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액', metric: '계산지표', other: '기타', system: '시스템'
@@ -1499,13 +1545,21 @@ function renderFieldList(cols) {
                     <div class="metric-line2">${c.formula || ''}</div>
                 </div>`;
             } else {
+                // [2026-06-18] 컬럼 영문명(c.name) 대신 학습관리 [동의어] 목록을 우측에 표시
+                //   - 사용자 의도: NLQ 가 어떤 자연어 표현으로 이 필드를 매칭하는지 보고 싶음
+                //   - synonyms 배열은 /api/builder/columns 응답에 이미 포함되어 있음
+                //   - 동의어가 없으면 흐릿한 '—' 로 표시 (학습관리에서 추가 필요함을 시각적으로 안내)
+                const synList = Array.isArray(c.synonyms) ? c.synonyms.filter(s => s && String(s).trim()) : [];
+                const synonymsHtml = synList.length > 0
+                    ? `<span class="fsynonyms" title="${escapeAttr(synList.join(', '))}">${escapeHtml(synList.join(', '))}</span>`
+                    : `<span class="fsynonyms empty" title="학습관리에서 동의어를 등록하면 여기에 표시됩니다">—</span>`;
                 html += `<div class="field-item" draggable="true"
                     ondragstart="dragStart(event, '${c.name}')"
                     ondblclick="addFieldByClick('${c.name}')"
                     data-name="${c.name}" data-label="${c.label}" data-type="${c.type}">
                     <span class="icon ${iconClass}">${iconChar}</span>
-                    <span class="fname">${c.label}</span>
-                    <span class="fcode">${c.name}</span>
+                    <span class="fname">${escapeHtml(c.label)}</span>
+                    ${synonymsHtml}
                 </div>`;
             }
         });
