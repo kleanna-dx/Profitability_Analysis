@@ -42,7 +42,7 @@ sap:
     sysnr: "01"
     sysid: "BWP"
     client: "100"
-    user: "ITM120"
+    user: "BWSYSTEM"
     passwd: "kleannara123@"
     lang: "KO"
     rfc-function: "Z_BI_WEB_EX_BL"

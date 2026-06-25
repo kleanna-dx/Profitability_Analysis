@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
  *     sysnr: "01"
  *     sysid: BWP
  *     client: "100"
- *     user: ITM120
+ *     user: BWSYSTEM
  *     passwd: kleannara123@
  *     lang: KO
  *     pool-capacity: 3
@@ -41,7 +41,7 @@ public class SapRfcProperties {
     private String client = "100";
 
     /** SAP 로그인 사용자 */
-    private String user = "ITM120";
+    private String user = "BWSYSTEM";
 
     /** SAP 로그인 비밀번호 */
     private String passwd = "kleannara123@";

@@ -30,7 +30,7 @@ SAP_CONFIG = {
     'sysnr': '01',               # 인스턴스 번호
     'sysid': 'BWP',              # 시스템 ID
     'client': '100',             # 클라이언트 (만트) - 확인 필요
-    'user': 'ITM120',
+    'user': 'BWSYSTEM',
     'passwd': 'kleannara123@',
     'lang': 'KO',
 }
