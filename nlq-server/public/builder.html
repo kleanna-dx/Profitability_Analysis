@@ -2584,7 +2584,7 @@ function openValueCombo(condIdx, anchorInput) {
 }
 
 async function _fetchAndRenderValueCombo(qRaw) {
-    const { list, footer } = _comboEl();
+    const { list, footer, search } = _comboEl();
     const idx = filterCombo.condIdx;
     const colName = conditions[idx]?.column;
     if (!colName) { closeFilterCombo(); return; }
@@ -2594,7 +2594,55 @@ async function _fetchAndRenderValueCombo(qRaw) {
         const url = `/api/builder/values/${encodeURIComponent(colName)}?limit=100${q ? '&q=' + encodeURIComponent(q) : ''}`;
         const res = await fetch(url);
         if (!res.ok) {
-            list.innerHTML = `<div class="combo-empty">값 조회 실패 (HTTP ${res.status})</div>`;
+            // ─── [PR #192] 504/503/timeout 응답을 사용자가 이해할 수 있는 메시지로 변환 ───
+            // 서버(server.mjs)가 503 + {reason, hint} JSON 을 주면 그 hint 를 그대로 활용
+            // Nginx 504 / fetch 실패 / JSON 파싱 실패 케이스도 친절하게 안내
+            let serverHint = '';
+            let serverReason = '';
+            try {
+                const errData = await res.json();
+                serverHint = errData?.hint || '';
+                serverReason = errData?.reason || '';
+            } catch (_) { /* JSON 아닌 응답 (예: Nginx HTML) — 무시 */ }
+
+            const isTimeout = res.status === 504 || res.status === 503 || serverReason === 'statement_timeout';
+            const title = isTimeout
+                ? '값 조회 시간이 초과되었습니다'
+                : `값 조회 실패 (HTTP ${res.status})`;
+            const hintMsg = serverHint
+                || (isTimeout
+                    ? (q
+                        ? '검색어를 더 구체적으로 입력하거나 값을 직접 타이핑해 주세요.'
+                        : '값이 매우 많은 컬럼입니다. 검색어를 입력해 좁혀주세요 (예: 앞 글자 1~2자).')
+                    : '잠시 후 다시 시도해 주세요.');
+            list.innerHTML = `
+                <div class="combo-empty" style="padding:12px 14px;text-align:left;line-height:1.5;">
+                    <div style="font-weight:600;color:#d97706;margin-bottom:6px;">
+                        <i class="fas fa-clock" style="margin-right:6px;"></i>${escHtml(title)}
+                    </div>
+                    <div style="color:#6b7280;font-size:12px;margin-bottom:10px;">${escHtml(hintMsg)}</div>
+                    <button type="button" data-role="combo-retry"
+                        style="padding:4px 10px;font-size:12px;border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer;">
+                        <i class="fas fa-redo" style="margin-right:4px;"></i>다시 시도
+                    </button>
+                </div>`;
+            // 재시도 버튼 이벤트
+            const retryBtn = list.querySelector('[data-role="combo-retry"]');
+            if (retryBtn) {
+                retryBtn.addEventListener('click', () => {
+                    _fetchAndRenderValueCombo(search ? search.value : '');
+                });
+            }
+            // timeout 류면 검색창에 포커스 → 사용자가 바로 검색어 입력 가능
+            if (isTimeout && search) {
+                setTimeout(() => { try { search.focus(); } catch (_) {} }, 50);
+            }
+            // footer 갱신
+            if (footer) {
+                footer.style.display = 'flex';
+                footer.innerHTML = `<span style="color:#d97706;">${isTimeout ? '시간 초과' : '오류'}</span><span>검색어로 좁혀주세요</span>`;
+            }
+            _positionCombo();
             return;
         }
         const data = await res.json();
@@ -2630,7 +2678,25 @@ async function _fetchAndRenderValueCombo(qRaw) {
         // 패널 높이가 바뀌었을 수 있으니 위치 재계산
         _positionCombo();
     } catch (e) {
-        list.innerHTML = `<div class="combo-empty">값 조회 중 오류: ${escHtml(e.message || String(e))}</div>`;
+        // 네트워크 오류 / fetch abort / JSON 파싱 실패 등 — 재시도 버튼 제공
+        const { list: list2, search: search2 } = _comboEl();
+        list2.innerHTML = `
+            <div class="combo-empty" style="padding:12px 14px;text-align:left;line-height:1.5;">
+                <div style="font-weight:600;color:#dc2626;margin-bottom:6px;">
+                    <i class="fas fa-exclamation-triangle" style="margin-right:6px;"></i>값 조회 중 오류
+                </div>
+                <div style="color:#6b7280;font-size:12px;margin-bottom:10px;">${escHtml(e.message || String(e))}</div>
+                <button type="button" data-role="combo-retry"
+                    style="padding:4px 10px;font-size:12px;border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer;">
+                    <i class="fas fa-redo" style="margin-right:4px;"></i>다시 시도
+                </button>
+            </div>`;
+        const retryBtn = list2.querySelector('[data-role="combo-retry"]');
+        if (retryBtn) {
+            retryBtn.addEventListener('click', () => {
+                _fetchAndRenderValueCombo(search2 ? search2.value : '');
+            });
+        }
     }
 }
 
