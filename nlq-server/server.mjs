@@ -6627,8 +6627,15 @@ app.post('/api/builder/query', async (req, res) => {
     //   - 패턴 1: "X월 Y월 (...) 차이" → 월별 + 차이 컬럼
     //   - 패턴 2: "X월 (..)"           → 단일 월 필터
     //   - 패턴 3: "전월 대비 (..)"     → 전월 / 당월 / 증감 / 증감률
+    //
+    //   ★ 2026-06-29 (수정): regex 매칭 대신 SELECT 절을 처음부터 재구성하여
+    //      매칭 실패 케이스 제거. 또한 월별 비교 모드일 때는 시간 차원
+    //      (CALMONTH/CALDAY) 을 GROUP BY 에서 자동 제외하여 한 행에 월별
+    //      컬럼이 나란히 나오도록 함.
+    //
     //   매칭되면 즉시 SQL 생성 후 GPT 호출 스킵
     // ────────────────────────────────────────────────
+    let ruleDiagnostics = null; // 규칙 기반 실패/스킵 사유 진단
     if (needGpt) {
       const promptStart = Date.now();
       try {
@@ -6642,11 +6649,16 @@ app.post('/api/builder/query', async (req, res) => {
         const hasGrowthKeyword = /증가율|성장률|증감률|상승률|하락률/.test(trimmedPrompt);
         const hasPrevMonthKeyword = /전월\s*대비|MoM|m\/m/i.test(trimmedPrompt);
 
-        // 규칙 기반 적용 가능 조건:
-        //   1) Metric 이 1~2개 (단순 케이스)
-        //   2) date_start/date_end 존재
-        //   3) prompt 가 짧음 (200자 이내)
-        //   4) 월별 비교 또는 단일 월 추출 패턴
+        // 진단 정보 (사용자 요청 #6 — 실패 사유 명시)
+        ruleDiagnostics = {
+          metric_count: usedMetricEntriesPre.length,
+          prompt_len: trimmedPrompt.length,
+          months_found: uniqMonths,
+          has_diff: hasDiffKeyword,
+          has_prev_month: hasPrevMonthKeyword,
+          has_growth: hasGrowthKeyword,
+        };
+
         const isShortPrompt = trimmedPrompt.length <= 200;
         const canRule = usedMetricEntriesPre.length >= 1
           && usedMetricEntriesPre.length <= 2
@@ -6667,63 +6679,116 @@ app.post('/api/builder/query', async (req, res) => {
             }
             candidates.sort();
           } else if (hasPrevMonthKeyword) {
-            // 전월대비: date_end 의 전월 + date_end
             candidates = [calcPrevMonth(date_end), date_end];
           }
 
+          ruleDiagnostics.candidates = candidates;
+
           if (candidates.length >= 1) {
-            // 새 SELECT 절 구성
-            //   - GROUP BY / dimension 컬럼은 기본 SQL 의 SELECT 에서 추출하여 유지
-            //   - Metric 컬럼은 월별로 분해 + 차이/증감 컬럼 추가
-            //   기본 SQL 형태: "SELECT dim1, dim2, (formula) AS '영업이익' FROM ... WHERE ... GROUP BY dim1, dim2 LIMIT 1000"
-            //   → SELECT dim 부분은 그대로 두고, metric alias 절만 교체
-            let newSql = sql;
-            for (const [col, meta] of usedMetricEntriesPre) {
-              const fld = fields.find(f => f.column === col);
-              const alias = (fld && fld.alias) || meta.metric_code;
-              // 정규식 안전화
-              const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              // 기본 SQL 의 `(formula) AS '영업이익'` 또는 `(formula) AS \`영업이익\`` 패턴 매칭
-              const reMetricExpr = new RegExp(`\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)\\s+AS\\s+['\`"]${aliasEsc}['\`"]`, 'i');
+            // ────────────────────────────────────────────────
+            // SELECT 절 처음부터 재구성 (regex 매칭 X)
+            //   1) 차원(dimension) 필드: 그대로 유지, 단 CALMONTH/CALDAY 는
+            //      월별 비교 모드에서 제외 (한 행에 월별 컬럼이 나란히 와야 함)
+            //   2) Metric 필드: 월별로 분해 + 차이/증감률 컬럼
+            //   3) 기타 measure (SUM 등 일반 집계): 그대로 유지
+            // ────────────────────────────────────────────────
+            const newSelectParts = [];
+            const newGroupParts = [];
+            const isTimeDim = (c) => ['CALMONTH', 'CALDAY', 'CALYEAR'].includes(c);
 
-              const monthExprs = [];
-              for (const ym of candidates) {
-                const monthFormula = rewriteFormulaForMonth(meta.formula, ym);
-                const mmInt = parseInt(ym.slice(4), 10);
-                monthExprs.push(`(${monthFormula}) AS '${mmInt}월 ${alias}'`);
-              }
+            for (const f of fields) {
+              const col = f.column;
+              const agg = f.aggregate;
+              const alias = f.alias || col;
+              const isMetric = col.startsWith('METRIC__') && metricFormulaMap[col];
 
-              const extraExprs = [];
-              if (candidates.length >= 2 && (hasDiffKeyword || hasPrevMonthKeyword)) {
-                const [m1, m2] = [candidates[0], candidates[candidates.length - 1]];
-                const f1 = rewriteFormulaForMonth(meta.formula, m1);
-                const f2 = rewriteFormulaForMonth(meta.formula, m2);
-                const mm1 = parseInt(m1.slice(4), 10);
-                const mm2 = parseInt(m2.slice(4), 10);
-                extraExprs.push(`(${f2}) - (${f1}) AS '${mm2}월-${mm1}월 ${alias} 차이'`);
-                if (hasGrowthKeyword || hasPrevMonthKeyword) {
-                  // 증가율(%) = (m2 - m1) / NULLIF(m1, 0) * 100, 소수 2자리 ROUND
-                  extraExprs.push(`ROUND(((${f2}) - (${f1})) / NULLIF((${f1}), 0) * 100, 2) AS '${mm2}월 ${alias} 증감률(%)'`);
+              if (isMetric) {
+                const meta = metricFormulaMap[col];
+                // 월별 컬럼들
+                for (const ym of candidates) {
+                  const monthFormula = rewriteFormulaForMonth(meta.formula, ym);
+                  const mmInt = parseInt(ym.slice(4), 10);
+                  newSelectParts.push(`(${monthFormula}) AS '${mmInt}월 ${alias}'`);
                 }
-              }
-
-              const replacement = [...monthExprs, ...extraExprs].join(', ');
-              if (reMetricExpr.test(newSql)) {
-                newSql = newSql.replace(reMetricExpr, replacement);
+                // 차이/증감률 컬럼
+                if (candidates.length >= 2 && (hasDiffKeyword || hasPrevMonthKeyword)) {
+                  const m1 = candidates[0];
+                  const m2 = candidates[candidates.length - 1];
+                  const f1 = rewriteFormulaForMonth(meta.formula, m1);
+                  const f2 = rewriteFormulaForMonth(meta.formula, m2);
+                  const mm1 = parseInt(m1.slice(4), 10);
+                  const mm2 = parseInt(m2.slice(4), 10);
+                  newSelectParts.push(`(${f2}) - (${f1}) AS '${alias} 차이(${mm2}월-${mm1}월)'`);
+                  if (hasGrowthKeyword || hasPrevMonthKeyword) {
+                    newSelectParts.push(`ROUND(((${f2}) - (${f1})) / NULLIF((${f1}), 0) * 100, 2) AS '${alias} 증감률(%)'`);
+                  }
+                }
+              } else if (isTimeDim(col)) {
+                // 월별 비교 모드: 시간 차원은 SELECT/GROUP BY 에서 제외
+                //   → 한 행에 4월/5월 컬럼이 나란히 표시됨
+                continue;
+              } else if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
+                newSelectParts.push(`${agg.toUpperCase()}(${col}) AS '${alias}'`);
+              } else {
+                // 일반 차원 (자재명, 사업부 등) → SELECT + GROUP BY
+                newSelectParts.push(`${col} AS '${alias}'`);
+                newGroupParts.push(col);
               }
             }
 
-            if (newSql !== sql) {
-              sql = newSql;
-              finalParams = finalParams; // 그대로 (WHERE 절은 유지)
-              gptStatus = 'rule_based';
-              promptStageMs = Date.now() - promptStart;
-              console.log(`[PromptStage] 규칙 기반 처리 적용 (${promptStageMs}ms) — months=${candidates.join(',')}, diff=${hasDiffKeyword}, growth=${hasGrowthKeyword}`);
+            // WHERE 절은 finalParams 와 함께 그대로 유지 (date_start/date_end 와 사용자 조건)
+            const whereParts2 = [];
+            const newFinalParams = [];
+            if (date_start === date_end) {
+              whereParts2.push('CALMONTH = ?');
+              newFinalParams.push(date_start);
+            } else {
+              whereParts2.push('CALMONTH BETWEEN ? AND ?');
+              newFinalParams.push(date_start, date_end);
             }
+            const userWhere2 = buildUserConditions(newFinalParams);
+            if (userWhere2) whereParts2.push(userWhere2);
+
+            let orderClause2 = '';
+            if (order_by && !isTimeDim(order_by)) {
+              const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+              orderClause2 = `ORDER BY ${order_by} ${dir}`;
+            }
+
+            let newSql = `SELECT ${newSelectParts.join(', ')} FROM bw_profitability_data`;
+            if (whereParts2.length > 0) newSql += ` WHERE ${whereParts2.join(' ')}`;
+            if (newGroupParts.length > 0) newSql += ` GROUP BY ${newGroupParts.join(', ')}`;
+            if (orderClause2) newSql += ` ${orderClause2}`;
+            newSql += ` LIMIT ${safeLimit}`;
+
+            sql = newSql;
+            finalParams = newFinalParams;
+            gptStatus = 'rule_based';
+            promptStageMs = Date.now() - promptStart;
+            console.log(`[PromptStage] 규칙 기반 처리 적용 (${promptStageMs}ms) — months=${candidates.join(',')}, diff=${hasDiffKeyword}, growth=${hasGrowthKeyword}, metric=${usedMetricEntriesPre.map(([c])=>c).join(',')}`);
+            console.log(`[PromptStage] 재구성 SQL preview: ${newSql.slice(0, 200)}...`);
+          } else {
+            ruleDiagnostics.skip_reason = 'no_month_candidates_in_range';
+            console.log(`[PromptStage] 규칙 매칭됐으나 후보 월이 date_start~date_end 범위에 없음: months=${uniqMonths.join(',')}, range=${date_start}~${date_end}`);
           }
+        } else {
+          // 미매칭 사유 진단
+          if (usedMetricEntriesPre.length === 0) {
+            ruleDiagnostics.skip_reason = 'no_metric_field';
+          } else if (usedMetricEntriesPre.length > 2) {
+            ruleDiagnostics.skip_reason = 'too_many_metrics';
+          } else if (!isShortPrompt) {
+            ruleDiagnostics.skip_reason = 'prompt_too_long';
+          } else if (uniqMonths.length === 0 && !hasPrevMonthKeyword) {
+            ruleDiagnostics.skip_reason = 'no_month_or_prev_keyword';
+          } else {
+            ruleDiagnostics.skip_reason = 'other';
+          }
+          console.log(`[PromptStage] 규칙 미적용: ${ruleDiagnostics.skip_reason} (metric=${usedMetricEntriesPre.length}, months=${uniqMonths.join(',')}, diff=${hasDiffKeyword})`);
         }
       } catch (ruleErr) {
-        console.error('[PromptStage] 규칙 기반 처리 오류 (GPT 로 진행):', ruleErr.message);
+        console.error('[PromptStage] 규칙 기반 처리 오류 (GPT 로 진행):', ruleErr.message, ruleErr.stack);
+        if (ruleDiagnostics) ruleDiagnostics.skip_reason = 'exception: ' + ruleErr.message;
       }
       if (gptStatus !== 'rule_based') {
         promptStageMs = Date.now() - promptStart;
@@ -6784,9 +6849,11 @@ app.post('/api/builder/query', async (req, res) => {
         const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${metricGuide}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         // [2026-06-29] GPT 호출에 명시적 timeout 적용 (Nginx 60초 504 방지)
         //   - OpenAI SDK 의 `timeout` 옵션과 `AbortSignal` 양쪽으로 이중 보호
-        //   - 25초 안에 응답 못 받으면 abort → 코드단 fallback 으로 응답
-        //   - 규칙 기반 처리가 적용 안 된 케이스만 여기 도달 (전체 시간 ≤ 30s 보장)
-        const GPT_TIMEOUT_MS = parseInt(process.env.BUILDER_GPT_TIMEOUT_MS || '25000', 10);
+        //   - 40초 안에 응답 못 받으면 abort → 코드단 fallback 으로 응답
+        //   - 규칙 기반 처리가 적용 안 된 케이스만 여기 도달
+        //   - 사용자 요청 #1: timeout 을 충분히 늘려 SQL 생성 기회 확보
+        //     (40s + 마이그레이션/네트워크 여유 5s + SQL 실행 ~1s = ≤ 50s, Nginx 60s 안전)
+        const GPT_TIMEOUT_MS = parseInt(process.env.BUILDER_GPT_TIMEOUT_MS || '40000', 10);
         const gptStartTime = Date.now();
         console.log(`[GPTStage] GPT 호출 시작 (timeout=${GPT_TIMEOUT_MS}ms, prompt_len=${prompt.length})`);
         const gptAbort = new AbortController();
@@ -7044,6 +7111,14 @@ app.post('/api/builder/query', async (req, res) => {
       prompt_stage_ms: promptStageMs,
       db_stage_ms: dbStageMs,
     };
+    // [2026-06-29] 사용자 요청 #6 — prompt 가 SQL 에 반영됐는지 명확히 알림
+    //   - rule_based / applied : 반영 성공 (prompt_reflected: true)
+    //   - 그 외 (timeout/error/metric_loss/skipped) : 반영 실패 (prompt_reflected: false)
+    //     → 프론트가 명확한 경고 메시지로 표시
+    if (needGpt) {
+      responseObj.prompt_reflected = (gptStatus === 'rule_based' || gptStatus === 'applied');
+      if (ruleDiagnostics) responseObj.rule_diagnostics = ruleDiagnostics;
+    }
     if (hasCompare && measureFields.length > 0) {
       // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
       const allDimAliases = fields.filter(f => {
