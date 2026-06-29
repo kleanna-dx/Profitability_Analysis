@@ -1573,6 +1573,7 @@ function showDomainForceOverlay(){
 function hideDomainForceOverlay(){const o=document.getElementById('domainForceOverlay');if(o)o.style.display='none';}
 async function selectForceDomain(dc){
     currentDomain=dc;
+    valuesCache={}; // [PR #193] 도메인 변경 시 값 캐시 무효화
     await fetch('/api/me/domain',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain_code:dc})}).catch(()=>{});
     hideDomainForceOverlay();renderDomainSelectorBar();updateDomainInfoBanner();loadColumns();
 }
@@ -1589,7 +1590,9 @@ function onBuilderDomainClick(dc){
 async function switchDomain(dc){
     try{
         await fetch('/api/me/domain',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain_code:dc})});
-        currentDomain=dc;renderDomainSelectorBar();updateDomainInfoBanner();loadColumns();
+        currentDomain=dc;
+        valuesCache={}; // [PR #193] 도메인 변경 시 값 캐시 무효화
+        renderDomainSelectorBar();updateDomainInfoBanner();loadColumns();
     }catch(e){}
 }
 
@@ -1832,6 +1835,8 @@ function onDateChange() {
         document.getElementById('dateEndMonth').value = document.getElementById('dateStartMonth').value;
     }
     updateCompareButtons();
+    // [PR #193] 날짜 변경 시 값 콤보 캐시 무효화 — 새 기간 기준으로 다시 조회되도록
+    valuesCache = {};
 }
 
 function updateCompareButtons() {
@@ -2591,7 +2596,26 @@ async function _fetchAndRenderValueCombo(qRaw) {
     const q = (qRaw || '').trim();
     list.innerHTML = `<div class="combo-empty">불러오는 중...</div>`;
     try {
-        const url = `/api/builder/values/${encodeURIComponent(colName)}?limit=100${q ? '&q=' + encodeURIComponent(q) : ''}`;
+        // ─── [PR #193] 컨텍스트 필터 전달 ─────────────────────────────────
+        // 사용자가 보고 있는 화면(상단 [날짜 범위] + [도메인 PS/HL/MGMT]) 컨텍스트를
+        // 백엔드에 함께 보내서, 풀 테이블 GROUP BY 대신 좁혀진 결과를 받는다.
+        //   - date_start/date_end : 'YYYYMM' 6자리 (CALMONTH 형식과 동일)
+        //   - domain              : 현재 사용자 도메인 (PS/HL/MGMT)
+        // 백엔드는 자동으로 CALMONTH BETWEEN, DIVISION='10'/'20' 을 적용한다.
+        const params = new URLSearchParams();
+        params.set('limit', '100');
+        if (q) params.set('q', q);
+        try {
+            const dr = (typeof getDateRange === 'function') ? getDateRange() : { start: '', end: '' };
+            if (dr.start && dr.end) {
+                params.set('date_start', dr.start);
+                params.set('date_end', dr.end);
+            }
+        } catch (_) { /* 날짜 범위 없으면 백엔드가 세션 기본값 사용 */ }
+        if (typeof currentDomain === 'string' && currentDomain) {
+            params.set('domain', currentDomain);
+        }
+        const url = `/api/builder/values/${encodeURIComponent(colName)}?${params.toString()}`;
         const res = await fetch(url);
         if (!res.ok) {
             // ─── [PR #192] 504/503/timeout 응답을 사용자가 이해할 수 있는 메시지로 변환 ───
@@ -2729,10 +2753,22 @@ function onValueInputChanged(condIdx, inputEl) {
 }
 
 // ─── 기존 호환용 (캐시 프리로드) ───────────────────────────────
+// [PR #193] 이력 복원 시에도 화면 컨텍스트(날짜+도메인) 함께 전달 → timeout 회피
 async function loadColumnValues(colName, condIdx) {
     if (valuesCache[colName]) return;
     try {
-        const res = await fetch(`/api/builder/values/${encodeURIComponent(colName)}?limit=100`);
+        const params = new URLSearchParams();
+        params.set('limit', '100');
+        try {
+            const dr = (typeof getDateRange === 'function') ? getDateRange() : { start: '', end: '' };
+            if (dr.start && dr.end) {
+                params.set('date_start', dr.start);
+                params.set('date_end', dr.end);
+            }
+        } catch (_) {}
+        if (typeof currentDomain === 'string' && currentDomain) params.set('domain', currentDomain);
+        const res = await fetch(`/api/builder/values/${encodeURIComponent(colName)}?${params.toString()}`);
+        if (!res.ok) { valuesCache[colName] = []; return; } // timeout/오류 → 캐시 비움 (조용히 패스)
         const data = await res.json();
         valuesCache[colName] = data.values || [];
     } catch(e) {

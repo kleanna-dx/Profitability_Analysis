@@ -6180,61 +6180,127 @@ app.get('/api/builder/columns', async (req, res) => {
 // [2026-06-29] 사용자 요청 #2~#4 반영:
 //   - ?q=검색어  : 컬럼값에 부분 일치하는 값만 조회 (대소문자 무시)
 //   - ?limit=N   : 응답 행수 제한 (기본 100, 최대 500)
-//   - 응답에 total_distinct (해당 컬럼의 DISTINCT 총 개수) + truncated 플래그 포함
-//     → 프론트에서 "더 많은 값이 있습니다. 검색어를 입력해주세요" 안내 가능
 //
 // [2026-06-29 PR #192] HTTP 504 (Nginx 60s gateway timeout) 대응:
-//   ─ DIVISION_NM 같은 비인덱스 컬럼은 풀스캔 + filesort 가 일어나
-//     운영 DB에서 60s 초과 → Nginx 가 504 로 끊음.
-//   ─ 개선 사항:
-//     1) 이중 쿼리 (COUNT(DISTINCT) + GROUP BY) → 단일 쿼리로 축소.
-//        total_distinct 는 첫 페이지에서만 보수적으로 추정 (truncated 플래그용)
-//     2) MariaDB `MAX_STATEMENT_TIME` 으로 서버단 25s 안전망 — Nginx 60s 보다 먼저 끊고
-//        프론트에 명확한 408/500 에러 메시지 전달 → '값 조회 실패 (HTTP 504)' 보다
-//        구체적인 안내 가능 ('데이터가 많아 시간 초과 — 검색어를 입력해주세요')
-//     3) 검색어 없을 때는 limit+1 행만 조회 → truncated 여부만 빠르게 판단
-//        (정확한 total_distinct 는 검색어로 좁혔을 때만 계산)
+//   - 이중 쿼리 (COUNT(DISTINCT) + GROUP BY) → 단일 쿼리로 축소
+//   - MariaDB `MAX_STATEMENT_TIME` 으로 서버단 25s 안전망
+//
+// [2026-06-29 PR #193] '달력연도' 선택 시 일자값(2026-05-11) 섞임 이슈 수정 + 컨텍스트 필터링:
+//   원인 분석:
+//     ① 선택된 필드(예: CALYEAR) 의 컬럼명을 그대로 호출하므로 매핑 오류는 아님 —
+//        하지만 운영 DB 의 CALYEAR 컬럼에 데이터가 비어 다른 컬럼이 노출됐을 가능성.
+//     ② 상단 [날짜 범위] / [도메인(PS/HL/MGMT)] 컨텍스트를 무시하고 풀 테이블 GROUP BY
+//        → 사용자가 보고 있는 화면(2026년 4월~5월)과 무관한 과거 값까지 노출 + timeout.
+//   개선 사항:
+//     1) ?date_start=YYYYMM&date_end=YYYYMM 쿼리 파라미터 받아 CALMONTH BETWEEN 조건 적용
+//     2) ?domain=PS|HL|MGMT 받아 DIVISION = '10'/'20' 자동 부여 (MGMT 는 조건 없음)
+//        - 프론트가 안 보내면 세션 active_domain 으로 fallback (getActiveDomain)
+//     3) 날짜형 컬럼(CALYEAR/CALMONTH/CALDAY) 은 시간 역순(ORDER BY value DESC) 정렬 —
+//        최근 값이 먼저 보이도록. 일반 컬럼은 count DESC (인기값 우선).
+//     4) 컬럼 자기 자신은 자동 필터 대상에서 제외 (예: CALMONTH 값 조회 시 CALMONTH 필터 미적용)
+//        그래야 "지금 화면에서 어떤 월이 있는지" 둘러볼 수 있음.
 app.get('/api/builder/values/:columnName', async (req, res) => {
   const { columnName } = req.params;
   const q = (req.query.q || '').toString().trim();
   const limit = Math.min(Math.max(parseInt(req.query.limit) || 100, 1), 500);
+
+  // ─── 컨텍스트 파라미터 파싱 (요구사항 #3) ───────────────────────────────
+  const rawDateStart = (req.query.date_start || '').toString().trim();
+  const rawDateEnd   = (req.query.date_end   || '').toString().trim();
+  // YYYYMM (6자리 숫자) 만 허용 — SQL 인젝션 차단
+  const dateStart = /^\d{6}$/.test(rawDateStart) ? rawDateStart : '';
+  const dateEnd   = /^\d{6}$/.test(rawDateEnd)   ? rawDateEnd   : '';
+  // 도메인: 프론트 ?domain=... 우선, 없으면 세션 active_domain 으로 fallback
+  let domainParam = (req.query.domain || '').toString().trim().toUpperCase();
+  if (!['PS', 'HL', 'MGMT'].includes(domainParam)) {
+    try {
+      domainParam = (await getActiveDomain(req)) || 'PS';
+    } catch (_) {
+      domainParam = 'PS';
+    }
+  }
+
   // 서버단 statement timeout — Nginx 60s 보다 먼저 끊고 친절한 메시지 반환
-  // 환경변수 BUILDER_VALUES_STATEMENT_TIMEOUT_MS 로 조정 가능 (기본 25s)
   const stmtTimeoutMs = Math.max(parseInt(process.env.BUILDER_VALUES_STATEMENT_TIMEOUT_MS || '25000', 10), 1000);
   const t0 = Date.now();
   try {
-    // 화이트리스트 검증
+    // 화이트리스트 검증 — DB 에 실제 존재하는 컬럼인지 확인
     const [check] = await pool.query(`
       SELECT COLUMN_NAME FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data' AND COLUMN_NAME = ?
     `, [columnName]);
     if (check.length === 0) {
-      return res.status(404).json({ error: `존재하지 않는 컬럼: ${columnName}` });
+      return res.status(404).json({
+        error: `존재하지 않는 컬럼: ${columnName}`,
+        hint: '운영 DB 와 스키마가 다를 수 있습니다. ontology_column 매핑을 확인해주세요.',
+      });
     }
 
-    // 검색어가 있으면 LIKE 필터 적용. 백틱 안 컬럼명은 화이트리스트 통과한 값이라 안전.
-    const whereSearch = q ? `AND CAST(\`${columnName}\` AS CHAR) LIKE ?` : '';
-    const params = q ? [`%${q}%`] : [];
+    // ─── 컬럼 종류 판별 (요구사항 #4: 정렬 정책 분기) ──────────────────────
+    //   - 날짜형(CALYEAR/CALMONTH/CALDAY): ORDER BY value DESC (최근 값 우선)
+    //   - 일반형: ORDER BY count DESC (인기값 우선)
+    const isDateColumn = ['CALYEAR', 'CALMONTH', 'CALDAY'].includes(columnName.toUpperCase());
 
-    // 단일 쿼리: 인기값 상위 (limit+1) 행. limit+1 까지 받아 truncated 빠르게 판정.
-    // MariaDB `SET STATEMENT MAX_STATEMENT_TIME=초` 로 풀스캔이 너무 오래 걸리면 즉시 중단.
+    // ─── WHERE 조건 누적 ────────────────────────────────────────────────
+    //   기본: NULL/빈 값 제외
+    const whereParts = [`\`${columnName}\` IS NOT NULL`, `\`${columnName}\` != ''`];
+    const params = [];
+
+    // 검색어 필터 (LIKE) — 검색어가 있을 때만 풀스캔 대신 인덱스 가능성 확보
+    if (q) {
+      whereParts.push(`CAST(\`${columnName}\` AS CHAR) LIKE ?`);
+      params.push(`%${q}%`);
+    }
+
+    // 날짜 범위 필터 — CALMONTH 가 항상 존재한다고 가정 (스키마 보장)
+    //   단, 조회 대상 컬럼이 CALMONTH 면 자기 자신을 필터하지 않음 (전 범위 둘러보기)
+    const upperCol = columnName.toUpperCase();
+    if (dateStart && dateEnd && upperCol !== 'CALMONTH') {
+      whereParts.push(`CALMONTH BETWEEN ? AND ?`);
+      params.push(dateStart, dateEnd);
+    } else if (dateStart && dateEnd && upperCol === 'CALMONTH') {
+      // 자기 자신 컬럼이지만 사용자가 직접 보낸 범위는 신뢰 — 그대로 적용해서
+      // "지금 화면 기준으로 가능한 월 후보" 만 노출
+      whereParts.push(`CALMONTH BETWEEN ? AND ?`);
+      params.push(dateStart, dateEnd);
+    }
+
+    // 도메인 필터 — DIVISION = '10' (PS) / '20' (HL) / 없음 (MGMT)
+    //   단, 조회 대상 컬럼이 DIVISION 이면 자기 자신 필터 제외
+    if (upperCol !== 'DIVISION') {
+      if (domainParam === 'PS') {
+        whereParts.push(`DIVISION = '10'`);
+      } else if (domainParam === 'HL') {
+        whereParts.push(`DIVISION = '20'`);
+      }
+      // MGMT 는 조건 없음
+    }
+
+    const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
+
+    // ─── 정렬 정책 분기 (요구사항 #4) ───────────────────────────────────
+    const orderBy = isDateColumn
+      ? `\`${columnName}\` DESC`   // 최근 날짜 먼저
+      : `cnt DESC, \`${columnName}\` ASC`; // 인기값 우선, 동률이면 알파벳순
+
+    // ─── 단일 GROUP BY 쿼리 + statement timeout ────────────────────────
     const fetchLimit = limit + 1;
     const stmtTimeoutSec = Math.max(1, Math.round(stmtTimeoutMs / 1000));
     const sql = `SET STATEMENT MAX_STATEMENT_TIME=${stmtTimeoutSec} FOR
       SELECT \`${columnName}\` AS val, COUNT(*) AS cnt
       FROM bw_profitability_data
-      WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` != '' ${whereSearch}
+      ${whereSql}
       GROUP BY \`${columnName}\`
-      ORDER BY cnt DESC
+      ORDER BY ${orderBy}
       LIMIT ${fetchLimit}`;
+
     let rows;
     try {
       const result = await pool.query(sql, params);
       rows = result[0];
     } catch (qErr) {
-      // MariaDB statement timeout (ER_STATEMENT_TIMEOUT = 1969 / errno 1969 / code ER_QUERY_TIMEOUT)
       const isTimeout = /MAX_STATEMENT_TIME|statement\s+timeout|query\s+execution\s+was\s+interrupted/i.test(qErr.message || '');
-      console.error(`[Builder][values] ${columnName} q='${q}' ` +
+      console.error(`[Builder][values] ${columnName} q='${q}' domain=${domainParam} date=${dateStart}~${dateEnd} ` +
         `${isTimeout ? 'TIMEOUT' : 'ERROR'} after ${Date.now() - t0}ms: ${qErr.message}`);
       if (isTimeout) {
         return res.status(503).json({
@@ -6259,20 +6325,27 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       count: Number(r.cnt),
     }));
 
-    // total_distinct 는 별도 쿼리하지 않음 — truncated 여부만 정확.
-    // 정확한 distinct 수가 필요하면 ?count=1 옵션을 별도로 호출하게끔 분리.
-    // (이전 버전은 매번 COUNT(DISTINCT) 를 함께 실행해 시간이 두 배 들었음)
     const elapsed = Date.now() - t0;
-    console.log(`[Builder][values] ${columnName} q='${q}' → ${values.length}건${truncated ? '(+more)' : ''} in ${elapsed}ms`);
+    console.log(`[Builder][values] ${columnName} q='${q}' domain=${domainParam} ` +
+      `date=${dateStart || '-'}~${dateEnd || '-'} sort=${isDateColumn ? 'value DESC' : 'count DESC'} ` +
+      `→ ${values.length}건${truncated ? '(+more)' : ''} in ${elapsed}ms`);
 
     res.json({
       column: columnName,
       values,
       total: values.length,
-      total_distinct: truncated ? null : values.length, // null = '많음(잘림)' 의미
+      total_distinct: truncated ? null : values.length,
       truncated,
       q,
       limit,
+      // 디버그/검증용 — 프론트는 안 써도 됨
+      applied_filters: {
+        date_start: dateStart || null,
+        date_end: dateEnd || null,
+        domain: domainParam,
+        is_date_column: isDateColumn,
+        sort_by: isDateColumn ? 'value_desc' : 'count_desc',
+      },
       elapsed_ms: elapsed,
     });
   } catch (err) {
