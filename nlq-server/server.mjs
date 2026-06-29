@@ -6182,10 +6182,26 @@ app.get('/api/builder/columns', async (req, res) => {
 //   - ?limit=N   : 응답 행수 제한 (기본 100, 최대 500)
 //   - 응답에 total_distinct (해당 컬럼의 DISTINCT 총 개수) + truncated 플래그 포함
 //     → 프론트에서 "더 많은 값이 있습니다. 검색어를 입력해주세요" 안내 가능
+//
+// [2026-06-29 PR #192] HTTP 504 (Nginx 60s gateway timeout) 대응:
+//   ─ DIVISION_NM 같은 비인덱스 컬럼은 풀스캔 + filesort 가 일어나
+//     운영 DB에서 60s 초과 → Nginx 가 504 로 끊음.
+//   ─ 개선 사항:
+//     1) 이중 쿼리 (COUNT(DISTINCT) + GROUP BY) → 단일 쿼리로 축소.
+//        total_distinct 는 첫 페이지에서만 보수적으로 추정 (truncated 플래그용)
+//     2) MariaDB `MAX_STATEMENT_TIME` 으로 서버단 25s 안전망 — Nginx 60s 보다 먼저 끊고
+//        프론트에 명확한 408/500 에러 메시지 전달 → '값 조회 실패 (HTTP 504)' 보다
+//        구체적인 안내 가능 ('데이터가 많아 시간 초과 — 검색어를 입력해주세요')
+//     3) 검색어 없을 때는 limit+1 행만 조회 → truncated 여부만 빠르게 판단
+//        (정확한 total_distinct 는 검색어로 좁혔을 때만 계산)
 app.get('/api/builder/values/:columnName', async (req, res) => {
   const { columnName } = req.params;
   const q = (req.query.q || '').toString().trim();
   const limit = Math.min(Math.max(parseInt(req.query.limit) || 100, 1), 500);
+  // 서버단 statement timeout — Nginx 60s 보다 먼저 끊고 친절한 메시지 반환
+  // 환경변수 BUILDER_VALUES_STATEMENT_TIMEOUT_MS 로 조정 가능 (기본 25s)
+  const stmtTimeoutMs = Math.max(parseInt(process.env.BUILDER_VALUES_STATEMENT_TIMEOUT_MS || '25000', 10), 1000);
+  const t0 = Date.now();
   try {
     // 화이트리스트 검증
     const [check] = await pool.query(`
@@ -6196,47 +6212,71 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       return res.status(404).json({ error: `존재하지 않는 컬럼: ${columnName}` });
     }
 
-    // 검색어가 있으면 LIKE 필터 적용. 백틱 안에 컬럼명은 화이트리스트 통과한 값이므로 안전.
-    const whereSearch = q
-      ? `AND CAST(\`${columnName}\` AS CHAR) LIKE ?`
-      : '';
+    // 검색어가 있으면 LIKE 필터 적용. 백틱 안 컬럼명은 화이트리스트 통과한 값이라 안전.
+    const whereSearch = q ? `AND CAST(\`${columnName}\` AS CHAR) LIKE ?` : '';
     const params = q ? [`%${q}%`] : [];
 
-    // 전체 DISTINCT 개수 (truncated 플래그용 — 필터 적용 후 기준)
-    const [totalRow] = await pool.query(
-      `SELECT COUNT(DISTINCT \`${columnName}\`) AS total
-       FROM bw_profitability_data
-       WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` != '' ${whereSearch}`,
-      params
-    );
-    const totalDistinct = Number(totalRow[0]?.total || 0);
+    // 단일 쿼리: 인기값 상위 (limit+1) 행. limit+1 까지 받아 truncated 빠르게 판정.
+    // MariaDB `SET STATEMENT MAX_STATEMENT_TIME=초` 로 풀스캔이 너무 오래 걸리면 즉시 중단.
+    const fetchLimit = limit + 1;
+    const stmtTimeoutSec = Math.max(1, Math.round(stmtTimeoutMs / 1000));
+    const sql = `SET STATEMENT MAX_STATEMENT_TIME=${stmtTimeoutSec} FOR
+      SELECT \`${columnName}\` AS val, COUNT(*) AS cnt
+      FROM bw_profitability_data
+      WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` != '' ${whereSearch}
+      GROUP BY \`${columnName}\`
+      ORDER BY cnt DESC
+      LIMIT ${fetchLimit}`;
+    let rows;
+    try {
+      const result = await pool.query(sql, params);
+      rows = result[0];
+    } catch (qErr) {
+      // MariaDB statement timeout (ER_STATEMENT_TIMEOUT = 1969 / errno 1969 / code ER_QUERY_TIMEOUT)
+      const isTimeout = /MAX_STATEMENT_TIME|statement\s+timeout|query\s+execution\s+was\s+interrupted/i.test(qErr.message || '');
+      console.error(`[Builder][values] ${columnName} q='${q}' ` +
+        `${isTimeout ? 'TIMEOUT' : 'ERROR'} after ${Date.now() - t0}ms: ${qErr.message}`);
+      if (isTimeout) {
+        return res.status(503).json({
+          error: '값 조회 시간이 초과되었습니다',
+          reason: 'statement_timeout',
+          column: columnName,
+          q,
+          hint: q
+            ? '검색어를 더 구체적으로 입력하거나 값을 직접 타이핑해 주세요.'
+            : '값이 매우 많은 컬럼입니다. 검색어를 입력해 좁혀주세요 (예: 앞 글자 1~2자).',
+          timeout_ms: stmtTimeoutMs,
+        });
+      }
+      throw qErr;
+    }
 
-    const [rows] = await pool.query(
-      `SELECT \`${columnName}\` AS val, COUNT(*) AS cnt
-       FROM bw_profitability_data
-       WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` != '' ${whereSearch}
-       GROUP BY \`${columnName}\`
-       ORDER BY cnt DESC
-       LIMIT ${limit}`,
-      params
-    );
+    const truncated = rows.length > limit;
+    if (truncated) rows = rows.slice(0, limit);
 
     const values = rows.map(r => ({
       value: typeof r.val === 'bigint' ? Number(r.val) : r.val,
       count: Number(r.cnt),
     }));
 
+    // total_distinct 는 별도 쿼리하지 않음 — truncated 여부만 정확.
+    // 정확한 distinct 수가 필요하면 ?count=1 옵션을 별도로 호출하게끔 분리.
+    // (이전 버전은 매번 COUNT(DISTINCT) 를 함께 실행해 시간이 두 배 들었음)
+    const elapsed = Date.now() - t0;
+    console.log(`[Builder][values] ${columnName} q='${q}' → ${values.length}건${truncated ? '(+more)' : ''} in ${elapsed}ms`);
+
     res.json({
       column: columnName,
       values,
       total: values.length,
-      total_distinct: totalDistinct,
-      truncated: totalDistinct > values.length,
+      total_distinct: truncated ? null : values.length, // null = '많음(잘림)' 의미
+      truncated,
       q,
       limit,
+      elapsed_ms: elapsed,
     });
   } catch (err) {
-    console.error('[Builder] values error:', err.message);
+    console.error('[Builder][values] error:', err.message);
     res.status(500).json({ error: '값 조회 실패: ' + err.message });
   }
 });
