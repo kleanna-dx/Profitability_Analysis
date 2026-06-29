@@ -2400,10 +2400,10 @@ async function executeQuery() {
     };
 
     // [2026-06-29] 프론트 fetch 자체 timeout (사용자 요청 #5)
-    //   - 서버 GPT 25s + 여유 = 50s
+    //   - 서버 GPT 40s + 여유 = 55s
     //   - 운영 Nginx 가 60s 에 끊더라도 그 전에 프론트가 먼저 신호를 보여줌
     const fetchAbort = new AbortController();
-    const fetchTimer = setTimeout(() => fetchAbort.abort(), 50000);
+    const fetchTimer = setTimeout(() => fetchAbort.abort(), 55000);
     try {
         const res = await fetch('/api/builder/query', {
             method: 'POST',
@@ -2470,43 +2470,65 @@ async function executeQuery() {
         //   - 'timeout'  : GPT 응답 시간초과 → 기본 SQL + 코드단 월별 변환 적용됨
         //   - 'metric_loss' / 'skipped' / 'error' : 기본 SQL 유지
         if (data.gpt_status && data.gpt_status !== 'applied') {
-            // 결과는 정상 표시하면서 상단에 가벼운 안내 배너만 출력
-            //   - rule_based : 초록 (규칙 기반 빠른 처리)
-            //   - timeout/metric_loss/skipped/error : 노랑 (일부 미반영 가능)
+            // [2026-06-29] 사용자 요청 #6 — prompt 가 SQL 에 반영됐는지 명확히 표시
+            //   - rule_based (prompt_reflected=true) : 초록 배너 6초 자동 사라짐
+            //   - timeout/error/metric_loss/skipped (prompt_reflected=false) : 빨간 경고 + 재시도 버튼
+            //                                                                  자동 사라지지 않음
             const isPositive = data.gpt_status === 'rule_based';
-            let bannerText;
+            const isPromptIgnored = data.prompt_reflected === false;
+
+            const banner = document.getElementById('errorBox');
+            if (!banner) return;
+
             if (isPositive) {
                 const t = data.timing || {};
-                bannerText = `<b>✓ 빠른 처리:</b> 추가 프롬프트를 규칙 기반으로 즉시 처리했습니다 ` +
-                             `<span style="opacity:.7;font-size:12px;">(prompt ${t.prompt_stage_ms || 0}ms + db ${t.db_stage_ms || 0}ms)</span>`;
+                banner.innerHTML = `<b>✓ 빠른 처리:</b> 추가 프롬프트를 규칙 기반으로 즉시 처리했습니다 ` +
+                                   `<span style="opacity:.7;font-size:12px;">(prompt ${t.prompt_stage_ms || 0}ms + db ${t.db_stage_ms || 0}ms)</span>`;
+                banner.classList.add('active');
+                banner.style.background = '#e8f5e9';
+                banner.style.border = '1px solid #a5d6a7';
+                banner.style.color = '#1b5e20';
+                setTimeout(() => {
+                    banner.classList.remove('active');
+                    banner.style.background = '';
+                    banner.style.border = '';
+                    banner.style.color = '';
+                }, 6000);
+            } else if (isPromptIgnored) {
+                // 사용자가 입력한 추가 프롬프트가 SQL 에 반영되지 않은 상태
+                //  → 자동으로 사라지지 않는 강한 경고 + 재시도 버튼
+                const reasonMap = {
+                    'timeout'    : 'GPT 응답 시간이 초과되었습니다.',
+                    'error'      : 'GPT 호출 중 오류가 발생했습니다.',
+                    'metric_loss': 'GPT 응답이 계산지표 산식을 단순화하여 거부되었습니다.',
+                    'skipped'    : 'GPT 응답이 안전 검증을 통과하지 못했습니다.',
+                };
+                const reasonText = reasonMap[data.gpt_status] || ('상태: ' + data.gpt_status);
+                const diagText = data.rule_diagnostics
+                    ? `<div style="font-size:11px;opacity:.7;margin-top:6px;">진단: metric=${data.rule_diagnostics.metric_count}, 추출월=[${(data.rule_diagnostics.months_found || []).join(',')}], 차이키워드=${data.rule_diagnostics.has_diff}, 사유=${data.rule_diagnostics.skip_reason || '-'}</div>`
+                    : '';
+                banner.innerHTML = `<b>⚠ 추가 프롬프트가 반영되지 않았습니다.</b><br>` +
+                                   `${reasonText} 아래 결과는 추가 프롬프트를 제외한 <b>기본 SQL</b> 의 결과입니다.<br>` +
+                                   `<button type="button" onclick="executeQuery()" style="margin-top:8px;padding:6px 14px;background:#d32f2f;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:13px;"><i class="fas fa-redo"></i> 다시 시도</button>` +
+                                   `<button type="button" onclick="document.getElementById('errorBox').classList.remove('active')" style="margin-top:8px;margin-left:8px;padding:6px 14px;background:#fff;color:#d32f2f;border:1px solid #d32f2f;border-radius:4px;cursor:pointer;font-size:13px;">기본 SQL 결과 그대로 사용</button>` +
+                                   diagText;
+                banner.classList.add('active');
+                banner.style.background = '#ffebee';
+                banner.style.border = '1px solid #ef9a9a';
+                banner.style.color = '#b71c1c';
+                // 자동 사라짐 없음 — 사용자가 액션을 선택해야 함
             } else if (data.gpt_message) {
-                bannerText = `<b>ℹ 안내:</b> ${data.gpt_message} <span style="opacity:.7;font-size:12px;">(추가 프롬프트의 일부가 반영되지 않을 수 있습니다.)</span>`;
-            } else {
-                bannerText = null;
-            }
-            if (bannerText) {
-                try {
-                    const banner = document.getElementById('errorBox');
-                    if (banner) {
-                        banner.innerHTML = bannerText;
-                        banner.classList.add('active');
-                        if (isPositive) {
-                            banner.style.background = '#e8f5e9';
-                            banner.style.border = '1px solid #a5d6a7';
-                            banner.style.color = '#1b5e20';
-                        } else {
-                            banner.style.background = '#fff8e1';
-                            banner.style.border = '1px solid #ffe082';
-                            banner.style.color = '#5d4037';
-                        }
-                        setTimeout(() => {
-                            banner.classList.remove('active');
-                            banner.style.background = '';
-                            banner.style.border = '';
-                            banner.style.color = '';
-                        }, 6000);
-                    }
-                } catch (_) { /* noop */ }
+                banner.innerHTML = `<b>ℹ 안내:</b> ${data.gpt_message}`;
+                banner.classList.add('active');
+                banner.style.background = '#fff8e1';
+                banner.style.border = '1px solid #ffe082';
+                banner.style.color = '#5d4037';
+                setTimeout(() => {
+                    banner.classList.remove('active');
+                    banner.style.background = '';
+                    banner.style.border = '';
+                    banner.style.color = '';
+                }, 6000);
             }
         }
 
