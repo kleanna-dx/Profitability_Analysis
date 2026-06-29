@@ -6597,6 +6597,14 @@ app.post('/api/builder/query', async (req, res) => {
 
     // GPT SQL 보완: 추가 프롬프트가 있을 때만 사용
     const needGpt = prompt && prompt.trim();
+    // [2026-06-29] GPT 보완 결과를 호출자에게도 알릴 수 있도록 상태 변수 분리
+    //   - 'applied'    : GPT SQL 채택 성공
+    //   - 'timeout'    : GPT 응답이 시간 안에 안 옴 → 기본 SQL + 코드단 fallback 적용
+    //   - 'error'      : GPT 호출 실패 (네트워크/키 등) → 기본 SQL 유지
+    //   - 'metric_loss': GPT 가 산식 단순화 → 기본 SQL 유지
+    //   - 'skipped'    : 안전 검증 실패 → 기본 SQL 유지
+    let gptStatus = null;
+    let gptErrorMessage = null;
     if (needGpt) {
       try {
         let resolvedSql = sql;
@@ -6645,7 +6653,16 @@ app.post('/api/builder/query', async (req, res) => {
 
         const userPromptText = `\n\n[추가 요청]\n${prompt}`;
         const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${metricGuide}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
-        const completion = await openai.chat.completions.create({
+        // [2026-06-29] GPT 호출에 명시적 timeout 적용 (Nginx 60초 504 방지)
+        //   - OpenAI SDK 의 `timeout` 옵션과 `AbortSignal` 양쪽으로 이중 보호
+        //   - 45초 안에 응답 못 받으면 abort → 코드단 fallback 으로 응답
+        const GPT_TIMEOUT_MS = parseInt(process.env.BUILDER_GPT_TIMEOUT_MS || '45000', 10);
+        const gptStartTime = Date.now();
+        const gptAbort = new AbortController();
+        const gptTimer = setTimeout(() => gptAbort.abort(), GPT_TIMEOUT_MS);
+        let completion;
+        try {
+          completion = await openai.chat.completions.create({
           model: GPT_MODEL,
           messages: [
             { role: 'system', content:
@@ -6674,7 +6691,16 @@ app.post('/api/builder/query', async (req, res) => {
             { role: 'user', content: gptPrompt },
           ],
           temperature: 0.1,
-        });
+          // GPT 응답 자체 timeout (OpenAI SDK 레벨)
+          // baseURL 이 Genspark 프록시인 경우에도 동일하게 동작
+          // (SDK 가 fetch 옵션으로 전달)
+          // eslint-disable-next-line camelcase
+          }, { signal: gptAbort.signal, timeout: GPT_TIMEOUT_MS });
+        } finally {
+          clearTimeout(gptTimer);
+        }
+        const gptElapsed = Date.now() - gptStartTime;
+        console.log(`[Builder] GPT 응답 완료: ${gptElapsed}ms`);
         let gptSql = completion.choices[0].message.content.trim();
         gptSql = gptSql.replace(/```sql\s*/gi, '').replace(/```\s*/g, '').trim();
         const forbidden = ['INSERT','UPDATE','DELETE','DROP','ALTER','TRUNCATE','CREATE'];
@@ -6707,11 +6733,90 @@ app.post('/api/builder/query', async (req, res) => {
         if (isSafe && /^SELECT/i.test(gptSql) && !metricLossDetected) {
           sql = gptSql;
           finalParams = [];
+          gptStatus = 'applied';
         } else if (metricLossDetected) {
           console.log('[Builder] GPT 응답에서 Metric 산식 손실 감지 → 기본 SQL 유지');
+          gptStatus = 'metric_loss';
+          gptErrorMessage = 'GPT 가 Metric 산식을 단순화하여 기본 SQL 을 유지했습니다.';
+        } else {
+          gptStatus = 'skipped';
+          gptErrorMessage = 'GPT 응답이 안전 검증을 통과하지 못해 기본 SQL 을 유지했습니다.';
         }
       } catch (gptErr) {
-        console.error('[Builder] GPT prompt enhancement failed:', gptErr.message);
+        // [2026-06-29] timeout/abort 케이스 구분
+        const isAbort =
+          gptErr?.name === 'AbortError' ||
+          gptErr?.code === 'ETIMEDOUT' ||
+          /aborted|timeout|timed out/i.test(gptErr?.message || '');
+        gptStatus = isAbort ? 'timeout' : 'error';
+        gptErrorMessage = isAbort
+          ? 'GPT 보완이 시간 초과되어 기본 SQL 을 사용합니다.'
+          : `GPT 보완 실패: ${gptErr.message}`;
+        console.error(`[Builder] GPT prompt enhancement ${gptStatus}:`, gptErr.message);
+
+        // ────────────────────────────────────────────────
+        // [2026-06-29] 코드단 fallback — 추가 프롬프트에서 월별 비교 의도 감지 시
+        //   기본 SQL 에 rewriteFormulaForMonth 를 자동 적용하여
+        //   '4월 5월 영업이익 차이' 같은 요청을 GPT 없이도 처리한다.
+        //
+        // 매칭 규칙 (단순/안전 위주, 한국어 기반):
+        //   - prompt 에서 "X월" 패턴 1~2개 추출 → 해당 월을 date_start/date_end 기준
+        //     YYYYMM 으로 변환
+        //   - usedMetricEntries 가 있으면 SELECT 절의 해당 컬럼을 월별 SUM(CASE WHEN) 으로 교체
+        //   - 컬럼 수가 적은 경우(1~2 metric)만 처리하여 SQL 폭주 방지
+        // ────────────────────────────────────────────────
+        try {
+          if (usedMetricEntries.length > 0 && usedMetricEntries.length <= 2 && date_start && date_end) {
+            const monthMatches = [...prompt.matchAll(/(\d{1,2})\s*월/g)].map(m => parseInt(m[1], 10));
+            const uniqMonths = [...new Set(monthMatches)].filter(m => m >= 1 && m <= 12);
+            if (uniqMonths.length >= 1) {
+              // date_start ~ date_end 범위 안에서 해당 월의 실제 YYYYMM 을 찾음
+              const yyyyStart = date_start.slice(0, 4);
+              const yyyyEnd = date_end.slice(0, 4);
+              const candidates = [];
+              for (const yyyy of [yyyyStart, yyyyEnd]) {
+                for (const mm of uniqMonths) {
+                  const ymStr = `${yyyy}${String(mm).padStart(2, '0')}`;
+                  if (ymStr >= date_start && ymStr <= date_end && !candidates.includes(ymStr)) {
+                    candidates.push(ymStr);
+                  }
+                }
+              }
+              if (candidates.length >= 1) {
+                console.log(`[Builder] GPT fallback: 월별 변환 적용 — 월=${candidates.join(',')}`);
+                // 기본 SQL 의 metric alias 컬럼을 월별로 분리해 새 SELECT 절 구성
+                for (const [col, meta] of usedMetricEntries) {
+                  const fld = fields.find(f => f.column === col);
+                  const alias = (fld && fld.alias) || meta.metric_code;
+                  // 원본 SELECT 절에서 해당 metric expression 한 줄을 찾아서 월별로 치환
+                  // 단순화: alias 가 있는 형태인 `(...) AS '영업이익'` 또는 `... AS \`영업이익\`` 패턴 매칭
+                  const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                  const re = new RegExp(`([^,\\n]+?\\bAS\\s+['\`"]${aliasEsc}['\`"])`, 'i');
+                  if (re.test(sql)) {
+                    // 월별 변환 컬럼 생성
+                    const monthExprs = candidates.map(ym => {
+                      const monthFormula = rewriteFormulaForMonth(meta.formula, ym);
+                      const mmInt = parseInt(ym.slice(4), 10);
+                      return `(${monthFormula}) AS '${mmInt}월 ${alias}'`;
+                    });
+                    let diffExpr = '';
+                    if (candidates.length === 2) {
+                      const [m1, m2] = candidates;
+                      const f1 = rewriteFormulaForMonth(meta.formula, m1);
+                      const f2 = rewriteFormulaForMonth(meta.formula, m2);
+                      const mm1 = parseInt(m1.slice(4), 10);
+                      const mm2 = parseInt(m2.slice(4), 10);
+                      diffExpr = `, (${f2}) - (${f1}) AS '${mm2}월-${mm1}월 ${alias} 차이'`;
+                    }
+                    sql = sql.replace(re, monthExprs.join(', ') + diffExpr);
+                  }
+                }
+              }
+            }
+          }
+        } catch (fbErr) {
+          console.error('[Builder] GPT fallback 월별 변환 실패:', fbErr.message);
+        }
       }
     }
 
@@ -6795,6 +6900,11 @@ app.post('/api/builder/query', async (req, res) => {
       });
     }
     const responseObj = { success: true, sql: sqlForResponse, columns: cols, rows: clean, row_count: clean.length, chart, history_id: hid || null, is_bookmarked: isBookmarked };
+    // [2026-06-29] GPT 보완 상태를 프론트에 알림 (사용자에게 안내 가능)
+    if (gptStatus) {
+      responseObj.gpt_status = gptStatus;
+      if (gptErrorMessage) responseObj.gpt_message = gptErrorMessage;
+    }
     if (hasCompare && measureFields.length > 0) {
       // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
       const allDimAliases = fields.filter(f => {
