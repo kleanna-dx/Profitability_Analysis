@@ -2952,6 +2952,48 @@ function formatCellNumber(val) {
     return num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
+// [2026-06-29] 증감/차이 컬럼 전용: 부호(+/-) 명시 + 색상 표시용 포맷
+//   - 양수: +1,234 (빨간색 처리는 호출측 style 에서)
+//   - 음수: -1,234 (초록색 처리는 호출측 style 에서)
+//   - 0   : 0      (기본/회색 처리는 호출측 style 에서)
+function formatSignedNumber(val) {
+    const num = Number(val);
+    if (!isFinite(num)) return String(val ?? '');
+    if (num === 0) return '0';
+    // 증가율/감소율(% 컬럼) 같은 소수형 vs 정수형 모두 커버
+    let abs;
+    if (Number.isInteger(num) || Math.abs(num - Math.trunc(num)) < 1e-9) {
+        abs = Math.trunc(Math.abs(num)).toLocaleString('ko-KR');
+    } else {
+        abs = Math.abs(num).toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+    return (num > 0 ? '+' : '-') + abs;
+}
+
+// [2026-06-29] 컬럼명이 증감/차이성 컬럼인지 감지
+//   적용 대상 (사용자 요청):
+//     - 차이 / 영업이익 차이 / 매출 차이 등 "차이"로 끝나는 컬럼
+//     - 증감 / 증감액 / 증감률
+//     - 전월대비 차이 / 전월대비 증감액 / 전년대비 차이 등 ("전월대비/전년대비" + "차이/증감")
+//     - 증가율 / 감소율 / 변동률 (부호 있는 값)
+//   주의: compareCols(▲▼ 상태 컬럼)과는 분리. 여기는 "숫자(부호 있는)" 컬럼만.
+function isDeltaColumn(col) {
+    if (!col) return false;
+    const s = String(col);
+    // ▲▼ 가 들어가는 상태표시 컬럼은 별도 처리 → 여기서는 제외
+    // (예: '전월대비 ▲/▼' 같은 컬럼은 compareCols 로 처리됨)
+    if (/[▲▼]/.test(s)) return false;
+    // 한국어 키워드 기반 — "차이"/"증감"/"증가율"/"감소율"/"변동률"/"변화율" 가
+    // 컬럼명 어디든(시작/중간/끝) 포함되면 부호 색상 컬럼으로 간주.
+    //   예) '영업이익 차이', '물량차이 Y', '가격차이 Z', '판매수량 증감',
+    //       '전월대비 증감액', '증가율', '감소율(%)', '4월 5월 차이' 등
+    if (/차이/.test(s))   return true;
+    if (/증감/.test(s))   return true;
+    if (/증가율|감소율|변동률|변동율|변화율/.test(s)) return true;
+    if (/전월대비|전년대비/.test(s) && /(증가|감소|변동)/.test(s)) return true;
+    return false;
+}
+
 // 값이 숫자(혹은 숫자형 문자열)인지 판단
 // — MariaDB의 SUM(DECIMAL) 결과는 문자열로 반환되므로 typeof 검사만으로는 부족
 function isNumericValue(v) {
@@ -2968,19 +3010,37 @@ function isNumericValue(v) {
 
 function renderTable(columns, rows) {
     const numCols = new Set();
-    // 비교 컬럼 감지 (전월대비/전년대비 등 증감상태 컬럼)
+    // 비교 컬럼 감지 (전월대비/전년대비 등 ▲▼ 상태 컬럼 — 텍스트 기반)
     const compareCols = new Set();
+    // [2026-06-29] 증감/차이 컬럼 (숫자 기반, +/- 부호 색상 표시 대상)
+    //   - "차이", "증감", "증감액", "증감률/증감율", "증가율/감소율/변동률" 등
+    //   - 추가 프롬프트로 생성되는 영업이익 차이, 4월/5월 차이 등도 자동 포함
+    const deltaCols = new Set();
     columns.forEach(col => {
-        if (/전월대비|전년대비/.test(col)) compareCols.add(col);
+        // ▲▼ 텍스트 상태 컬럼은 compareCols 로 분류
+        // (컬럼명에 '▲' 또는 '▼' 마커가 있거나, '상태'/'추세' 등이 들어가면 텍스트 컬럼)
+        if (/[▲▼]/.test(col) || /상태$|추세$/.test(col)) {
+            compareCols.add(col);
+            return;
+        }
+        // 차이/증감/증감률/전월대비 차이 등 부호 있는 숫자 컬럼
+        if (isDeltaColumn(col)) {
+            deltaCols.add(col);
+            return;
+        }
+        // 기존 호환: '전월대비'/'전년대비' 단독 → ▲▼ 상태 컬럼 (텍스트)
+        if (/전월대비$|전년대비$/.test(col)) compareCols.add(col);
     });
     // 숫자 컬럼 판단:
     //   1) 컬럼명이 날짜형이면 제외 (달력연도/월, CALMONTH, CALDAY 등 → 코드값 그대로 표시)
     //   2) 첫 번째 비-null 행의 값이 숫자(혹은 숫자형 문자열)이면 numeric으로 인정
     //      → SUM(DECIMAL) 등 문자열로 반환되는 케이스도 커버
+    //   3) compareCols / deltaCols 는 별도 처리하므로 제외
     const isDateColName = (col) => /달력|CALYEAR|CALMONTH|CALDAY|연도|월$|일자|날짜/i.test(col);
     if (rows.length > 0) {
         columns.forEach(col => {
             if (compareCols.has(col)) return;
+            if (deltaCols.has(col)) return;
             if (isDateColName(col)) return;
             // 첫 비-null 값으로 판단
             for (const row of rows) {
@@ -2993,9 +3053,12 @@ function renderTable(columns, rows) {
     }
     let html = '<table><thead><tr><th class="col-seq">순번</th>';
     columns.forEach(col => {
-        // 비교 컬럼 헤더에 스타일 추가
+        // 비교 컬럼 헤더(▲▼ 상태)에 스타일 추가
         if (compareCols.has(col)) {
             html += `<th style="background:#fef3c7;color:#92400e;text-align:center;">${col}</th>`;
+        } else if (deltaCols.has(col)) {
+            // [2026-06-29] 증감/차이 컬럼 헤더 — 옅은 배경 + 우측 정렬(숫자)
+            html += `<th style="background:#fef9c3;color:#854d0e;text-align:right;">${col}</th>`;
         } else {
             html += `<th>${col}</th>`;
         }
@@ -3013,6 +3076,25 @@ function renderTable(columns, rows) {
                 else if (str.includes('▼')) style += 'color:#2563eb;background:#eff6ff;';
                 else style += 'color:#94a3b8;';
                 html += `<td style="${style}">${str}</td>`;
+            } else if (deltaCols.has(col)) {
+                // [2026-06-29] 증감/차이 컬럼: 부호별 색상 표시
+                //   + (양수) → 빨간색 #dc2626
+                //   - (음수) → 초록색 #16a34a
+                //   0       → 회색  #94a3b8
+                //   비숫자/null → 회색, 부호 없이 그대로
+                if (val === null || val === undefined || val === '') {
+                    html += `<td class="num" style="color:#94a3b8;">-</td>`;
+                } else if (isNumericValue(val)) {
+                    const num = Number(val);
+                    let style = 'text-align:right;font-variant-numeric:tabular-nums;font-weight:600;';
+                    if (num > 0)      style += 'color:#dc2626;'; // 양수 → 빨강
+                    else if (num < 0) style += 'color:#16a34a;'; // 음수 → 초록
+                    else              style += 'color:#94a3b8;'; // 0 → 회색
+                    html += `<td class="num" style="${style}">${formatSignedNumber(num)}</td>`;
+                } else {
+                    // 부호 인식 불가 (텍스트 등) → 기본 표기
+                    html += `<td class="num">${String(val)}</td>`;
+                }
             } else if (numCols.has(col) && val !== null && val !== undefined && val !== '') {
                 html += `<td class="num">${formatCellNumber(val)}</td>`;
             } else {
