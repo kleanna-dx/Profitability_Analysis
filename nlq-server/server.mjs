@@ -22,11 +22,18 @@ import {
   removeFromIndex,
   getRagStats,
 } from './rag.mjs';
+// [2026-06-29] 요청 단위 단계별 로그 — /api/builder/* timeout 추적용
+//   - 로그 파일: /data/analytics/logs/nlq-server.log (운영) / ./logs/nlq-server.log (샌드박스)
+//   - 모든 /api/* 요청에 requestId 부여 (Nginx X-Request-Id 헤더 우선)
+import { requestIdMiddleware, createReqLogger, LOG_FILE_PATH } from './lib/reqLogger.mjs';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// 모든 /api/* 요청에 requestId 부여 (가장 앞단에 배치 — 다른 미들웨어보다 먼저)
+app.use('/api', requestIdMiddleware);
+console.log(`[Boot] nlq-server 요청 단위 로그 파일: ${LOG_FILE_PATH}`);
 
 // ============================================================
 // [2026-06-16] 비밀번호 SHA-256 해싱 헬퍼
@@ -6204,6 +6211,16 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
   const q = (req.query.q || '').toString().trim();
   const limit = Math.min(Math.max(parseInt(req.query.limit) || 100, 1), 500);
 
+  // ─── [2026-06-29] 요청 단위 로거 — timeout/오류 추적용 ─────────────────
+  //   LLM 호출 없음을 명시 (사용자 요청 #4)
+  const log = createReqLogger(req, '/api/builder/values', {
+    column: columnName,
+    q,
+    limit,
+    llm_used: false,  // ★ 이 엔드포인트는 DB DISTINCT 만 수행, LLM 호출 0건
+  });
+  log.stage('request_received');
+
   // ─── 컨텍스트 파라미터 파싱 (요구사항 #3) ───────────────────────────────
   const rawDateStart = (req.query.date_start || '').toString().trim();
   const rawDateEnd   = (req.query.date_end   || '').toString().trim();
@@ -6219,6 +6236,8 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       domainParam = 'PS';
     }
   }
+  log.withCtx({ domain: domainParam, date_start: dateStart || null, date_end: dateEnd || null });
+  log.stage('params_resolved');
 
   // 서버단 statement timeout — Nginx 60s 보다 먼저 끊고 친절한 메시지 반환
   const stmtTimeoutMs = Math.max(parseInt(process.env.BUILDER_VALUES_STATEMENT_TIMEOUT_MS || '25000', 10), 1000);
@@ -6229,7 +6248,12 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       SELECT COLUMN_NAME FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data' AND COLUMN_NAME = ?
     `, [columnName]);
+    log.stage('column_whitelist_check', {
+      valid: check.length > 0,
+      mapped_db_column: check.length > 0 ? check[0].COLUMN_NAME : null,
+    });
     if (check.length === 0) {
+      log.error('column_not_found', new Error(`column not found: ${columnName}`));
       return res.status(404).json({
         error: `존재하지 않는 컬럼: ${columnName}`,
         hint: '운영 DB 와 스키마가 다를 수 있습니다. ontology_column 매핑을 확인해주세요.',
@@ -6294,14 +6318,29 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       ORDER BY ${orderBy}
       LIMIT ${fetchLimit}`;
 
+    // ─── [로그] SQL 빌드 완료 ─────────────────────────────────────
+    log.stage('sql_built', {
+      sql: sql.replace(/\s+/g, ' ').trim(),  // 한 줄로 정규화 (로그 가독성)
+      params,
+      stmt_timeout_ms: stmtTimeoutMs,
+      sort_by: isDateColumn ? 'value_desc' : 'count_desc',
+    });
+
     let rows;
+    const dbStart = Date.now();
+    log.stage('db_execute_start');
     try {
       const result = await pool.query(sql, params);
       rows = result[0];
     } catch (qErr) {
+      const dbElapsed = Date.now() - dbStart;
       const isTimeout = /MAX_STATEMENT_TIME|statement\s+timeout|query\s+execution\s+was\s+interrupted/i.test(qErr.message || '');
+      log.error(isTimeout ? 'db_execute_timeout' : 'db_execute_failed', qErr, {
+        db_elapsed_ms: dbElapsed,
+        timeout_ms: stmtTimeoutMs,
+      });
       console.error(`[Builder][values] ${columnName} q='${q}' domain=${domainParam} date=${dateStart}~${dateEnd} ` +
-        `${isTimeout ? 'TIMEOUT' : 'ERROR'} after ${Date.now() - t0}ms: ${qErr.message}`);
+        `${isTimeout ? 'TIMEOUT' : 'ERROR'} after ${Date.now() - t0}ms: ${qErr.message} reqId=${log.requestId}`);
       if (isTimeout) {
         return res.status(503).json({
           error: '값 조회 시간이 초과되었습니다',
@@ -6312,10 +6351,13 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
             ? '검색어를 더 구체적으로 입력하거나 값을 직접 타이핑해 주세요.'
             : '값이 매우 많은 컬럼입니다. 검색어를 입력해 좁혀주세요 (예: 앞 글자 1~2자).',
           timeout_ms: stmtTimeoutMs,
+          requestId: log.requestId,
         });
       }
       throw qErr;
     }
+    const dbElapsed = Date.now() - dbStart;
+    log.stage('db_execute_done', { row_count: rows.length, db_elapsed_ms: dbElapsed, timeout: false });
 
     const truncated = rows.length > limit;
     if (truncated) rows = rows.slice(0, limit);
@@ -6330,6 +6372,11 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       `date=${dateStart || '-'}~${dateEnd || '-'} sort=${isDateColumn ? 'value DESC' : 'count DESC'} ` +
       `→ ${values.length}건${truncated ? '(+more)' : ''} in ${elapsed}ms`);
 
+    log.stage('response_sent', {
+      total_row_count: values.length,
+      truncated,
+      total_elapsed_ms: elapsed,
+    });
     res.json({
       column: columnName,
       values,
@@ -6347,10 +6394,12 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
         sort_by: isDateColumn ? 'value_desc' : 'count_desc',
       },
       elapsed_ms: elapsed,
+      requestId: log.requestId,
     });
   } catch (err) {
-    console.error('[Builder][values] error:', err.message);
-    res.status(500).json({ error: '값 조회 실패: ' + err.message });
+    log.error('unexpected_error', err);
+    console.error(`[Builder][values] error reqId=${log.requestId}:`, err.message);
+    res.status(500).json({ error: '값 조회 실패: ' + err.message, requestId: log.requestId });
   }
 });
 
@@ -6359,17 +6408,34 @@ app.post('/api/builder/query', async (req, res) => {
   const { fields, conditions, group_by, order_by, order_dir, limit: limitStr, prompt,
           date_start, date_end, compare_yoy, compare_mom, compare_dims, history_id } = req.body;
 
-  console.log(`[Builder] 요청: fields=${fields?.length}, compare_mom=${compare_mom}, compare_yoy=${compare_yoy}, date=${date_start}~${date_end}, compare_dims=${JSON.stringify(compare_dims)}`);
+  // ─── [2026-06-29] 요청 단위 로거 — 11개 stage 단계별 추적 ────────────────
+  //   (사용자 요청 #3) 요청 수신 → LLM 필요 여부 → LLM 호출/응답 → SQL 파싱
+  //   → DB 실행 → 이력 저장 → 응답 반환 까지 모든 단계를 requestId 로 묶음
+  const log = createReqLogger(req, '/api/builder/query', {
+    fields_count: Array.isArray(fields) ? fields.length : 0,
+    has_prompt: !!(prompt && String(prompt).trim()),
+    compare_mom: !!compare_mom,
+    compare_yoy: !!compare_yoy,
+    date_start: date_start || null,
+    date_end: date_end || null,
+    history_id: history_id || null,
+  });
+  log.stage('request_received', { prompt_preview: (prompt && String(prompt).trim().slice(0, 80)) || null });
+
+  console.log(`[Builder] 요청: fields=${fields?.length}, compare_mom=${compare_mom}, compare_yoy=${compare_yoy}, date=${date_start}~${date_end}, compare_dims=${JSON.stringify(compare_dims)} reqId=${log.requestId}`);
 
   if (!fields || fields.length === 0) {
-    return res.status(400).json({ error: '조회할 필드를 하나 이상 선택해주세요.' });
+    log.error('validation_failed', new Error('fields 없음'), { reason: 'no_fields' });
+    return res.status(400).json({ error: '조회할 필드를 하나 이상 선택해주세요.', requestId: log.requestId });
   }
 
   // 날짜 조건 필수 검증
   if (!date_start || !date_end || date_start.length !== 6 || date_end.length !== 6) {
-    return res.status(400).json({ error: '날짜 조건(시작/종료 년월)을 설정해주세요.' });
+    log.error('validation_failed', new Error('date 잘못됨'), { reason: 'invalid_date' });
+    return res.status(400).json({ error: '날짜 조건(시작/종료 년월)을 설정해주세요.', requestId: log.requestId });
   }
 
+  log.stage('validation_done');
   const safeLimit = Math.min(parseInt(limitStr) || 1000, 5000);
 
   try {
@@ -6432,8 +6498,13 @@ app.post('/api/builder/query', async (req, res) => {
           }
         }
         console.log(`[Builder] Metric 산식 매핑: ${JSON.stringify(Object.entries(metricFormulaMap).map(([k,v]) => k + '=' + v.formula))}`);
+        log.stage('metric_resolved', {
+          resolved_metrics: Object.keys(metricFormulaMap),
+          count: Object.keys(metricFormulaMap).length,
+        });
       } catch (metErr) {
         console.error('[Builder] Metric formula 조회 오류:', metErr.message);
+        log.error('metric_resolve_failed', metErr);
       }
     }
 
@@ -6560,6 +6631,13 @@ app.post('/api/builder/query', async (req, res) => {
     }
 
     console.log(`[Builder] 필드 분류: dim=${dimFields.length}개(${dimFields.map(d=>d.col).join(',')}), measure=${measureFields.length}개(${measureFields.map(m=>m.col).join(',')})`);
+    log.stage('field_classified', {
+      dim_count: dimFields.length,
+      measure_count: measureFields.length,
+      dim_cols: dimFields.map(d => d.col),
+      measure_cols: measureFields.map(m => m.col),
+      has_compare: !!hasCompare,
+    });
 
     let sql, finalParams;
 
@@ -6682,6 +6760,13 @@ app.post('/api/builder/query', async (req, res) => {
 
       console.log(`[Builder] 비교모드 SQL: ${sql.substring(0, 300)}...`);
       console.log(`[Builder] 비교모드 params: [${finalParams.join(', ')}]`);
+      log.stage('base_sql_built', {
+        mode: 'compare',
+        compare_type: compare_mom ? 'mom' : 'yoy',
+        sql_preview: sql.substring(0, 500),
+        sql_length: sql.length,
+        param_count: finalParams.length,
+      });
 
     // ═══════════════════════════════════════════════
     // 일반 모드 (비교 없음): 사용자가 명시 선택한 필드만 SELECT/GROUP BY
@@ -6742,6 +6827,13 @@ app.post('/api/builder/query', async (req, res) => {
       if (groupParts.length > 0) sql += ` GROUP BY ${groupParts.join(', ')}`;
       if (orderClause) sql += ` ${orderClause}`;
       sql += ` LIMIT ${safeLimit}`;
+      log.stage('base_sql_built', {
+        mode: 'normal',
+        sql_preview: sql.substring(0, 500),
+        sql_length: sql.length,
+        param_count: finalParams.length,
+        group_by_cols: groupParts,
+      });
     }
 
     // ============================================================
@@ -6756,6 +6848,11 @@ app.post('/api/builder/query', async (req, res) => {
     //   - [DBStage]     SQL 실행 시간 (이미 아래 로깅)
     // ============================================================
     const needGpt = prompt && prompt.trim();
+    log.stage('llm_needed_check', {
+      prompt_present: !!(prompt && String(prompt).trim()),
+      prompt_length: prompt ? String(prompt).length : 0,
+      llm_used: false, // 이 시점에서는 아직 LLM 호출 안 함. 실제 호출 시 별도 stage 로 기록
+    });
     // [2026-06-29] GPT 보완 결과를 호출자에게도 알릴 수 있도록 상태 변수 분리
     //   - 'rule_based' : 규칙 기반 처리 성공 (GPT 호출 없음, 새로 추가)
     //   - 'applied'    : GPT SQL 채택 성공
@@ -6910,6 +7007,14 @@ app.post('/api/builder/query', async (req, res) => {
             finalParams = newFinalParams;
             gptStatus = 'rule_based';
             promptStageMs = Date.now() - promptStart;
+            log.stage('rule_based_applied', {
+              llm_used: false,
+              months: candidates,
+              has_diff: hasDiffKeyword,
+              has_growth: hasGrowthKeyword,
+              prompt_stage_ms: promptStageMs,
+              sql_preview: newSql.substring(0, 300),
+            });
             console.log(`[PromptStage] 규칙 기반 처리 적용 (${promptStageMs}ms) — months=${candidates.join(',')}, diff=${hasDiffKeyword}, growth=${hasGrowthKeyword}, metric=${usedMetricEntriesPre.map(([c])=>c).join(',')}`);
             console.log(`[PromptStage] 재구성 SQL preview: ${newSql.slice(0, 200)}...`);
           } else {
@@ -7001,6 +7106,13 @@ app.post('/api/builder/query', async (req, res) => {
         const GPT_TIMEOUT_MS = parseInt(process.env.BUILDER_GPT_TIMEOUT_MS || '40000', 10);
         const gptStartTime = Date.now();
         console.log(`[GPTStage] GPT 호출 시작 (timeout=${GPT_TIMEOUT_MS}ms, prompt_len=${prompt.length})`);
+        log.stage('llm_call_start', {
+          llm_used: true,
+          model: GPT_MODEL,
+          timeout_ms: GPT_TIMEOUT_MS,
+          prompt_len: prompt.length,
+          gpt_prompt_len: gptPrompt.length,
+        });
         const gptAbort = new AbortController();
         const gptTimer = setTimeout(() => gptAbort.abort(), GPT_TIMEOUT_MS);
         let completion;
@@ -7044,6 +7156,10 @@ app.post('/api/builder/query', async (req, res) => {
         }
         const gptElapsed = Date.now() - gptStartTime;
         console.log(`[GPTStage] GPT 응답 완료: ${gptElapsed}ms`);
+        log.stage('llm_response_received', {
+          llm_elapsed_ms: gptElapsed,
+          response_len: (completion?.choices?.[0]?.message?.content || '').length,
+        });
         let gptSql = completion.choices[0].message.content.trim();
         gptSql = gptSql.replace(/```sql\s*/gi, '').replace(/```\s*/g, '').trim();
         const forbidden = ['INSERT','UPDATE','DELETE','DROP','ALTER','TRUNCATE','CREATE'];
@@ -7077,13 +7193,28 @@ app.post('/api/builder/query', async (req, res) => {
           sql = gptSql;
           finalParams = [];
           gptStatus = 'applied';
+          log.stage('sql_parse_validated', {
+            outcome: 'applied',
+            sql_preview: sql.substring(0, 300),
+            sql_length: sql.length,
+          });
         } else if (metricLossDetected) {
           console.log('[Builder] GPT 응답에서 Metric 산식 손실 감지 → 기본 SQL 유지');
           gptStatus = 'metric_loss';
           gptErrorMessage = 'GPT 가 Metric 산식을 단순화하여 기본 SQL 을 유지했습니다.';
+          log.error('sql_parse_failed', new Error('metric_loss'), {
+            outcome: 'metric_loss',
+            reason: 'GPT 가 Metric 산식을 단순화함',
+          });
         } else {
           gptStatus = 'skipped';
           gptErrorMessage = 'GPT 응답이 안전 검증을 통과하지 못해 기본 SQL 을 유지했습니다.';
+          log.error('sql_parse_failed', new Error('unsafe_or_not_select'), {
+            outcome: 'skipped',
+            is_safe: isSafe,
+            starts_with_select: /^SELECT/i.test(gptSql),
+            sql_preview: gptSql.substring(0, 200),
+          });
         }
       } catch (gptErr) {
         // [2026-06-29] timeout/abort 케이스 구분
@@ -7096,6 +7227,12 @@ app.post('/api/builder/query', async (req, res) => {
           ? 'GPT 보완이 시간 초과되어 기본 SQL 을 사용합니다.'
           : `GPT 보완 실패: ${gptErr.message}`;
         console.error(`[Builder] GPT prompt enhancement ${gptStatus}:`, gptErr.message);
+        log.error(isAbort ? 'llm_call_timeout' : 'llm_call_failed', gptErr, {
+          llm_used: true,
+          outcome: gptStatus,
+          err_name: gptErr?.name,
+          err_code: gptErr?.code,
+        });
 
         // ────────────────────────────────────────────────
         // [2026-06-29] 코드단 fallback — 추가 프롬프트에서 월별 비교 의도 감지 시
@@ -7182,17 +7319,46 @@ app.post('/api/builder/query', async (req, res) => {
       if (sql !== sqlBefore) {
         console.log(`[Builder] 도메인 필터 적용: domain=${activeDomainForBuilder}`);
       }
+      log.stage('domain_filter_applied', {
+        domain: activeDomainForBuilder,
+        changed: sql !== sqlBefore,
+        sql_length: sql.length,
+      });
     } catch (dfErr) {
       console.error('[Builder] 도메인 필터 적용 실패 (원본 SQL 유지):', dfErr.message);
+      log.error('domain_filter_failed', dfErr);
     }
 
     // SQL 실행 (시간 측정 — 사용자 요청 #1)
     const dbStart = Date.now();
-    const [rows] = finalParams.length > 0
-      ? await pool.query(sql, finalParams)
-      : await pool.query(sql);
+    log.stage('db_execute_start', {
+      sql_preview: sql.substring(0, 300),
+      sql_length: sql.length,
+      param_count: finalParams.length,
+      gpt_status: gptStatus,
+    });
+    let rows;
+    try {
+      const result = finalParams.length > 0
+        ? await pool.query(sql, finalParams)
+        : await pool.query(sql);
+      rows = result[0];
+    } catch (dbErr) {
+      const dbElapsed = Date.now() - dbStart;
+      log.error('db_execute_failed', dbErr, {
+        db_elapsed_ms: dbElapsed,
+        sql_preview: sql.substring(0, 300),
+        error_code: dbErr?.code,
+        sql_state: dbErr?.sqlState,
+      });
+      throw dbErr; // 기존 outer catch 로 전파
+    }
     const dbStageMs = Date.now() - dbStart;
     console.log(`[DBStage] SQL 실행 완료: ${dbStageMs}ms, rows=${rows.length}`);
+    log.stage('db_execute_done', {
+      row_count: rows.length,
+      db_elapsed_ms: dbStageMs,
+    });
 
     const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
     const clean = rows.map(row => {
@@ -7214,7 +7380,15 @@ app.post('/api/builder/query', async (req, res) => {
     const histUserId = req.session?.user?.id || null;
     const activeDomain = await getActiveDomain(req);
     const savedId = saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, sql, clean.length, 0, 'SUCCESS', null, history_id || null, activeDomain)
-      .catch(e => { console.error('[Builder History] 저장 실패:', e.message); return null; });
+      .then(id => {
+        log.stage('history_save_done', { history_id: id || null });
+        return id;
+      })
+      .catch(e => {
+        console.error('[Builder History] 저장 실패:', e.message);
+        log.error('history_save_failed', e);
+        return null;
+      });
 
     // 비교모드일 때 compare_info 포함
     const hid = await savedId;
@@ -7264,6 +7438,8 @@ app.post('/api/builder/query', async (req, res) => {
       responseObj.prompt_reflected = (gptStatus === 'rule_based' || gptStatus === 'applied');
       if (ruleDiagnostics) responseObj.rule_diagnostics = ruleDiagnostics;
     }
+    // 응답에 requestId 포함 (Nginx 매칭용)
+    responseObj.requestId = log.requestId;
     if (hasCompare && measureFields.length > 0) {
       // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
       const allDimAliases = fields.filter(f => {
@@ -7282,15 +7458,24 @@ app.post('/api/builder/query', async (req, res) => {
         mode: compare_mom ? '전월대비' : '전년대비',
       };
     }
+    log.stage('response_sent', {
+      row_count: clean.length,
+      column_count: cols.length,
+      gpt_status: gptStatus,
+      prompt_reflected: needGpt ? (gptStatus === 'rule_based' || gptStatus === 'applied') : null,
+      db_stage_ms: dbStageMs,
+      prompt_stage_ms: promptStageMs,
+    });
     res.json(responseObj);
   } catch (err) {
     console.error('[Builder] query error:', err.message);
+    log.error('unexpected_error', err);
     // 실패 이력도 저장
     const histUserId = req.session?.user?.id || null;
     const activeDomain = await getActiveDomain(req);
     saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, null, 0, 0, 'FAILED', err.message, null, activeDomain)
       .catch(e => console.error('[Builder History] 실패이력 저장 실패:', e.message));
-    res.status(500).json({ error: `DB 오류: ${err.message}`, sql: '' });
+    res.status(500).json({ error: `DB 오류: ${err.message}`, sql: '', requestId: log.requestId });
   }
 });
 
