@@ -6265,11 +6265,12 @@ app.post('/api/builder/query', async (req, res) => {
           }
           // 2. 아직 SUM()에 감싸지지 않은 DB 컬럼 참조를 SUM()으로 감싸기
           // 패턴: 알파벳/언더스코어로 시작하는 단어 (이미 SUM( 등 함수로 감싸진 것은 제외)
+          // [2026-06-29] 사용자 따옴표 규칙: 컬럼명에 백틱(`) 사용 금지
           resolved = resolved.replace(/\b([A-Z][A-Z0-9_]+)\b(?!\s*\()/g, (match) => {
             // SQL 키워드/함수는 제외
             if (['SUM','AVG','COUNT','MAX','MIN','NULLIF','COALESCE','CASE','WHEN','THEN','ELSE','END','AND','OR','NOT','NULL','AS'].includes(match)) return match;
             // 이미 SUM()등으로 감싸져 있으면 스킵 (lookbehind는 위 regex에서 처리)
-            return `SUM(\`${match}\`)`;
+            return `SUM(${match})`;
           });
           return resolved;
         };
@@ -6309,8 +6310,9 @@ app.post('/api/builder/query', async (req, res) => {
       //     SUM( <백틱컬럼명> ) 또는 SUM( <영숫자컬럼명> ) 만 변환.
       //   - 복잡한 SUM( CASE WHEN ... END ) 같은 형태는 이미 월 조건이 포함된 것으로
       //     간주하고 건드리지 않음.
-      return formula.replace(/SUM\s*\(\s*(`?[A-Z][A-Z0-9_]*`?)\s*\)/gi, (m, colExpr) => {
-        return `SUM(CASE WHEN CALMONTH = '${month}' THEN ${colExpr} ELSE 0 END)`;
+      return formula.replace(/SUM\s*\(\s*`?([A-Z][A-Z0-9_]*)`?\s*\)/gi, (m, colName) => {
+        // [2026-06-29] 출력에서 백틱 제거 (사용자 따옴표 규칙)
+        return `SUM(CASE WHEN CALMONTH = '${month}' THEN ${colName} ELSE 0 END)`;
       });
     }
 
@@ -6341,24 +6343,25 @@ app.post('/api/builder/query', async (req, res) => {
           const val = cond.value || '';
           const logic = (cond.logic || 'AND').toUpperCase();
           let clause;
+          // [2026-06-29] 사용자 따옴표 규칙: 컬럼명 백틱 미사용
           if (['=','!=','>','>=','<','<='].includes(op)) {
-            clause = `\`${col}\` ${op} ?`; paramArr.push(val);
+            clause = `${col} ${op} ?`; paramArr.push(val);
           } else if (op === 'LIKE') {
-            clause = `\`${col}\` LIKE ?`; paramArr.push(`%${val}%`);
+            clause = `${col} LIKE ?`; paramArr.push(`%${val}%`);
           } else if (op === 'NOT LIKE') {
-            clause = `\`${col}\` NOT LIKE ?`; paramArr.push(`%${val}%`);
+            clause = `${col} NOT LIKE ?`; paramArr.push(`%${val}%`);
           } else if (op === 'IN') {
             const inVals = String(val).split(',').map(v => v.trim()).filter(v => v);
             if (inVals.length === 0) continue;
-            clause = `\`${col}\` IN (${inVals.map(() => '?').join(',')})`;
+            clause = `${col} IN (${inVals.map(() => '?').join(',')})`;
             paramArr.push(...inVals);
-          } else if (op === 'IS NULL') { clause = `\`${col}\` IS NULL`;
-          } else if (op === 'IS NOT NULL') { clause = `\`${col}\` IS NOT NULL`;
+          } else if (op === 'IS NULL') { clause = `${col} IS NULL`;
+          } else if (op === 'IS NOT NULL') { clause = `${col} IS NOT NULL`;
           } else if (op === 'BETWEEN') {
             const bVals = String(val).split(',').map(v => v.trim());
             if (bVals.length !== 2) continue;
-            clause = `\`${col}\` BETWEEN ? AND ?`; paramArr.push(bVals[0], bVals[1]);
-          } else { clause = `\`${col}\` = ?`; paramArr.push(val); }
+            clause = `${col} BETWEEN ? AND ?`; paramArr.push(bVals[0], bVals[1]);
+          } else { clause = `${col} = ?`; paramArr.push(val); }
           parts.push(`${parts.length === 0 ? 'AND' : (logic === 'OR' ? 'OR' : 'AND')} ${clause}`);
         }
       }
@@ -6541,6 +6544,7 @@ app.post('/api/builder/query', async (req, res) => {
     // 프론트엔드에서 기간 필드(CALMONTH/CALDAY) 미선택 시 피벗 실행 차단
     // ═══════════════════════════════════════════════
     } else {
+      // [2026-06-29] 사용자 따옴표 규칙 적용 (컬럼/테이블 백틱 미사용, alias 만 single quote)
       const selectParts = [];
       for (const f of fields) {
         const col = f.column;
@@ -6549,11 +6553,11 @@ app.post('/api/builder/query', async (req, res) => {
         const isMetric = col.startsWith('METRIC__') && metricFormulaMap[col];
         if (isMetric) {
           // Metric: 산식 그대로 사용 (SUM 등이 이미 포함됨)
-          selectParts.push(`(${metricFormulaMap[col].formula}) AS \`${alias}\``);
+          selectParts.push(`(${metricFormulaMap[col].formula}) AS '${alias}'`);
         } else if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
-          selectParts.push(`${agg.toUpperCase()}(\`${col}\`) AS \`${alias}\``);
+          selectParts.push(`${agg.toUpperCase()}(${col}) AS '${alias}'`);
         } else {
-          selectParts.push(`\`${col}\` AS \`${alias}\``);
+          selectParts.push(`${col} AS '${alias}'`);
         }
       }
 
@@ -6561,10 +6565,10 @@ app.post('/api/builder/query', async (req, res) => {
       finalParams = [];
 
       if (date_start === date_end) {
-        whereParts.push('`CALMONTH` = ?');
+        whereParts.push('CALMONTH = ?');
         finalParams.push(date_start);
       } else {
-        whereParts.push('`CALMONTH` BETWEEN ? AND ?');
+        whereParts.push('CALMONTH BETWEEN ? AND ?');
         finalParams.push(date_start, date_end);
       }
       const userWhere = buildUserConditions(finalParams);
@@ -6578,14 +6582,14 @@ app.post('/api/builder/query', async (req, res) => {
         for (const g of group_by) {
           // Metric 필드는 GROUP BY에서 제외 (산식이므로)
           if (g.startsWith('METRIC__')) continue;
-          if (validCols.has(g)) groupParts.push(`\`${g}\``);
+          if (validCols.has(g)) groupParts.push(g);
         }
       }
 
       let orderClause = '';
       if (order_by) {
         const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-        orderClause = `ORDER BY \`${order_by}\` ${dir}`;
+        orderClause = `ORDER BY ${order_by} ${dir}`;
       }
 
       sql = `SELECT ${selectParts.join(', ')} FROM bw_profitability_data`;
@@ -6595,9 +6599,20 @@ app.post('/api/builder/query', async (req, res) => {
       sql += ` LIMIT ${safeLimit}`;
     }
 
-    // GPT SQL 보완: 추가 프롬프트가 있을 때만 사용
+    // ============================================================
+    // [2026-06-29] 추가 프롬프트 처리 — 규칙 기반 우선, GPT 는 fallback
+    // ------------------------------------------------------------
+    //   문제: GPT 호출이 60s+ 걸려 Nginx 504 발생
+    //   해결: 단순 월별 비교는 GPT 없이 코드만으로 처리 → 즉시 응답
+    //
+    //   각 단계별 시간 측정 로깅 (사용자 요청 #1):
+    //   - [PromptStage] 패턴 분석 + 규칙 기반 SQL 생성 시간
+    //   - [GPTStage]    GPT 호출 시작/완료 시간 + elapsed
+    //   - [DBStage]     SQL 실행 시간 (이미 아래 로깅)
+    // ============================================================
     const needGpt = prompt && prompt.trim();
     // [2026-06-29] GPT 보완 결과를 호출자에게도 알릴 수 있도록 상태 변수 분리
+    //   - 'rule_based' : 규칙 기반 처리 성공 (GPT 호출 없음, 새로 추가)
     //   - 'applied'    : GPT SQL 채택 성공
     //   - 'timeout'    : GPT 응답이 시간 안에 안 옴 → 기본 SQL + 코드단 fallback 적용
     //   - 'error'      : GPT 호출 실패 (네트워크/키 등) → 기본 SQL 유지
@@ -6605,7 +6620,121 @@ app.post('/api/builder/query', async (req, res) => {
     //   - 'skipped'    : 안전 검증 실패 → 기본 SQL 유지
     let gptStatus = null;
     let gptErrorMessage = null;
+    let promptStageMs = 0;
+
+    // ────────────────────────────────────────────────
+    // [Stage 1] 규칙 기반 처리 시도 (사용자 요청 #2)
+    //   - 패턴 1: "X월 Y월 (...) 차이" → 월별 + 차이 컬럼
+    //   - 패턴 2: "X월 (..)"           → 단일 월 필터
+    //   - 패턴 3: "전월 대비 (..)"     → 전월 / 당월 / 증감 / 증감률
+    //   매칭되면 즉시 SQL 생성 후 GPT 호출 스킵
+    // ────────────────────────────────────────────────
     if (needGpt) {
+      const promptStart = Date.now();
+      try {
+        const usedMetricEntriesPre = Object.entries(metricFormulaMap);
+        const trimmedPrompt = prompt.trim();
+
+        // 패턴: "X월 Y월 영업이익 차이" / "4월과 5월의 차이" / "차이도 같이"
+        const monthMatches = [...trimmedPrompt.matchAll(/(\d{1,2})\s*월/g)].map(m => parseInt(m[1], 10));
+        const uniqMonths = [...new Set(monthMatches)].filter(m => m >= 1 && m <= 12);
+        const hasDiffKeyword = /차이|차액|증감|뺀|빼서/.test(trimmedPrompt);
+        const hasGrowthKeyword = /증가율|성장률|증감률|상승률|하락률/.test(trimmedPrompt);
+        const hasPrevMonthKeyword = /전월\s*대비|MoM|m\/m/i.test(trimmedPrompt);
+
+        // 규칙 기반 적용 가능 조건:
+        //   1) Metric 이 1~2개 (단순 케이스)
+        //   2) date_start/date_end 존재
+        //   3) prompt 가 짧음 (200자 이내)
+        //   4) 월별 비교 또는 단일 월 추출 패턴
+        const isShortPrompt = trimmedPrompt.length <= 200;
+        const canRule = usedMetricEntriesPre.length >= 1
+          && usedMetricEntriesPre.length <= 2
+          && isShortPrompt
+          && date_start && date_end;
+
+        if (canRule && (uniqMonths.length >= 1 || hasPrevMonthKeyword)) {
+          // 사용자가 명시한 월 또는 전월대비 → 실제 YYYYMM 후보 생성
+          let candidates = [];
+          if (uniqMonths.length >= 1) {
+            for (const yyyy of [date_start.slice(0,4), date_end.slice(0,4)]) {
+              for (const mm of uniqMonths) {
+                const ymStr = `${yyyy}${String(mm).padStart(2, '0')}`;
+                if (ymStr >= date_start && ymStr <= date_end && !candidates.includes(ymStr)) {
+                  candidates.push(ymStr);
+                }
+              }
+            }
+            candidates.sort();
+          } else if (hasPrevMonthKeyword) {
+            // 전월대비: date_end 의 전월 + date_end
+            candidates = [calcPrevMonth(date_end), date_end];
+          }
+
+          if (candidates.length >= 1) {
+            // 새 SELECT 절 구성
+            //   - GROUP BY / dimension 컬럼은 기본 SQL 의 SELECT 에서 추출하여 유지
+            //   - Metric 컬럼은 월별로 분해 + 차이/증감 컬럼 추가
+            //   기본 SQL 형태: "SELECT dim1, dim2, (formula) AS '영업이익' FROM ... WHERE ... GROUP BY dim1, dim2 LIMIT 1000"
+            //   → SELECT dim 부분은 그대로 두고, metric alias 절만 교체
+            let newSql = sql;
+            for (const [col, meta] of usedMetricEntriesPre) {
+              const fld = fields.find(f => f.column === col);
+              const alias = (fld && fld.alias) || meta.metric_code;
+              // 정규식 안전화
+              const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              // 기본 SQL 의 `(formula) AS '영업이익'` 또는 `(formula) AS \`영업이익\`` 패턴 매칭
+              const reMetricExpr = new RegExp(`\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)\\s+AS\\s+['\`"]${aliasEsc}['\`"]`, 'i');
+
+              const monthExprs = [];
+              for (const ym of candidates) {
+                const monthFormula = rewriteFormulaForMonth(meta.formula, ym);
+                const mmInt = parseInt(ym.slice(4), 10);
+                monthExprs.push(`(${monthFormula}) AS '${mmInt}월 ${alias}'`);
+              }
+
+              const extraExprs = [];
+              if (candidates.length >= 2 && (hasDiffKeyword || hasPrevMonthKeyword)) {
+                const [m1, m2] = [candidates[0], candidates[candidates.length - 1]];
+                const f1 = rewriteFormulaForMonth(meta.formula, m1);
+                const f2 = rewriteFormulaForMonth(meta.formula, m2);
+                const mm1 = parseInt(m1.slice(4), 10);
+                const mm2 = parseInt(m2.slice(4), 10);
+                extraExprs.push(`(${f2}) - (${f1}) AS '${mm2}월-${mm1}월 ${alias} 차이'`);
+                if (hasGrowthKeyword || hasPrevMonthKeyword) {
+                  // 증가율(%) = (m2 - m1) / NULLIF(m1, 0) * 100, 소수 2자리 ROUND
+                  extraExprs.push(`ROUND(((${f2}) - (${f1})) / NULLIF((${f1}), 0) * 100, 2) AS '${mm2}월 ${alias} 증감률(%)'`);
+                }
+              }
+
+              const replacement = [...monthExprs, ...extraExprs].join(', ');
+              if (reMetricExpr.test(newSql)) {
+                newSql = newSql.replace(reMetricExpr, replacement);
+              }
+            }
+
+            if (newSql !== sql) {
+              sql = newSql;
+              finalParams = finalParams; // 그대로 (WHERE 절은 유지)
+              gptStatus = 'rule_based';
+              promptStageMs = Date.now() - promptStart;
+              console.log(`[PromptStage] 규칙 기반 처리 적용 (${promptStageMs}ms) — months=${candidates.join(',')}, diff=${hasDiffKeyword}, growth=${hasGrowthKeyword}`);
+            }
+          }
+        }
+      } catch (ruleErr) {
+        console.error('[PromptStage] 규칙 기반 처리 오류 (GPT 로 진행):', ruleErr.message);
+      }
+      if (gptStatus !== 'rule_based') {
+        promptStageMs = Date.now() - promptStart;
+        console.log(`[PromptStage] 규칙 미적용 (${promptStageMs}ms) → GPT 호출 진행`);
+      }
+    }
+
+    // ────────────────────────────────────────────────
+    // [Stage 2] GPT 보완 — 규칙 기반이 적용 안 된 경우에만 호출
+    // ────────────────────────────────────────────────
+    if (needGpt && gptStatus !== 'rule_based') {
       try {
         let resolvedSql = sql;
         let paramIdx = 0;
@@ -6655,9 +6784,11 @@ app.post('/api/builder/query', async (req, res) => {
         const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${metricGuide}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         // [2026-06-29] GPT 호출에 명시적 timeout 적용 (Nginx 60초 504 방지)
         //   - OpenAI SDK 의 `timeout` 옵션과 `AbortSignal` 양쪽으로 이중 보호
-        //   - 45초 안에 응답 못 받으면 abort → 코드단 fallback 으로 응답
-        const GPT_TIMEOUT_MS = parseInt(process.env.BUILDER_GPT_TIMEOUT_MS || '45000', 10);
+        //   - 25초 안에 응답 못 받으면 abort → 코드단 fallback 으로 응답
+        //   - 규칙 기반 처리가 적용 안 된 케이스만 여기 도달 (전체 시간 ≤ 30s 보장)
+        const GPT_TIMEOUT_MS = parseInt(process.env.BUILDER_GPT_TIMEOUT_MS || '25000', 10);
         const gptStartTime = Date.now();
+        console.log(`[GPTStage] GPT 호출 시작 (timeout=${GPT_TIMEOUT_MS}ms, prompt_len=${prompt.length})`);
         const gptAbort = new AbortController();
         const gptTimer = setTimeout(() => gptAbort.abort(), GPT_TIMEOUT_MS);
         let completion;
@@ -6700,7 +6831,7 @@ app.post('/api/builder/query', async (req, res) => {
           clearTimeout(gptTimer);
         }
         const gptElapsed = Date.now() - gptStartTime;
-        console.log(`[Builder] GPT 응답 완료: ${gptElapsed}ms`);
+        console.log(`[GPTStage] GPT 응답 완료: ${gptElapsed}ms`);
         let gptSql = completion.choices[0].message.content.trim();
         gptSql = gptSql.replace(/```sql\s*/gi, '').replace(/```\s*/g, '').trim();
         const forbidden = ['INSERT','UPDATE','DELETE','DROP','ALTER','TRUNCATE','CREATE'];
@@ -6843,10 +6974,13 @@ app.post('/api/builder/query', async (req, res) => {
       console.error('[Builder] 도메인 필터 적용 실패 (원본 SQL 유지):', dfErr.message);
     }
 
-    // SQL 실행
+    // SQL 실행 (시간 측정 — 사용자 요청 #1)
+    const dbStart = Date.now();
     const [rows] = finalParams.length > 0
       ? await pool.query(sql, finalParams)
       : await pool.query(sql);
+    const dbStageMs = Date.now() - dbStart;
+    console.log(`[DBStage] SQL 실행 완료: ${dbStageMs}ms, rows=${rows.length}`);
 
     const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
     const clean = rows.map(row => {
@@ -6905,6 +7039,11 @@ app.post('/api/builder/query', async (req, res) => {
       responseObj.gpt_status = gptStatus;
       if (gptErrorMessage) responseObj.gpt_message = gptErrorMessage;
     }
+    // [2026-06-29] 단계별 처리 시간 (디버깅/관제용)
+    responseObj.timing = {
+      prompt_stage_ms: promptStageMs,
+      db_stage_ms: dbStageMs,
+    };
     if (hasCompare && measureFields.length > 0) {
       // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
       const allDimAliases = fields.filter(f => {

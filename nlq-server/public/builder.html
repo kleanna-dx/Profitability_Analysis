@@ -2399,11 +2399,17 @@ async function executeQuery() {
         history_id: loadedHistoryId || null,
     };
 
+    // [2026-06-29] 프론트 fetch 자체 timeout (사용자 요청 #5)
+    //   - 서버 GPT 25s + 여유 = 50s
+    //   - 운영 Nginx 가 60s 에 끊더라도 그 전에 프론트가 먼저 신호를 보여줌
+    const fetchAbort = new AbortController();
+    const fetchTimer = setTimeout(() => fetchAbort.abort(), 50000);
     try {
         const res = await fetch('/api/builder/query', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: fetchAbort.signal,
         });
         // [2026-06-29] 안전 파싱 (사용자 요청 #5):
         //   서버가 라우트 catch / 글로벌 핸들러 / Nginx 504 / 프록시 등
@@ -2463,25 +2469,45 @@ async function executeQuery() {
         //   - 'applied'  : GPT SQL 채택 → 안내 불필요
         //   - 'timeout'  : GPT 응답 시간초과 → 기본 SQL + 코드단 월별 변환 적용됨
         //   - 'metric_loss' / 'skipped' / 'error' : 기본 SQL 유지
-        if (data.gpt_status && data.gpt_status !== 'applied' && data.gpt_message) {
+        if (data.gpt_status && data.gpt_status !== 'applied') {
             // 결과는 정상 표시하면서 상단에 가벼운 안내 배너만 출력
-            try {
-                const banner = document.getElementById('errorBox');
-                if (banner) {
-                    banner.innerHTML = `<b>ℹ 안내:</b> ${data.gpt_message} <span style="opacity:.7;font-size:12px;">(추가 프롬프트의 일부가 반영되지 않을 수 있습니다.)</span>`;
-                    banner.classList.add('active');
-                    banner.style.background = '#fff8e1';
-                    banner.style.border = '1px solid #ffe082';
-                    banner.style.color = '#5d4037';
-                    // 5초 뒤 자동 사라짐
-                    setTimeout(() => {
-                        banner.classList.remove('active');
-                        banner.style.background = '';
-                        banner.style.border = '';
-                        banner.style.color = '';
-                    }, 6000);
-                }
-            } catch (_) { /* noop */ }
+            //   - rule_based : 초록 (규칙 기반 빠른 처리)
+            //   - timeout/metric_loss/skipped/error : 노랑 (일부 미반영 가능)
+            const isPositive = data.gpt_status === 'rule_based';
+            let bannerText;
+            if (isPositive) {
+                const t = data.timing || {};
+                bannerText = `<b>✓ 빠른 처리:</b> 추가 프롬프트를 규칙 기반으로 즉시 처리했습니다 ` +
+                             `<span style="opacity:.7;font-size:12px;">(prompt ${t.prompt_stage_ms || 0}ms + db ${t.db_stage_ms || 0}ms)</span>`;
+            } else if (data.gpt_message) {
+                bannerText = `<b>ℹ 안내:</b> ${data.gpt_message} <span style="opacity:.7;font-size:12px;">(추가 프롬프트의 일부가 반영되지 않을 수 있습니다.)</span>`;
+            } else {
+                bannerText = null;
+            }
+            if (bannerText) {
+                try {
+                    const banner = document.getElementById('errorBox');
+                    if (banner) {
+                        banner.innerHTML = bannerText;
+                        banner.classList.add('active');
+                        if (isPositive) {
+                            banner.style.background = '#e8f5e9';
+                            banner.style.border = '1px solid #a5d6a7';
+                            banner.style.color = '#1b5e20';
+                        } else {
+                            banner.style.background = '#fff8e1';
+                            banner.style.border = '1px solid #ffe082';
+                            banner.style.color = '#5d4037';
+                        }
+                        setTimeout(() => {
+                            banner.classList.remove('active');
+                            banner.style.background = '';
+                            banner.style.border = '';
+                            banner.style.color = '';
+                        }, 6000);
+                    }
+                } catch (_) { /* noop */ }
+            }
         }
 
         // 서버가 반환한 history_id 저장 (다음 재실행 시 UPDATE 용)
@@ -2519,8 +2545,16 @@ async function executeQuery() {
         displayResults(data);
     } catch(e) {
         document.getElementById('loading').classList.remove('active');
-        showError('네트워크 오류: ' + e.message);
+        // [2026-06-29] AbortError (프론트 50s timeout) 별도 안내
+        if (e && (e.name === 'AbortError' || /aborted/i.test(e.message || ''))) {
+            showError('요청 처리 시간이 초과되었습니다 (프론트 50s timeout).<br>' +
+                      '서버가 응답하지 않거나 추가 프롬프트 처리에 시간이 오래 걸렸을 수 있습니다.<br>' +
+                      '잠시 후 다시 시도해 주세요.');
+        } else {
+            showError('네트워크 오류: ' + (e?.message || e));
+        }
     } finally {
+        clearTimeout(fetchTimer);
         btn.disabled = false;
         // 히스토리 자동 새로고침 (비동기)
         loadBuilderHistory().catch(() => {});
