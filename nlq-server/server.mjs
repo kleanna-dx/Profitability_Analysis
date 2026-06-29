@@ -6291,6 +6291,29 @@ app.post('/api/builder/query', async (req, res) => {
       }
     }
 
+    // ============================================================
+    // [2026-06-24] Metric 산식 → 월별 조건부 SUM 변환 헬퍼
+    // ------------------------------------------------------------
+    // GPT 보완 단계에서 "4월/5월 차이" 같은 월별 비교 요청이 들어왔을 때,
+    // Metric formula 의 각 `SUM(...)` 을 `SUM(CASE WHEN CALMONTH=? THEN ... ELSE 0 END)` 로
+    // 변환해 GPT 프롬프트에 명시적인 예시로 제공한다.
+    //
+    // 입력 :  SUM(`ZAMT001`) - SUM(`ZAMT002`)
+    // 출력 :  SUM(CASE WHEN CALMONTH = '202604' THEN `ZAMT001` ELSE 0 END)
+    //       - SUM(CASE WHEN CALMONTH = '202604' THEN `ZAMT002` ELSE 0 END)
+    // ============================================================
+    function rewriteFormulaForMonth(formula, month) {
+      if (!formula || !month) return formula;
+      // SUM( ... ) 패턴을 잡되, 괄호 안의 단순 컬럼/표현식을 보존
+      //   - 중첩 괄호는 단순 정규식으로 완벽 매칭이 어려우므로,
+      //     SUM( <백틱컬럼명> ) 또는 SUM( <영숫자컬럼명> ) 만 변환.
+      //   - 복잡한 SUM( CASE WHEN ... END ) 같은 형태는 이미 월 조건이 포함된 것으로
+      //     간주하고 건드리지 않음.
+      return formula.replace(/SUM\s*\(\s*(`?[A-Z][A-Z0-9_]*`?)\s*\)/gi, (m, colExpr) => {
+        return `SUM(CASE WHEN CALMONTH = '${month}' THEN ${colExpr} ELSE 0 END)`;
+      });
+    }
+
     // ── 헬퍼 함수 ──
     const calcPrevMonth = (ym) => {
       const y = parseInt(ym.slice(0, 4), 10);
@@ -6584,12 +6607,70 @@ app.post('/api/builder/query', async (req, res) => {
           if (typeof v === 'number') return String(v);
           return `'${String(v).replace(/'/g, "''")}'`;
         });
+
+        // ────────────────────────────────────────────────────────
+        // [2026-06-24] Metric 산식을 GPT 프롬프트에 명시
+        //   기존: GPT 가 기본 SQL 만 보고 "영업이익" 등 alias 가 어떤 산식인지
+        //         몰라서 ZAMT055 같은 단일 컬럼으로 단순화하는 경우가 있었음.
+        //   수정: 사용된 Metric 의 alias / 원본 formula / 월별 변환 예시 를
+        //         프롬프트에 함께 넣어 GPT 가 산식 전체를 보존하도록 가이드.
+        // ────────────────────────────────────────────────────────
+        let metricGuide = '';
+        const usedMetricEntries = Object.entries(metricFormulaMap);
+        if (usedMetricEntries.length > 0) {
+          metricGuide += '\n\n[계산지표(Metric) 산식 — 절대 단일 컬럼으로 단순화하지 말 것]\n';
+          for (const [col, meta] of usedMetricEntries) {
+            // 해당 Metric 의 사용자 alias 추정 (fields 에서 검색)
+            const fld = fields.find(f => f.column === col);
+            const alias = (fld && fld.alias) || meta.metric_code;
+            metricGuide += `- "${alias}" (코드: ${meta.metric_code}) = ${meta.formula}\n`;
+            // 월별 변환 예시 (date_start, date_end 가 다르면 양 끝 월에 대해 보여줌)
+            if (date_start && date_end) {
+              const exA = rewriteFormulaForMonth(meta.formula, date_start);
+              metricGuide += `   · ${date_start} 월값 변환 예시: ${exA}\n`;
+              if (date_start !== date_end) {
+                const exB = rewriteFormulaForMonth(meta.formula, date_end);
+                metricGuide += `   · ${date_end} 월값 변환 예시: ${exB}\n`;
+              }
+            }
+          }
+          metricGuide += '\n[중요] 위 Metric 의 alias("' + usedMetricEntries.map(([c]) => {
+            const fld = fields.find(f => f.column === c);
+            return (fld && fld.alias) || metricFormulaMap[c].metric_code;
+          }).join('", "') + '") 가 SELECT 절에 나타나는 경우, 반드시 위 "산식 전체" 를 사용해야 합니다. ' +
+            '월별 비교(예: "4월 5월 차이") 요청 시에는 산식 안의 각 SUM(컬럼) 을 ' +
+            '`SUM(CASE WHEN CALMONTH = \'YYYYMM\' THEN 컬럼 ELSE 0 END)` 로 변환해서 사용하세요. ' +
+            '절대 산식의 일부 컬럼만 추출해 단순 SUM 하지 마세요.\n';
+        }
+
         const userPromptText = `\n\n[추가 요청]\n${prompt}`;
-        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
+        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${metricGuide}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         const completion = await openai.chat.completions.create({
           model: GPT_MODEL,
           messages: [
-            { role: 'system', content: '당신은 SQL 전문가입니다. 주어진 기본 SQL을 기반으로 요청사항을 반영한 SELECT 문만 작성하세요.\n중요 규칙:\n1. 반드시 제공된 테이블 스키마에 존재하는 컬럼명만 사용하세요.\n2. "매출"은 ZAMT001(총매출), "순매출"은 ZAMT003 등 스키마의 한국어 설명을 참고하여 올바른 컬럼을 매핑하세요.\n3. 존재하지 않는 컬럼명을 임의로 생성하지 마세요.\n4. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.\n5. 결과 컬럼에 한글 alias를 사용하세요.\n6. WHERE 조건의 CALMONTH 범위를 절대 변경하지 마세요.' },
+            { role: 'system', content:
+              '당신은 SQL 전문가입니다. 주어진 기본 SQL을 기반으로 요청사항을 반영한 SELECT 문만 작성하세요.\n' +
+              '중요 규칙:\n' +
+              '1. 반드시 제공된 테이블 스키마에 존재하는 컬럼명만 사용하세요.\n' +
+              '2. "매출"은 ZAMT001(총매출), "순매출"은 ZAMT003 등 스키마의 한국어 설명을 참고하여 올바른 컬럼을 매핑하세요.\n' +
+              '3. 존재하지 않는 컬럼명을 임의로 생성하지 마세요.\n' +
+              '4. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.\n' +
+              '5. 결과 컬럼에 한글 alias를 사용하세요.\n' +
+              '6. WHERE 조건의 CALMONTH 범위를 절대 변경하지 마세요.\n' +
+              '7. [계산지표(Metric) 산식] 섹션에 명시된 alias 가 SELECT 절에 있으면 반드시 명시된 "산식 전체" 를 사용하세요. ' +
+              '   - 산식 안의 일부 컬럼(예: ZAMT055)만 추출해 단순 SUM 으로 대체하지 마세요.\n' +
+              '   - 월별 비교 요청("4월 5월 차이", "전월 대비 증가율") 시 산식의 각 SUM(컬럼) 을 ' +
+              '`SUM(CASE WHEN CALMONTH = \'YYYYMM\' THEN 컬럼 ELSE 0 END)` 형태로 변환하세요.\n' +
+              '8. 추가 프롬프트의 비교/증가율/그룹화 요청은 반드시 SQL 에 반영하세요.\n' +
+              '   - "4월 5월 차이" → 4월값, 5월값, 차이 3개 컬럼 생성\n' +
+              '   - "전월 대비 증가율" → 전월값, 당월값, 증감액, 증가율(%) 4개 컬럼 생성\n' +
+              '   - "사업부별로" → GROUP BY 에 해당 컬럼 추가\n' +
+              '9. 따옴표 규칙: 컬럼명/테이블명에는 백틱(`) 이나 작은따옴표를 사용하지 마세요. ' +
+              '   - 잘못된 예: SELECT `MATERIAL_NM` FROM `bw_profitability_data`\n' +
+              '   - 올바른 예: SELECT MATERIAL_NM FROM bw_profitability_data\n' +
+              '   - AS 뒤의 한글 alias 만 작은따옴표로 감쌉니다 (예: AS \'4월 영업이익\')\n' +
+              '   - WHERE 조건값은 작은따옴표로 감쌉니다 (예: CALMONTH = \'202604\')'
+            },
             { role: 'user', content: gptPrompt },
           ],
           temperature: 0.1,
@@ -6598,9 +6679,36 @@ app.post('/api/builder/query', async (req, res) => {
         gptSql = gptSql.replace(/```sql\s*/gi, '').replace(/```\s*/g, '').trim();
         const forbidden = ['INSERT','UPDATE','DELETE','DROP','ALTER','TRUNCATE','CREATE'];
         const isSafe = !forbidden.some(w => new RegExp('\\b' + w + '\\b', 'i').test(gptSql));
-        if (isSafe && /^SELECT/i.test(gptSql)) {
+
+        // [2026-06-24] Metric 산식 보존 검증
+        //   - 사용된 Metric 산식 안의 핵심 컬럼들이 GPT 응답에 모두 살아있는지 체크
+        //   - 한두 개만 살아 있으면 (예: ZAMT055 만) → GPT 가 산식을 단순화한 것 →
+        //     기본 SQL 유지 + 코드 단에서 월별 변환 적용
+        let metricLossDetected = false;
+        if (isSafe && usedMetricEntries.length > 0) {
+          for (const [, meta] of usedMetricEntries) {
+            // formula 에서 컬럼명만 추출 (ZAMT001, ZAMT002 등)
+            const cols = [...meta.formula.matchAll(/\b(ZAMT\d+|[A-Z][A-Z0-9_]{2,})\b/g)]
+              .map(m => m[1])
+              .filter(c => !['SUM','AVG','COUNT','MAX','MIN','NULLIF','COALESCE','CASE','WHEN','THEN','ELSE','END','AND','OR','NOT','NULL','AS','SELECT','FROM','WHERE','GROUP','BY','ORDER','LIMIT','CALMONTH','CALDAY','CALYEAR'].includes(c));
+            const uniqCols = [...new Set(cols)];
+            if (uniqCols.length >= 3) { // 산식이 3개 이상 컬럼을 가진 경우만 검증
+              const missing = uniqCols.filter(c => !new RegExp('\\b' + c + '\\b').test(gptSql));
+              // 절반 이상 누락이면 산식 손실로 판단
+              if (missing.length > uniqCols.length / 2) {
+                console.warn(`[Builder] GPT 가 Metric "${meta.metric_code}" 산식을 단순화한 것으로 보임. 누락 컬럼: ${missing.length}/${uniqCols.length}`);
+                metricLossDetected = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (isSafe && /^SELECT/i.test(gptSql) && !metricLossDetected) {
           sql = gptSql;
           finalParams = [];
+        } else if (metricLossDetected) {
+          console.log('[Builder] GPT 응답에서 Metric 산식 손실 감지 → 기본 SQL 유지');
         }
       } catch (gptErr) {
         console.error('[Builder] GPT prompt enhancement failed:', gptErr.message);
