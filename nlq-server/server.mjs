@@ -6176,8 +6176,16 @@ app.get('/api/builder/columns', async (req, res) => {
 });
 
 // GET /api/builder/values/:columnName - 특정 컬럼의 고유값 목록 (필터 조건 자동완성용)
+//
+// [2026-06-29] 사용자 요청 #2~#4 반영:
+//   - ?q=검색어  : 컬럼값에 부분 일치하는 값만 조회 (대소문자 무시)
+//   - ?limit=N   : 응답 행수 제한 (기본 100, 최대 500)
+//   - 응답에 total_distinct (해당 컬럼의 DISTINCT 총 개수) + truncated 플래그 포함
+//     → 프론트에서 "더 많은 값이 있습니다. 검색어를 입력해주세요" 안내 가능
 app.get('/api/builder/values/:columnName', async (req, res) => {
   const { columnName } = req.params;
+  const q = (req.query.q || '').toString().trim();
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 100, 1), 500);
   try {
     // 화이트리스트 검증
     const [check] = await pool.query(`
@@ -6188,21 +6196,45 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       return res.status(404).json({ error: `존재하지 않는 컬럼: ${columnName}` });
     }
 
-    const [rows] = await pool.query(`
-      SELECT DISTINCT \`${columnName}\` AS val, COUNT(*) AS cnt
-      FROM bw_profitability_data
-      WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` != ''
-      GROUP BY \`${columnName}\`
-      ORDER BY cnt DESC
-      LIMIT 200
-    `);
+    // 검색어가 있으면 LIKE 필터 적용. 백틱 안에 컬럼명은 화이트리스트 통과한 값이므로 안전.
+    const whereSearch = q
+      ? `AND CAST(\`${columnName}\` AS CHAR) LIKE ?`
+      : '';
+    const params = q ? [`%${q}%`] : [];
+
+    // 전체 DISTINCT 개수 (truncated 플래그용 — 필터 적용 후 기준)
+    const [totalRow] = await pool.query(
+      `SELECT COUNT(DISTINCT \`${columnName}\`) AS total
+       FROM bw_profitability_data
+       WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` != '' ${whereSearch}`,
+      params
+    );
+    const totalDistinct = Number(totalRow[0]?.total || 0);
+
+    const [rows] = await pool.query(
+      `SELECT \`${columnName}\` AS val, COUNT(*) AS cnt
+       FROM bw_profitability_data
+       WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` != '' ${whereSearch}
+       GROUP BY \`${columnName}\`
+       ORDER BY cnt DESC
+       LIMIT ${limit}`,
+      params
+    );
 
     const values = rows.map(r => ({
       value: typeof r.val === 'bigint' ? Number(r.val) : r.val,
       count: Number(r.cnt),
     }));
 
-    res.json({ column: columnName, values, total: values.length });
+    res.json({
+      column: columnName,
+      values,
+      total: values.length,
+      total_distinct: totalDistinct,
+      truncated: totalDistinct > values.length,
+      q,
+      limit,
+    });
   } catch (err) {
     console.error('[Builder] values error:', err.message);
     res.status(500).json({ error: '값 조회 실패: ' + err.message });
