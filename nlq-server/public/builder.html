@@ -2673,7 +2673,13 @@ async function _fetchAndRenderValueCombo(qRaw) {
         const values = Array.isArray(data.values) ? data.values : [];
         filterCombo.items = values;
         filterCombo.truncated = !!data.truncated;
-        filterCombo.totalDistinct = Number(data.total_distinct || 0);
+        // [PR #194] total_distinct 는 백엔드가 truncated=true 일 때 null 을 보냄
+        // (정확한 COUNT(DISTINCT) 를 별도 호출하지 않는 경량 정책 — PR #192)
+        // 기존 코드 `Number(data.total_distinct || 0)` 는 null → 0 으로 만들어
+        // footer 에 "총 0개 중 100개 표시" 같은 모순된 문구가 나옴 → null 그대로 보존
+        filterCombo.totalDistinct = (data.total_distinct === null || data.total_distinct === undefined)
+            ? null
+            : Number(data.total_distinct);
 
         // 캐시도 갱신 (다른 곳에서 참조할 수 있도록 검색 없는 첫 조회 결과만)
         if (!q && !valuesCache[colName]) valuesCache[colName] = values;
@@ -2692,12 +2698,18 @@ async function _fetchAndRenderValueCombo(qRaw) {
             _ensureComboListDelegation(list);
         }
         // footer — 사용자 요청 #4: 너무 많을 때 검색어 입력 안내
+        // [PR #194] truncated 일 때는 정확한 총개수를 모르므로 모호한 숫자 노출 대신
+        //   "검색 결과가 많아 상위 N개만 표시합니다" 문구로 안내
         footer.style.display = 'flex';
         const shown = values.length;
-        const totalStr = filterCombo.totalDistinct.toLocaleString();
-        const hint = filterCombo.truncated
-            ? `<span class="truncated-hint">총 ${totalStr}개 중 ${shown}개 표시 — 검색어로 좁혀주세요</span>`
-            : `<span>총 ${totalStr}개 표시</span>`;
+        let hint;
+        if (filterCombo.truncated) {
+            hint = `<span class="truncated-hint">검색 결과가 많아 상위 ${shown}개만 표시합니다. 검색어를 더 입력해 좁혀주세요.</span>`;
+        } else if (filterCombo.totalDistinct !== null && filterCombo.totalDistinct !== undefined) {
+            hint = `<span>총 ${Number(filterCombo.totalDistinct).toLocaleString()}개 표시</span>`;
+        } else {
+            hint = `<span>총 ${shown}개 표시</span>`;
+        }
         footer.innerHTML = `${hint}<span>클릭=자동입력</span>`;
         // 패널 높이가 바뀌었을 수 있으니 위치 재계산
         _positionCombo();
