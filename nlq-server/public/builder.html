@@ -377,6 +377,77 @@
         .val-suggestions .item:hover { background:#eff6ff; }
         .val-suggestions .item .cnt { color:#94a3b8; font-size:0.72rem; }
 
+        /* [2026-06-29] 필터 조건 — 커스텀 콤보박스 (필드 선택 + 값 입력 공용)
+           - body 에 직접 첨부되는 floating 패널이라 section-card 의 overflow:hidden 영향 없음
+           - position:fixed 로 화면 좌표 기준 배치 → 어떤 부모 컨텍스트에서도 잘리지 않음 */
+        .combo-popup {
+            position:fixed; z-index:99999;
+            background:white; border:1px solid var(--border); border-radius:10px;
+            box-shadow:0 12px 32px rgba(0,0,0,0.18);
+            min-width:240px; max-width:420px;
+            display:none; flex-direction:column;
+            overflow:hidden;
+        }
+        .combo-popup.active { display:flex; }
+        .combo-popup .combo-search {
+            padding:8px 10px; border-bottom:1px solid var(--border); background:#fafbfc;
+        }
+        .combo-popup .combo-search input {
+            width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:8px;
+            font-size:0.82rem; outline:none; box-sizing:border-box;
+        }
+        .combo-popup .combo-search input:focus { border-color:var(--primary); }
+        .combo-popup .combo-list {
+            max-height:280px; overflow-y:auto; padding:4px 0;
+        }
+        .combo-popup .combo-group-label {
+            padding:6px 12px 4px; font-size:0.7rem; font-weight:700;
+            color:#6366f1; background:#f5f3ff;
+            position:sticky; top:0;
+        }
+        .combo-popup .combo-item {
+            padding:7px 12px; cursor:pointer; font-size:0.82rem;
+            display:flex; justify-content:space-between; align-items:center; gap:8px;
+            border-bottom:1px solid #f8fafc;
+        }
+        .combo-popup .combo-item:hover,
+        .combo-popup .combo-item.active { background:#eef2ff; }
+        .combo-popup .combo-item .ci-main { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .combo-popup .combo-item .ci-syn { color:#94a3b8; font-size:0.7rem; margin-left:6px; }
+        .combo-popup .combo-item .ci-cnt {
+            color:#64748b; font-size:0.72rem; font-variant-numeric:tabular-nums;
+            white-space:nowrap; flex-shrink:0;
+        }
+        .combo-popup .combo-empty {
+            padding:14px 12px; text-align:center; color:#94a3b8; font-size:0.78rem;
+        }
+        .combo-popup .combo-footer {
+            padding:6px 12px; font-size:0.7rem; color:#94a3b8;
+            border-top:1px solid var(--border); background:#fafbfc;
+            display:flex; justify-content:space-between; align-items:center;
+        }
+        .combo-popup .combo-footer .truncated-hint { color:#d97706; }
+
+        /* [2026-06-29] 필터 조건 row 의 커스텀 필드 선택 트리거 — native select 와
+           외형은 동일하게 유지 (chevron 까지) */
+        .condition-row .field-combo-trigger,
+        .condition-row .field-combo-trigger:focus {
+            padding:6px 28px 6px 10px; border:1px solid var(--border); border-radius:8px;
+            font-size:0.82rem; outline:none; background:white; cursor:pointer;
+            min-width:140px; text-align:left;
+            position:relative;
+            appearance:none; -webkit-appearance:none;
+            display:inline-flex; align-items:center;
+            background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%2364748b' fill='none' stroke-width='1.5' stroke-linecap='round'/></svg>");
+            background-repeat:no-repeat; background-position:right 10px center;
+        }
+        .condition-row .field-combo-trigger:hover { border-color:var(--primary); }
+        .condition-row .field-combo-trigger.open { border-color:var(--primary); }
+        .condition-row .field-combo-trigger.placeholder { color:#94a3b8; }
+        .condition-row .field-combo-trigger .ft-label {
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px;
+        }
+
         .add-condition-btn {
             display:inline-flex; align-items:center; gap:4px; padding:8px 16px;
             background:#eef2ff; color:var(--indigo); border:1px dashed #a5b4fc;
@@ -2199,32 +2270,28 @@ function renderConditions() {
     if (conditions.length === 0) {
         list.innerHTML = '';
         document.getElementById('condCountBadge').textContent = '0개';
+        closeFilterCombo(); // 행이 사라지면 열려 있던 드롭다운 닫기
         return;
     }
     let html = '';
     conditions.forEach((cond, i) => {
         const col = allColumns.find(c => c.name === cond.column);
         const isNum = col && col.type === 'number';
-        html += `<div class="condition-row">`;
+        html += `<div class="condition-row" data-cond-idx="${i}">`;
         if (i > 0) {
             html += `<span class="logic-toggle ${cond.logic.toLowerCase()}" onclick="toggleLogic(${i})">${cond.logic}</span>`;
         } else {
             html += `<span style="width:40px;"></span>`;
         }
-        html += `<select onchange="setCondColumn(${i}, this.value)" style="min-width:140px;">
-            <option value="">필드 선택</option>`;
-        // [2026-06-18] 사용자 요청: 날짜 필드(달력연도/달력연도월/달력일)도 필터 조건의
-        // [필드 선택] 드롭다운에 노출. (이전: !DATE_FIELDS.includes(c.name) 으로 제외)
-        CATEGORY_ORDER.forEach(cat => {
-            const cols = allColumns.filter(c => c.category === cat);
-            if (cols.length === 0) return;
-            html += `<optgroup label="${CATEGORY_NAMES[cat]}">`;
-            cols.forEach(c => {
-                html += `<option value="${c.name}" ${c.name === cond.column ? 'selected' : ''}>${c.label}</option>`;
-            });
-            html += `</optgroup>`;
-        });
-        html += `</select>`;
+        // [2026-06-29] 필드 선택 — 커스텀 콤보박스 트리거 (검색 가능한 드롭다운)
+        // native <select> 는 검색 기능이 없어 컬럼이 많을 때 찾기 어려움 → 검색 입력이 있는 floating panel 로 대체
+        const fieldLabel = col ? escHtml(col.label) : '필드 선택';
+        const placeholderCls = col ? '' : 'placeholder';
+        html += `<button type="button" class="field-combo-trigger ${placeholderCls}"
+                    onclick="openFieldCombo(${i}, this)"
+                    title="${col ? escHtml(col.label + ' (' + col.name + ')') : '필드 선택'}">
+                <span class="ft-label">${fieldLabel}</span>
+            </button>`;
         html += `<select onchange="setCondOp(${i}, this.value)" style="min-width:90px;">`;
         const ops = isNum
             ? [['=','='],['!=','!='],['>','>'],['>=','>='],['<','<'],['<=','<='],['BETWEEN','사이'],['IS NULL','없음'],['IS NOT NULL','있음']]
@@ -2235,14 +2302,21 @@ function renderConditions() {
         html += `</select>`;
         const needsValue = !['IS NULL', 'IS NOT NULL'].includes(cond.operator);
         if (needsValue) {
+            // [2026-06-29] 값 입력 — 직접 입력 + 포커스 시 floating 드롭다운으로 실제 값 목록 표시
+            //   - onfocus / onclick → openValueCombo (서버에서 DISTINCT 값 조회 후 표시)
+            //   - oninput → 입력값 setCondValue + 콤보가 열려 있으면 디바운스 서버 재조회
+            //   - 콤보의 검색 입력은 panel 자체에 있으므로, 이 input 은 순수 사용자 입력값 보유용
+            const ph = cond.operator === 'BETWEEN' ? '시작,끝'
+                     : cond.operator === 'IN' ? '값1,값2,값3'
+                     : '값 입력...';
             html += `<div style="position:relative;flex:1;">
                 <input type="text" value="${escHtml(cond.value)}"
-                    oninput="setCondValue(${i}, this.value); showSuggestions(${i}, this)"
-                    onfocus="showSuggestions(${i}, this)"
-                    onblur="setTimeout(()=>hideSuggestions(${i}), 200)"
-                    placeholder="${cond.operator === 'BETWEEN' ? '시작,끝' : cond.operator === 'IN' ? '값1,값2,값3' : '값 입력...'}"
+                    data-cond-idx="${i}" data-role="value-input"
+                    oninput="setCondValue(${i}, this.value); onValueInputChanged(${i}, this)"
+                    onfocus="openValueCombo(${i}, this)"
+                    onclick="openValueCombo(${i}, this)"
+                    placeholder="${ph}"
                     style="width:100%;">
-                <div class="val-suggestions" id="suggestions_${i}"></div>
             </div>`;
         }
         html += `<span class="remove-cond" onclick="removeCondition(${i})">&times;</span></div>`;
@@ -2255,43 +2329,349 @@ function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// ─── Value Suggestions ───────────────────────
+// ─── [2026-06-29] 필터 조건 — 공용 floating 콤보박스 ─────────────────────────
+//   - mode = 'field'  : 필드 선택 드롭다운 (검색은 클라이언트단 — allColumns 에서)
+//   - mode = 'value'  : 값 입력 드롭다운 (검색은 서버 /api/builder/values?q= 재조회)
+//   - body 끝의 #filterComboPopup 단일 패널을 두 용도로 재사용
+let filterCombo = {
+    open: false,
+    mode: null,        // 'field' | 'value'
+    condIdx: -1,       // 현재 대상 condition row
+    anchorEl: null,    // 트리거 (button or input)
+    items: [],         // 표시 중 항목
+    truncated: false,
+    totalDistinct: 0,
+    valueSearchTimer: null,
+    docClickHandler: null,
+    reposHandler: null,
+};
+
+function _comboEl() {
+    return {
+        popup: document.getElementById('filterComboPopup'),
+        search: document.getElementById('filterComboSearch'),
+        list: document.getElementById('filterComboList'),
+        footer: document.getElementById('filterComboFooter'),
+    };
+}
+
+function _positionCombo() {
+    if (!filterCombo.anchorEl) return;
+    const { popup } = _comboEl();
+    const rect = filterCombo.anchorEl.getBoundingClientRect();
+    // 트리거 폭에 맞추되, 너무 좁거나 넓지 않게 (240~420px)
+    const desiredWidth = Math.max(240, Math.min(420, rect.width));
+    popup.style.minWidth = desiredWidth + 'px';
+    popup.style.maxWidth = '420px';
+    // 우선 위치를 임시 잡고 실제 popup 높이 측정 → 화면 하단을 넘으면 위쪽 띄움
+    popup.style.left = rect.left + 'px';
+    popup.style.top  = (rect.bottom + 4) + 'px';
+    popup.style.visibility = 'hidden';
+    popup.style.display = 'flex';
+    const ph = popup.offsetHeight;
+    popup.style.display = '';
+    popup.style.visibility = '';
+    const vw = window.innerWidth, vh = window.innerHeight;
+    // 가로 보정
+    let left = rect.left;
+    if (left + desiredWidth > vw - 8) left = Math.max(8, vw - desiredWidth - 8);
+    popup.style.left = left + 'px';
+    // 세로 보정 — 하단 공간 부족 시 anchor 위쪽으로 띄움
+    const spaceBelow = vh - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+    if (spaceBelow < ph && spaceAbove > spaceBelow) {
+        popup.style.top = Math.max(8, rect.top - ph - 4) + 'px';
+    } else {
+        popup.style.top = (rect.bottom + 4) + 'px';
+    }
+}
+
+function closeFilterCombo() {
+    const { popup, list, footer, search } = _comboEl();
+    popup.classList.remove('active');
+    popup.setAttribute('aria-hidden', 'true');
+    list.innerHTML = '';
+    footer.style.display = 'none';
+    footer.innerHTML = '';
+    search.value = '';
+    filterCombo.open = false;
+    filterCombo.mode = null;
+    filterCombo.anchorEl = null;
+    filterCombo.items = [];
+    if (filterCombo.docClickHandler) {
+        document.removeEventListener('mousedown', filterCombo.docClickHandler, true);
+        filterCombo.docClickHandler = null;
+    }
+    if (filterCombo.reposHandler) {
+        window.removeEventListener('resize', filterCombo.reposHandler);
+        window.removeEventListener('scroll', filterCombo.reposHandler, true);
+        filterCombo.reposHandler = null;
+    }
+    if (filterCombo.valueSearchTimer) {
+        clearTimeout(filterCombo.valueSearchTimer);
+        filterCombo.valueSearchTimer = null;
+    }
+}
+
+function _openComboFrame(mode, condIdx, anchorEl, searchPlaceholder) {
+    const { popup, search, footer } = _comboEl();
+    filterCombo.open = true;
+    filterCombo.mode = mode;
+    filterCombo.condIdx = condIdx;
+    filterCombo.anchorEl = anchorEl;
+    filterCombo.items = [];
+    filterCombo.truncated = false;
+    filterCombo.totalDistinct = 0;
+
+    search.placeholder = searchPlaceholder || '검색...';
+    search.value = '';
+    footer.style.display = 'none';
+    footer.innerHTML = '';
+    popup.classList.add('active');
+    popup.setAttribute('aria-hidden', 'false');
+    _positionCombo();
+
+    // 바깥 클릭 → 닫기 (anchor / popup 내부 클릭은 제외)
+    filterCombo.docClickHandler = (ev) => {
+        if (popup.contains(ev.target)) return;
+        if (anchorEl && anchorEl.contains(ev.target)) return;
+        closeFilterCombo();
+        // 값 input 의 경우 트리거 자체가 input 이므로, 다른 condition row 클릭으로
+        // 이동했을 때 새 input 이 자체 onfocus 로 다시 열게 됨 — 정상 동작
+    };
+    document.addEventListener('mousedown', filterCombo.docClickHandler, true);
+
+    // 스크롤/리사이즈 시 재배치
+    filterCombo.reposHandler = () => _positionCombo();
+    window.addEventListener('resize', filterCombo.reposHandler);
+    window.addEventListener('scroll', filterCombo.reposHandler, true);
+
+    // 검색 input 포커스 + 입력 핸들러 등록
+    search.oninput = () => {
+        if (filterCombo.mode === 'field') {
+            _renderFieldComboItems(search.value);
+        } else if (filterCombo.mode === 'value') {
+            // 서버 재조회 (디바운스)
+            if (filterCombo.valueSearchTimer) clearTimeout(filterCombo.valueSearchTimer);
+            filterCombo.valueSearchTimer = setTimeout(() => {
+                _fetchAndRenderValueCombo(search.value);
+            }, 250);
+        }
+    };
+    // 패널 표시 직후 검색에 포커스
+    setTimeout(() => { try { search.focus(); } catch(e){} }, 0);
+}
+
+// ─── 필드 선택 콤보 ──────────────────────────────────────────────
+function openFieldCombo(condIdx, anchorBtn) {
+    const trigger = anchorBtn || document.querySelector(`.condition-row[data-cond-idx="${condIdx}"] .field-combo-trigger`);
+    if (!trigger) return;
+    // 이미 같은 트리거로 열려 있으면 토글로 닫기
+    if (filterCombo.open && filterCombo.mode === 'field' && filterCombo.condIdx === condIdx) {
+        closeFilterCombo();
+        return;
+    }
+    // 다른 콤보가 열려 있으면 먼저 닫기
+    if (filterCombo.open) closeFilterCombo();
+    document.querySelectorAll('.field-combo-trigger.open').forEach(el => el.classList.remove('open'));
+    trigger.classList.add('open');
+    _openComboFrame('field', condIdx, trigger, '필드명·동의어·컬럼명 검색...');
+    _renderFieldComboItems('');
+}
+
+function _renderFieldComboItems(qRaw) {
+    const { list, footer } = _comboEl();
+    const q = (qRaw || '').toLowerCase();
+    const qNoSpace = q.replace(/\s/g, '');
+    const match = (text) => {
+        if (!text) return false;
+        const t = String(text).toLowerCase();
+        return !q || t.includes(q) || t.replace(/\s/g, '').includes(qNoSpace);
+    };
+
+    // 카테고리 순회하며 매칭 항목만 노출 (사용자 요청 #1: 필드명/동의어/컬럼명 검색)
+    const cur = conditions[filterCombo.condIdx]?.column;
+    let html = '';
+    let total = 0;
+    CATEGORY_ORDER.forEach(cat => {
+        const cols = allColumns.filter(c => c.category === cat);
+        if (cols.length === 0) return;
+        const matched = cols.filter(c => {
+            if (!q) return true;
+            if (match(c.label))    return true; // 필드 설명 (한글명)
+            if (match(c.name))     return true; // DB 컬럼명 (영문)
+            if (c.synonyms && Array.isArray(c.synonyms)) {
+                if (c.synonyms.some(s => match(s))) return true; // 동의어
+            }
+            if (c.metric_code && match(c.metric_code)) return true; // Metric 코드
+            return false;
+        });
+        if (matched.length === 0) return;
+        html += `<div class="combo-group-label">${CATEGORY_NAMES[cat] || cat}</div>`;
+        matched.forEach(c => {
+            total++;
+            const isCur = c.name === cur ? ' active' : '';
+            const synStr = (c.synonyms && c.synonyms.length) ? c.synonyms.slice(0,3).join(', ') : '';
+            const synHtml = synStr ? `<span class="ci-syn">${escHtml(synStr)}</span>` : '';
+            const codeHtml = c.metric_code
+                ? `<span class="ci-cnt">${escHtml(c.metric_code)}</span>`
+                : `<span class="ci-cnt">${escHtml(c.name)}</span>`;
+            // data-col 속성에 컬럼명 저장 → 위임 핸들러가 안전하게 픽업
+            html += `<div class="combo-item${isCur}" data-col="${escHtml(c.name)}"
+                title="${escHtml(c.label + ' (' + c.name + ')')}">
+                <span class="ci-main">${escHtml(c.label)}${synHtml}</span>
+                ${codeHtml}
+            </div>`;
+        });
+    });
+    if (total === 0) {
+        list.innerHTML = `<div class="combo-empty">검색 결과가 없습니다</div>`;
+    } else {
+        list.innerHTML = html;
+    }
+    _ensureComboListDelegation(list);
+    footer.style.display = 'flex';
+    footer.innerHTML = `<span>총 ${total}개 필드</span><span>클릭=선택</span>`;
+}
+
+// [2026-06-29] 통합 위임 — combo-item 클릭을 한 핸들러에서 처리
+//   - data-col 가 있으면 필드 픽업 (pickFieldCombo)
+//   - data-val 가 있으면 값 픽업 (pickValueCombo)
+//   list 가 innerHTML 로 다시 채워져도 list element 자체는 동일하므로 한 번만 등록
+function _ensureComboListDelegation(listEl) {
+    if (listEl._delegationBound) return;
+    listEl.addEventListener('mousedown', (ev) => {
+        const it = ev.target.closest('.combo-item');
+        if (!it) return;
+        const colName = it.getAttribute('data-col');
+        const valStr  = it.getAttribute('data-val');
+        if (colName !== null) {
+            ev.preventDefault();
+            pickFieldCombo(colName);
+        } else if (valStr !== null) {
+            ev.preventDefault();
+            pickValueCombo(valStr);
+        }
+    });
+    listEl._delegationBound = true;
+}
+
+function pickFieldCombo(colName) {
+    const idx = filterCombo.condIdx;
+    closeFilterCombo();
+    if (idx < 0 || idx >= conditions.length) return;
+    setCondColumn(idx, colName);
+}
+
+// ─── 값 입력 콤보 ────────────────────────────────────────────────
+function openValueCombo(condIdx, anchorInput) {
+    const colName = conditions[condIdx]?.column;
+    if (!colName) {
+        // 필드를 먼저 선택해야 함을 input placeholder 로 안내 — 콤보는 열지 않음
+        return;
+    }
+    // 이미 같은 input 으로 열려 있으면 재오픈 막음 (input 이 다시 focus 받을 때 깜빡임 방지)
+    if (filterCombo.open && filterCombo.mode === 'value' && filterCombo.condIdx === condIdx) {
+        // 위치만 재조정
+        filterCombo.anchorEl = anchorInput;
+        _positionCombo();
+        return;
+    }
+    if (filterCombo.open) closeFilterCombo();
+    _openComboFrame('value', condIdx, anchorInput, '값 검색 (DISTINCT)...');
+    // 검색어는 비워두고 빈 검색으로 첫 조회 (사용자 요청 #4: 기본 노출 건수 제한)
+    _fetchAndRenderValueCombo('');
+}
+
+async function _fetchAndRenderValueCombo(qRaw) {
+    const { list, footer } = _comboEl();
+    const idx = filterCombo.condIdx;
+    const colName = conditions[idx]?.column;
+    if (!colName) { closeFilterCombo(); return; }
+    const q = (qRaw || '').trim();
+    list.innerHTML = `<div class="combo-empty">불러오는 중...</div>`;
+    try {
+        const url = `/api/builder/values/${encodeURIComponent(colName)}?limit=100${q ? '&q=' + encodeURIComponent(q) : ''}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+            list.innerHTML = `<div class="combo-empty">값 조회 실패 (HTTP ${res.status})</div>`;
+            return;
+        }
+        const data = await res.json();
+        const values = Array.isArray(data.values) ? data.values : [];
+        filterCombo.items = values;
+        filterCombo.truncated = !!data.truncated;
+        filterCombo.totalDistinct = Number(data.total_distinct || 0);
+
+        // 캐시도 갱신 (다른 곳에서 참조할 수 있도록 검색 없는 첫 조회 결과만)
+        if (!q && !valuesCache[colName]) valuesCache[colName] = values;
+
+        if (values.length === 0) {
+            list.innerHTML = `<div class="combo-empty">${q ? `'${escHtml(q)}' 에 해당하는 값이 없습니다` : '값이 없습니다'}</div>`;
+        } else {
+            // data-val 속성에 값 저장 → 통합 위임 핸들러로 안전하게 픽업 (특수문자 안전)
+            list.innerHTML = values.map(v => {
+                const vs = String(v.value);
+                return `<div class="combo-item" data-val="${escHtml(vs)}" title="${escHtml(vs)}">
+                    <span class="ci-main">${escHtml(vs)}</span>
+                    <span class="ci-cnt">${Number(v.count).toLocaleString()}건</span>
+                </div>`;
+            }).join('');
+            _ensureComboListDelegation(list);
+        }
+        // footer — 사용자 요청 #4: 너무 많을 때 검색어 입력 안내
+        footer.style.display = 'flex';
+        const shown = values.length;
+        const totalStr = filterCombo.totalDistinct.toLocaleString();
+        const hint = filterCombo.truncated
+            ? `<span class="truncated-hint">총 ${totalStr}개 중 ${shown}개 표시 — 검색어로 좁혀주세요</span>`
+            : `<span>총 ${totalStr}개 표시</span>`;
+        footer.innerHTML = `${hint}<span>클릭=자동입력</span>`;
+        // 패널 높이가 바뀌었을 수 있으니 위치 재계산
+        _positionCombo();
+    } catch (e) {
+        list.innerHTML = `<div class="combo-empty">값 조회 중 오류: ${escHtml(e.message || String(e))}</div>`;
+    }
+}
+
+function pickValueCombo(val) {
+    const idx = filterCombo.condIdx;
+    closeFilterCombo();
+    if (idx < 0 || idx >= conditions.length) return;
+    conditions[idx].value = val;
+    // 직접 input 값만 갱신해 렌더링 비용 최소화 + 포커스 유지
+    const row = document.querySelector(`.condition-row[data-cond-idx="${idx}"]`);
+    if (row) {
+        const inp = row.querySelector('input[data-role="value-input"]');
+        if (inp) { inp.value = val; return; }
+    }
+    renderConditions();
+}
+
+// 값 input 에 사용자가 직접 타이핑 중일 때: 콤보가 열려 있으면 검색으로 연동
+function onValueInputChanged(condIdx, inputEl) {
+    if (!filterCombo.open || filterCombo.mode !== 'value' || filterCombo.condIdx !== condIdx) {
+        // 콤보가 닫혀 있으면 자동으로 다시 열어주지 않음 (입력 방해 방지)
+        return;
+    }
+    const { search } = _comboEl();
+    search.value = inputEl.value;
+    if (filterCombo.valueSearchTimer) clearTimeout(filterCombo.valueSearchTimer);
+    filterCombo.valueSearchTimer = setTimeout(() => {
+        _fetchAndRenderValueCombo(inputEl.value);
+    }, 250);
+}
+
+// ─── 기존 호환용 (캐시 프리로드) ───────────────────────────────
 async function loadColumnValues(colName, condIdx) {
     if (valuesCache[colName]) return;
     try {
-        const res = await fetch(`/api/builder/values/${colName}`);
+        const res = await fetch(`/api/builder/values/${encodeURIComponent(colName)}?limit=100`);
         const data = await res.json();
         valuesCache[colName] = data.values || [];
     } catch(e) {
         valuesCache[colName] = [];
     }
-}
-
-function showSuggestions(idx, inputEl) {
-    const col = conditions[idx].column;
-    const vals = valuesCache[col];
-    if (!vals || vals.length === 0) return;
-    const q = inputEl.value.toLowerCase();
-    const filtered = vals.filter(v => String(v.value).toLowerCase().includes(q)).slice(0, 30);
-    if (filtered.length === 0) { hideSuggestions(idx); return; }
-    const div = document.getElementById(`suggestions_${idx}`);
-    div.innerHTML = filtered.map(v =>
-        `<div class="item" onmousedown="pickSuggestion(${idx}, '${escHtml(String(v.value))}')">
-            <span>${v.value}</span>
-            <span class="cnt">${v.count.toLocaleString()}건</span>
-        </div>`
-    ).join('');
-    div.classList.add('active');
-}
-
-function hideSuggestions(idx) {
-    const div = document.getElementById(`suggestions_${idx}`);
-    if (div) div.classList.remove('active');
-}
-
-function pickSuggestion(idx, val) {
-    conditions[idx].value = val;
-    renderConditions();
 }
 
 // ─── Execute Query ───────────────────────────
@@ -3713,6 +4093,17 @@ async function clearAllBuilderHistory() {
             <button onclick="closePeriodWarnModal()">확인 (필드 선택하러 가기)</button>
         </div>
     </div>
+</div>
+
+<!-- [2026-06-29] 필터 조건 — 필드 선택/값 입력 공용 floating 콤보박스
+     body 끝에 두어 section-card 의 overflow:hidden / 기타 부모 stacking context 영향 회피.
+     position:fixed + z-index:99999 로 항상 최상단에 표시. -->
+<div id="filterComboPopup" class="combo-popup" role="listbox" aria-hidden="true">
+    <div class="combo-search">
+        <input id="filterComboSearch" type="text" placeholder="검색..." autocomplete="off">
+    </div>
+    <div id="filterComboList" class="combo-list"></div>
+    <div id="filterComboFooter" class="combo-footer" style="display:none;"></div>
 </div>
 </body>
 </html>
