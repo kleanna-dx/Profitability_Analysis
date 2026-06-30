@@ -2893,11 +2893,16 @@ async function executeQuery() {
         history_id: loadedHistoryId || null,
     };
 
-    // [2026-06-29] 프론트 fetch 자체 timeout (사용자 요청 #5)
-    //   - 서버 GPT 40s + 여유 = 55s
-    //   - 운영 Nginx 가 60s 에 끊더라도 그 전에 프론트가 먼저 신호를 보여줌
+    // [2026-06-29 PR #196] 프론트 fetch timeout 55s → 130s 상향
+    //   - 운영 로그에서 LLM 호출이 40s 에 abort 되어 prompt 미반영 사례 다수 발견
+    //     (요청 #195 이후 reqId=mqyzh7wsve1x 추적)
+    //   - 4-layer timeout 일관성 (안쪽 < 바깥쪽):
+    //       LLM 90s  <  Express server 110s  <  Nginx 120s  <  Frontend 130s
+    //   - 프론트는 가장 바깥쪽 → Nginx 504 (120s) 가 먼저 도달하면 프론트는
+    //     "Gateway Timeout" 메시지로 안내. Nginx 가 늦으면 프론트가 130s 에 abort
+    //     해서 명시적 에러 표시.
     const fetchAbort = new AbortController();
-    const fetchTimer = setTimeout(() => fetchAbort.abort(), 55000);
+    const fetchTimer = setTimeout(() => fetchAbort.abort(), 130000);
     try {
         const res = await fetch('/api/builder/query', {
             method: 'POST',
