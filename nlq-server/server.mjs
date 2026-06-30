@@ -1414,28 +1414,16 @@ ZAMT064 | BIGINT | 경상이익
 `;
 
 // ============================================================
-// Metric Dictionary (AI가 수식을 창작하지 않고 이 사전만 참조)
+// [2026-06-30 제거됨] METRIC_DICTIONARY 하드코딩 상수
+// ------------------------------------------------------------
+// 기존: 산식을 코드에 박아둔 정적 사전 (2026-04-28 NLQ 서버 최초 생성 당시,
+//       metric 테이블 자체가 존재하지 않아서 GPT 산식 창작 방지용으로 도입)
+// 문제: 학습관리(metric 테이블)에서 산식을 수정해도 옛 산식이 LLM 프롬프트에
+//       계속 같이 전달되어 GPT 가 옛 산식과 새 산식 사이에서 혼동을 일으킴
+// 해결: buildMetricDictionaryFromDB(domainCode) 로 DB 기반 동적 사전 생성
+//       → 학습관리 metric.formula 수정 시 즉시 NLQ 에 반영됨
+// 호환성: 출력 포맷은 동일 ("계산 지표 사전 (Metric Dictionary):" 헤더 유지)
 // ============================================================
-const METRIC_DICTIONARY = `
-계산 지표 사전 (Metric Dictionary):
-- 총매출 = SUM(ZAMT001)
-- 판매장려금 = SUM(ZAMT002)
-- 순매출 = SUM(ZAMT003)  [또는 SUM(ZAMT001) - SUM(ZAMT002) - SUM(ZAMT004)]
-- 매출원가 = SUM(ZAMT034)
-- 매출총이익 = SUM(ZAMT003) - SUM(ZAMT034)  ★ [Metric 산식: 순매출 - 매출원가 계] (ZAMT035 단순 컬럼 대신 이 산식 사용!)
-- 매출총이익률 = (SUM(ZAMT003) - SUM(ZAMT034)) / NULLIF(SUM(ZAMT003),0) * 100
-- 판매관리비 = SUM(ZAMT036)
-- 영업이익 = SUM(ZAMT055)
-- 영업이익률 = SUM(ZAMT055) / NULLIF(SUM(ZAMT003),0) * 100
-- 경상이익 = SUM(ZAMT064)
-- BOX수량 = SUM(BIC_ZQTY_BOX)
-- BAG수량 = SUM(BIC_ZQTY_BAG)
-- EA수량 = SUM(BIC_ZQTY_KE)
-- 평균단가(BOX) = SUM(ZAMT001) / NULLIF(SUM(BIC_ZQTY_BOX),0)
-- 재료비합계 = SUM(ZAMT006)+SUM(ZAMT007)+SUM(ZAMT008)+SUM(ZAMT009)+SUM(ZAMT010)+SUM(ZAMT011)
-- 인건비합계 = SUM(ZAMT012)+SUM(ZAMT013)+SUM(ZAMT014)
-- 마케팅비합계 = SUM(ZAMT047)+SUM(ZAMT048)+SUM(ZAMT049)+SUM(ZAMT050)+SUM(ZAMT051)+SUM(ZAMT052)+SUM(ZAMT053)+SUM(ZAMT054)
-`;
 
 // ============================================================
 // RAG 상태 관리
@@ -1805,6 +1793,69 @@ async function loadMetricMap(domainCode) {
     console.error('[Metric] loadMetricMap 실패:', e.message);
   }
   return map;
+}
+
+/**
+ * 도메인별 Metric Dictionary 동적 생성 (DB metric 테이블 기반)
+ *
+ * [목적 — 2026-06-30 기능 개선]
+ *   기존: server.mjs 에 하드코딩되어 있던 METRIC_DICTIONARY 상수가
+ *         사용자가 학습관리에서 산식을 변경해도 옛 산식을 LLM 에 전달하여
+ *         GPT 가 옛 산식과 새 산식 사이에서 혼동하는 사고가 발생했음.
+ *   변경: DB metric 테이블의 최신 산식을 도메인별로 읽어와
+ *         LLM 시스템 프롬프트에 동적으로 주입하는 사전 문자열을 만든다.
+ *
+ * 출력 형식 (LLM 호환성 유지 — 기존 METRIC_DICTIONARY 와 동일 포맷):
+ *   계산 지표 사전 (Metric Dictionary):
+ *   - {description} = {aggregation_applied_formula}
+ *   ...
+ *
+ * 집계 함수 적용 규칙:
+ *   - aggregation = 'CALC' → formula 그대로 (이미 SUM/CASE 등 포함된 산식)
+ *   - aggregation = 'SUM'/'AVG'/'COUNT'/'MAX'/'MIN' → 산식이 이미 SUM 등 포함하면 그대로,
+ *     없으면 해당 집계로 감싸기
+ *   - 그 외 → formula 그대로
+ *
+ * @param {string} domainCode - 'PS'|'HL'|'MGMT' 등 (없으면 PS)
+ * @returns {Promise<string>} LLM 프롬프트에 합칠 "계산 지표 사전" 문자열
+ *   (등록된 metric 이 0건이면 빈 문자열 반환 — 프롬프트에 빈 헤더 안 들어감)
+ */
+async function buildMetricDictionaryFromDB(domainCode) {
+  const dc = domainCode || 'PS';
+  try {
+    const [rows] = await pool.query(
+      `SELECT metric_code, aggregation, formula, description
+       FROM metric
+       WHERE domain_code = ? AND formula IS NOT NULL AND formula != ''
+       ORDER BY metric_code`,
+      [dc]
+    );
+    if (!rows || rows.length === 0) return '';
+
+    const lines = ['계산 지표 사전 (Metric Dictionary — DB metric 테이블 기반, 도메인=' + dc + '):'];
+    for (const r of rows) {
+      const desc = (r.description || r.metric_code).split(',')[0].trim();
+      const formula = (r.formula || '').trim();
+      if (!desc || !formula) continue;
+      const agg = (r.aggregation || '').toUpperCase();
+      const hasAggInside = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(formula);
+
+      let sqlExpr;
+      if (agg === 'CALC' || hasAggInside) {
+        sqlExpr = formula;
+      } else if (agg === 'SUM' || agg === 'AVG' || agg === 'COUNT' || agg === 'MAX' || agg === 'MIN') {
+        sqlExpr = `${agg}(${formula})`;
+      } else {
+        sqlExpr = formula;
+      }
+      lines.push(`- ${desc} (${r.metric_code}) = ${sqlExpr}`);
+    }
+    if (lines.length === 1) return '';   // 헤더만 있고 항목 0건이면 빈 문자열
+    return lines.join('\n') + '\n';
+  } catch (e) {
+    console.error('[Metric] buildMetricDictionaryFromDB 실패:', e.message);
+    return '';
+  }
 }
 
 /**
@@ -2391,7 +2442,10 @@ async function buildRAGSystemPrompt(query, domainCode) {
       + '\n\n--- RAG 검색 컨텍스트 (이 질문과 관련된 메타데이터만 포함됨) ---\n' + contextText;
   } else {
     // 폴백: 기존 방식 (전체 스키마 + 메트릭 + 폴백 컨텍스트)
-    prompt = BASE_SYSTEM_PROMPT + domainCtx + synonymContext + '\n' + TABLE_SCHEMA + '\n' + METRIC_DICTIONARY
+    // [2026-06-30] METRIC_DICTIONARY 하드코딩 상수 제거 → DB metric 테이블에서 동적 생성
+    //   학습관리에서 산식 수정 시 즉시 LLM 프롬프트에 반영되도록 함.
+    const dynamicMetricDict = await buildMetricDictionaryFromDB(domainCode);
+    prompt = BASE_SYSTEM_PROMPT + domainCtx + synonymContext + '\n' + TABLE_SCHEMA + '\n' + dynamicMetricDict
       + '\n\n--- 컨텍스트 ---\n' + contextText;
   }
 
