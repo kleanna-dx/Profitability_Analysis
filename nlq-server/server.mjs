@@ -6424,6 +6424,29 @@ app.post('/api/builder/query', async (req, res) => {
 
   console.log(`[Builder] 요청: fields=${fields?.length}, compare_mom=${compare_mom}, compare_yoy=${compare_yoy}, date=${date_start}~${date_end}, compare_dims=${JSON.stringify(compare_dims)} reqId=${log.requestId}`);
 
+  // ─── [2026-06-30 PR #197] 클라이언트 abort 감지 ────────────────────────
+  //   (사용자 요청 #4, #5)
+  //   - 프론트가 fetch timeout 으로 먼저 abort 한 경우, 백엔드는 DB 실행을
+  //     계속 진행하므로 response_sent 로그가 찍히더라도 사용자 화면에는
+  //     아무것도 표시되지 않는 모순적 UX 가 발생.
+  //   - req.on('close') 는 클라이언트가 정상 응답을 받기 전에 연결을 끊었을 때
+  //     발생. Node.js 16+ 에서는 res.writableEnded 가 true 이면 정상 응답 후
+  //     close 이므로 무시해야 함.
+  //   - req.aborted 플래그(Node 14+ deprecated, 16+ 는 res.destroyed) 와
+  //     res.writableEnded 를 함께 확인하여 정확한 client abort 만 로깅.
+  let clientAborted = false;
+  req.on('close', () => {
+    // 응답이 정상적으로 종료(res.writableEnded=true) 됐다면 정상 close
+    if (!res.writableEnded) {
+      clientAborted = true;
+      // 백엔드는 작업을 계속 진행하지만, 로그에는 "응답 전 client 가 끊었다"는 사실을 남김
+      log.error('client_aborted', new Error('client closed connection before response'), {
+        res_headers_sent: !!res.headersSent,
+        res_writable_ended: !!res.writableEnded,
+      });
+    }
+  });
+
   if (!fields || fields.length === 0) {
     log.error('validation_failed', new Error('fields 없음'), { reason: 'no_fields' });
     return res.status(400).json({ error: '조회할 필드를 하나 이상 선택해주세요.', requestId: log.requestId });
@@ -7364,6 +7387,33 @@ app.post('/api/builder/query', async (req, res) => {
       db_elapsed_ms: dbStageMs,
     });
 
+    // ─── [2026-06-30 PR #197] Slow SQL 자동 EXPLAIN 로깅 ───────────────────
+    //   (사용자 요청 #2, #3)
+    //   - DB 실행이 BUILDER_EXPLAIN_SLOW_MS (기본 30000ms = 30s) 이상 걸린 경우
+    //     EXPLAIN 결과를 자동으로 로그에 기록 → 운영에서 즉시 원인 진단 가능.
+    //   - EXPLAIN 자체는 매우 빠르고(<1s) 부수효과가 없으므로 응답에 영향 없음.
+    //   - 실패하더라도 응답에는 영향 주지 않음 (조용히 무시).
+    const EXPLAIN_SLOW_MS = parseInt(process.env.BUILDER_EXPLAIN_SLOW_MS || '30000', 10);
+    if (dbStageMs >= EXPLAIN_SLOW_MS) {
+      try {
+        const explainStart = Date.now();
+        const explainSql = `EXPLAIN ${sql}`;
+        const [explainRows] = finalParams.length > 0
+          ? await pool.query(explainSql, finalParams)
+          : await pool.query(explainSql);
+        const explainElapsed = Date.now() - explainStart;
+        log.stage('db_explain_slow', {
+          db_elapsed_ms: dbStageMs,
+          explain_elapsed_ms: explainElapsed,
+          explain_rows: explainRows,
+          sql_length: sql.length,
+          threshold_ms: EXPLAIN_SLOW_MS,
+        });
+      } catch (explainErr) {
+        log.error('db_explain_failed', explainErr, { db_elapsed_ms: dbStageMs });
+      }
+    }
+
     const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
     const clean = rows.map(row => {
       const r = {};
@@ -7462,6 +7512,15 @@ app.post('/api/builder/query', async (req, res) => {
         mode: compare_mom ? '전월대비' : '전년대비',
       };
     }
+    // ─── [2026-06-30 PR #197] 응답 전 클라이언트 연결 상태 점검 ────────────
+    //   (사용자 요청 #5)
+    //   - 백엔드가 정상 응답을 만들었더라도, 프론트가 이미 fetch timeout 으로
+    //     연결을 끊은 상태일 수 있음 → 실제 사용자에게는 결과가 전달되지 못함.
+    //   - clientAborted 플래그(req.on('close') 핸들러에서 설정) 또는
+    //     res.writableEnded / req.destroyed 를 함께 확인하여 정확히 구분.
+    //   - delivered=false 인 경우 response_failed 로그를 별도로 남겨
+    //     "백엔드는 성공했지만 사용자는 못 받았다" 는 케이스를 운영에서 식별.
+    const stillConnected = !clientAborted && !req.destroyed && !res.writableEnded;
     log.stage('response_sent', {
       row_count: clean.length,
       column_count: cols.length,
@@ -7469,11 +7528,26 @@ app.post('/api/builder/query', async (req, res) => {
       prompt_reflected: needGpt ? (gptStatus === 'rule_based' || gptStatus === 'applied') : null,
       db_stage_ms: dbStageMs,
       prompt_stage_ms: promptStageMs,
+      client_aborted: clientAborted,
+      delivered: stillConnected,
     });
-    res.json(responseObj);
+    if (clientAborted) {
+      // 백엔드 작업은 성공했지만 사용자는 받지 못한 케이스 — 별도 식별용 로그
+      log.error('response_failed', new Error('response built but client already disconnected'), {
+        db_stage_ms: dbStageMs,
+        row_count: clean.length,
+        reason: 'client_aborted_before_response',
+      });
+      // 그래도 res.json 은 안전하게 시도(Express 가 내부적으로 무시)
+      try { res.json(responseObj); } catch (_) { /* 이미 끊긴 소켓 — 무시 */ }
+    } else {
+      res.json(responseObj);
+    }
   } catch (err) {
     console.error('[Builder] query error:', err.message);
-    log.error('unexpected_error', err);
+    log.error('unexpected_error', err, {
+      client_aborted: clientAborted,
+    });
     // 실패 이력도 저장
     const histUserId = req.session?.user?.id || null;
     const activeDomain = await getActiveDomain(req);
