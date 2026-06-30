@@ -1511,8 +1511,11 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 3순위: 동의어 매칭이 없으면 위 허용 목록 + TABLE_SCHEMA 설명을 보고 가장 적합한 컬럼을 판단하여 사용
 
 ★ Metric 산식 우선 규칙: 학습관리의 Metric에 계산 산식(formula)이 정의된 지표는 반드시 해당 산식을 사용하세요.
-  예) 매출총이익 → SUM(ZAMT035) ✗ → SUM(ZAMT003)-SUM(ZAMT034) ✓ (Metric 산식)
-  예) 매출총이익률 → (SUM(ZAMT003)-SUM(ZAMT034))/NULLIF(SUM(ZAMT003),0)*100 ✓
+  - 산식은 **항상 학습관리에 등록된 원본 그대로**(아래 [동의어 매칭 결과]의 "반드시 사용할 SQL 표현식" 절) 사용하세요.
+  - **절대 산식을 직접 창작/변형하지 마세요.** 예시 산식을 외워서 기억으로 작성하는 것도 금지입니다.
+  - **컬럼별 SUM 분배 금지**: 산식이 row-level (예: ZAMT001-ZAMT002+ZAMT004) 형태로 제공되면,
+    'SUM(ZAMT001)-SUM(ZAMT002)+SUM(ZAMT004)' 처럼 컬럼마다 SUM()을 붙여 분배하지 마세요.
+    반드시 산식 **전체**를 'SUM(산식)' 한 번으로 감싸세요. (자세한 wrap 규칙은 아래 "[Metric 산식 → SQL 표현식 변환 규칙]" 참조)
 ★ Ontology/Metric 분리 규칙: 동일 단어가 Ontology 동의어와 Metric 동의어 양쪽에 매칭될 수 있는 경우 Ontology를 우선합니다.
   - Ontology = 차원/분류 컬럼 (GROUP BY, WHERE, SELECT에서 분류 기준으로 사용)
   - Metric = 계산 지표/산식 (SELECT에서 집계값으로 사용)
@@ -1615,6 +1618,37 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 - 예: "총매출 합계"라고 하면 → SUM(ZAMT001) 하나만 사용. 순매출, 영업이익 등은 추가하지 마세요.
 - 사용자가 "수량" 이라고만 하면 기본 단위는 BOX(BIC_ZQTY_BOX). BAG/EA는 사용자가 명시적으로 요청할 때만 포함.
 - 사용자가 "모든 수량" 또는 "BOX, BAG, EA 수량"처럼 여러 단위를 명시한 경우에만 복수 수량 컬럼 사용.
+
+[★★★ Metric 산식 → SQL 표현식 변환 규칙 — 매우 중요! (2026-06-30) ★★★]
+학습관리에 등록된 Metric 산식(formula)을 SELECT 절에 넣을 때는 **다음 규칙을 정확히 따르세요**.
+산식의 "row-level / column-level" 구분:
+  - **row-level (원시 컬럼만 있음)**: 산식 안에 SUM/AVG/COUNT/MAX/MIN 같은 집계 함수가 전혀 없는 경우.
+      예) ZAMT001-ZAMT002 ,  ZAMT001-ZAMT002+ZAMT004-(ZAMT006+ZAMT007+...+ZAMT033)
+  - **column-level (집계 함수 포함)**: 산식 안에 이미 SUM/AVG 등이 포함되어 있는 경우.
+      예) SUM(ZAMT001)/NULLIF(SUM(ZQTY_BOX),0) ,  SUM(ZAMT035)/NULLIF(SUM(ZAMT003),0)*100
+
+★ row-level 산식을 SELECT(또는 ORDER BY/HAVING)에 넣을 때:
+  ① **무조건 산식 전체를 SUM() 한 번으로 감싸세요.**
+     - 산식: ZAMT001-ZAMT002+ZAMT004-(ZAMT006+...+ZAMT033)
+     - ✓ 정답: SUM(ZAMT001-ZAMT002+ZAMT004-(ZAMT006+...+ZAMT033))
+     - ✗ 금지: SUM(ZAMT001)-SUM(ZAMT002)+SUM(ZAMT004)-(SUM(ZAMT006)+...+SUM(ZAMT033))  (컬럼별 SUM 분배 금지)
+     - ✗ 금지: ZAMT001-ZAMT002+...  (SUM 없이 그대로 노출 금지 — 단일 행 집계 불가)
+  ② **조건부 합계가 필요한 경우(WHERE로 거를 수 없는 행 단위 분기)**: SUM(CASE WHEN <조건> THEN <산식> ELSE 0 END) 으로 감싸세요.
+     - 예) 도메인별 매출총이익 분리 합계가 필요할 때:
+       SUM(CASE WHEN DIVISION='20' THEN ZAMT001-ZAMT002+ZAMT004-(ZAMT006+...) ELSE 0 END)
+  ③ FORMAT(), ORDER BY, HAVING 등에서도 위와 동일한 SUM(산식) 표현을 그대로 복사해 사용하세요.
+  ④ 비율/평균을 계산할 때 (예: 매출총이익률 = 매출총이익 / 순매출 * 100):
+     - 분자/분모가 각각 row-level 산식이면 각각을 SUM()으로 감싸세요:
+       SUM(<매출총이익 산식>) / NULLIF(SUM(<순매출 산식>), 0) * 100
+
+★ column-level 산식(이미 SUM이 들어있는 산식)을 사용할 때:
+  - 산식을 **그대로** 복사해 사용. 추가로 SUM()을 또 감싸지 마세요(중첩 금지).
+  - 예) 산식 SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100 → 그대로 SELECT에 넣음.
+
+★ 절대 금지:
+  - 학습관리에 없는 metric_code를 단독으로 SUM()해서 단순 합산하지 마세요.
+    예) 매출총이익 산식이 row-level로 등록돼 있는데 SUM(ZAMT035) 한 줄로 답하기 → ✗ 금지.
+  - 다른 metric의 산식을 **추측/기억**으로 작성하지 마세요. 반드시 동의어 매칭 결과의 "반드시 사용할 SQL 표현식"을 그대로 복사하세요.
 
 [★★★ 동의어 정확매칭 우선 — 매우 중요! (PR #140) ★★★]
 - 사용자가 "매출" 같은 짧은 단어로 질의했고, 동의어 매칭 결과에 그 단어가 **하나의 컬럼/Metric에 정확매칭** 되어 있으면:
@@ -2270,26 +2304,51 @@ async function buildRAGSystemPrompt(query, domainCode) {
           for (const c of m.referenced_codes) allRefCodes.add(c);
         }
       }
+      // ★ [2026-06-30] row-level / column-level 산식 판별 + wrap 가이드
+      //   - row-level: 산식 안에 SUM/AVG/COUNT/MAX/MIN 가 전혀 없음 → 전체를 SUM(...)으로 감싸야 함
+      //   - column-level: 산식 안에 이미 집계 함수 포함 → 그대로 사용 (중첩 금지)
+      let hasRowLevelMetric = false;
+      let hasColumnLevelMetric = false;
       for (const m of metricMatches) {
         // column_name이 "CALC(...)" 또는 "SUM(...)" 형태이므로 괄호 내부만 추출하여 LLM에게 권장
         const formulaMatch = m.column_name.match(/^(\w+)\((.+)\)$/);
         const innerFormula = formulaMatch ? formulaMatch[2] : m.column_name;
-        synonymContext += `- "${m.synonym}" (metric_code: ${m.metric_code || '?'})\n`;
-        synonymContext += `  ▶ 반드시 사용할 SQL 표현식: ${innerFormula}\n`;
-        synonymContext += `  ▶ FORMAT()이나 ORDER BY 등에도 동일하게 위 표현식을 그대로 복사해 사용하세요.\n`;
+        const aggInside = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(innerFormula);
+        const isRowLevel = !aggInside;
+        if (isRowLevel) hasRowLevelMetric = true; else hasColumnLevelMetric = true;
+        // 권장 SQL 표현식: row-level이면 SUM(전체)로 감싸고, column-level이면 그대로
+        const sqlExpr = isRowLevel ? `SUM(${innerFormula})` : innerFormula;
+        synonymContext += `- "${m.synonym}" (metric_code: ${m.metric_code || '?'}) [${isRowLevel ? 'row-level' : 'column-level'}]\n`;
+        synonymContext += `  ▶ 원본 산식 (학습관리 등록값): ${innerFormula}\n`;
+        synonymContext += `  ▶ 반드시 사용할 SQL 표현식: ${sqlExpr}\n`;
+        if (isRowLevel) {
+          synonymContext += `  ▶ 조건부 합계가 필요하면: SUM(CASE WHEN <조건> THEN ${innerFormula} ELSE 0 END)\n`;
+        }
+        synonymContext += `  ▶ FORMAT()이나 ORDER BY 등에도 동일하게 위 SQL 표현식을 그대로 복사해 사용하세요.\n`;
       }
       if (allRefCodes.size > 0) {
         synonymContext += `\n⛔ 절대 사용 금지 컬럼 (위 산식의 구성 요소 또는 매칭된 metric_code):\n`;
         synonymContext += `   ${[...allRefCodes].join(', ')}\n`;
         synonymContext += `   → 이 코드들을 SUM(코드) 또는 SUM(코드)±SUM(코드) 형태로 단순 합산하면 안 됩니다.\n`;
-        synonymContext += `   → 반드시 위에 제시된 산식 표현식 전체를 그대로 SELECT 절에 넣으세요.\n`;
+        synonymContext += `   → 반드시 위에 제시된 SQL 표현식 전체를 그대로 SELECT 절에 넣으세요.\n`;
       }
-      synonymContext += `\n예시) 매출총이익 산식이 "(SUM(ZAMT001)-SUM(ZAMT002)-SUM(ZAMT004))-(ZAMT026+SUM(ZAMT025)+ZAMT005)" 로 제공되면:\n`;
-      synonymContext += `  ✗ 금지: SELECT SUM(ZAMT035)\n`;
-      synonymContext += `  ✗ 금지: SELECT SUM(ZAMT003)-SUM(ZAMT034)\n`;
-      synonymContext += `  ✗ 금지: SELECT SUM(ZAMT003-ZAMT034)\n`;
-      synonymContext += `  ✓ 정답: SELECT (SUM(ZAMT001)-SUM(ZAMT002)-SUM(ZAMT004))-(SUM(ZAMT026)+SUM(ZAMT025)+SUM(ZAMT005))\n`;
-      synonymContext += `         (제공된 산식 표현식을 그대로 복사하되, 산식 안에 SUM()으로 감싸지 않은 원시 컬럼이 있다면 SUM()으로 감싸도 됩니다)\n`;
+      if (hasRowLevelMetric) {
+        synonymContext += `\n[row-level 산식 사용 예시 — 매우 중요!]\n`;
+        synonymContext += `  원본 산식이 "ZAMT001-ZAMT002+ZAMT004-(ZAMT006+ZAMT007+ZAMT008)" 로 제공되면:\n`;
+        synonymContext += `  ✓ 정답: SELECT FORMAT(SUM(ZAMT001-ZAMT002+ZAMT004-(ZAMT006+ZAMT007+ZAMT008)), 0) AS '매출총이익 합계(원)'\n`;
+        synonymContext += `         (산식 전체를 SUM() 한 번으로 감싸기)\n`;
+        synonymContext += `  ✗ 금지: SUM(ZAMT001)-SUM(ZAMT002)+SUM(ZAMT004)-(SUM(ZAMT006)+SUM(ZAMT007)+SUM(ZAMT008))\n`;
+        synonymContext += `         (컬럼마다 SUM()을 분배하면 안 됩니다! 산식 안에 새 컬럼이나 분기가 들어갈 수 있어 결과가 달라질 수 있습니다.)\n`;
+        synonymContext += `  ✗ 금지: SUM(ZAMT035)  (학습관리에 row-level로 등록되어 있으므로 단독 컬럼 합산은 금지)\n`;
+        synonymContext += `  ✗ 금지: ZAMT001-ZAMT002+...  (SUM 없이 그대로 노출하면 GROUP BY 없이는 단일 행이 안 됨)\n`;
+        synonymContext += `  → 조건부가 필요하면: SUM(CASE WHEN DIVISION='20' THEN ZAMT001-ZAMT002+ZAMT004-(ZAMT006+ZAMT007+ZAMT008) ELSE 0 END)\n`;
+      }
+      if (hasColumnLevelMetric) {
+        synonymContext += `\n[column-level 산식 사용 예시]\n`;
+        synonymContext += `  원본 산식이 이미 "SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100" 처럼 SUM()을 포함하면:\n`;
+        synonymContext += `  ✓ 정답: 그대로 복사 → SELECT ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1) AS '영업이익률(%)'\n`;
+        synonymContext += `  ✗ 금지: 한 번 더 SUM() 감싸기 (중첩 집계 금지) — SUM(SUM(ZAMT055)/...) ✗\n`;
+      }
     }
     if (columnMatches.length > 0) {
       synonymContext += '\n🔷 [Ontology 컬럼 매핑 — 이 단어들은 Metric이 아닌 Ontology 컬럼입니다!]\n';
@@ -5729,6 +5788,57 @@ app.get('/api/metric', requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ============================================================
+// [2026-06-30] Metric → RAG 인덱스 자동 동기화 헬퍼
+//   학습관리에서 metric / metric_synonym 변경 시 호출되어 RAG 인덱스를 즉시 갱신.
+//   - 인덱스 미준비 상태(ragReady=false)이면 스킵 (전체 빌드 시 함께 반영됨)
+//   - 임베딩 호출은 best-effort: 실패해도 본 API 응답은 정상 200으로 반환
+// ============================================================
+async function syncMetricToRag(metricId) {
+  if (!ragReady) return; // 인덱스 미준비 시 스킵
+  try {
+    const [rows] = await pool.query(
+      `SELECT m.id, m.metric_code, m.aggregation, m.formula, m.description, m.domain_code,
+              GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
+       FROM metric m
+       LEFT JOIN metric_synonym s ON s.metric_id = m.id
+       WHERE m.id = ?
+       GROUP BY m.id`,
+      [metricId]
+    );
+    // 기존 청크 제거
+    await removeFromIndex(pool, 'metric', metricId);
+    if (rows.length === 0) {
+      console.log(`[RAG sync] metric #${metricId} 삭제됨 → 인덱스에서 제거`);
+      return;
+    }
+    const m = rows[0];
+    const formula = (m.formula || '').trim();
+    const aggUpper = (m.aggregation || '').toUpperCase();
+    const hasAggInside = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(formula);
+    let sqlExpr; let level;
+    if (hasAggInside) { sqlExpr = formula; level = 'column-level'; }
+    else if (aggUpper === 'CALC') { sqlExpr = `SUM(${formula})`; level = 'row-level'; }
+    else if (['SUM','AVG','COUNT','MAX','MIN'].includes(aggUpper)) { sqlExpr = `${aggUpper}(${formula})`; level = 'row-level'; }
+    else { sqlExpr = formula; level = 'row-level'; }
+    let text = `지표: ${m.description || m.metric_code} = ${sqlExpr} [${level}, 도메인:${m.domain_code || 'ALL'}]`;
+    text += `. 원본 산식(학습관리 등록값): ${formula}`;
+    if (m.synonyms) text += `. 동의어: ${m.synonyms}`;
+    await addToIndex(pool, 'metric', metricId, text, {
+      metric_code: m.metric_code,
+      aggregation: m.aggregation,
+      formula: m.formula,
+      sql_expr: sqlExpr,
+      level,
+      description: m.description,
+      domain_code: m.domain_code,
+    });
+    console.log(`[RAG sync] metric #${metricId} (${m.metric_code}) → 인덱스 갱신 완료`);
+  } catch (e) {
+    console.error(`[RAG sync] metric #${metricId} 동기화 실패 (본 API 응답엔 영향 없음):`, e.message);
+  }
+}
+
 app.post('/api/metric', requireAdmin, async (req, res) => {
   const { metric_code, aggregation, formula, table_name, description } = req.body;
   const dc = req.body.domain_code || await getActiveDomain(req);
@@ -5738,6 +5848,8 @@ app.post('/api/metric', requireAdmin, async (req, res) => {
       'INSERT INTO metric (domain_code, metric_code, aggregation, formula, table_name, description) VALUES (?,?,?,?,?,?)',
       [dc, metric_code, aggregation || 'SUM', formula, table_name || 'bw_profitability_data', description || '']
     );
+    // [2026-06-30] RAG 인덱스에 즉시 반영
+    syncMetricToRag(r.insertId).catch(() => {});
     res.json({ id: r.insertId, domain_code: dc, metric_code, aggregation: aggregation || 'SUM', formula, table_name: table_name || 'bw_profitability_data', description });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -5749,6 +5861,8 @@ app.put('/api/metric/:id', requireAdmin, async (req, res) => {
       'UPDATE metric SET metric_code=?, aggregation=?, formula=?, table_name=?, description=? WHERE id=?',
       [metric_code, aggregation, formula, table_name, description, req.params.id]
     );
+    // [2026-06-30] RAG 인덱스에 즉시 반영
+    syncMetricToRag(Number(req.params.id)).catch(() => {});
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -5757,6 +5871,8 @@ app.delete('/api/metric/:id', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM metric_synonym WHERE metric_id=?', [req.params.id]);
     await pool.query('DELETE FROM metric WHERE id=?', [req.params.id]);
+    // [2026-06-30] RAG 인덱스에서 제거 (DELETE 후 호출 — syncMetricToRag가 행 없음 감지 후 remove만 수행)
+    syncMetricToRag(Number(req.params.id)).catch(() => {});
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -5769,13 +5885,19 @@ app.post('/api/metric/:id/synonym', requireAdmin, async (req, res) => {
       'INSERT INTO metric_synonym (metric_id, synonym_text) VALUES (?,?)',
       [req.params.id, synonym_text]
     );
+    // [2026-06-30] 동의어 변경도 RAG 청크 text에 영향 → 재인덱싱
+    syncMetricToRag(Number(req.params.id)).catch(() => {});
     res.json({ id: r.insertId, synonym_text });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/api/metric/synonym/:synId', requireAdmin, async (req, res) => {
   try {
+    // 삭제 전에 metric_id 조회 (RAG 재동기화용)
+    const [pre] = await pool.query('SELECT metric_id FROM metric_synonym WHERE id=?', [req.params.synId]);
+    const metricId = pre.length > 0 ? Number(pre[0].metric_id) : null;
     await pool.query('DELETE FROM metric_synonym WHERE id=?', [req.params.synId]);
+    if (metricId) syncMetricToRag(metricId).catch(() => {});
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

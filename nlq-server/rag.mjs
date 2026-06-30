@@ -106,6 +106,11 @@ async function buildRagIndex(pool) {
   }
 
   // 3. 메트릭 청크 — 지표 + 수식 + 동의어 (domain_code 포함)
+  // [2026-06-30] 청크 텍스트와 metadata의 SQL 표현식을 정확히 생성:
+  //   - row-level (formula에 SUM/AVG 등 집계 함수 없음): SUM(formula)로 감쌈
+  //   - column-level (formula에 이미 집계 함수 포함): formula 그대로
+  //   - aggregation 값이 CALC 가 아니어도, formula가 row-level이면 SUM(formula)로 명확히 표기
+  //   → 이렇게 해야 LLM이 "CALC(...)" 같은 무의미한 표기를 보지 않고, 바로 사용 가능한 SQL 표현식을 받음
   const [metRows] = await pool.query(
     `SELECT m.id, m.metric_code, m.aggregation, m.formula, m.description, m.domain_code,
             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
@@ -114,13 +119,41 @@ async function buildRagIndex(pool) {
      GROUP BY m.id`
   );
   for (const m of metRows) {
-    let text = `지표: ${m.description || m.metric_code} = ${m.aggregation}(${m.formula}) [도메인:${m.domain_code || 'ALL'}]`;
+    const formula = (m.formula || '').trim();
+    const aggUpper = (m.aggregation || '').toUpperCase();
+    const hasAggInside = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(formula);
+    let sqlExpr;
+    let level; // 'row-level' | 'column-level'
+    if (hasAggInside) {
+      sqlExpr = formula;
+      level = 'column-level';
+    } else if (aggUpper === 'CALC') {
+      // CALC + row-level → 전체를 SUM()으로 감싸 사용
+      sqlExpr = `SUM(${formula})`;
+      level = 'row-level';
+    } else if (['SUM','AVG','COUNT','MAX','MIN'].includes(aggUpper)) {
+      sqlExpr = `${aggUpper}(${formula})`;
+      level = 'row-level';
+    } else {
+      sqlExpr = formula;
+      level = hasAggInside ? 'column-level' : 'row-level';
+    }
+    let text = `지표: ${m.description || m.metric_code} = ${sqlExpr} [${level}, 도메인:${m.domain_code || 'ALL'}]`;
+    text += `. 원본 산식(학습관리 등록값): ${formula}`;
     if (m.synonyms) text += `. 동의어: ${m.synonyms}`;
     chunks.push({
       type: 'metric',
       sourceId: m.id,
       text,
-      metadata: { metric_code: m.metric_code, aggregation: m.aggregation, formula: m.formula, description: m.description, domain_code: m.domain_code },
+      metadata: {
+        metric_code: m.metric_code,
+        aggregation: m.aggregation,
+        formula: m.formula,
+        sql_expr: sqlExpr,
+        level,
+        description: m.description,
+        domain_code: m.domain_code
+      },
     });
   }
 
@@ -352,11 +385,26 @@ function ragResultToPromptContext(ragResult) {
   }
 
   // 관련 메트릭
+  // [2026-06-30] sql_expr / level 을 함께 노출하여 LLM이 row-level/column-level을 명확히 인식하도록 함
   if (ragResult.metric.length > 0) {
     ctx += '\n[관련 계산 지표]\n';
     for (const m of ragResult.metric) {
-      ctx += `- ${m.metadata.description || m.metadata.metric_code} = ${m.metadata.aggregation}(${m.metadata.formula})\n`;
+      const md = m.metadata || {};
+      const name = md.description || md.metric_code;
+      const formula = md.formula || '';
+      // sql_expr이 metadata에 있으면 그대로 사용, 없으면 (구 인덱스 호환) row-level 가정으로 SUM(formula) 생성
+      let sqlExpr = md.sql_expr;
+      let level = md.level;
+      if (!sqlExpr) {
+        const hasAggInside = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(formula);
+        if (hasAggInside) { sqlExpr = formula; level = level || 'column-level'; }
+        else { sqlExpr = `SUM(${formula})`; level = level || 'row-level'; }
+      }
+      ctx += `- ${name} (${md.metric_code || '?'}) [${level || 'row-level'}]\n`;
+      ctx += `    원본 산식: ${formula}\n`;
+      ctx += `    SQL 표현식: ${sqlExpr}\n`;
     }
+    ctx += `  ※ row-level 산식은 위 "SQL 표현식"을 그대로 사용하세요 (전체를 SUM()으로 감싼 형태). 컬럼별 SUM 분배 금지.\n`;
   }
 
   // 관련 코드매핑
