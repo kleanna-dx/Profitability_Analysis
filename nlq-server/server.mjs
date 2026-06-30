@@ -6542,17 +6542,122 @@ app.post('/api/builder/query', async (req, res) => {
     // 출력 :  SUM(CASE WHEN CALMONTH = '202604' THEN `ZAMT001` ELSE 0 END)
     //       - SUM(CASE WHEN CALMONTH = '202604' THEN `ZAMT002` ELSE 0 END)
     // ============================================================
+    // ============================================================
+    // [2026-06-30 PR #199] Metric 산식 SUM 자동 감싸기 헬퍼
+    // ------------------------------------------------------------
+    //   - 학습관리에서 산식이 row-level (SUM 제거) 로 저장될 수 있음.
+    //     예) "ZAMT001-ZAMT002+ZAMT004-(ZAMT006+ZAMT007+...)"
+    //   - 이 경우 GROUP BY 가 있는 SQL 에서는 자재별 합계가 아니라
+    //     임의 row 값이 나오므로 잘못된 결과 발생.
+    //   - 따라서 최종 SQL 생성 시 row-level 산식은 시스템이 자동으로
+    //     SUM(...) 또는 SUM(CASE WHEN CALMONTH=... THEN ... ELSE 0 END)
+    //     로 감싸줘야 함.
+    // ============================================================
+
+    // SQL 키워드 / 함수명 / 차원 컬럼 (COALESCE 대상에서 제외할 토큰)
+    const FORMULA_RESERVED = new Set([
+      // 집계/스칼라 함수
+      'SUM','AVG','COUNT','MAX','MIN','NULLIF','COALESCE','ROUND','ABS','IF','IFNULL','CAST','CONVERT',
+      'GREATEST','LEAST','FLOOR','CEIL','CEILING','POWER','SQRT','LOG','EXP','MOD','DATE','YEAR','MONTH','DAY',
+      // 키워드
+      'CASE','WHEN','THEN','ELSE','END','AND','OR','NOT','NULL','AS','BETWEEN','IN','IS','TRUE','FALSE',
+      'SELECT','FROM','WHERE','GROUP','BY','ORDER','HAVING','LIMIT','OFFSET','ASC','DESC','DISTINCT',
+      // 차원/시간 컬럼 (NULL 안전 대상 아님)
+      'CALMONTH','CALDAY','CALYEAR','MATERIAL_NM','DIVISION','DIVISION_NM','PLANT','PLANT_NM',
+    ]);
+
+    // 산식에 이미 SUM(...) 형태의 집계 함수가 포함되어 있는지 판별
+    //   - SUM, COUNT, AVG, MAX, MIN 중 하나라도 있으면 "이미 집계됨" 으로 간주
+    //   - 비율 지표(예: ROUND(SUM(A)/SUM(B), 2)) 처럼 복잡한 산식도 SUM 포함
+    //     으로 판별되어 추가 감싸기를 안 함 (이중 SUM 방지).
+    function formulaContainsAggregate(formula) {
+      if (!formula) return false;
+      return /\b(SUM|COUNT|AVG|MAX|MIN)\s*\(/i.test(formula);
+    }
+
+    // 산식에 SUM 이외의 비-가법 집계 함수(AVG/COUNT/MAX/MIN)가 있는지
+    //   → 이런 산식은 월별 SUM(CASE WHEN..) 으로 단순 감싸면 의미가 깨지므로
+    //     별도 처리 또는 보존 대상
+    function formulaContainsNonSumAggregate(formula) {
+      if (!formula) return false;
+      return /\b(AVG|COUNT|MAX|MIN)\s*\(/i.test(formula);
+    }
+
+    // 산식 내 DB 컬럼 참조만 안전하게 COALESCE(컬럼, 0) 으로 감싸기 (NULL 안전)
+    //   - 환경변수 BUILDER_METRIC_NULL_AS_ZERO 로 on/off (기본 on)
+    //   - 핵심 규칙: 토큰 뒤에 `(` 가 있으면 = 함수 → 보존, RESERVED 면 보존, METRIC_ 접두면 보존
+    //   - lookahead `(?=\s*\()` 만으로는 `ROUND` 같은 함수명을 정규식 그리디 매칭에서
+    //     "ROUN" + "D(" 로 쪼개는 경우가 있어, 단어 경계 + 사용자 정의 토큰화로 처리
+    const METRIC_NULL_AS_ZERO = (process.env.BUILDER_METRIC_NULL_AS_ZERO || 'true').toLowerCase() === 'true';
+    function applyNullSafe(formula) {
+      if (!METRIC_NULL_AS_ZERO || !formula) return formula;
+      // 영문 대소문자 토큰을 모두 추출하여, 그 뒤가 `(` 가 아니고 RESERVED 가 아니고
+      // METRIC_ 접두가 아닌 것만 COALESCE 로 감싸기.
+      // (백틱으로 감싸진 컬럼도 처리)
+      return formula.replace(
+        /`([A-Za-z_][A-Za-z0-9_]*)`|([A-Za-z_][A-Za-z0-9_]*)/g,
+        (match, bt, plain, offset, full) => {
+          const token = bt || plain;
+          // 1) 함수 호출: 토큰 직후가 ( 면 보존 (공백 허용)
+          const rest = full.slice(offset + match.length);
+          if (/^\s*\(/.test(rest)) return match;
+          // 2) 백틱으로 감싸진 컬럼 → 백틱 제거 후 COALESCE
+          if (bt) return `COALESCE(${bt}, 0)`;
+          // 3) RESERVED 키워드/함수/차원 컬럼
+          if (FORMULA_RESERVED.has(token.toUpperCase())) return token;
+          // 4) Metric 참조
+          if (token.startsWith('METRIC_')) return token;
+          // 5) 너무 짧은 토큰(a, x 등)은 변수 가능성 — 그대로 둠
+          if (token.length < 3) return token;
+          // 6) 그 외 = DB 컬럼으로 간주 → COALESCE
+          return `COALESCE(${token}, 0)`;
+        }
+      );
+    }
+
+    // 산식을 월별 비교용으로 재작성
+    //
+    // 분기 (사용자 요청 #199):
+    //   Case A: SUM(컬럼) 패턴이 있는 기존 산식
+    //           → 각 SUM(컬럼) 을 SUM(CASE WHEN CALMONTH=... THEN 컬럼 ELSE 0 END) 로 변환
+    //           → NULL 안전 옵션 적용 시 컬럼은 COALESCE(컬럼, 0) 으로 감싸기
+    //   Case B: SUM 이외의 비-가법 집계(AVG/COUNT/MAX/MIN) 가 있는 비율 산식
+    //           → 단순 SUM(CASE WHEN..) 으로 감싸면 의미 깨짐 → 그대로 보존
+    //   Case C: SUM 도 다른 집계도 없는 row-level 산식 (사용자가 SUM 제거한 케이스)
+    //           → 전체 산식을 NULL 안전 처리 후
+    //             SUM(CASE WHEN CALMONTH=... THEN (산식) ELSE 0 END) 로 감싸기
     function rewriteFormulaForMonth(formula, month) {
       if (!formula || !month) return formula;
-      // SUM( ... ) 패턴을 잡되, 괄호 안의 단순 컬럼/표현식을 보존
-      //   - 중첩 괄호는 단순 정규식으로 완벽 매칭이 어려우므로,
-      //     SUM( <백틱컬럼명> ) 또는 SUM( <영숫자컬럼명> ) 만 변환.
-      //   - 복잡한 SUM( CASE WHEN ... END ) 같은 형태는 이미 월 조건이 포함된 것으로
-      //     간주하고 건드리지 않음.
-      return formula.replace(/SUM\s*\(\s*`?([A-Z][A-Z0-9_]*)`?\s*\)/gi, (m, colName) => {
-        // [2026-06-29] 출력에서 백틱 제거 (사용자 따옴표 규칙)
-        return `SUM(CASE WHEN CALMONTH = '${month}' THEN ${colName} ELSE 0 END)`;
-      });
+
+      // Case A: SUM(컬럼) 패턴 직접 매칭 (NULL safe 적용 전 원본에서 검사)
+      if (/SUM\s*\(\s*`?[A-Z][A-Z0-9_]*\s*`?\s*\)/i.test(formula)) {
+        // 원본 → 각 SUM(컬럼) 만 변환 (다른 컬럼은 그대로 두고, 변환 결과에만 COALESCE 적용)
+        return formula.replace(/SUM\s*\(\s*`?([A-Z][A-Z0-9_]*)`?\s*\)/gi, (m, colName) => {
+          const colExpr = METRIC_NULL_AS_ZERO ? `COALESCE(${colName}, 0)` : colName;
+          return `SUM(CASE WHEN CALMONTH = '${month}' THEN ${colExpr} ELSE 0 END)`;
+        });
+      }
+
+      // Case B: AVG/COUNT/MAX/MIN 등 다른 집계 포함 → 보존
+      if (formulaContainsNonSumAggregate(formula)) {
+        return formula;
+      }
+
+      // Case C: row-level 산식 → 전체를 SUM(CASE WHEN..) 으로 감싸기
+      const safeFormula = applyNullSafe(formula);
+      return `SUM(CASE WHEN CALMONTH = '${month}' THEN (${safeFormula}) ELSE 0 END)`;
+    }
+
+    // 산식을 일반 (월 분기 없는) 집계용으로 감싸기
+    //   - 이미 집계 함수(SUM/AVG/COUNT/MAX/MIN) 포함 → 그대로 (이중 SUM 방지)
+    //   - row-level 산식 → NULL 안전 처리 후 SUM(...) 으로 감싸기
+    function wrapMetricFormulaAggregated(formula) {
+      if (!formula) return formula;
+      if (formulaContainsAggregate(formula)) {
+        return formula; // 이미 집계 포함 → 보존
+      }
+      const safeFormula = applyNullSafe(formula);
+      return `SUM(${safeFormula})`;
     }
 
     // ── 헬퍼 함수 ──
@@ -6798,6 +6903,11 @@ app.post('/api/builder/query', async (req, res) => {
     // ═══════════════════════════════════════════════
     } else {
       // [2026-06-29] 사용자 따옴표 규칙 적용 (컬럼/테이블 백틱 미사용, alias 만 single quote)
+      // [2026-06-30 PR #199] Metric 산식 SUM 자동 감싸기
+      //   - 학습관리에서 산식이 row-level (SUM 없음) 로 저장된 경우, 시스템이
+      //     GROUP BY 컨텍스트에서 SUM(산식) 으로 자동 감싸줘야 함.
+      //   - wrapMetricFormulaAggregated() 가 이미 집계 함수 포함 여부를 판별해서
+      //     안전하게 처리 (이중 SUM 방지).
       const selectParts = [];
       for (const f of fields) {
         const col = f.column;
@@ -6805,8 +6915,9 @@ app.post('/api/builder/query', async (req, res) => {
         const alias = f.alias || col;
         const isMetric = col.startsWith('METRIC__') && metricFormulaMap[col];
         if (isMetric) {
-          // Metric: 산식 그대로 사용 (SUM 등이 이미 포함됨)
-          selectParts.push(`(${metricFormulaMap[col].formula}) AS '${alias}'`);
+          // Metric: row-level 산식이면 SUM 으로, 이미 집계 포함이면 그대로
+          const wrapped = wrapMetricFormulaAggregated(metricFormulaMap[col].formula);
+          selectParts.push(`${wrapped} AS '${alias}'`);
         } else if (agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(agg.toUpperCase())) {
           selectParts.push(`${agg.toUpperCase()}(${col}) AS '${alias}'`);
         } else {
@@ -7113,9 +7224,10 @@ app.post('/api/builder/query', async (req, res) => {
             const fld = fields.find(f => f.column === c);
             return (fld && fld.alias) || metricFormulaMap[c].metric_code;
           }).join('", "') + '") 가 SELECT 절에 나타나는 경우, 반드시 위 "산식 전체" 를 사용해야 합니다. ' +
-            '월별 비교(예: "4월 5월 차이") 요청 시에는 산식 안의 각 SUM(컬럼) 을 ' +
-            '`SUM(CASE WHEN CALMONTH = \'YYYYMM\' THEN 컬럼 ELSE 0 END)` 로 변환해서 사용하세요. ' +
-            '절대 산식의 일부 컬럼만 추출해 단순 SUM 하지 마세요.\n';
+            '월별 비교(예: "4월 5월 차이") 요청 시에는:\n' +
+            '  - 산식 안에 SUM(컬럼) 이 있으면 각 SUM(컬럼) 을 `SUM(CASE WHEN CALMONTH = \'YYYYMM\' THEN 컬럼 ELSE 0 END)` 로 변환\n' +
+            '  - 산식이 SUM 없는 row-level 형태(예: `ZAMT001-ZAMT002+...`)면 전체 산식을 `SUM(CASE WHEN CALMONTH = \'YYYYMM\' THEN (산식) ELSE 0 END)` 로 감싸기\n' +
+            '절대 산식의 일부 컬럼만 추출해 단순 SUM 하지 마세요. GROUP BY 가 있는데 산식이 row-level 인 채로 SELECT 절에 두면 그룹 내 임의 row 값이 나오는 잘못된 결과가 됩니다.\n';
         }
 
         const userPromptText = `\n\n[추가 요청]\n${prompt}`;
