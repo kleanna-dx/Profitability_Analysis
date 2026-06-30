@@ -2893,16 +2893,19 @@ async function executeQuery() {
         history_id: loadedHistoryId || null,
     };
 
-    // [2026-06-29 PR #196] 프론트 fetch timeout 55s → 130s 상향
-    //   - 운영 로그에서 LLM 호출이 40s 에 abort 되어 prompt 미반영 사례 다수 발견
-    //     (요청 #195 이후 reqId=mqyzh7wsve1x 추적)
+    // [2026-06-30 PR #197] 프론트 fetch timeout 130s → 180s 상향
+    //   - 사유: 운영 로그(requestId=mqzx38lfkv70) 기준 rule-based SQL 이
+    //     18,563자까지 폭증 + 월별 CASE WHEN/Metric 산식으로 인해
+    //     DB 실행에 61초가 소요되는 사례 발생. 백엔드는 정상 응답했지만
+    //     프론트가 먼저 timeout 으로 abort 하여 "HTTP 504 Gateway Timeout"
+    //     안내가 표시되는 모순적 UX 발생.
     //   - 4-layer timeout 일관성 (안쪽 < 바깥쪽):
-    //       LLM 90s  <  Express server 110s  <  Nginx 120s  <  Frontend 130s
-    //   - 프론트는 가장 바깥쪽 → Nginx 504 (120s) 가 먼저 도달하면 프론트는
-    //     "Gateway Timeout" 메시지로 안내. Nginx 가 늦으면 프론트가 130s 에 abort
-    //     해서 명시적 에러 표시.
+    //       LLM 90s  <  Express server 110s  <  Nginx 180s (운영 실측)  <  Frontend 180s
+    //     ※ 단, 무거운 rule-based SQL 은 LLM 을 거치지 않으므로 LLM 90s 제약과 무관.
+    //   - 임시 조치: 인덱스/쿼리 최적화 (PR 본문 가이드 참조) 전까지
+    //     긴 쿼리를 사용자가 기다릴 수 있도록 프론트 timeout 만 상향.
     const fetchAbort = new AbortController();
-    const fetchTimer = setTimeout(() => fetchAbort.abort(), 130000);
+    const fetchTimer = setTimeout(() => fetchAbort.abort(), 180000);
     try {
         const res = await fetch('/api/builder/query', {
             method: 'POST',
@@ -3066,11 +3069,13 @@ async function executeQuery() {
         displayResults(data);
     } catch(e) {
         document.getElementById('loading').classList.remove('active');
-        // [2026-06-29] AbortError (프론트 50s timeout) 별도 안내
+        // [2026-06-30 PR #197] AbortError (프론트 180s timeout) 별도 안내
+        //   - 프론트 fetch timeout 을 180s 로 상향 (PR #197) — 그래도 abort 되면
+        //     실제로 백엔드 쿼리가 180s 이상 걸린 것이므로 정확한 안내를 표시.
         if (e && (e.name === 'AbortError' || /aborted/i.test(e.message || ''))) {
-            showError('요청 처리 시간이 초과되었습니다 (프론트 50s timeout).<br>' +
-                      '서버가 응답하지 않거나 추가 프롬프트 처리에 시간이 오래 걸렸을 수 있습니다.<br>' +
-                      '잠시 후 다시 시도해 주세요.');
+            showError('요청 처리 시간이 초과되었습니다 (프론트 180s timeout).<br>' +
+                      '백엔드 쿼리 실행이 너무 오래 걸려 클라이언트에서 요청을 취소했습니다.<br>' +
+                      '잠시 후 다시 시도하거나, 조건(기간/지표)을 줄여서 시도해 주세요.');
         } else {
             showError('네트워크 오류: ' + (e?.message || e));
         }
