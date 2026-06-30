@@ -26,6 +26,11 @@ import {
 //   - 로그 파일: /data/analytics/logs/nlq-server.log (운영) / ./logs/nlq-server.log (샌드박스)
 //   - 모든 /api/* 요청에 requestId 부여 (Nginx X-Request-Id 헤더 우선)
 import { requestIdMiddleware, createReqLogger, LOG_FILE_PATH } from './lib/reqLogger.mjs';
+// [2026-06-30] 후속 질문 의도(intent) 분류기 + 핸들러 모듈
+//   - 8 intent (data_query/analysis/metric_lookup/ontology_lookup/troubleshooting/sql_explain/domain_explain/general_chat)
+//   - 3-tier 분류 (휴리스틱 → LLM → 라디오 fallback)
+//   - 6개 신규 intent 핸들러 (metric/ontology/troubleshooting/sql/domain/general)
+import { initConversationalIntent } from './conversational_intent.mjs';
 // Phase 1: 후속 대화 의도 분류기 + 6개 신규 핸들러 (PR #201)
 import {
   INTENT_LABELS,
@@ -3359,6 +3364,26 @@ function applyDomainFilter(inputSql, domainCode) {
 }
 
 // ============================================================
+// [2026-06-30] Conversational Intent 분류기 + 핸들러 초기화
+// ------------------------------------------------------------
+// pool / openai / GPT_MODEL / applyDomainFilter 모두 위에서 이미 정의되어 있으므로
+// 이 시점에 안전하게 초기화 가능.
+// 사용:
+//   const { intent, tier } = await conversationalIntent.classifyConversationalIntent(query, ctx, mode);
+//   if (intent === 'metric_lookup') {
+//     const resp = await conversationalIntent.handleMetricLookup(query, activeDomain, ctx);
+//     return res.json(resp);
+//   }
+// ============================================================
+const conversationalIntent = initConversationalIntent({
+  pool,
+  openai,
+  GPT_MODEL,
+  applyDomainFilter,
+});
+console.log('[Boot] Conversational Intent 분류기 초기화 완료 (8 intents, 3-tier classifier)');
+
+// ============================================================
 // Helper: Dummy 행 제거 (결과 후필터) — 안전망
 // - 서버 응답 data 배열에서 어떤 컬럼이든 값이 정확히 'Dummy' (대소문자 무시) 인 행 제거
 // - SQL 자동주입이 적용 안 된 경우(서브쿼리/UNION/CTE/JOIN 등)에도 보호
@@ -3666,6 +3691,96 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     let sql, answer = '', explanation, chartType, chartConfig, analysisRequired = false;
     let ragInfo = null;  // RAG 검색 상세 정보
     let dateContext = null;  // 당월/전월 날짜 컨텍스트
+
+    // ============================================================
+    // [2026-06-30] ★ 후속 질문 의도(intent) 자동 분류 + 6개 신규 핸들러 라우팅
+    // ------------------------------------------------------------
+    // 정책:
+    //   - 라디오(현황집계/분석질문) 는 유지하되, 실제 의도가
+    //     metric_lookup / ontology_lookup / troubleshooting / sql_explain
+    //     / domain_explain / general_chat 중 하나면 전용 핸들러로 라우팅.
+    //   - data_query / analysis 두 의도는 기존 경로 그대로 사용 (아래 블록을 그냥 통과).
+    //   - 학습 데이터(matchedSql) 매칭이 있으면 신규 분류 우회 (사용자가 검증한 SQL 우선).
+    //   - 라디오와 intent 가 어긋나면 응답에 suggestedMode 안내 동봉 (강제 차단은 안 함).
+    // ============================================================
+    if (!matchedSql) {
+      setRequestStage('conversational_intent_classify');
+      const ciStart = Date.now();
+      const ciResult = await conversationalIntent.classifyConversationalIntent(
+        query, conversationContext, userQueryMode
+      );
+      const ciDuration = Date.now() - ciStart;
+      conversationalIntent.logConversationalIntent({
+        requestId: getCurrentRequestId(),
+        query,
+        userQueryMode,
+        intent: ciResult.intent,
+        confidence: ciResult.confidence,
+        tier: ciResult.tier,
+        durationMs: ciDuration,
+      });
+
+      // 6개 신규 intent → 전용 핸들러
+      const conversationalIntents = new Set([
+        'metric_lookup', 'ontology_lookup', 'troubleshooting',
+        'sql_explain', 'domain_explain', 'general_chat',
+      ]);
+      if (conversationalIntents.has(ciResult.intent)) {
+        setRequestStage(`intent_${ciResult.intent}`);
+        let handlerResp;
+        try {
+          if      (ciResult.intent === 'metric_lookup')   handlerResp = await conversationalIntent.handleMetricLookup(query, activeDomain, conversationContext);
+          else if (ciResult.intent === 'ontology_lookup') handlerResp = await conversationalIntent.handleOntologyLookup(query, activeDomain, conversationContext);
+          else if (ciResult.intent === 'troubleshooting') handlerResp = await conversationalIntent.handleTroubleshooting(query, activeDomain, conversationContext);
+          else if (ciResult.intent === 'sql_explain')     handlerResp = await conversationalIntent.handleSqlExplain(query, activeDomain, conversationContext);
+          else if (ciResult.intent === 'domain_explain')  handlerResp = await conversationalIntent.handleDomainExplain(query, activeDomain, conversationContext);
+          else if (ciResult.intent === 'general_chat')    handlerResp = await conversationalIntent.handleGeneralChat(query, activeDomain, conversationContext);
+        } catch (handlerErr) {
+          // 핸들러 자체 실패 — 단순 에러 금지, 자연어 안내로 fallback
+          console.error(`[ConversationalIntent] ${ciResult.intent} 핸들러 실패:`, handlerErr.message);
+          handlerResp = conversationalIntent.buildConversationalResponse({
+            intent: ciResult.intent,
+            userQueryMode,
+            answer: `요청을 처리하던 중 일시적 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.\n\n(오류: ${handlerErr.message})`,
+            referenced: { error: true, errorMessage: handlerErr.message },
+          });
+        }
+
+        // 표준 응답에 requestId / mode 정보 보강
+        handlerResp.requestId = getCurrentRequestId();
+        handlerResp.queryMode = userQueryMode;
+        handlerResp.intentTier = ciResult.tier;
+        handlerResp.intentConfidence = ciResult.confidence;
+
+        // 이력 저장 (오류 없이 가벼운 대화형 응답이므로 sql=null, rows=0)
+        try {
+          const userId = req.session?.user?.id || null;
+          await saveHistory(
+            userId, query, null,
+            handlerResp.answer || '', 'analysis', null,
+            [], 0, ciDuration, 'success', null,
+            session_id, activeDomain
+          );
+        } catch (histErr) {
+          console.error('[ConversationalIntent] 이력 저장 실패 (무시):', histErr.message);
+        }
+
+        return res.json(handlerResp);
+      }
+      // data_query / analysis → 기존 경로 그대로 통과 (아래 블록으로 진행)
+      // 다만 라디오↔intent 미스매치가 있으면 suggestedMode 정보를 res.locals 에 보관해
+      // 기존 경로 응답에 합칠 수 있도록 함 (Phase 2 에서 활용 — 현재는 로그만)
+      const mismatch = conversationalIntent.determineSuggestedMode(ciResult.intent, userQueryMode);
+      if (mismatch.suggestedMode) {
+        console.log(`[ConversationalIntent] 라디오↔intent 미스매치: radio=${userQueryMode}, intent=${ciResult.intent}, suggested=${mismatch.suggestedMode}`);
+        res.locals = res.locals || {};
+        res.locals.suggestedMode = mismatch.suggestedMode;
+        res.locals.suggestedModeMessage = mismatch.suggestedModeMessage;
+      }
+      res.locals = res.locals || {};
+      res.locals.classifiedIntent = ciResult.intent;
+      res.locals.classifiedIntentTier = ciResult.tier;
+    }
 
     // ============================================================
     // ★ 분석형 질문 사전 분기 (안전 경로)
