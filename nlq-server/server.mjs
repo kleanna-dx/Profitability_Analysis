@@ -26,6 +26,19 @@ import {
 //   - 로그 파일: /data/analytics/logs/nlq-server.log (운영) / ./logs/nlq-server.log (샌드박스)
 //   - 모든 /api/* 요청에 requestId 부여 (Nginx X-Request-Id 헤더 우선)
 import { requestIdMiddleware, createReqLogger, LOG_FILE_PATH } from './lib/reqLogger.mjs';
+// Phase 1: 후속 대화 의도 분류기 + 6개 신규 핸들러 (PR #201)
+import {
+  INTENT_LABELS,
+  classifyConversationalIntent,
+  logConversationalIntent,
+  determineSuggestedMode,
+  handleMetricLookup,
+  handleOntologyLookup,
+  handleTroubleshooting,
+  handleSqlExplain,
+  handleDomainExplain,
+  handleGeneralChat,
+} from './conversational-intent.mjs';
 
 const app = express();
 app.use(cors());
@@ -3522,6 +3535,112 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   // ★ 질문 유형: 'aggregate'(현황집계: 표+SQL) | 'analysis'(분석질문: 텍스트만)
   //   기본값 'aggregate' — 프론트엔드 라디오에서 명시적으로 선택 (기존 자동 키워드 감지보다 우선)
   const userQueryMode = (queryMode === 'analysis') ? 'analysis' : 'aggregate';
+
+  // ============================================================
+  // Phase 1: 후속 대화 의도 자동 분류 + 6개 신규 의도 라우팅 (PR #201)
+  // - 라디오는 그대로 유지(data_query/analysis의 기본 모드)
+  // - metric_lookup / ontology_lookup / troubleshooting / sql_explain
+  //   / domain_explain / general_chat 은 즉시 처리하여 텍스트 응답 반환
+  // - data_query / analysis 는 기존 흐름으로 통과 (try 블록으로 진입)
+  // ============================================================
+  let classifiedIntent = null;
+  let classificationTier = null;
+  let classificationConfidence = null;
+  try {
+    const cls = await classifyConversationalIntent(query, conversationContext, userQueryMode, openai, GPT_MODEL);
+    classifiedIntent = cls.intent;
+    classificationTier = cls.tier;
+    classificationConfidence = cls.confidence;
+
+    const intentCommonCtx = {
+      query,
+      activeDomain,
+      conversationContext: conversationContext || [],
+      pool,
+      openai,
+      model: GPT_MODEL,
+    };
+
+    // 6개 신규 의도 — 즉시 텍스트 응답 후 종료
+    const newIntentHandlers = {
+      metric_lookup:   handleMetricLookup,
+      ontology_lookup: handleOntologyLookup,
+      troubleshooting: handleTroubleshooting,
+      sql_explain:     handleSqlExplain,
+      domain_explain:  handleDomainExplain,
+      general_chat:    handleGeneralChat,
+    };
+
+    if (newIntentHandlers[classifiedIntent]) {
+      const t0 = Date.now();
+      const respBody = await newIntentHandlers[classifiedIntent](intentCommonCtx);
+      const elapsed = Date.now() - t0;
+
+      // suggestedMode 산출 (라디오 vs 분류 불일치)
+      respBody.suggestedMode = determineSuggestedMode(classifiedIntent, userQueryMode);
+      respBody.requestId = getCurrentRequestId();
+      respBody.classificationTier = classificationTier;
+      respBody.classificationConfidence = classificationConfidence;
+
+      // 표준 로깅
+      logConversationalIntent({
+        requestId: getCurrentRequestId(),
+        mode: userQueryMode,
+        intent: classifiedIntent,
+        intentLabel: INTENT_LABELS[classifiedIntent],
+        tier: classificationTier,
+        confidence: classificationConfidence,
+        domain: activeDomain,
+        elapsedMs: elapsed,
+        referenced: respBody.referenced,
+        suggestedMode: respBody.suggestedMode,
+        success: true,
+      });
+
+      // 이력 저장 (saveHistory 13개 파라미터 시그니처 준수, SQL은 빈 문자열)
+      const userIdForHistory = req.session?.user?.id || null;
+      try {
+        await saveHistory(
+          userIdForHistory,
+          query,
+          '',                                              // generated_sql
+          respBody.explanation || respBody.analysisText || '', // explanation
+          'analysis',                                      // chart_type
+          null,                                            // chart_config
+          [],                                              // result_data
+          0,                                               // row_count
+          elapsed,                                         // execution_time_ms
+          'success',                                       // status
+          null,                                            // error_message
+          session_id || null,                              // session_id
+          activeDomain                                     // domain_code
+        );
+      } catch (histErr) {
+        console.error('[NLQ:Intent] saveHistory 실패 (응답에는 영향 없음):', histErr.message);
+      }
+
+      return res.json(respBody);
+    }
+
+    // data_query / analysis / fallback 은 기존 흐름으로 진행
+    // 단, 라디오 모드를 자동 분류 결과로 보정할지 정책: 보수적으로 라디오 우선 유지
+    logConversationalIntent({
+      requestId: getCurrentRequestId(),
+      mode: userQueryMode,
+      intent: classifiedIntent,
+      intentLabel: INTENT_LABELS[classifiedIntent] || classifiedIntent,
+      tier: classificationTier,
+      confidence: classificationConfidence,
+      domain: activeDomain,
+      passThrough: true,
+    });
+  } catch (clsErr) {
+    // 분류 자체가 실패해도 기존 흐름은 정상 진행
+    console.error('[NLQ:Intent] 분류 처리 중 오류 (기존 흐름으로 계속 진행):', clsErr.message);
+  }
+  // ============================================================
+  // Phase 1 끝 — 아래는 기존 data_query/analysis 흐름
+  // ============================================================
 
   try {
     console.log(`[NLQ] 질의: ${query}`);
