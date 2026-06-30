@@ -48,10 +48,31 @@ const DOMAIN_DIVISION = {
  *           > metric_lookup > ontology_lookup > general_chat
  * 일치하는 패턴이 없으면 null 반환 (LLM으로 위임).
  */
-export function classifyConversationalIntentHeuristic(query) {
+export function classifyConversationalIntentHeuristic(query, conversationContext) {
   if (!query || typeof query !== 'string') return null;
   const q = query.trim();
   const lower = q.toLowerCase();
+
+  // [2026-06-30] 직전 턴에 SQL이 있으면, "SQL/쿼리" 단어 없이도 후속 SQL 관련 질문을
+  //   sql_explain 으로 분류. 사용자 사례: "근데 넌 왜 컬럼마다 SUM을 붙여놨어?" "왜 묶지 않았어?"
+  //   - 직전 SQL이 있고, "왜/어디서/어떻게/그건" + "SUM/컬럼/산식/계산/묶/펼쳐/감싸/분배" 키워드면 sql_explain
+  //   - 또는 "이/저/그/방금" + (산식/SQL/쿼리/컬럼) + (어디|출처|왜|어떻게) 형태도 sql_explain
+  const hasPrevSql = Array.isArray(conversationContext) && conversationContext.length > 0
+    && conversationContext.slice().reverse().some(t => t && t.sql);
+  if (hasPrevSql) {
+    if (
+      // (a) 의문어 → 키워드 (앞 → 뒤 순서)
+      /(왜|어디서|어디|어떻게|뭐|무슨|어째서).{0,40}(sum|컬럼|산식|공식|계산|묶|펼치|감싸|분배|붙여|붙였|왜그|왜 그|쿼리|sql|select|group|where|case|when|join|order|출처|근거|등록|가져)/i.test(q) ||
+      // (b) 키워드 → 의문어 (뒤 → 앞 순서, "산식은 어디서" 같은 패턴)
+      /(sum|컬럼|산식|공식|쿼리|sql).{0,40}(왜|어디서|어디|어떻게|뭐|무슨|어째서|출처|근거|가져|등록)/i.test(q) ||
+      // (c) 지시어 + SQL/산식 관련 + 의문/요청
+      /(이|저|그|방금|위|아까).{0,5}(산식|공식|쿼리|sql|컬럼).{0,30}(어디|출처|근거|왜|어떻게|설명|풀어)/i.test(q) ||
+      // (d) 단정형 불일치 표현
+      /(이상해|이상한|틀린|잘못|왜이래|이게 맞|이게맞|왜 이렇)/.test(q)
+    ) {
+      return 'sql_explain';
+    }
+  }
 
   // 0) ontology_lookup 강제 우선 — "컬럼/필드/용어" 명시어가 있고 "뭐/뜻/의미/설명"이면
   //    domain_explain / metric_lookup 보다 먼저 ontology로 라우팅.
@@ -197,8 +218,8 @@ export async function classifyConversationalIntentLLM(query, conversationContext
  *   - tier: 'heuristic' | 'llm' | 'fallback'
  */
 export async function classifyConversationalIntent(query, conversationContext, userQueryMode, openai, model) {
-  // Tier 1
-  const h = classifyConversationalIntentHeuristic(query);
+  // Tier 1 — conversationContext 전달 (직전 SQL 유무에 따른 분류 차이 반영)
+  const h = classifyConversationalIntentHeuristic(query, conversationContext);
   if (h) {
     return { intent: h, confidence: 0.95, tier: 'heuristic' };
   }
@@ -363,7 +384,12 @@ export async function handleMetricLookup({ query, activeDomain, conversationCont
 - 산식은 코드 블록(\`)으로 표시
 - 마크다운 표/리스트 활용 가능
 - 절대 거짓말하지 말고, 제공된 정보만 사용
-- "조회 실패", "처리할 수 없습니다" 같은 표현 금지`;
+- "조회 실패", "처리할 수 없습니다" 같은 표현 금지
+
+[응답 길이/형식 규칙 — 매우 중요]
+- 응답이 중간에 잘리지 않도록 핵심 결론부터 먼저 답하고, 산식 본문은 마지막에 코드 블록으로 배치
+- 산식의 컬럼이 **15개 이상**이면 "총 N개 컬럼 합산"이라고 요약 + 처음 3개·마지막 2개만 표기 + 전체 산식은 \`\`\`sql 블록\`\`\`에 한 번만
+- 동일 metric이 여러 도메인에 있으면 사용자의 활성 도메인 우선, 다른 도메인은 "타 도메인: HL, MGMT에도 존재" 한 줄로만 언급`;
 
   const userPrompt = `사용자 질문: "${query}"
 도메인: ${activeDomain}
@@ -381,7 +407,7 @@ ${metricList}${colHint}
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: 600,
+      max_tokens: 1200, // [Fix-D] 산식 노출 시 잘림 방지: 600 → 1200
       temperature: 0.2,
     });
     answer = resp.choices?.[0]?.message?.content?.trim() || metricList;
@@ -572,7 +598,7 @@ ${diagnostics.length > 0 ? diagnostics.map(d => `- ${d}`).join('\n') : '- (특�
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: 600,
+      max_tokens: 1200, // [Fix-D] 진단 본문 잘림 방지: 600 → 1200
       temperature: 0.3,
     });
     answer = resp.choices?.[0]?.message?.content?.trim();
@@ -603,7 +629,135 @@ ${diagnostics.length > 0 ? diagnostics.map(d => `- ${d}`).join('\n') : '- (특�
 }
 
 /**
- * handleSqlExplain — 직전 생성 SQL 설명
+ * [2026-06-30] sql_explain sub-intent 휴리스틱 분류
+ *   - structure_explain: 절별 SQL 구조 풀이 ("이 쿼리 설명", "절별로 풀어")
+ *   - formula_source   : 산식 출처/근거 ("어디서 가져왔어", "어떻게 결정")
+ *   - formula_compare  : 직전 SQL ↔ 현재 metric 산식 비교 ("왜 컬럼마다 SUM", "왜 묶지 않았")
+ *   - formula_reason   : 왜 이렇게 짰는지 ("왜 이렇게", "왜 이 컬럼")
+ *   - judgment         : 적절성 판단 ("맞아?", "이상한 거 아냐?", "괜찮아?")
+ */
+export function classifySqlExplainSubIntent(query) {
+  const q = (query || '').trim();
+  if (!q) return 'structure_explain';
+  // formula_compare: 산식 비교 의도 (SUM/컬럼 분배/묶기 관련)
+  if (/(왜|어째서|어떻게).{0,30}(컬럼마다|각 컬럼|컬럼별).{0,15}(sum|합)/i.test(q) ||
+      /(왜|어째서).{0,30}(묶지|감싸지|한 번|한번|크게|전체로)/.test(q) ||
+      /(분배|펼쳐|펼치|컬럼별.{0,5}sum)/i.test(q) ||
+      /(왜|어째서).{0,30}(sum.{0,5}붙)/i.test(q)) {
+    return 'formula_compare';
+  }
+  // formula_source: 산식 출처/근거
+  if (/(어디서|어디에서|어디).{0,15}(가져|왔|등록|참조|기반|기준)/.test(q) ||
+      /(출처|근거|기반|기준|레퍼런스)/.test(q) ||
+      /(어떤 산식|무슨 산식|어떤 공식|무슨 공식)/.test(q)) {
+    return 'formula_source';
+  }
+  // judgment: 적절성 판단
+  if (/(맞아|맞나|맞는|이게 맞|이상해|이상한|잘못|틀린|틀렸|괜찮|적절|이게 답)/.test(q)) {
+    return 'judgment';
+  }
+  // formula_reason: 왜 이렇게 짰는지
+  if (/(왜|어째서).{0,30}(이렇|이런 식|이 컬럼|이 산식|이 방식|이 함수)/.test(q) ||
+      /(왜|어째서).{0,30}(선택|골라|뽑|쓴|썼|골랐)/.test(q)) {
+    return 'formula_reason';
+  }
+  // 기본
+  return 'structure_explain';
+}
+
+/**
+ * [2026-06-30] SQL에서 metric_code 토큰을 추출 후, metric 테이블의 현재 산식과 비교.
+ *   - 직전 SQL 안의 ZAMTxxx / SUM(ZAMTxxx) 같은 패턴 식별
+ *   - LLM에게 비교 컨텍스트로 전달할 metric 목록 반환
+ *
+ *   주의: SQL 안의 모든 컬럼이 metric_code는 아니므로, metric 테이블에 등록된 코드와 교집합만 사용.
+ */
+async function loadMetricsForExplain(pool, activeDomain) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT metric_code, aggregation, formula, description FROM metric WHERE domain_code = ?`,
+      [activeDomain || 'PS']
+    );
+    return rows.map(r => ({
+      metric_code: r.metric_code,
+      aggregation: (r.aggregation || '').toUpperCase(),
+      formula: (r.formula || '').trim(),
+      description: r.description || '',
+    }));
+  } catch (e) {
+    console.error('[Intent:sql_explain] metric 조회 실패:', e.message);
+    return [];
+  }
+}
+
+/**
+ * [2026-06-30] 직전 SQL ↔ 현재 metric 산식의 차이 분석.
+ *   휴리스틱 검출:
+ *   - "AGG 분배" 패턴: SUM(A) - SUM(B) + SUM(C) 형태인데, metric formula는 row-level (A-B+C)
+ *   - "단독 컬럼 사용" 패턴: SUM(ZAMT035) 단독인데, ZAMT035 산식이 row-level로 등록됨
+ *   - "산식 일치" : SQL이 SUM(전체 formula) 형태 그대로 사용 중
+ */
+function analyzeSqlVsMetric(sql, metrics) {
+  const s = sql || '';
+  const norm = x => (x || '').replace(/\s+/g, '');
+  const sqlNorm = norm(s);
+  const findings = [];
+  for (const m of metrics) {
+    const code = m.metric_code;
+    const formula = m.formula;
+    if (!code || !formula) continue;
+    const hasAggInsideFormula = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(formula);
+    const level = hasAggInsideFormula ? 'column-level' : 'row-level';
+    // formula에 등장하는 원시 컬럼 추출 (ZAMTxxx, BIC_xxx, ZQTYxxx)
+    const cols = (formula.match(/ZAMT\d{3}|BIC_[A-Z0-9_]+|ZQTY[A-Z_]*|[A-Z_][A-Z0-9_]{2,}/g) || [])
+      .filter((v,i,a) => a.indexOf(v) === i);
+    const codeAppearsInSql = new RegExp(`\\b${code}\\b`, 'i').test(s);
+    // formula의 컬럼들이 SQL에 충분히(>=60%) 등장하는지
+    const colMatchCount = cols.filter(c => new RegExp(`\\b${c}\\b`, 'i').test(s)).length;
+    const colMatchRatio = cols.length > 0 ? colMatchCount / cols.length : 0;
+    const formulaColumnsAppearInSql = cols.length >= 2 && colMatchRatio >= 0.6;
+    // 둘 다 아니면 이 metric은 SQL과 무관 → 스킵
+    if (!codeAppearsInSql && !formulaColumnsAppearInSql) continue;
+
+    // (1) SUM(전체 산식) 그대로 들어있는가? (공백 무시)
+    const wrapped = `SUM(${norm(formula)})`;
+    if (sqlNorm.includes(wrapped) || sqlNorm.includes(norm(formula))) {
+      findings.push({ code, level, status: 'matches_wrapped', formula, description: m.description, viaColumns: !codeAppearsInSql });
+      continue;
+    }
+    // (2) 단독 SUM(metric_code) — row-level metric이라면 부적절
+    const standaloneSum = new RegExp(`SUM\\s*\\(\\s*${code}\\s*\\)`, 'i').test(s);
+    if (standaloneSum && level === 'row-level') {
+      findings.push({ code, level, status: 'standalone_sum_on_rowlevel', formula, description: m.description });
+      continue;
+    }
+    // (3) AGG 분배 의심: formula의 모든 원시 컬럼이 SQL에서 개별 SUM()으로 등장
+    if (level === 'row-level' && cols.length >= 2) {
+      const summedCount = cols.filter(c => new RegExp(`SUM\\s*\\(\\s*${c}\\s*\\)`, 'i').test(s)).length;
+      // 60% 이상의 컬럼이 개별 SUM()으로 감싸여 있으면 분배 패턴으로 판정
+      if (summedCount / cols.length >= 0.6) {
+        findings.push({
+          code, level,
+          status: 'agg_distributed',
+          formula,
+          description: m.description,
+          columns: cols,
+          summedCount,
+          totalCols: cols.length,
+          viaColumns: !codeAppearsInSql,
+        });
+        continue;
+      }
+    }
+    // (4) 그 외 — 등장은 하지만 명확한 패턴 매칭 안 됨
+    findings.push({ code, level, status: 'appears_unclear', formula, description: m.description, viaColumns: !codeAppearsInSql });
+  }
+  return findings;
+}
+
+/**
+ * handleSqlExplain — 직전 생성 SQL 설명 (sub-intent 분기 지원)
+ *   [2026-06-30] sub-intent 휴리스틱 + 직전 SQL ↔ 현재 metric 비교 + 응답 잘림 방지
  */
 export async function handleSqlExplain({ query, activeDomain, conversationContext, pool, openai, model }) {
   const last = extractLastContext(conversationContext);
@@ -616,24 +770,93 @@ export async function handleSqlExplain({ query, activeDomain, conversationContex
     });
   }
 
-  const systemPrompt = `당신은 SQL 전문가입니다.
-사용자가 자연어로 만든 SQL을 한국어로 알기 쉽게 설명합니다.
-- SELECT / FROM / WHERE / GROUP BY / ORDER BY 각 절을 한 줄씩 풀어쓰기
-- 컬럼/필터의 의미를 도메인 맥락(${activeDomain})으로 해석
-- 마크다운 사용
-- "처리할 수 없습니다" 같은 표현 금지`;
+  const subIntent = classifySqlExplainSubIntent(query);
+  const metrics = await loadMetricsForExplain(pool, activeDomain);
+  const findings = analyzeSqlVsMetric(last.sql, metrics);
 
-  const userPrompt = `도메인: ${activeDomain}
-원래 질문: ${last.query || '(불명)'}
+  // findings 요약 문자열 (LLM에 컨텍스트로 전달)
+  const findingsForLLM = findings.length === 0
+    ? '(관련 metric 코드가 SQL에서 발견되지 않음 — 일반 SQL 설명만 진행)'
+    : findings.map(f => {
+        const head = `- ${f.code} (${f.description || ''}) [${f.level}, status=${f.status}]`;
+        const formula = `\n    학습관리 산식: ${f.formula}`;
+        const extra = f.status === 'agg_distributed'
+          ? `\n    ⚠ 직전 SQL은 각 컬럼에 SUM()을 분배함. 학습관리 산식은 row-level이므로 SUM(산식 전체)로 묶는 것이 올바름.`
+          : f.status === 'standalone_sum_on_rowlevel'
+          ? `\n    ⚠ 직전 SQL은 SUM(${f.code})만 단독 사용. 학습관리에는 row-level 산식이 등록되어 있어 단순 컬럼 합산은 부적절.`
+          : f.status === 'matches_wrapped'
+          ? `\n    ✓ 직전 SQL은 학습관리 산식과 일치(또는 전체 SUM 형태로 사용 중).`
+          : '';
+        return head + formula + extra;
+      }).join('\n');
 
-설명할 SQL:
+  // sub-intent별 systemPrompt
+  const baseHeader = `당신은 SQL/데이터 분석 어시스턴트입니다.
+도메인: ${activeDomain}
+응답 언어: 한국어, 마크다운 사용.
+"처리할 수 없습니다" 같은 회피 표현 금지.
+
+**응답 길이/형식 규칙 (매우 중요)**:
+- 절대 응답이 중간에 잘리지 않도록 핵심부터 먼저 답하고, 결론을 끝에 명시할 것.
+- 긴 산식이나 컬럼 목록은 코드 블록(\`\`\`)으로 짧게 표시하고, "총 N개 컬럼" 처럼 개수만 요약.
+- 27개 이상의 컬럼이 있는 산식은 처음 3개 + ... + 마지막 1개 형태로 축약 표기.
+- 풀(full) SQL이나 풀 산식이 필요하면 \`\`\`sql 블록\`\`\` 안에 한 번만 표기.`;
+
+  const subPrompts = {
+    structure_explain: `${baseHeader}
+
+[작업] 직전 SQL을 절(節) 단위로 친절히 설명하세요.
+- SELECT / FROM / WHERE / GROUP BY / ORDER BY / LIMIT 각 절을 1-2줄로
+- 핵심 컬럼이 도메인적으로 무엇을 의미하는지 짧게 해석
+- 산식이 길면 "총 N개 컬럼의 합" 식으로 요약`,
+
+    formula_source: `${baseHeader}
+
+[작업] 사용자가 "이 산식이 어디서 왔는지" 묻고 있습니다.
+- 직전 SQL에서 사용된 산식이 학습관리(metric 테이블)의 어느 metric_code에서 왔는지 명시
+- 해당 metric의 원본 산식(학습관리 등록값)을 그대로 인용 (길면 요약 + 코드블록)
+- "산식이 학습관리 → metric 테이블 → domain=${activeDomain} 의 OOO 항목에서 가져왔습니다" 형식 문장 포함`,
+
+    formula_compare: `${baseHeader}
+
+[작업] 사용자가 "직전 SQL이 산식을 왜 컬럼마다 SUM으로 펼쳤는지(또는 왜 묶지 않았는지)" 묻고 있습니다.
+- 아래 [SQL ↔ 학습관리 산식 비교 결과]를 근거로 답하세요.
+- status=agg_distributed: 직전 SQL이 row-level 산식을 SUM(A)-SUM(B)+... 형태로 펼쳤다는 사실을 인정하고, **수학적으로는 동치지만 학습관리 권장 형태(SUM(산식 전체))와 표현이 다르다**고 설명. 향후엔 SUM(전체 산식)으로 묶어야 함을 안내.
+- status=matches_wrapped: 이미 SUM(전체 산식) 형태이므로 올바름을 확인하고, 사용자에게 "현재 SQL은 산식 전체를 한 번의 SUM()으로 묶고 있습니다"라고 명확히 답.
+- status=standalone_sum_on_rowlevel: SUM(metric_code) 단독은 부적절함을 지적.
+- 비교 후 **권장 SQL 표현식**도 함께 제시 (전체 산식이 너무 길면 축약 + 코드블록).`,
+
+    formula_reason: `${baseHeader}
+
+[작업] 사용자가 "왜 이렇게 짰는지" 묻고 있습니다.
+- 직전 SQL의 컬럼/조건/집계 선택의 근거를 설명
+- 가능하면 학습관리 등록 산식/동의어/도메인 규칙을 근거로 인용`,
+
+    judgment: `${baseHeader}
+
+[작업] 사용자가 "이게 맞는지/이상한지" 판단을 묻고 있습니다.
+- 직전 SQL이 학습관리 산식 기준으로 적절한지 평가
+- 적절하면 "이 SQL은 학습관리 산식 기준으로 올바른 형태입니다" 명시
+- 부적절하면 어떤 점이 어긋났는지 + 권장 형태 제시`,
+  };
+
+  const systemPrompt = subPrompts[subIntent] || subPrompts.structure_explain;
+
+  // SQL 요약 — 너무 길면 LLM에게 압축본도 같이 줌
+  const sqlForLLM = last.sql.length > 2500 ? last.sql.slice(0, 2400) + '\n-- ...(이하 생략)...' : last.sql;
+
+  const userPrompt = `원래 질문: ${last.query || '(불명)'}
+직전 SQL:
 \`\`\`sql
-${last.sql}
+${sqlForLLM}
 \`\`\`
+
+[SQL ↔ 학습관리 산식 비교 결과] (sub-intent: ${subIntent})
+${findingsForLLM}
 
 사용자 후속 요청: "${query}"
 
-위 SQL을 절(節) 단위로 친절히 설명해주세요.`;
+위 컨텍스트를 바탕으로 sub-intent에 맞춰 답해주세요.`;
 
   let answer;
   try {
@@ -643,7 +866,7 @@ ${last.sql}
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: 700,
+      max_tokens: 1400, // [Fix-D] 응답 잘림 방지: 700 → 1400 확장
       temperature: 0.2,
     });
     answer = resp.choices?.[0]?.message?.content?.trim();
@@ -652,14 +875,19 @@ ${last.sql}
   }
 
   if (!answer) {
-    answer = `**직전 SQL**\n\n\`\`\`sql\n${last.sql}\n\`\`\`\n\n` +
+    answer = `**직전 SQL**\n\n\`\`\`sql\n${last.sql.slice(0, 1500)}${last.sql.length > 1500 ? '\n-- ...(이하 생략)' : ''}\n\`\`\`\n\n` +
       `(자동 설명 생성에 일시 실패했습니다. 위 SQL을 직접 확인해 주세요.)`;
   }
 
   return buildConversationalResponse({
     intent: 'sql_explain',
     answer,
-    referenced: { lastQuery: last.query, lastSql: last.sql.slice(0, 500) },
+    referenced: {
+      lastQuery: last.query,
+      lastSql: last.sql.slice(0, 500),
+      subIntent,
+      findings: findings.map(f => ({ code: f.code, status: f.status, level: f.level })),
+    },
   });
 }
 
