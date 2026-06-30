@@ -3622,6 +3622,18 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         console.error('[NLQ:Intent] saveHistory 실패 (응답에는 영향 없음):', histErr.message);
       }
 
+      // [2026-06-30] Phase 2: 프론트 conversationContext 확장 필드 보강
+      //   - domain: 현재 도메인 (PS/HL/MGMT) — troubleshooting 핸들러가 직전 도메인 활용
+      //   - rowCount: 신규 intent 핸들러는 항상 0 (데이터 조회 아님)
+      //   - elapsedMs: 처리 시간 — 진단/로깅용
+      //   - queryMode: 사용자가 선택한 라디오 값 — Phase 2 미스매치 안내에 활용
+      if (respBody && typeof respBody === 'object') {
+        if (respBody.domain === undefined)     respBody.domain     = activeDomain;
+        if (respBody.rowCount === undefined)   respBody.rowCount   = 0;
+        if (respBody.elapsedMs === undefined)  respBody.elapsedMs  = elapsed;
+        if (respBody.queryMode === undefined)  respBody.queryMode  = userQueryMode;
+      }
+
       return res.json(respBody);
     }
 

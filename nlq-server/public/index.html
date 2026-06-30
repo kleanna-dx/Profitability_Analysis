@@ -1472,14 +1472,16 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
         });
     } else if (data.isUnknownTerm) {
         appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
+    } else if (isNewIntent(data)) {
+        // [2026-06-30] Phase 2: 신규 intent 응답 (분석 async 경로에서도 일관 처리)
+        appendIntentMessage(data);
+        pushConversationContext({ query, data });
     } else if (data.isAnalysisAnswer) {
-        appendAnalysisOnlyMessage(data.answer || data.analysis || '분석 답변을 생성하지 못했습니다.');
-        conversationContext.push({ query, sql: null });
-        if (conversationContext.length > 5) conversationContext.shift();
+        appendAnalysisOnlyMessage(data.answer || data.analysis || data.explanation || '분석 답변을 생성하지 못했습니다.');
+        pushConversationContext({ query, data, overrideSql: null });
     } else {
         appendBotMessage(data);
-        conversationContext.push({ query, sql: data.sql });
-        if (conversationContext.length > 5) conversationContext.shift();
+        pushConversationContext({ query, data });
     }
 }
 
@@ -1718,18 +1720,24 @@ async function sendQuery(query) {
             });
         } else if (data.isUnknownTerm) {
             appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
+        } else if (isNewIntent(data)) {
+            // ★ [2026-06-30] Phase 2: 후속 질문 6개 신규 intent 응답 처리
+            //   metric_lookup / ontology_lookup / troubleshooting /
+            //   sql_explain / domain_explain / general_chat
+            //   - 처리 유형 배지 + 마크다운 본문 + (있으면) suggestedMode 배너
+            //   - 표/SQL/차트 영역은 띄우지 않음 (백엔드 isAnalysisAnswer:true)
+            appendIntentMessage(data);
+            // 대화 컨텍스트 — Phase 2 확장 필드 포함 (직전 질의의 맥락 유지)
+            pushConversationContext({ query, data });
         } else if (data.isAnalysisAnswer) {
             // ★ 분석형 답변: 표/SQL/차트 없이 텍스트 분석만 표시
-            appendAnalysisOnlyMessage(data.answer || data.analysis || '분석 답변을 생성하지 못했습니다.');
+            appendAnalysisOnlyMessage(data.answer || data.analysis || data.explanation || '분석 답변을 생성하지 못했습니다.');
             // 대화 컨텍스트에 추가 (SQL은 null)
-            conversationContext.push({ query, sql: null });
-            if (conversationContext.length > 5) conversationContext.shift();
+            pushConversationContext({ query, data, overrideSql: null });
         } else {
             appendBotMessage(data);
             // 대화 컨텍스트에 추가 (후속 질문 시 GPT가 이전 SQL을 참조할 수 있도록)
-            conversationContext.push({ query, sql: data.sql });
-            // 최근 5턴만 유지 (토큰 절약)
-            if (conversationContext.length > 5) conversationContext.shift();
+            pushConversationContext({ query, data });
         }
         // [2026-06-15] 사이드바 동기화 — 질문 실행 후엔 항상 [최근] 탭으로 정규화
         //   (자주질문 탭에서 질문 실행 시 탭/목록 불일치 방지)
@@ -2381,6 +2389,165 @@ function appendAnalysisOnlyMessage(analysis) {
         </div>`;
     chatArea.appendChild(el);
     scrollToBottom();
+}
+
+// ============================================================
+// [2026-06-30] Phase 2: 후속 질문 6개 신규 intent 응답 렌더
+// ------------------------------------------------------------
+// 백엔드(conversational-intent.mjs)는 다음 응답 필드를 내려준다:
+//   - intent           : metric_lookup / ontology_lookup / troubleshooting /
+//                        sql_explain / domain_explain / general_chat
+//   - intentLabel      : 한글 처리 유형 라벨 (예: "Metric 산식 조회")
+//   - explanation      : 답변 본문 (마크다운 가능)
+//   - analysisText     : 동일한 답변 (호환용)
+//   - isAnalysisAnswer : true
+//   - chartType        : 'analysis'
+//   - sql              : ''  (표/SQL/차트 없음)
+//   - results          : []
+//   - referenced       : 디버깅용 메타 (sourceTable, lastSql 등)
+//   - suggestedMode    : null | 'aggregate' | 'analysis'
+//                        (라디오↔intent 미스매치 안내)
+//
+// 본 함수는 처리 유형 배지 + 마크다운 본문 + (있으면) 미스매치 안내 배너를 렌더.
+// ============================================================
+function appendIntentMessage(data) {
+    const chatArea = document.getElementById('chatArea');
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+
+    // 본문 우선순위: explanation > analysisText > answer > analysis
+    const body = data.explanation || data.analysisText || data.answer || data.analysis || '답변을 생성하지 못했습니다.';
+    const rendered = renderSimpleMarkdown(String(body));
+
+    // intent별 배지 색상/아이콘 매핑
+    const intentBadgeStyle = {
+        metric_lookup:   { bg:'#ecfdf5', fg:'#047857', border:'#a7f3d0', icon:'fas fa-calculator' },
+        ontology_lookup: { bg:'#eff6ff', fg:'#1d4ed8', border:'#bfdbfe', icon:'fas fa-book' },
+        troubleshooting: { bg:'#fff7ed', fg:'#c2410c', border:'#fed7aa', icon:'fas fa-stethoscope' },
+        sql_explain:     { bg:'#f5f3ff', fg:'#6d28d9', border:'#ddd6fe', icon:'fas fa-code' },
+        domain_explain:  { bg:'#fdf2f8', fg:'#be185d', border:'#fbcfe8', icon:'fas fa-layer-group' },
+        general_chat:    { bg:'#f1f5f9', fg:'#334155', border:'#cbd5e1', icon:'fas fa-info-circle' },
+    };
+    const style = intentBadgeStyle[data.intent] || { bg:'#f1f5f9', fg:'#334155', border:'#cbd5e1', icon:'fas fa-comment' };
+    const intentLabel = data.intentLabel || data.intent || '응답';
+
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,${style.fg},${style.fg}cc);">
+                <i class="${style.icon}" style="font-size:13px;"></i>
+            </div>
+            <div style="background:${style.bg};border:1px solid ${style.border};padding:14px 18px;border-radius:12px;flex:1;">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+                    <span style="display:inline-flex;align-items:center;gap:5px;background:${style.fg};color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:10px;letter-spacing:0.3px;">
+                        <i class="${style.icon}" style="font-size:10px;"></i>${esc(intentLabel)}
+                    </span>
+                    <span style="font-size:11px;color:${style.fg}99;">처리 유형</span>
+                </div>
+                <div style="color:#1f2937;font-size:13px;line-height:1.75;" class="analysis-body intent-body">
+                    ${rendered}
+                </div>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+
+    // suggestedMode 안내 배너 (라디오↔intent 미스매치)
+    if (data.suggestedMode && (data.suggestedMode === 'aggregate' || data.suggestedMode === 'analysis')) {
+        showSuggestedModeBanner(data.suggestedMode);
+    }
+    scrollToBottom();
+}
+
+// ============================================================
+// [2026-06-30] Phase 2: 라디오↔intent 미스매치 안내 배너
+// ------------------------------------------------------------
+// 백엔드가 suggestedMode = 'aggregate' | 'analysis' 를 내려줄 때 호출.
+// 채팅창 위에 안내 배너 + 라디오 자동 전환 버튼 표시.
+// 같은 메시지가 연속으로 떠 있으면 새 것 1개만 유지 (직전 배너 제거).
+// ============================================================
+function showSuggestedModeBanner(targetMode) {
+    if (targetMode !== 'aggregate' && targetMode !== 'analysis') return;
+    if (queryMode === targetMode) return;  // 이미 일치하면 표시 안 함
+
+    const chatArea = document.getElementById('chatArea');
+
+    // 직전 배너 제거 (중복 누적 방지)
+    const prev = chatArea.querySelector('.suggested-mode-banner');
+    if (prev) prev.remove();
+
+    const targetLabel = (targetMode === 'analysis') ? '분석질문' : '현황집계';
+    const currLabel   = (queryMode === 'analysis') ? '분석질문' : '현황집계';
+    const message = (targetMode === 'analysis')
+        ? `이번 질문은 분석성 질문으로 보입니다. <strong>분석질문</strong> 라디오를 선택하시면 더 풍부한 시사점을 받을 수 있습니다.`
+        : `이번 질문은 단순 데이터 조회로 보입니다. <strong>현황집계</strong> 라디오를 선택하시면 표와 차트로 결과를 받을 수 있습니다.`;
+
+    const banner = document.createElement('div');
+    banner.className = 'suggested-mode-banner fade-in';
+    banner.style.cssText = 'background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;border-radius:10px;padding:12px 14px;margin:8px 0;display:flex;align-items:flex-start;gap:10px;';
+    banner.innerHTML = `
+        <i class="fas fa-lightbulb" style="color:#d97706;font-size:16px;margin-top:2px;flex-shrink:0;"></i>
+        <div style="flex:1;font-size:13px;color:#78350f;line-height:1.6;">
+            ${message}
+            <div style="margin-top:8px;font-size:11.5px;color:#92400e;">현재 선택: <strong>${esc(currLabel)}</strong></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+            <button type="button" onclick="onQueryModeChange('${targetMode}'); this.closest('.suggested-mode-banner').remove();"
+                    style="background:#f59e0b;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">
+                <i class="fas fa-exchange-alt" style="margin-right:4px;"></i>${esc(targetLabel)}(으)로 변경
+            </button>
+            <button type="button" onclick="this.closest('.suggested-mode-banner').remove();"
+                    style="background:transparent;color:#92400e;border:1px solid #fcd34d;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">
+                닫기
+            </button>
+        </div>`;
+    chatArea.appendChild(banner);
+}
+
+// ============================================================
+// [2026-06-30] Phase 2 헬퍼: 신규 intent 응답 판별 + 컨텍스트 확장 push
+// ============================================================
+const CONVERSATIONAL_INTENT_SET = new Set([
+    'metric_lookup', 'ontology_lookup', 'troubleshooting',
+    'sql_explain', 'domain_explain', 'general_chat',
+]);
+function isNewIntent(data) {
+    return data && typeof data.intent === 'string' && CONVERSATIONAL_INTENT_SET.has(data.intent);
+}
+
+// ============================================================
+// [2026-06-30] Phase 2: conversationContext 10필드 확장
+// ------------------------------------------------------------
+// 기존: { query, sql }
+// 확장: { query, sql, domain, rowCount, filters, metricUsed,
+//        errorMessage, historyId, queryMode, timestamp,
+//        intent, intentLabel }
+//
+// - troubleshooting / sql_explain 핸들러가 직전 SQL 외에도
+//   도메인 / rowCount / 에러메시지 / Metric 사용여부를 보고 정확한 진단을 함.
+// - 백엔드 응답에 historyId / rowCount / filters / metricUsed 가 없으면
+//   해당 필드는 그대로 누락(null) — 백엔드 보강은 후속 작업으로 분리.
+// - 최근 5턴만 유지 (LLM 토큰 절약).
+// ============================================================
+function pushConversationContext({ query, data, overrideSql }) {
+    if (!Array.isArray(conversationContext)) conversationContext = [];
+    const ctx = {
+        query,
+        sql:          (overrideSql !== undefined) ? overrideSql : (data && data.sql) || null,
+        domain:       currentDomain || (data && data.domain) || null,
+        rowCount:     (data && typeof data.rowCount === 'number') ? data.rowCount
+                      : (data && Array.isArray(data.data)) ? data.data.length
+                      : (data && Array.isArray(data.results)) ? data.results.length
+                      : null,
+        filters:      (data && data.filters) || null,
+        metricUsed:   (data && (data.metricUsed || data.metric_used)) || null,
+        errorMessage: (data && (data.error || data.errorMessage)) || null,
+        historyId:    (data && (data.historyId || data.history_id)) || null,
+        queryMode:    queryMode || null,
+        timestamp:    new Date().toISOString(),
+        intent:       (data && data.intent) || null,
+        intentLabel:  (data && data.intentLabel) || null,
+    };
+    conversationContext.push(ctx);
+    while (conversationContext.length > 5) conversationContext.shift();
 }
 
 // 간단한 마크다운 → HTML 렌더링 (분석 답변 전용)
