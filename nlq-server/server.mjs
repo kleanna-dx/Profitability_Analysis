@@ -7357,28 +7357,75 @@ app.post('/api/builder/query', async (req, res) => {
     }
 
     // SQL 실행 (시간 측정 — 사용자 요청 #1)
+    // ─── [2026-06-30 PR #198] DB 쿼리 timeout 명시 설정 ──────────────────────
+    //   (사용자 요청 #3 — timeout 정합성)
+    //   - mysql2 의 query 옵션 timeout 은 클라이언트 쪽 cancel 만 수행하므로
+    //     DB 서버에서는 쿼리가 계속 돌 수 있음 → MariaDB 의 SET STATEMENT
+    //     max_statement_time 으로 서버측에서도 cancel.
+    //   - 기본 100s (Express 110s 보다 안쪽). 환경변수로 조정 가능.
+    //   - 100s 를 넘으면 ER_QUERY_TIMEOUT 또는 ER_STATEMENT_TIMEOUT 으로
+    //     던져지므로 db_execute_failed 로 정확히 로깅됨.
+    const DB_QUERY_TIMEOUT_MS = parseInt(process.env.BUILDER_DB_QUERY_TIMEOUT_MS || '100000', 10);
     const dbStart = Date.now();
     log.stage('db_execute_start', {
       sql_preview: sql.substring(0, 300),
       sql_length: sql.length,
       param_count: finalParams.length,
       gpt_status: gptStatus,
+      db_query_timeout_ms: DB_QUERY_TIMEOUT_MS,
     });
     let rows;
+    let dbTimedOut = false;
     try {
+      // MariaDB: SET STATEMENT max_statement_time=<초> FOR <SQL>
+      // mysql2 query 옵션 timeout: 클라이언트 cancel (서버 cancel 은 위 SET 으로)
+      const timeoutSec = Math.ceil(DB_QUERY_TIMEOUT_MS / 1000);
+      const wrappedSql = `SET STATEMENT max_statement_time=${timeoutSec} FOR ${sql}`;
       const result = finalParams.length > 0
-        ? await pool.query(sql, finalParams)
-        : await pool.query(sql);
+        ? await pool.query({ sql: wrappedSql, timeout: DB_QUERY_TIMEOUT_MS }, finalParams)
+        : await pool.query({ sql: wrappedSql, timeout: DB_QUERY_TIMEOUT_MS });
       rows = result[0];
     } catch (dbErr) {
       const dbElapsed = Date.now() - dbStart;
-      log.error('db_execute_failed', dbErr, {
+      // MariaDB ER_STATEMENT_TIMEOUT(1969) / mysql2 timeout(PROTOCOL_SEQUENCE_TIMEOUT)
+      const code = dbErr?.code || '';
+      const errno = dbErr?.errno || 0;
+      dbTimedOut = (
+        code === 'PROTOCOL_SEQUENCE_TIMEOUT' ||
+        errno === 1969 ||  // ER_STATEMENT_TIMEOUT
+        /max_statement_time|query.*timeout|statement.*timeout/i.test(String(dbErr?.message || ''))
+      );
+      log.error(dbTimedOut ? 'db_query_timeout' : 'db_execute_failed', dbErr, {
         db_elapsed_ms: dbElapsed,
+        db_query_timeout_ms: DB_QUERY_TIMEOUT_MS,
         sql_preview: sql.substring(0, 300),
-        error_code: dbErr?.code,
+        sql_length: sql.length,
+        error_code: code,
+        errno,
         sql_state: dbErr?.sqlState,
       });
-      throw dbErr; // 기존 outer catch 로 전파
+      // DB 쿼리 timeout 은 명시적 504 + JSON 으로 응답 → 프론트가 정확한 메시지 표시 가능
+      if (dbTimedOut) {
+        const msg = `DB 조회 시간이 초과되었습니다 (${Math.round(dbElapsed/1000)}초, 한도 ${timeoutSec}초). ` +
+                    `조회 기간을 좁히거나 차원 수를 줄여서 재시도해 주세요.`;
+        log.stage('response_sent', {
+          db_elapsed_ms: dbElapsed,
+          db_timed_out: true,
+          http_status: 504,
+          delivered: !req.destroyed && !res.writableEnded,
+        });
+        if (!res.headersSent && !res.writableEnded) {
+          return res.status(504).json({
+            error: msg,
+            error_type: 'db_query_timeout',
+            db_elapsed_ms: dbElapsed,
+            db_query_timeout_ms: DB_QUERY_TIMEOUT_MS,
+            requestId: log.requestId,
+          });
+        }
+        return; // 이미 응답 끊김 — 추가 처리 불필요
+      }
+      throw dbErr; // 다른 에러는 기존 outer catch 로 전파
     }
     const dbStageMs = Date.now() - dbStart;
     console.log(`[DBStage] SQL 실행 완료: ${dbStageMs}ms, rows=${rows.length}`);
@@ -7512,15 +7559,35 @@ app.post('/api/builder/query', async (req, res) => {
         mode: compare_mom ? '전월대비' : '전년대비',
       };
     }
-    // ─── [2026-06-30 PR #197] 응답 전 클라이언트 연결 상태 점검 ────────────
-    //   (사용자 요청 #5)
-    //   - 백엔드가 정상 응답을 만들었더라도, 프론트가 이미 fetch timeout 으로
-    //     연결을 끊은 상태일 수 있음 → 실제 사용자에게는 결과가 전달되지 못함.
-    //   - clientAborted 플래그(req.on('close') 핸들러에서 설정) 또는
-    //     res.writableEnded / req.destroyed 를 함께 확인하여 정확히 구분.
-    //   - delivered=false 인 경우 response_failed 로그를 별도로 남겨
-    //     "백엔드는 성공했지만 사용자는 못 받았다" 는 케이스를 운영에서 식별.
+    // ─── [2026-06-30 PR #198] 응답 전 클라이언트 연결 상태 점검 (보강) ──────
+    //   (사용자 요청 #5 — delivered=false 원인 구분)
+    //   - PR #197 에서는 단순히 client_aborted / delivered 플래그만 기록.
+    //   - 이번에는 delivery_failure_reason 으로 다음 케이스를 구분:
+    //       client_timeout         : 프론트 fetch abort (req.aborted + 빠른 close)
+    //       proxy_timeout          : Nginx 가 먼저 끊음 (응답 시간 > 180s 추정)
+    //       response_delivery_failed: 그 외 정상 close 가 아닌 미상의 실패
+    //       null                   : 정상 전달
+    //   - 정확한 구분은 close 까지의 elapsed 시간 + req.destroyed 패턴으로 판별.
+    const totalElapsedMs = Date.now() - log.t0;
     const stillConnected = !clientAborted && !req.destroyed && !res.writableEnded;
+
+    // delivered=false 일 때 원인 추정
+    let deliveryFailureReason = null;
+    if (!stillConnected && clientAborted) {
+      // Nginx proxy_read_timeout(운영 180s) 부근에서 끊겼으면 proxy_timeout 으로 추정
+      // 그 이전이라면 프론트(client) 가 직접 abort 한 것으로 추정
+      const NGINX_PROXY_TIMEOUT_MS = parseInt(process.env.BUILDER_NGINX_PROXY_TIMEOUT_MS || '180000', 10);
+      // 임계 윈도우: Nginx timeout ± 5s 이내면 proxy_timeout 으로 본다
+      if (totalElapsedMs >= NGINX_PROXY_TIMEOUT_MS - 5000) {
+        deliveryFailureReason = 'proxy_timeout';
+      } else {
+        deliveryFailureReason = 'client_timeout';
+      }
+    } else if (!stillConnected && !clientAborted) {
+      // close 이벤트는 안 왔지만 res 가 writable 아님 — 드물지만 가능
+      deliveryFailureReason = 'response_delivery_failed';
+    }
+
     log.stage('response_sent', {
       row_count: clean.length,
       column_count: cols.length,
@@ -7528,15 +7595,19 @@ app.post('/api/builder/query', async (req, res) => {
       prompt_reflected: needGpt ? (gptStatus === 'rule_based' || gptStatus === 'applied') : null,
       db_stage_ms: dbStageMs,
       prompt_stage_ms: promptStageMs,
+      total_elapsed_ms: totalElapsedMs,
       client_aborted: clientAborted,
       delivered: stillConnected,
+      delivery_failure_reason: deliveryFailureReason,
     });
-    if (clientAborted) {
+    if (!stillConnected) {
       // 백엔드 작업은 성공했지만 사용자는 받지 못한 케이스 — 별도 식별용 로그
-      log.error('response_failed', new Error('response built but client already disconnected'), {
+      log.error('response_failed', new Error(`response built but ${deliveryFailureReason || 'unknown'}`), {
         db_stage_ms: dbStageMs,
+        total_elapsed_ms: totalElapsedMs,
         row_count: clean.length,
-        reason: 'client_aborted_before_response',
+        reason: deliveryFailureReason || 'unknown',
+        client_aborted: clientAborted,
       });
       // 그래도 res.json 은 안전하게 시도(Express 가 내부적으로 무시)
       try { res.json(responseObj); } catch (_) { /* 이미 끊긴 소켓 — 무시 */ }
