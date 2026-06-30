@@ -7097,13 +7097,17 @@ app.post('/api/builder/query', async (req, res) => {
 
         const userPromptText = `\n\n[추가 요청]\n${prompt}`;
         const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${metricGuide}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
-        // [2026-06-29] GPT 호출에 명시적 timeout 적용 (Nginx 60초 504 방지)
+        // [2026-06-29 PR #196] GPT 호출 timeout 40s → 90s 상향
+        //   - 운영 로그에서 40s 도달 시점에 abort 다발 발생 확인 (reqId=mqyzh7wsve1x 등)
+        //     → 프롬프트가 길어지면(현재 약 9.5KB) gpt-5.5 응답이 40s 를 넘기는 사례 다수
+        //   - 4-layer timeout 일관성 (안쪽 < 바깥쪽):
+        //       LLM 90s  <  Express server.setTimeout 110s
+        //                <  Nginx proxy_read_timeout 120s
+        //                <  Frontend fetch AbortController 130s
         //   - OpenAI SDK 의 `timeout` 옵션과 `AbortSignal` 양쪽으로 이중 보호
-        //   - 40초 안에 응답 못 받으면 abort → 코드단 fallback 으로 응답
-        //   - 규칙 기반 처리가 적용 안 된 케이스만 여기 도달
-        //   - 사용자 요청 #1: timeout 을 충분히 늘려 SQL 생성 기회 확보
-        //     (40s + 마이그레이션/네트워크 여유 5s + SQL 실행 ~1s = ≤ 50s, Nginx 60s 안전)
-        const GPT_TIMEOUT_MS = parseInt(process.env.BUILDER_GPT_TIMEOUT_MS || '40000', 10);
+        //   - 90s 안에도 응답 못 받으면 abort → 코드단 fallback 으로 기본 SQL 응답
+        //   - 환경변수 BUILDER_GPT_TIMEOUT_MS 로 운영 중 재조정 가능
+        const GPT_TIMEOUT_MS = parseInt(process.env.BUILDER_GPT_TIMEOUT_MS || '90000', 10);
         const gptStartTime = Date.now();
         console.log(`[GPTStage] GPT 호출 시작 (timeout=${GPT_TIMEOUT_MS}ms, prompt_len=${prompt.length})`);
         log.stage('llm_call_start', {
@@ -10064,7 +10068,7 @@ async function ensureFavoriteQuestionsTable() {
   }
 }
 
-app.listen(PORT, '0.0.0.0', async () => {
+const httpServer = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 NLQ Server running on http://0.0.0.0:${PORT}`);
 
   // 배치관리 테이블 자동 생성
@@ -10131,3 +10135,30 @@ app.listen(PORT, '0.0.0.0', async () => {
     ragReady = false;
   }
 });
+
+// ════════════════════════════════════════════════════════════════════
+// [2026-06-29 PR #196] HTTP 서버 timeout 명시적 설정 (4-layer 일관성)
+// --------------------------------------------------------------------
+// Node.js 기본값(headersTimeout=60s) 이 Nginx 60s 와 겹쳐, /api/builder/query
+// 가 LLM 90s 까지 기다리도록 늘리려면 HTTP 서버 자체 timeout 도 같이 늘려야 함.
+//
+// timeout 위계 (안쪽이 항상 더 짧음):
+//   LLM(GPT)        90s   ← server.mjs (BUILDER_GPT_TIMEOUT_MS)
+//   Express server 110s   ← 여기 (BUILDER_SERVER_TIMEOUT_MS)
+//   Nginx proxy_read 120s ← 운영 nginx.conf (PR 본문의 배포 가이드 참고)
+//   Frontend fetch  130s  ← public/builder.html
+//
+// 각 값은 환경변수로 운영 중 조정 가능.
+// ════════════════════════════════════════════════════════════════════
+const SERVER_TIMEOUT_MS = parseInt(process.env.BUILDER_SERVER_TIMEOUT_MS || '110000', 10);
+// requestTimeout: 단일 요청 전체 (헤더+바디+처리) 의 최대 시간
+httpServer.requestTimeout = SERVER_TIMEOUT_MS;
+// headersTimeout: 헤더 수신까지의 최대 시간. requestTimeout 보다 약간 더 크게 둬야
+//   Node.js 가 정상 동작 (https://nodejs.org/api/http.html#serverheaderstimeout)
+httpServer.headersTimeout = SERVER_TIMEOUT_MS + 5000;
+// keepAliveTimeout: Nginx upstream keepalive 사용 시, 클라이언트가 재사용하는
+//   소켓을 서버가 먼저 끊지 않도록 65s (Nginx 기본 60s 보다 살짝 크게)
+httpServer.keepAliveTimeout = 65000;
+// .setTimeout(): 소켓 무응답 차단 (legacy API — 호환성용으로 같이 지정)
+httpServer.setTimeout(SERVER_TIMEOUT_MS);
+console.log(`[Boot] HTTP server timeouts: request=${SERVER_TIMEOUT_MS}ms, headers=${httpServer.headersTimeout}ms, keepAlive=${httpServer.keepAliveTimeout}ms`);
