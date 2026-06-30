@@ -3613,7 +3613,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           [],                                              // result_data
           0,                                               // row_count
           elapsed,                                         // execution_time_ms
-          'success',                                       // status
+          'SUCCESS',                                       // status — ★ 기존 컨벤션('SUCCESS'/'FAILED' 대문자) 준수. 이전엔 'success'(소문자)로 저장되어 이력 복원 시 status 비교 실패 → 빨간 오류 박스 노출 버그가 있었음
           null,                                            // error_message
           session_id || null,                              // session_id
           activeDomain                                     // domain_code
