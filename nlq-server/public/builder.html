@@ -2884,11 +2884,18 @@ async function executeQuery() {
     try {
         const sp = document.getElementById('sqlPreview');
         const spText = document.getElementById('sqlPreviewText');
+        const reqIdSpan = document.getElementById('sqlPreviewRequestId');
         if (sp && spText) {
             spText.innerHTML = '<span style="opacity:.6;">(실행 중… 응답 도착 시 실제 실행된 SQL 이 여기에 표시됩니다)</span>';
             sp.classList.add('active');   // 영역 자체는 노출해서 대기 상태를 알림
             sp.classList.remove('expanded');
             sp.classList.remove('editing');
+        }
+        // [PR #211] 이전 요청의 reqId badge 는 즉시 클리어 (새 요청 시작 시점)
+        //   실제 이번 요청의 reqId 는 아래에서 clientRequestId 생성 직후 채워 넣음
+        if (reqIdSpan) {
+            reqIdSpan.textContent = '';
+            reqIdSpan.title = '';
         }
         // 편집 모드 취소용 원본 스냅샷도 초기화 (이전 결과의 SQL 이 남지 않도록)
         lastGeneratedSql = '';
@@ -2947,13 +2954,48 @@ async function executeQuery() {
     //     긴 쿼리를 사용자가 기다릴 수 있도록 프론트 timeout 만 상향.
     const fetchAbort = new AbortController();
     const fetchTimer = setTimeout(() => fetchAbort.abort(), 180000);
+    // ─── [2026-07-01 PR #211] 클라이언트 requestId 생성 + 헤더 전송 ─────────
+    //   목적: 504/AbortError 처럼 백엔드 응답을 못 받는 경우에도 프론트가
+    //         자체 ID 로 서버 로그를 검색할 수 있게 함.
+    //   백엔드 requestIdMiddleware 가 X-Request-Id 헤더를 존중하므로
+    //   서버 로그의 requestId 도 이 값을 그대로 사용 → 화면/로그 완전 매칭.
+    const clientRequestId = generateClientRequestId();
+    // 현재 요청 ID 를 상위 스코프에 보존 (catch 블록에서 참조)
+    executeQuery._currentRequestId = clientRequestId;
+    // [PR #211] SQL preview 영역에 이번 요청의 clientRequestId 를 즉시 표시
+    //   → 사용자가 로딩 도중이라도 자신의 요청 ID 를 확인/복사 가능
+    //   → 504 나 abort 로 화면이 굳어져도 이 ID 로 서버 로그 추적 가능
+    try {
+        const _reqIdSpan = document.getElementById('sqlPreviewRequestId');
+        if (_reqIdSpan) {
+            _reqIdSpan.textContent = `(reqId: ${clientRequestId})`;
+            _reqIdSpan.title = `이번 요청의 ID. 서버 로그에서 requestId="${clientRequestId}" 로 검색 가능. 클릭하면 클립보드에 복사됩니다.`;
+            _reqIdSpan.style.cursor = 'pointer';
+            _reqIdSpan.onclick = function () {
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(clientRequestId);
+                    const orig = _reqIdSpan.textContent;
+                    _reqIdSpan.textContent = '✓ 복사됨';
+                    setTimeout(() => { _reqIdSpan.textContent = orig; }, 800);
+                }
+            };
+        }
+    } catch (_) { /* ignore */ }
     try {
         const res = await fetch('/api/builder/query', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Request-Id': clientRequestId,
+            },
             body: JSON.stringify(payload),
             signal: fetchAbort.signal,
         });
+        // 서버가 응답 헤더로 돌려준 X-Request-Id 를 우선 사용 (프록시가 재발급했을 수도)
+        //   대부분의 경우 clientRequestId 와 동일하지만, Nginx 가 앞단에서 재발급하면 다를 수 있음.
+        //   응답 도착한 경우엔 서버 확정 ID 를, 응답 없는 경우엔 clientRequestId 를 사용.
+        const serverRequestId = (res.headers.get('X-Request-Id') || '').trim() || clientRequestId;
+        executeQuery._currentRequestId = serverRequestId;
         // [2026-06-29] 안전 파싱 (사용자 요청 #5):
         //   서버가 라우트 catch / 글로벌 핸들러 / Nginx 504 / 프록시 등
         //   다양한 이유로 JSON 이 아닌 HTML 응답을 반환할 수 있음.
@@ -3017,13 +3059,16 @@ async function executeQuery() {
                       `Content-Type=${contentType || '(없음)'}<br>` +
                       `<span style="opacity:.7;font-size:12px;">${snippet}</span>`;
             }
-            showError(msg);
+            // [PR #211] 504/HTML 응답 케이스 — 백엔드 응답이 없어도 serverRequestId(=clientRequestId) 로 추적 가능
+            showError(msg, null, serverRequestId);
             return;
         }
 
         // HTTP 4xx/5xx 인데 JSON 으로 내려온 경우 (라우트 catch 가 정상 동작한 경우)
-        if (!res.ok) { showError(data.error || `서버 오류 (HTTP ${res.status})`, data.sql); return; }
-        if (data.error) { showError(data.error, data.sql); return; }
+        // [PR #211] data.requestId 우선, 없으면 serverRequestId(=응답헤더) fallback
+        const errRid = (data && data.requestId) || serverRequestId;
+        if (!res.ok) { showError(data.error || `서버 오류 (HTTP ${res.status})`, data.sql, errRid); return; }
+        if (data.error) { showError(data.error, data.sql, errRid); return; }
 
         // [2026-06-29] GPT 보완 상태 안내 (timeout / metric_loss 등)
         //   - 'applied'  : GPT SQL 채택 → 안내 불필요
@@ -3159,6 +3204,10 @@ async function executeQuery() {
             lastGeneratedSql = '';
         } catch (_) { /* ignore */ }
 
+        // [PR #211] catch 블록에서 사용할 requestId — 서버 응답 헤더를 못 받은 케이스가 많으므로
+        //   상위 스코프에 보존해 둔 executeQuery._currentRequestId (=clientRequestId 또는 서버 확정 ID) 를 사용
+        const catchRid = executeQuery._currentRequestId || clientRequestId;
+
         // [2026-06-30 PR #198] AbortError 안내 — prompt 유무로 GPT/DB 분기
         if (e && (e.name === 'AbortError' || /aborted/i.test(e.message || ''))) {
             const hasPrompt = !!(payload && payload.prompt && String(payload.prompt).trim());
@@ -3168,15 +3217,17 @@ async function executeQuery() {
                           '&middot; 프롬프트를 짧게 줄이거나,<br>' +
                           '&middot; 조회 기간(시작/종료 년월) 을 좁혀서 재시도해 주세요.<br>' +
                           '<span style="opacity:.7;font-size:12px;">서버 로그에서 requestId 로 stage="final_sql_analysis" 를 검색하면 ' +
-                          '실제 실행된 SQL 과 증가율/차이 컬럼 반영 여부를 확인할 수 있습니다.</span>');
+                          '실제 실행된 SQL 과 증가율/차이 컬럼 반영 여부를 확인할 수 있습니다.</span>',
+                          null, catchRid);
             } else {
                 showError('DB 조회 시간이 초과되었습니다 (프론트 180s timeout).<br>' +
                           '선택한 지표/기간의 데이터 양이 많아 DB 쿼리가 오래 걸린 것으로 보입니다.<br>' +
                           '&middot; 조회 기간(시작/종료 년월) 을 좁혀서 재시도해 주세요.<br>' +
-                          '&middot; 필요 시 차원(MATERIAL_NM 등) 의 수를 줄여보세요.');
+                          '&middot; 필요 시 차원(MATERIAL_NM 등) 의 수를 줄여보세요.',
+                          null, catchRid);
             }
         } else {
-            showError('네트워크 오류: ' + (e?.message || e));
+            showError('네트워크 오류: ' + (e?.message || e), null, catchRid);
         }
     } finally {
         clearTimeout(fetchTimer);
@@ -3186,9 +3237,47 @@ async function executeQuery() {
     }
 }
 
-function showError(msg, sql) {
+// ─── [2026-07-01 PR #211] 클라이언트측 requestId 생성 (오류 추적용) ─────
+//   목적: Nginx 504 / fetch abort 등으로 백엔드가 응답을 못 보낸 상황에서도
+//         프론트가 자체 발급한 ID 로 로그를 검색할 수 있게 함.
+//   원리: fetch 요청 시 X-Request-Id 헤더로 이 ID 를 전송.
+//         백엔드 requestIdMiddleware (lib/reqLogger.mjs L106-113) 가
+//         이미 이 헤더를 존중 → 서버 로그의 requestId 도 이 값을 사용 →
+//         프론트가 화면에 표시한 ID 로 정확히 로그를 grep 가능.
+//   형식: 서버 genReqId() 와 동일 (base36 timestamp + 8자 랜덤 = 12자)
+function generateClientRequestId() {
+    const t = Date.now().toString(36);
+    const r = Math.random().toString(36).slice(2, 10).padEnd(8, '0');
+    return (t + r).slice(0, 12);
+}
+
+// ─── [2026-07-01 PR #211] 오류 배너에 requestId 를 명시 표시하는 헬퍼 ────
+//   운영팀이 사용자로부터 오류 스크린샷을 받았을 때 즉시 로그 검색이 가능하도록
+//   requestId 를 코드박스로 크게 노출 + 클릭하면 클립보드 복사.
+function buildRequestIdBadge(requestId) {
+    if (!requestId) return '';
+    const safeId = String(requestId).replace(/[^A-Za-z0-9_-]/g, '');
+    if (!safeId) return '';
+    return (
+        '<div style="margin-top:10px;padding:8px 10px;background:rgba(0,0,0,0.06);' +
+        'border-radius:4px;font-size:12px;display:flex;align-items:center;gap:8px;">' +
+        '<span style="opacity:.75;">요청 ID (로그 추적용):</span>' +
+        `<code style="background:#fff;padding:2px 8px;border-radius:3px;` +
+        `font-family:'Fira Code',monospace;font-weight:600;color:#d32f2f;cursor:pointer;user-select:all;" ` +
+        `onclick="navigator.clipboard && navigator.clipboard.writeText('${safeId}');` +
+        `this.style.background='#c8e6c9';setTimeout(()=>{this.style.background='#fff'},800);" ` +
+        `title="클릭하면 클립보드에 복사됩니다. 운영팀에 이 ID 를 전달하면 서버 로그에서 즉시 추적할 수 있습니다.">` +
+        `${safeId}</code>` +
+        '<span style="opacity:.55;font-size:11px;">문의 시 이 ID 를 함께 전달해 주세요</span>' +
+        '</div>'
+    );
+}
+
+function showError(msg, sql, requestId) {
     let html = `<b>오류:</b> ${msg}`;
     if (sql) html += `<code>${sql}</code>`;
+    // [PR #211] requestId 를 배너 하단에 명시 표시
+    html += buildRequestIdBadge(requestId);
     document.getElementById('errorBox').innerHTML = html;
     document.getElementById('errorBox').classList.add('active');
     // ─── [2026-07-01 PR #209] 오류 발생 시 SQL preview 도 명시적으로 리셋 ─────
@@ -3216,11 +3305,16 @@ function showError(msg, sql) {
             sp.classList.remove('expanded');
             sp.classList.remove('editing');
         }
-        // requestId 표시도 갱신 (에러 응답에도 requestId 가 포함될 수 있음)
-        // 호출부에서 data.requestId 를 전달받지 않으므로 여기선 클리어
+        // [PR #211] requestId 가 전달된 경우 SQL 영역 badge 옆에도 표시
+        //   (오류 배너와 SQL 영역 양쪽에서 동일한 ID 를 볼 수 있게 함)
         if (reqIdSpan) {
-            reqIdSpan.textContent = '';
-            reqIdSpan.title = '';
+            if (requestId) {
+                reqIdSpan.textContent = `(reqId: ${requestId})`;
+                reqIdSpan.title = `이 요청은 실패했습니다. 서버 로그에서 requestId="${requestId}" 로 검색하면 실패 원인을 확인할 수 있습니다.`;
+            } else {
+                reqIdSpan.textContent = '';
+                reqIdSpan.title = '';
+            }
         }
         // 편집 원본도 리셋 → 재실행 시 이전 SQL 이 살아나지 않도록
         lastGeneratedSql = '';
