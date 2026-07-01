@@ -7307,6 +7307,12 @@ app.post('/api/builder/query', async (req, res) => {
     let gptStatus = null;
     let gptErrorMessage = null;
     let promptStageMs = 0;
+    // [2026-07-01 PR #208] GPT/DB timing breakdown 을 최종 응답 & 로그에 노출
+    //   - llmElapsedMs : LLM 호출 왕복 시간 (성공/timeout 무관하게 캡처)
+    //   - llmTimedOut  : GPT timeout 여부 (true 이면 GPT 원인)
+    //   - dbStageMs 는 아래에서 계산됨
+    let llmElapsedMs = 0;
+    let llmTimedOut = false;
 
     // ────────────────────────────────────────────────
     // [Stage 1] 규칙 기반 처리 시도 (사용자 요청 #2)
@@ -7500,6 +7506,17 @@ app.post('/api/builder/query', async (req, res) => {
                 prompt_stage_ms: promptStageMs,
                 sql_preview: newSql.substring(0, 300),
               });
+              // [PR #208] 규칙 기반 최종 SQL 도 파일로 저장 (검증 편의)
+              try {
+                const fname = `/tmp/nlq-final-sql-${log.requestId}.sql`;
+                fs.writeFileSync(fname, `-- requestId: ${log.requestId}\n-- ts: ${new Date().toISOString()}\n-- gpt_status: rule_based\n-- months: ${candidates.join(',')}\n${newSql}\n`, 'utf8');
+                log.stage('final_sql_file_written', {
+                  file: fname,
+                  sql_length: newSql.length,
+                });
+              } catch (fwErr) {
+                log.error('final_sql_file_write_failed', fwErr, { sql_length: newSql.length });
+              }
               console.log(`[PromptStage] 규칙 기반 처리 적용 (${promptStageMs}ms) — months=${candidates.join(',')}, diff=${hasDiffKeyword}, growth=${hasGrowthKeyword}, metric=${usedMetricEntriesPre.map(([c])=>c).join(',')}`);
               console.log(`[PromptStage] 재구성 SQL preview: ${newSql.slice(0, 200)}...`);
             }
@@ -7653,6 +7670,7 @@ app.post('/api/builder/query', async (req, res) => {
           clearTimeout(gptTimer);
         }
         const gptElapsed = Date.now() - gptStartTime;
+        llmElapsedMs = gptElapsed; // [PR #208] outer scope 로 노출
         console.log(`[GPTStage] GPT 응답 완료: ${gptElapsed}ms`);
         log.stage('llm_response_received', {
           llm_elapsed_ms: gptElapsed,
@@ -7696,6 +7714,23 @@ app.post('/api/builder/query', async (req, res) => {
             sql_preview: sql.substring(0, 300),
             sql_length: sql.length,
           });
+          // [2026-07-01 PR #208] GPT 최종 SQL 을 별도 파일 로 저장 + 로그에 전체 SQL 남김
+          //   - 사용자 요청: "GPT 가 생성한 최종 SQL 전체를 로그에 남겨줘"
+          //   - 방법1: nlq-server.log 에는 정상 로그 흐름 유지 위해 짧은 preview 대신
+          //     multi-line 은 escape 문제로 파일로 저장.
+          //   - 방법2: `final_sql` 필드에 전체 SQL 을 인라인. 로그 파일 라인 하나가 길어지지만
+          //     검색성이 좋아지므로 인라인 로그도 함께 남긴다.
+          try {
+            const tmpDir = '/tmp';
+            const fname = `${tmpDir}/nlq-final-sql-${log.requestId}.sql`;
+            fs.writeFileSync(fname, `-- requestId: ${log.requestId}\n-- ts: ${new Date().toISOString()}\n-- gpt_status: applied\n${sql}\n`, 'utf8');
+            log.stage('final_sql_file_written', {
+              file: fname,
+              sql_length: sql.length,
+            });
+          } catch (fwErr) {
+            log.error('final_sql_file_write_failed', fwErr, { sql_length: sql.length });
+          }
         } else if (metricLossDetected) {
           console.log('[Builder] GPT 응답에서 Metric 산식 손실 감지 → 기본 SQL 유지');
           gptStatus = 'metric_loss';
@@ -7724,12 +7759,17 @@ app.post('/api/builder/query', async (req, res) => {
         gptErrorMessage = isAbort
           ? 'GPT 보완이 시간 초과되어 기본 SQL 을 사용합니다.'
           : `GPT 보완 실패: ${gptErr.message}`;
+        // [PR #208] LLM 소요시간 & timeout 여부를 outer 로 노출
+        //   - gptStartTime 은 llm_call_start 직전. try 진입 이후이므로 catch 에서도 접근 가능.
+        try { llmElapsedMs = Date.now() - gptStartTime; } catch (_) { /* ignore */ }
+        llmTimedOut = isAbort;
         console.error(`[Builder] GPT prompt enhancement ${gptStatus}:`, gptErr.message);
         log.error(isAbort ? 'llm_call_timeout' : 'llm_call_failed', gptErr, {
           llm_used: true,
           outcome: gptStatus,
           err_name: gptErr?.name,
           err_code: gptErr?.code,
+          llm_elapsed_ms: llmElapsedMs,
         });
 
         // ────────────────────────────────────────────────
@@ -7827,6 +7867,46 @@ app.post('/api/builder/query', async (req, res) => {
       log.error('domain_filter_failed', dfErr);
     }
 
+    // ────────────────────────────────────────────────
+    // [2026-07-01 PR #208] Final SQL Analysis — DB 실행 직전에 최종 SQL 을 분석
+    //   1) 사용자 프롬프트에서 요구된 컬럼 유형(intent) 감지
+    //   2) 최종 SQL 에서 alias 추출
+    //   3) 요구된 컬럼이 실제 SQL 에 반영됐는지 검증 → intent_verification
+    //
+    //   이 stage 는 로그에만 정보를 남기고 SQL 자체는 변경하지 않는다.
+    //   판정 결과는 response_sent / responseObj.prompt_reflected 에 반영된다.
+    // ────────────────────────────────────────────────
+    let intentVerification = null;
+    try {
+      const promptIntent = detectPromptIntent(prompt);
+      const sqlAliases = extractSqlColumnAliases(sql);
+      const columnFlags = classifyResultColumns(sqlAliases);
+      intentVerification = verifyPromptReflected(promptIntent, columnFlags, sqlAliases);
+      log.stage('final_sql_analysis', {
+        prompt_intent: {
+          has_growth: promptIntent.has_growth,
+          has_diff: promptIntent.has_diff,
+          has_month_compare: promptIntent.has_month_compare,
+          months_in_prompt: promptIntent.months,
+          requires_growth_column: promptIntent.requires_growth_column,
+          requires_diff_column: promptIntent.requires_diff_column,
+          requires_multi_month_columns: promptIntent.requires_multi_month_columns,
+        },
+        actual_columns: sqlAliases,
+        expected_columns: intentVerification.required_intents,
+        result_column_flags: columnFlags,
+        prompt_reflected_strict: intentVerification.prompt_reflected,
+        partial_reflected: intentVerification.partial_reflected,
+        missing_intents: intentVerification.missing_intents,
+        gpt_status: gptStatus,
+        sql_length: sql.length,
+        // 전체 SQL 을 로그 라인에 인라인 (multi-line 은 개행이 JSON escape 됨)
+        final_sql: sql,
+      });
+    } catch (ivErr) {
+      log.error('final_sql_analysis_failed', ivErr, { sql_length: sql.length });
+    }
+
     // SQL 실행 (시간 측정 — 사용자 요청 #1)
     // ─── [2026-06-30 PR #198] DB 쿼리 timeout 명시 설정 ──────────────────────
     //   (사용자 요청 #3 — timeout 정합성)
@@ -7844,6 +7924,10 @@ app.post('/api/builder/query', async (req, res) => {
       param_count: finalParams.length,
       gpt_status: gptStatus,
       db_query_timeout_ms: DB_QUERY_TIMEOUT_MS,
+      // [PR #208] 전체 SQL 을 인라인 로그로 남김 — final_sql_analysis 와 db_execute_start
+      //   두 stage 에서 동일한 SQL 을 남겨야 "DB 가 실제로 실행한 SQL" 을 확실히 특정 가능.
+      final_sql: sql,
+      final_params: finalParams,
     });
     let rows;
     let dbTimedOut = false;
@@ -7998,16 +8082,70 @@ app.post('/api/builder/query', async (req, res) => {
       if (gptErrorMessage) responseObj.gpt_message = gptErrorMessage;
     }
     // [2026-06-29] 단계별 처리 시간 (디버깅/관제용)
+    // [2026-07-01 PR #208] stage_timing_breakdown 추가 — GPT vs DB 병목 명확 구분
     responseObj.timing = {
       prompt_stage_ms: promptStageMs,
+      llm_stage_ms: llmElapsedMs,
       db_stage_ms: dbStageMs,
+      // 병목 판정 (프론트 배너에서 활용 가능)
+      bottleneck:
+        llmTimedOut ? 'gpt_timeout' :
+        dbStageMs >= 60000 ? 'db_slow' :
+        llmElapsedMs >= 30000 ? 'gpt_slow' :
+        'normal',
     };
-    // [2026-06-29] 사용자 요청 #6 — prompt 가 SQL 에 반영됐는지 명확히 알림
-    //   - rule_based / applied : 반영 성공 (prompt_reflected: true)
-    //   - 그 외 (timeout/error/metric_loss/skipped) : 반영 실패 (prompt_reflected: false)
-    //     → 프론트가 명확한 경고 메시지로 표시
+    // [2026-06-29 → 2026-07-01 PR #208] 사용자 요청 #2 — prompt_reflected 판정 강화
+    //   기존: gptStatus === 'rule_based' || 'applied' → 무조건 true
+    //   신규:
+    //     1) gptStatus 가 실패(timeout/error/metric_loss/skipped) → prompt_reflected=false
+    //     2) 성공이더라도 사용자가 명시적으로 요구한 컬럼(증가율/차이/월별)이
+    //        결과에 반영 안 됐으면 → prompt_reflected=false, partial_reflected=true
+    //        (일부만 반영) 또는 partial_reflected=false (전무)
+    //     3) 사용자 요구가 명시적이지 않으면 (예: "매출 알려줘") 기존 로직 유지
     if (needGpt) {
-      responseObj.prompt_reflected = (gptStatus === 'rule_based' || gptStatus === 'applied');
+      const gptTechSuccess = (gptStatus === 'rule_based' || gptStatus === 'applied');
+      // intent 판정 결과가 있고 명시적 요구사항이 존재하는 경우 → 그것으로 override
+      if (intentVerification && intentVerification.required_intents.length > 0) {
+        // 실제 실행된 결과 컬럼(cols) 이 있으면 그것도 병행 검증
+        // (SQL alias 는 quote 처리 등으로 놓칠 수 있으므로 실 result column 이 더 확실)
+        let colsClassify = { has_growth_column: false, has_diff_column: false, month_alias_count: 0 };
+        if (cols && cols.length > 0) {
+          colsClassify = classifyResultColumns(cols);
+        }
+        // SQL alias 판정 or 실제 결과 컬럼 판정 중 하나라도 성공한 경우 met 으로 간주
+        const finalMet = [];
+        const promptIntentForResp = detectPromptIntent(prompt);
+        if (promptIntentForResp.requires_growth_column && (intentVerification.result_column_flags.has_growth_column || colsClassify.has_growth_column)) finalMet.push('growth_column');
+        if (promptIntentForResp.requires_diff_column && (intentVerification.result_column_flags.has_diff_column || colsClassify.has_diff_column)) finalMet.push('diff_column');
+        if (promptIntentForResp.requires_multi_month_columns && (intentVerification.result_column_flags.month_alias_count >= 2 || colsClassify.month_alias_count >= 2)) finalMet.push('multi_month_columns');
+        const finalMissing = intentVerification.required_intents.filter(r => !finalMet.includes(r));
+        const strictReflected = gptTechSuccess && finalMissing.length === 0;
+        const partialReflected = gptTechSuccess && finalMet.length > 0 && finalMissing.length > 0;
+        responseObj.prompt_reflected = strictReflected;
+        responseObj.partial_reflected = partialReflected;
+        responseObj.reflection_details = {
+          gpt_status: gptStatus,
+          gpt_tech_success: gptTechSuccess,
+          required_intents: intentVerification.required_intents,
+          met_intents: finalMet,
+          missing_intents: finalMissing,
+          sql_column_flags: intentVerification.result_column_flags,
+          result_column_flags: colsClassify,
+          actual_result_columns: cols || [],
+        };
+        // 사용자에게 안내 (gpt_message 가 없거나 성공 상태일 때)
+        if (!strictReflected && !gptErrorMessage) {
+          if (partialReflected) {
+            responseObj.gpt_message = `요청하신 컬럼 중 일부만 반영되었습니다 (누락: ${finalMissing.join(', ')}). 프롬프트를 좀 더 구체적으로 재입력해 주세요.`;
+          } else {
+            responseObj.gpt_message = `요청하신 "${finalMissing.join(', ')}" 컬럼이 결과에 반영되지 않았습니다. 프롬프트를 다시 확인해 주세요.`;
+          }
+        }
+      } else {
+        // 명시적 intent 없음 → 기존 로직
+        responseObj.prompt_reflected = gptTechSuccess;
+        responseObj.partial_reflected = false;
+      }
       if (ruleDiagnostics) responseObj.rule_diagnostics = ruleDiagnostics;
     }
     // 응답에 requestId 포함 (Nginx 매칭용)
@@ -8030,43 +8168,72 @@ app.post('/api/builder/query', async (req, res) => {
         mode: compare_mom ? '전월대비' : '전년대비',
       };
     }
-    // ─── [2026-06-30 PR #198] 응답 전 클라이언트 연결 상태 점검 (보강) ──────
-    //   (사용자 요청 #5 — delivered=false 원인 구분)
-    //   - PR #197 에서는 단순히 client_aborted / delivered 플래그만 기록.
-    //   - 이번에는 delivery_failure_reason 으로 다음 케이스를 구분:
+    // ─── [2026-06-30 PR #198 → 2026-07-01 PR #208] 응답 전 클라이언트 연결 상태 점검 ──────
+    //   (사용자 요청 #4/#5 — delivered=false 원인 구분 강화)
+    //   구분:
     //       client_timeout         : 프론트 fetch abort (req.aborted + 빠른 close)
-    //       proxy_timeout          : Nginx 가 먼저 끊음 (응답 시간 > 180s 추정)
+    //       proxy_timeout          : Nginx/게이트웨이가 먼저 끊음 (응답 시간 > 임계값)
+    //       socket_writable_ended  : socket 이 이미 writable 아님 (res.writableEnded=true 이지만 데이터 미전송)
+    //       socket_destroyed       : req.destroyed=true (하위 소켓 파괴)
     //       response_delivery_failed: 그 외 정상 close 가 아닌 미상의 실패
     //       null                   : 정상 전달
-    //   - 정확한 구분은 close 까지의 elapsed 시간 + req.destroyed 패턴으로 판별.
+    //   PR #208: 판정에 필요한 원 신호(res_writable_ended, req_destroyed, headers_sent) 를
+    //     로그에 함께 남겨서 사후 분석 가능하게 함.
     const totalElapsedMs = Date.now() - log.t0;
-    const stillConnected = !clientAborted && !req.destroyed && !res.writableEnded;
+    const resWritableEnded = !!res.writableEnded;
+    const reqDestroyed = !!req.destroyed;
+    const resHeadersSent = !!res.headersSent;
+    // [2026-07-01 PR #208] delivered/stillConnected 판정 완화 (오탐 방지)
+    //   - 이전 로직: `!clientAborted && !req.destroyed && !res.writableEnded` 를 모두 만족해야 stillConnected=true
+    //   - 문제: keep-alive 재사용 준비 상태에서 req.destroyed=true 가 될 수 있어
+    //     실제 응답은 성공했는데도 delivery_failure_reason 이 잘못 잡힘 (sandbox curl 재현 확인).
+    //   - 신규 로직: 유일하게 신뢰할 수 있는 실패 신호는 clientAborted (req 'close' 이벤트가
+    //     writableEnded=false 상태에서 온 것) + res.writableEnded=true 상태에서 res.destroyed=true.
+    //   - req.destroyed 만으로는 실패로 확정하지 않고, 원 신호만 로그에 남김.
+    const resDestroyed = !!res.destroyed;
+    const isRealDeliveryFailure = clientAborted || (!resHeadersSent && resDestroyed);
+    const stillConnected = !isRealDeliveryFailure;
 
     // delivered=false 일 때 원인 추정
     let deliveryFailureReason = null;
-    if (!stillConnected && clientAborted) {
-      // Nginx proxy_read_timeout(운영 180s) 부근에서 끊겼으면 proxy_timeout 으로 추정
-      // 그 이전이라면 프론트(client) 가 직접 abort 한 것으로 추정
-      const NGINX_PROXY_TIMEOUT_MS = parseInt(process.env.BUILDER_NGINX_PROXY_TIMEOUT_MS || '180000', 10);
-      // 임계 윈도우: Nginx timeout ± 5s 이내면 proxy_timeout 으로 본다
+    if (isRealDeliveryFailure) {
+      const NGINX_PROXY_TIMEOUT_MS = parseInt(process.env.BUILDER_NGINX_PROXY_TIMEOUT_MS || '120000', 10);
+      // 임계 판정: Nginx timeout (기본 120s) 이상이면 proxy_timeout 우선
       if (totalElapsedMs >= NGINX_PROXY_TIMEOUT_MS - 5000) {
         deliveryFailureReason = 'proxy_timeout';
-      } else {
+      } else if (clientAborted) {
         deliveryFailureReason = 'client_timeout';
+      } else if (resDestroyed) {
+        deliveryFailureReason = 'response_socket_destroyed';
+      } else {
+        deliveryFailureReason = 'response_delivery_failed';
       }
-    } else if (!stillConnected && !clientAborted) {
-      // close 이벤트는 안 왔지만 res 가 writable 아님 — 드물지만 가능
-      deliveryFailureReason = 'response_delivery_failed';
     }
 
+    // [PR #208] response_sent 로그에 강화된 prompt_reflected + timing breakdown 반영
+    const otherMs = Math.max(0, totalElapsedMs - dbStageMs - llmElapsedMs - promptStageMs);
     log.stage('response_sent', {
       row_count: clean.length,
       column_count: cols.length,
+      columns: cols,
       gpt_status: gptStatus,
-      prompt_reflected: needGpt ? (gptStatus === 'rule_based' || gptStatus === 'applied') : null,
+      // 강화된 prompt_reflected: responseObj 에서 그대로 반사 (intent 검증 반영)
+      prompt_reflected: needGpt ? (responseObj.prompt_reflected ?? null) : null,
+      partial_reflected: needGpt ? (responseObj.partial_reflected ?? false) : null,
+      missing_intents: needGpt ? (responseObj.reflection_details?.missing_intents || []) : null,
+      met_intents: needGpt ? (responseObj.reflection_details?.met_intents || []) : null,
       db_stage_ms: dbStageMs,
+      llm_stage_ms: llmElapsedMs,
       prompt_stage_ms: promptStageMs,
+      other_stage_ms: otherMs,
       total_elapsed_ms: totalElapsedMs,
+      // 병목 판정 (사용자 요청 #4: GPT/DB timeout 원인 명확화)
+      timing_bottleneck:
+        llmTimedOut ? 'gpt_timeout' :
+        dbStageMs >= 60000 ? 'db_slow' :
+        llmElapsedMs >= 30000 ? 'gpt_slow' :
+        'normal',
+      llm_timed_out: llmTimedOut,
       client_aborted: clientAborted,
       delivered: stillConnected,
       delivery_failure_reason: deliveryFailureReason,
@@ -8075,10 +8242,29 @@ app.post('/api/builder/query', async (req, res) => {
       // 백엔드 작업은 성공했지만 사용자는 받지 못한 케이스 — 별도 식별용 로그
       log.error('response_failed', new Error(`response built but ${deliveryFailureReason || 'unknown'}`), {
         db_stage_ms: dbStageMs,
+        llm_stage_ms: llmElapsedMs,
         total_elapsed_ms: totalElapsedMs,
         row_count: clean.length,
+        column_count: cols.length,
         reason: deliveryFailureReason || 'unknown',
         client_aborted: clientAborted,
+        // [PR #208] 원 신호를 함께 남김 (사후 분석용)
+        res_writable_ended: resWritableEnded,
+        req_destroyed: reqDestroyed,
+        res_headers_sent: resHeadersSent,
+        gpt_status: gptStatus,
+        timing_bottleneck:
+          llmTimedOut ? 'gpt_timeout' :
+          dbStageMs >= 60000 ? 'db_slow' :
+          llmElapsedMs >= 30000 ? 'gpt_slow' :
+          'normal',
+        // [PR #208] 원 시그널 (오탐 진단용)
+        raw_signals: {
+          res_writable_ended: resWritableEnded,
+          req_destroyed: reqDestroyed,
+          res_destroyed: resDestroyed,
+          res_headers_sent: resHeadersSent,
+        },
       });
       // 그래도 res.json 은 안전하게 시도(Express 가 내부적으로 무시)
       try { res.json(responseObj); } catch (_) { /* 이미 끊긴 소켓 — 무시 */ }
@@ -8221,6 +8407,164 @@ function builderSuggestChart(cols, rowCount) {
   if (rowCount <= 6 && dataCols.length === 1) return { chart_type: 'pie', label_column: labelCol, data_columns: dataCols };
   if (rowCount <= 30) return { chart_type: 'bar', label_column: labelCol, data_columns: dataCols };
   return { chart_type: 'table_only' };
+}
+
+// ============================================================
+// [2026-07-01 PR #208] Builder — Prompt intent 감지 & 결과 SQL 컬럼 검증 헬퍼
+// ============================================================
+// 사용자 요청: "GPT 적용 성공/규칙 기반 성공"의 판정 기준을 강화하려면
+//   1) 사용자가 프롬프트에서 무엇을 요구했는지 (expected)
+//   2) 실제 최종 SQL 이 어떤 alias 를 만들었는지 (actual)
+// 두 축을 비교해야 하므로 아래 두 헬퍼를 사용한다.
+//
+//  - detectPromptIntent(prompt) → { has_growth, has_diff, has_month_compare, months, requires_growth_column, requires_diff_column, requires_multi_month_columns }
+//  - extractSqlColumnAliases(sql) → [{ alias, has_case_when_calmonth }, ...]
+//  - verifyPromptReflected(intent, aliases) → { prompt_reflected, partial_reflected, expected_columns, actual_columns, missing }
+//
+// 규칙(간단·안전 위주):
+//   - 프롬프트에 "증가율/성장률/증감률/상승률/하락률/%/percent" → requires_growth_column=true
+//   - 프롬프트에 "차이/차액/증감액/gap" → requires_diff_column=true
+//   - 프롬프트에 "N월" 이 2개 이상, 또는 "대비/vs/비교" 가 있으면 requires_multi_month_columns=true
+//
+// alias 는 `AS '한글이름'` 또는 `AS \`한글이름\`` 또는 `AS 한글이름` 패턴에서 추출.
+// (컬럼명이 한글이면 quote 로 감싸는 게 표준. Quote 없는 alias 도 fallback 처리.)
+function detectPromptIntent(prompt) {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return {
+      has_prompt: false,
+      has_growth: false,
+      has_diff: false,
+      has_month_compare: false,
+      months: [],
+      requires_growth_column: false,
+      requires_diff_column: false,
+      requires_multi_month_columns: false,
+    };
+  }
+  const has_growth = /증가율|성장률|증감률|상승률|하락률|%|퍼센트|percent/i.test(text);
+  const has_diff = /차이|차액|증감액|증감|gap|차\b/i.test(text);
+  const compareKw = /대비|비교|vs\b|늘었|줄었|증가|감소|얼마나|지난달|저번달|이전\s*(월|달)|전월|전년|작년|MoM|YoY|Y\/Y|m\/m/i.test(text);
+  // 프롬프트에서 "3월" 같은 월 표현 추출 (중복 제거)
+  const monthMatches = [...text.matchAll(/(\d{1,2})\s*월/g)].map(m => parseInt(m[1], 10));
+  const months = [...new Set(monthMatches)].filter(m => m >= 1 && m <= 12);
+  // "N월 대비" 만 있어도 (예: "3월 대비 증가율") 다른 월 컬럼이 필요하므로 multi_month 로 간주
+  const requires_multi_month_columns = months.length >= 2 || (months.length >= 1 && compareKw) || compareKw;
+  return {
+    has_prompt: true,
+    has_growth,
+    has_diff,
+    has_month_compare: compareKw,
+    months,
+    requires_growth_column: has_growth,
+    requires_diff_column: has_diff,
+    requires_multi_month_columns,
+  };
+}
+
+// SQL 문자열에서 "AS ..." alias 를 추출.
+//   - `AS 'foo'`   → foo
+//   - `AS "foo"`   → foo
+//   - `AS \`foo\`` → foo
+//   - `AS foo`     → foo   (한글/영문 식별자, 공백/특수기호 이전까지)
+// alias 안의 CASE WHEN CALMONTH 유무는 alias 를 정의하는 SELECT 표현식에 나오는지 별도 판정.
+function extractSqlColumnAliases(sql) {
+  const out = [];
+  if (!sql || typeof sql !== 'string') return out;
+  // 우선 quote 로 감싼 alias 추출
+  const patterns = [
+    /AS\s+'([^']+)'/gi,
+    /AS\s+"([^"]+)"/gi,
+    /AS\s+`([^`]+)`/gi,
+  ];
+  const seen = new Set();
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(sql)) !== null) {
+      const a = (m[1] || '').trim();
+      if (a && !seen.has(a)) {
+        seen.add(a);
+        out.push(a);
+      }
+    }
+  }
+  // Quote 없는 alias fallback (한글/영문/숫자/(), 공백/괄호가 나오기 전까지)
+  const bareRe = /AS\s+([A-Za-z_\uac00-\ud7a3][A-Za-z0-9_\uac00-\ud7a3()%\-]{0,80})/gi;
+  let bm;
+  while ((bm = bareRe.exec(sql)) !== null) {
+    const a = (bm[1] || '').trim();
+    // quote 안에 있으면 이미 처리됨. 단순히 seen 만 체크.
+    if (a && !seen.has(a)) {
+      // AS 뒤가 SELECT 서브쿼리 alias 인 경우 컬럼 alias 가 아닐 수 있으니 얕게 필터
+      if (!/^(SELECT|FROM|WHERE|GROUP|ORDER|LIMIT)$/i.test(a)) {
+        seen.add(a);
+        out.push(a);
+      }
+    }
+  }
+  return out;
+}
+
+// 실제 alias 리스트에서 "증가율" / "차이" / "월비교" 유형 컬럼이 있는지 판정.
+// (한글 서비스라 한글 키워드 위주로 판정 — 영문 alias 도 병렬로 인정)
+function classifyResultColumns(aliases) {
+  const has_growth_column = aliases.some(a =>
+    /증가율|성장률|증감률|상승률|하락률|growth|%/i.test(a)
+  );
+  const has_diff_column = aliases.some(a =>
+    /(차이|차액|증감액|차\)|증감\)|gap|diff)/i.test(a)
+  );
+  // "3월", "4월" 같이 월이 포함된 alias 개수
+  const monthAliasCount = aliases.filter(a => /(\d{1,2}\s*월|\d{4}\s*[-/]?\s*\d{1,2}|\d{6})/.test(a)).length;
+  return { has_growth_column, has_diff_column, month_alias_count: monthAliasCount };
+}
+
+// 사용자 의도(intent) vs 실제 SQL 결과 컬럼(classify) 비교 → prompt_reflected/partial_reflected 산출.
+//   prompt_reflected=true : 요구된 컬럼이 모두 존재
+//   partial_reflected=true : 요구된 컬럼 중 일부만 존재 (하나 이상, 그러나 모두는 아님)
+//   prompt_reflected=false : 요구는 있으나 하나도 반영 안 됨
+// intent 가 아무 것도 요구하지 않는 경우 (예: 단순 조회 프롬프트) → prompt_reflected=null (기존 로직 유지)
+function verifyPromptReflected(intent, classify, aliases) {
+  const required = [];
+  const met = [];
+  if (intent.requires_growth_column) {
+    required.push('growth_column');
+    if (classify.has_growth_column) met.push('growth_column');
+  }
+  if (intent.requires_diff_column) {
+    required.push('diff_column');
+    if (classify.has_diff_column) met.push('diff_column');
+  }
+  if (intent.requires_multi_month_columns) {
+    required.push('multi_month_columns');
+    if (classify.month_alias_count >= 2) met.push('multi_month_columns');
+  }
+  const missing = required.filter(r => !met.includes(r));
+  let prompt_reflected = null;
+  let partial_reflected = false;
+  if (required.length === 0) {
+    // 명시적 요구사항 없음 → 판정 유보 (호출부에서 기존 로직 유지)
+    prompt_reflected = null;
+    partial_reflected = false;
+  } else if (missing.length === 0) {
+    prompt_reflected = true;
+    partial_reflected = false;
+  } else if (met.length > 0) {
+    prompt_reflected = false;
+    partial_reflected = true;
+  } else {
+    prompt_reflected = false;
+    partial_reflected = false;
+  }
+  return {
+    prompt_reflected,
+    partial_reflected,
+    required_intents: required,
+    met_intents: met,
+    missing_intents: missing,
+    actual_columns: aliases,
+    result_column_flags: classify,
+  };
 }
 
 // ============================================================
