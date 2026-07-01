@@ -3019,56 +3019,86 @@ async function executeQuery() {
         }
 
         if (!data) {
-            // Nginx 504 / HTML 500 페이지 등 — 응답 단서 추출
-            let snippet = (rawText || '').trim()
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 300);
-            if (!snippet) snippet = '(응답 본문 없음)';
-            let msg;
-            if (res.status === 504) {
-                // [2026-06-30 PR #198] 504 안내 메시지를 "GPT 추가 프롬프트" vs "DB 조회" 로 분기
-                //   - 이번 케이스(reqId=mqzx38lfkv70 등) 는 gpt_status=rule_based,
-                //     prompt_reflected=true, db_elapsed_ms~=61s 로 GPT 가 아닌
-                //     DB 쿼리 자체가 느려서 발생한 504.
-                //   - prompt 가 있다 = "GPT 가 호출됐을 수도/추가 프롬프트일 수도" 가능성 존재
-                //   - prompt 가 없다 = 순수 빌더 SQL → 무조건 DB 쿼리 timeout 으로 안내
-                //   ※ 정확한 gpt_status 는 504 응답 본문에 없으므로 prompt 유무로 1차 추정,
-                //      더 정확한 진단은 백엔드 로그(nlq-server.log) 의 db_elapsed_ms 로 확인.
-                const hasPrompt = !!(payload && payload.prompt && String(payload.prompt).trim());
-                if (hasPrompt) {
-                    msg = `요청 처리 시간이 초과되었습니다 (HTTP 504 Gateway Timeout).<br>` +
-                          `DB 조회 또는 추가 프롬프트 처리에 시간이 오래 걸렸을 수 있습니다.<br>` +
-                          `&middot; 프롬프트를 짧게 줄여서 재시도하거나,<br>` +
-                          `&middot; 조회 기간(시작/종료 년월) 을 좁혀서 재시도해 주세요.<br>` +
-                          `<span style="opacity:.7;font-size:12px;">${snippet}</span>`;
-                } else {
-                    msg = `DB 조회 시간이 초과되었습니다 (HTTP 504 Gateway Timeout).<br>` +
-                          `선택한 지표/기간의 데이터 양이 많아 DB 쿼리가 오래 걸린 것으로 보입니다.<br>` +
-                          `&middot; 조회 기간(시작/종료 년월) 을 좁혀서 재시도해 주세요.<br>` +
-                          `&middot; 필요 시 차원(MATERIAL_NM 등) 의 수를 줄여보세요.<br>` +
-                          `<span style="opacity:.7;font-size:12px;">${snippet}</span>`;
+            // [PR #213] Nginx 504 / HTML 500 페이지 등 — 원시 HTML/텍스트는 절대 노출 금지
+            //   과거: rawText 를 태그 제거 후 snippet 으로 노출 → 'The page is temporarily unavailable' 같은
+            //         nginx 기본 문구가 그대로 사용자 화면에 표시되어 신뢰도 저하.
+            //   현재: rawText 는 서버 로그(콘솔)로만 남기고, 사용자 화면에는 우리가 통제한 문구만 표시.
+            try {
+                // 개발자 콘솔에만 원본 스니펫 남김 (F12 로 확인 가능, 사용자 화면 노출 없음)
+                const _internalSnippet = (rawText || '').trim().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 500);
+                if (_internalSnippet) {
+                    console.warn('[builder] non-JSON error response (hidden from user):',
+                                 { status: res.status, requestId: serverRequestId, snippet: _internalSnippet });
                 }
-            } else if (res.status === 502 || res.status === 503) {
-                msg = `백엔드 서버에 일시적으로 연결할 수 없습니다 (HTTP ${res.status}).<br>` +
-                      `잠시 후 다시 시도해 주세요.<br>` +
-                      `<span style="opacity:.7;font-size:12px;">${snippet}</span>`;
-            } else {
-                msg = `서버 오류 (HTTP ${res.status}): JSON 응답을 받지 못했습니다. ` +
-                      `Content-Type=${contentType || '(없음)'}<br>` +
-                      `<span style="opacity:.7;font-size:12px;">${snippet}</span>`;
+            } catch (_) { /* ignore */ }
+
+            const hasPrompt = !!(payload && payload.prompt && String(payload.prompt).trim());
+
+            // ── 추가 프롬프트가 있는 경우: 자동으로 prompt 제거 후 재시도 → 기본 SQL 결과라도 제공
+            if (hasPrompt && (res.status === 504 || res.status === 502 || res.status === 503 || !res.ok)) {
+                const kind = res.status === 504 ? 'timeout' : 'gateway';
+                await retryQueryWithoutPrompt(
+                    payload,
+                    classifyPromptFailureReason(kind),
+                    serverRequestId
+                );
+                return;
             }
-            // [PR #211] 504/HTML 응답 케이스 — 백엔드 응답이 없어도 serverRequestId(=clientRequestId) 로 추적 가능
-            showError(msg, null, serverRequestId);
+
+            // ── 프롬프트가 없거나 재시도 대상이 아닌 경우: 부드러운 안내 배너 (원시 HTML 노출 X)
+            let mainMessage, subNote;
+            if (res.status === 504) {
+                mainMessage = 'DB 조회 시간이 초과되어 결과를 표시하지 못했습니다.';
+                subNote = '선택한 지표/기간의 데이터 양이 많을 수 있습니다. 조회 기간을 좁히거나 차원(MATERIAL_NM 등) 의 수를 줄여서 다시 시도해 주세요.';
+            } else if (res.status === 502 || res.status === 503) {
+                mainMessage = '서버가 일시적으로 응답하지 못했습니다.';
+                subNote = '잠시 후 다시 시도해 주세요. 문제가 계속되면 위 요청 ID 를 관리자에게 전달해 주세요.';
+            } else {
+                mainMessage = '요청 처리 중 문제가 발생했습니다.';
+                subNote = '잠시 후 다시 시도해 주세요. 문제가 계속되면 위 요청 ID 를 관리자에게 전달해 주세요.';
+            }
+            showSoftFallbackNotice(mainMessage, serverRequestId, subNote);
             return;
         }
 
         // HTTP 4xx/5xx 인데 JSON 으로 내려온 경우 (라우트 catch 가 정상 동작한 경우)
         // [PR #211] data.requestId 우선, 없으면 serverRequestId(=응답헤더) fallback
         const errRid = (data && data.requestId) || serverRequestId;
-        if (!res.ok) { showError(data.error || `서버 오류 (HTTP ${res.status})`, data.sql, errRid); return; }
-        if (data.error) { showError(data.error, data.sql, errRid); return; }
+
+        // [PR #213] hasPrompt 이고 서버가 오류로 응답한 경우 → 자동으로 prompt 제거 후 재시도
+        //   서버 로그에는 원본 오류가 남아있으므로 개발자 추적은 그대로 가능.
+        //   사용자에게는 부드러운 안내만.
+        {
+            const hasPrompt = !!(payload && payload.prompt && String(payload.prompt).trim());
+            const gotErrorResponse = (!res.ok) || (data && data.error);
+            if (hasPrompt && gotErrorResponse) {
+                // 서버 오류 원문은 개발자 콘솔에만 (사용자 화면에는 노출 안 됨)
+                try {
+                    console.warn('[builder] server error response (hidden from user):',
+                                 { status: res.status, requestId: errRid, error: (data && data.error) || '(no error field)' });
+                } catch (_) {}
+                await retryQueryWithoutPrompt(
+                    payload,
+                    classifyPromptFailureReason('gateway'),
+                    errRid
+                );
+                return;
+            }
+        }
+
+        // 프롬프트가 없는 순수 빌더 SQL 이 실패한 경우 — 부드러운 안내 (원시 error 문자열 노출 금지)
+        if (!res.ok || (data && data.error)) {
+            try {
+                console.warn('[builder] server error (hidden from user):',
+                             { status: res.status, requestId: errRid, error: (data && data.error) || '(unknown)' });
+            } catch (_) {}
+            showSoftFallbackNotice(
+                '요청 처리 중 문제가 발생하여 결과를 표시하지 못했습니다.',
+                errRid,
+                '조회 조건(기간/필드/필터) 을 확인 후 다시 시도해 주세요. 문제가 계속되면 위 요청 ID 를 관리자에게 전달해 주세요.'
+            );
+            return;
+        }
 
         // [2026-06-29] GPT 보완 상태 안내 (timeout / metric_loss 등)
         //   - 'applied'  : GPT SQL 채택 → 안내 불필요
@@ -3212,26 +3242,40 @@ async function executeQuery() {
         //   상위 스코프에 보존해 둔 executeQuery._currentRequestId (=clientRequestId 또는 서버 확정 ID) 를 사용
         const catchRid = executeQuery._currentRequestId || clientRequestId;
 
-        // [2026-06-30 PR #198] AbortError 안내 — prompt 유무로 GPT/DB 분기
-        if (e && (e.name === 'AbortError' || /aborted/i.test(e.message || ''))) {
-            const hasPrompt = !!(payload && payload.prompt && String(payload.prompt).trim());
-            if (hasPrompt) {
-                showError('요청 처리 시간이 초과되었습니다 (프론트 180s timeout).<br>' +
-                          'DB 조회 또는 추가 프롬프트 처리에 시간이 오래 걸렸을 수 있습니다.<br>' +
-                          '&middot; 프롬프트를 짧게 줄이거나,<br>' +
-                          '&middot; 조회 기간(시작/종료 년월) 을 좁혀서 재시도해 주세요.<br>' +
-                          '<span style="opacity:.7;font-size:12px;">서버 로그에서 requestId 로 stage="final_sql_analysis" 를 검색하면 ' +
-                          '실제 실행된 SQL 과 증가율/차이 컬럼 반영 여부를 확인할 수 있습니다.</span>',
-                          null, catchRid);
-            } else {
-                showError('DB 조회 시간이 초과되었습니다 (프론트 180s timeout).<br>' +
-                          '선택한 지표/기간의 데이터 양이 많아 DB 쿼리가 오래 걸린 것으로 보입니다.<br>' +
-                          '&middot; 조회 기간(시작/종료 년월) 을 좁혀서 재시도해 주세요.<br>' +
-                          '&middot; 필요 시 차원(MATERIAL_NM 등) 의 수를 줄여보세요.',
-                          null, catchRid);
-            }
+        // 원본 예외는 개발자 콘솔에만 (사용자 화면 노출 금지)
+        try {
+            console.warn('[builder] executeQuery caught exception (hidden from user):',
+                         { name: e && e.name, message: e && e.message, requestId: catchRid });
+        } catch (_) {}
+
+        const hasPrompt = !!(payload && payload.prompt && String(payload.prompt).trim());
+        const isAbort   = !!(e && (e.name === 'AbortError' || /aborted/i.test(e.message || '')));
+
+        // [PR #213] 추가 프롬프트가 있는 요청이 timeout/network 실패한 경우:
+        //   prompt 제거 후 재시도 → 기본 SQL 결과라도 사용자에게 제공.
+        //   재시도가 완료된 후 (내부에서 loading/버튼 상태 해제 및 안내 배너까지 표시) 이 함수도 종료.
+        if (hasPrompt) {
+            await retryQueryWithoutPrompt(
+                payload,
+                classifyPromptFailureReason(isAbort ? 'timeout' : 'network'),
+                catchRid
+            );
+            return; // finally 는 계속 실행되지만 retryQueryWithoutPrompt 내부에서 이미 loading/btn 처리함
+        }
+
+        // 프롬프트가 없는 요청이 실패한 경우: 재시도해도 같은 결과이므로 부드러운 안내만
+        if (isAbort) {
+            showSoftFallbackNotice(
+                'DB 조회 시간이 초과되어 결과를 표시하지 못했습니다.',
+                catchRid,
+                '선택한 지표/기간의 데이터 양이 많을 수 있습니다. 조회 기간을 좁히거나 차원(MATERIAL_NM 등) 의 수를 줄여서 다시 시도해 주세요.'
+            );
         } else {
-            showError('네트워크 오류: ' + (e?.message || e), null, catchRid);
+            showSoftFallbackNotice(
+                '요청 처리 중 문제가 발생했습니다.',
+                catchRid,
+                '잠시 후 다시 시도해 주세요. 문제가 계속되면 위 요청 ID 를 관리자에게 전달해 주세요.'
+            );
         }
     } finally {
         clearTimeout(fetchTimer);
@@ -3374,6 +3418,179 @@ function displayResults(data) {
     renderChart(data.chart, data.columns, data.rows);
     document.getElementById('resultsSection').classList.add('active');
     switchTab('table');
+}
+
+// ─── [2026-07-01 PR #213] 추가 프롬프트 실패 시 우아한 폴백 (Graceful Prompt Fallback) ─────
+//   배경 (사용자 요청 verbatim):
+//     "추가 프롬프트 처리 중 GPT 오류, SQL 파싱 오류, timeout, response delivery 실패가
+//      발생하더라도 사용자 화면에는 치명적인 오류처럼 보여주지 말 것."
+//
+//   기존 문제:
+//     1) Nginx 504 → 백엔드 응답 없음 → 프론트에서 HTML snippet 을 그대로 배너에 노출
+//        ('The page is temporarily unavailable', nginx 기본 페이지 문구, etc.)
+//     2) AbortError (프론트 180s timeout) → 'HTTP 504' 같은 치명적 문구 노출
+//     3) 사용자는 시스템이 불안정하다고 느끼고 서비스 신뢰도 하락
+//
+//   해결 전략:
+//     - 추가 프롬프트가 있을 때만 발생하는 오류 (GPT 처리 관련) → prompt 제거 후 자동 재시도
+//     - 재시도 성공 시: 기본 SQL 결과를 표시 + 초록 안내 배너 (경고 아님)
+//     - 재시도 실패 시: 부드러운 안내 문구만, 원시 에러 메시지 절대 노출 금지
+//     - requestId 는 계속 노출 (개발자 로그 추적용, 사용자에게는 "문의 시 이 ID" 로 안내)
+//
+//   화이트리스트 원칙: 사용자 화면에는 "우리가 승인한 정형 문구" 만 표시,
+//                    원시 예외/HTML/stack trace 는 절대 통과시키지 않음.
+// ────────────────────────────────────────────────────────────────────────
+async function retryQueryWithoutPrompt(originalPayload, reasonText, priorRequestId) {
+    // 방어: originalPayload 가 없으면 조용히 종료
+    if (!originalPayload) {
+        showSoftFallbackNotice(
+            '추가 프롬프트 반영에 실패하여 기본 조건으로 조회했습니다.',
+            priorRequestId,
+            '입력하신 추가 요청은 결과에 반영되지 않았습니다. 필요하면 프롬프트를 다시 입력해 재시도해 주세요.'
+        );
+        return;
+    }
+    // payload 를 얕게 복제 + prompt 제거 (기본 조건은 그대로 유지)
+    const fallbackPayload = { ...originalPayload, prompt: '' };
+    // 이번 재시도의 별도 requestId (동일 세션이지만 재실행이므로 새 ID)
+    const retryRequestId = generateClientRequestId();
+    executeQuery._currentRequestId = retryRequestId;
+
+    // SQL preview 영역에 재시도 진행 중 표시 (사용자에게 '무언가 하고 있음' 알림)
+    try {
+        const spText = document.getElementById('sqlPreviewText');
+        const _reqIdSpan = document.getElementById('sqlPreviewRequestId');
+        if (spText) {
+            spText.innerHTML = '<span style="opacity:.6;">(추가 프롬프트를 제외하고 기본 조건으로 재조회 중…)</span>';
+        }
+        if (_reqIdSpan) {
+            _reqIdSpan.textContent = `(reqId: ${retryRequestId})`;
+            _reqIdSpan.title = `재시도 요청의 ID. 서버 로그에서 requestId="${retryRequestId}" 로 검색 가능. 클릭하면 클립보드에 복사됩니다.`;
+            _reqIdSpan.style.cursor = 'pointer';
+            _reqIdSpan.onclick = function () {
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(retryRequestId);
+                    const orig = _reqIdSpan.textContent;
+                    _reqIdSpan.textContent = '✓ 복사됨';
+                    setTimeout(() => { _reqIdSpan.textContent = orig; }, 800);
+                }
+            };
+        }
+    } catch (_) { /* ignore */ }
+
+    // 재시도 fetch — 타임아웃은 짧게(90s) 잡아서 두 번 연속 오래 기다리는 상황 방지
+    const retryAbort = new AbortController();
+    const retryTimer = setTimeout(() => retryAbort.abort(), 90000);
+    try {
+        const res = await fetch('/api/builder/query', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Request-Id': retryRequestId,
+            },
+            body: JSON.stringify(fallbackPayload),
+            signal: retryAbort.signal,
+        });
+        const serverRetryRid = (res.headers.get('X-Request-Id') || '').trim() || retryRequestId;
+        executeQuery._currentRequestId = serverRetryRid;
+
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        const isJson = ct.includes('application/json');
+        let data = null;
+        if (isJson) {
+            try { data = await res.json(); } catch (_) { data = null; }
+        }
+        // 재시도도 실패한 경우 — 원시 응답은 절대 노출하지 않고 조용한 안내만
+        if (!res.ok || !data || data.error) {
+            showSoftFallbackNotice(
+                '추가 프롬프트 반영에 실패하여 기본 조건으로 조회했으나, 재조회에도 문제가 발생했습니다.',
+                serverRetryRid,
+                '잠시 후 다시 시도해 주세요. 문제가 계속되면 위 요청 ID 를 관리자에게 전달해 주세요.'
+            );
+            return;
+        }
+
+        // 재시도 성공 — SQL preview 갱신 + 결과 렌더링 + 초록 안내 배너
+        try {
+            if (data.sql) {
+                lastGeneratedSql = data.sql;
+                const spText = document.getElementById('sqlPreviewText');
+                if (spText) spText.innerHTML = highlightSQL(data.sql);
+                const _reqIdSpan = document.getElementById('sqlPreviewRequestId');
+                if (_reqIdSpan) {
+                    _reqIdSpan.textContent = `(reqId: ${serverRetryRid})`;
+                    _reqIdSpan.title = `서버 로그에서 requestId="${serverRetryRid}" 로 검색 가능. 클릭하면 클립보드에 복사됩니다.`;
+                }
+                const sp = document.getElementById('sqlPreview');
+                if (sp) { sp.classList.add('active'); sp.classList.remove('expanded'); sp.classList.remove('editing'); }
+                syncSqlPreviewToggle();
+                syncSqlEditButtons(false);
+            }
+            if (data.history_id) loadedHistoryId = data.history_id;
+            displayResults(data);
+        } catch (_) { /* 결과 렌더 중 예외는 조용히 무시 (사용자 노출 방지) */ }
+
+        // 성공적으로 기본 SQL 결과가 나왔음을 안내 (경고 아닌 초록 안내 톤)
+        showSoftFallbackNotice(
+            reasonText || '추가 프롬프트 반영에 실패하여 기본 조건으로 조회했습니다.',
+            priorRequestId,
+            '입력하신 추가 요청은 결과에 반영되지 않았습니다. 필요하면 프롬프트를 다시 입력해 재시도해 주세요.'
+        );
+    } catch (_) {
+        // 재시도도 abort/network 실패 — 그래도 원시 메시지 노출 금지
+        showSoftFallbackNotice(
+            '추가 프롬프트 반영에 실패하여 기본 조건으로 조회했으나, 재조회에도 시간이 초과되었습니다.',
+            priorRequestId,
+            '잠시 후 다시 시도해 주세요. 문제가 계속되면 위 요청 ID 를 관리자에게 전달해 주세요.'
+        );
+    } finally {
+        clearTimeout(retryTimer);
+        document.getElementById('loading').classList.remove('active');
+        const btn = document.getElementById('execBtn');
+        if (btn) btn.disabled = false;
+    }
+}
+
+// 부드러운 안내 배너 (초록 톤 — 경고 아님, 정보성 안내)
+//   - 원시 에러 메시지 절대 통과 금지 (인자로 받는 것도 모두 우리가 통제하는 문구)
+//   - requestId 뱃지는 buildRequestIdBadge() 로 클릭-복사 지원
+//   - 자동 사라짐 없음 (사용자가 읽고 닫을 수 있도록)
+function showSoftFallbackNotice(mainMessage, requestId, subNote) {
+    const banner = document.getElementById('errorBox');
+    if (!banner) return;
+    const safeMain = String(mainMessage || '요청 처리 중 문제가 발생했습니다.').slice(0, 300);
+    const safeSub  = subNote ? String(subNote).slice(0, 400) : '';
+    let html =
+        '<div style="display:flex;align-items:flex-start;gap:10px;">' +
+        '<span style="font-size:18px;line-height:1;">ⓘ</span>' +
+        '<div style="flex:1;">' +
+        `<div style="font-weight:600;margin-bottom:4px;">${safeMain}</div>` +
+        (safeSub ? `<div style="font-size:12px;opacity:.85;line-height:1.5;">${safeSub}</div>` : '') +
+        '</div>' +
+        '</div>';
+    // requestId 뱃지 (개발자 로그 추적용 — 사용자 화면에도 유지)
+    html += buildRequestIdBadge(requestId);
+    banner.innerHTML = html;
+    banner.classList.add('active');
+    banner.style.background = '#e8f5e9';
+    banner.style.border = '1px solid #a5d6a7';
+    banner.style.color = '#1b5e20';
+    // 자동 사라짐 없음 — 사용자가 인지하고 다음 액션을 결정할 시간을 제공
+}
+
+// 오류 원인 (내부용) → 사용자 화면 문구로 변환 (화이트리스트)
+//   반환값은 "사용자가 봐도 안전한 문구". 절대 e.message 등을 그대로 리턴하지 않음.
+function classifyPromptFailureReason(kind /* 'timeout' | 'gateway' | 'network' | 'unknown' */) {
+    switch (kind) {
+        case 'timeout':
+            return '추가 프롬프트 처리 중 시간이 초과되어 기본 SQL 결과를 먼저 표시합니다.';
+        case 'gateway':
+            return '추가 프롬프트 반영 중 일시적인 통신 오류가 발생하여 기본 SQL 결과를 먼저 표시합니다.';
+        case 'network':
+            return '추가 프롬프트 반영 중 네트워크 문제가 발생하여 기본 SQL 결과를 먼저 표시합니다.';
+        default:
+            return '추가 프롬프트 반영에 실패하여 기본 조건으로 조회했습니다.';
+    }
 }
 
 function resetResults() {
