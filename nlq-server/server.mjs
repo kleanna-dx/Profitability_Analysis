@@ -7322,6 +7322,11 @@ app.post('/api/builder/query', async (req, res) => {
     //   매칭되면 즉시 SQL 생성 후 GPT 호출 스킵
     // ────────────────────────────────────────────────
     let ruleDiagnostics = null; // 규칙 기반 실패/스킵 사유 진단
+    // [2026-06-30] Fix — 규칙 기반 진입 전 원본 SQL/params 백업
+    //   목적: 규칙 기반이 "월 필드는 뽑았는데 비교 의도는 미충족" 이라는 애매한
+    //   상태로 끝난 경우, 원래 기본 SQL 로 되돌린 뒤 GPT 로 위임하기 위함.
+    const originalSqlBeforeRule = sql;
+    const originalParamsBeforeRule = finalParams.slice();
     if (needGpt) {
       const promptStart = Date.now();
       try {
@@ -7334,6 +7339,14 @@ app.post('/api/builder/query', async (req, res) => {
         const hasDiffKeyword = /차이|차액|증감|뺀|빼서/.test(trimmedPrompt);
         const hasGrowthKeyword = /증가율|성장률|증감률|상승률|하락률/.test(trimmedPrompt);
         const hasPrevMonthKeyword = /전월\s*대비|MoM|m\/m/i.test(trimmedPrompt);
+
+        // [2026-06-30] Fix — 사용자의 "비교 의도" 폭넓게 감지 (규칙 감지 키워드보다 상위)
+        //   목적: 규칙 기반이 처리 못 하는 표현("3월 대비", "지난달 대비", "vs", "얼마나 늘었어" 등)을
+        //   사용자가 원한 경우, 규칙이 어중간한 결과로 확정하지 않고 GPT 로 위임하기 위함.
+        //   ※ 이 플래그 자체는 아무 SQL 도 생성하지 않음. "의도가 있었는지" 만 체크.
+        const hasComparisonIntent =
+          hasDiffKeyword || hasGrowthKeyword || hasPrevMonthKeyword ||
+          /대비|비교|vs\b|늘었|줄었|증가|감소|얼마나|지난달|저번달|이전\s*(월|달)|전년|작년|YoY|Y\/Y/i.test(trimmedPrompt);
 
         // 진단 정보 (사용자 요청 #6 — 실패 사유 명시)
         ruleDiagnostics = {
@@ -7447,20 +7460,49 @@ app.post('/api/builder/query', async (req, res) => {
             if (orderClause2) newSql += ` ${orderClause2}`;
             newSql += ` LIMIT ${safeLimit}`;
 
-            sql = newSql;
-            finalParams = newFinalParams;
-            gptStatus = 'rule_based';
-            promptStageMs = Date.now() - promptStart;
-            log.stage('rule_based_applied', {
-              llm_used: false,
-              months: candidates,
-              has_diff: hasDiffKeyword,
-              has_growth: hasGrowthKeyword,
-              prompt_stage_ms: promptStageMs,
-              sql_preview: newSql.substring(0, 300),
-            });
-            console.log(`[PromptStage] 규칙 기반 처리 적용 (${promptStageMs}ms) — months=${candidates.join(',')}, diff=${hasDiffKeyword}, growth=${hasGrowthKeyword}, metric=${usedMetricEntriesPre.map(([c])=>c).join(',')}`);
-            console.log(`[PromptStage] 재구성 SQL preview: ${newSql.slice(0, 200)}...`);
+            // [2026-06-30] Fix — 규칙 기반 결과가 사용자 "비교 의도" 를 충족했는지 검증
+            //   시나리오: 프롬프트에 "3월 대비 증가율" — 월은 [3] 하나만 잡히고
+            //     hasDiffKeyword=false 이라 차이/증감률 컬럼은 안 만들어짐. 이 경우
+            //     결과는 "3월 컬럼 하나만 뽑는 SQL" 인데 사용자는 "3월 대비 4월 증가율"
+            //     을 원한 것. → 규칙으로 확정 짓지 말고 GPT 로 위임.
+            //
+            //   판정: (a) 사용자가 비교 의도를 표현했는데 (b) 실제 비교 컬럼이 안 나왔으면 미충족.
+            //         미충족이면 원본 SQL/params 로 되돌린 뒤 rule_based 확정 스킵.
+            const producedComparisonColumn = newSelectParts.some(p => /차이\(|증감률\(/.test(p));
+            const ruleFullySatisfied = !hasComparisonIntent || producedComparisonColumn;
+
+            if (!ruleFullySatisfied) {
+              // 미충족 → 원본 SQL/params 복구 후 rule_based 확정 스킵 → 아래 Stage 2 (GPT) 에서 처리
+              ruleDiagnostics.skip_reason = 'comparison_intent_unmet';
+              ruleDiagnostics.candidates_from_prompt = candidates;
+              ruleDiagnostics.produced_comparison_column = false;
+              promptStageMs = Date.now() - promptStart;
+              console.log(`[PromptStage] 규칙 매칭됐으나 사용자 비교 의도(${JSON.stringify({diff:hasDiffKeyword, growth:hasGrowthKeyword, prev:hasPrevMonthKeyword, broad:hasComparisonIntent})}) 를 충족 못 함 → GPT 위임 (${promptStageMs}ms)`);
+              log.stage('rule_deferred_to_gpt', {
+                llm_used: false,
+                reason: 'comparison_intent_unmet',
+                months_found: candidates,
+                has_comparison_intent: hasComparisonIntent,
+                produced_comparison_column: false,
+              });
+              // sql, finalParams 는 원본 유지 (originalSqlBeforeRule, originalParamsBeforeRule)
+              // gptStatus 는 여전히 null → Stage 2 GPT 호출로 진행
+            } else {
+              sql = newSql;
+              finalParams = newFinalParams;
+              gptStatus = 'rule_based';
+              promptStageMs = Date.now() - promptStart;
+              log.stage('rule_based_applied', {
+                llm_used: false,
+                months: candidates,
+                has_diff: hasDiffKeyword,
+                has_growth: hasGrowthKeyword,
+                prompt_stage_ms: promptStageMs,
+                sql_preview: newSql.substring(0, 300),
+              });
+              console.log(`[PromptStage] 규칙 기반 처리 적용 (${promptStageMs}ms) — months=${candidates.join(',')}, diff=${hasDiffKeyword}, growth=${hasGrowthKeyword}, metric=${usedMetricEntriesPre.map(([c])=>c).join(',')}`);
+              console.log(`[PromptStage] 재구성 SQL preview: ${newSql.slice(0, 200)}...`);
+            }
           } else {
             ruleDiagnostics.skip_reason = 'no_month_candidates_in_range';
             console.log(`[PromptStage] 규칙 매칭됐으나 후보 월이 date_start~date_end 범위에 없음: months=${uniqMonths.join(',')}, range=${date_start}~${date_end}`);
@@ -7577,7 +7619,11 @@ app.post('/api/builder/query', async (req, res) => {
               '3. 존재하지 않는 컬럼명을 임의로 생성하지 마세요.\n' +
               '4. SELECT 문 이외의 DML(INSERT, UPDATE, DELETE) 및 DDL(DROP, ALTER, CREATE, TRUNCATE)은 절대 생성하지 마세요.\n' +
               '5. 결과 컬럼에 한글 alias를 사용하세요.\n' +
-              '6. WHERE 조건의 CALMONTH 범위를 절대 변경하지 마세요.\n' +
+              '6. WHERE 조건의 CALMONTH 범위는 기본적으로 변경하지 마세요. ' +
+              '   단, 추가 프롬프트에 사용자가 명시적으로 언급한 월이 기본 SQL 의 CALMONTH 범위에 없는 경우 ' +
+              '(예: 기본 SQL 이 CALMONTH=\'202603\' 인데 프롬프트가 "3월 대비 4월 증가율" 이라 4월 이 필요한 경우), ' +
+              '   프롬프트에 명시된 월도 포함되도록 WHERE 절의 CALMONTH 범위를 확장하는 것은 허용합니다. ' +
+              '   이때 원래 범위를 축소하거나 변경하지 말고 반드시 확장(BETWEEN 또는 IN)만 하세요.\n' +
               '7. [계산지표(Metric) 산식] 섹션에 명시된 alias 가 SELECT 절에 있으면 반드시 명시된 "산식 전체" 를 사용하세요. ' +
               '   - 산식 안의 일부 컬럼(예: ZAMT055)만 추출해 단순 SUM 으로 대체하지 마세요.\n' +
               '   - 월별 비교 요청("4월 5월 차이", "전월 대비 증가율") 시 산식의 각 SUM(컬럼) 을 ' +
@@ -7585,6 +7631,9 @@ app.post('/api/builder/query', async (req, res) => {
               '8. 추가 프롬프트의 비교/증가율/그룹화 요청은 반드시 SQL 에 반영하세요.\n' +
               '   - "4월 5월 차이" → 4월값, 5월값, 차이 3개 컬럼 생성\n' +
               '   - "전월 대비 증가율" → 전월값, 당월값, 증감액, 증가율(%) 4개 컬럼 생성\n' +
+              '   - "3월 대비 4월 증가율" / "3월 대비 증가율" → 3월값, 4월값, 증감액, 증가율(%) 컬럼 생성 ' +
+              '     (기본 SQL 의 CALMONTH 범위가 3월만이라면 규칙6에 따라 4월 도 포함되도록 확장)\n' +
+              '   - "N월 대비" 패턴에서 비교 대상 월이 명시 안 되면 기본 SQL 의 CALMONTH 범위 중 가장 큰(최신) 월을 사용\n' +
               '   - "사업부별로" → GROUP BY 에 해당 컬럼 추가\n' +
               '9. 따옴표 규칙: 컬럼명/테이블명에는 백틱(`) 이나 작은따옴표를 사용하지 마세요. ' +
               '   - 잘못된 예: SELECT `MATERIAL_NM` FROM `bw_profitability_data`\n' +
