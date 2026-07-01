@@ -6970,6 +6970,125 @@ app.post('/api/builder/query', async (req, res) => {
       return `SUM(${safeFormula})`;
     }
 
+    // ─── [2026-07-01 PR #214] GPT 생성 SQL 구조 검증 ──────────────────────
+    //   목적:
+    //     GPT 가 "SUM/AVG/COUNT 는 최상위 SELECT 에서만" 규칙을 지켰는지 검사.
+    //     지키지 않은 SQL (내부 서브쿼리에서 이미 집계된 SQL) 은 실행계획이 무거워져
+    //     timeout 을 유발하므로 실행 전에 거부하고 기본 SQL 로 fallback.
+    //
+    //   검증 대상:
+    //     1) 프롬프트가 "월별 비교/증가율/퍼센트/YoY/MoM/증감액/N월 대비" 등 비교 지표를 요청한 경우
+    //     2) 사용자가 선택한 차원 컬럼 (group_by) 이 최종 SQL 에 보존되었는지
+    //     3) 사용자가 선택한 차원이 최종 GROUP BY 에 들어있는지
+    //     4) 프롬프트에 "증가율/퍼센트/%/대비" 가 있으면 실제 그런 컬럼이 생성됐는지
+    //     5) 내부 서브쿼리에 SUM/AVG/COUNT 가 과도하게 있지 않은지 (경고 수준)
+    //
+    //   반환: { ok: boolean, issues: string[], warnings: string[] }
+    //     - ok=false : 구조 위반, GPT SQL 거부하고 기본 SQL 로 fallback
+    //     - warnings : 로그에만 남기고 실행은 허용
+    // ────────────────────────────────────────────────────────────────────
+    function validateGptSqlStructure(gptSql, ctx) {
+      const issues = [];
+      const warnings = [];
+      const promptText = String(ctx.promptText || '').toLowerCase();
+      const dimCols    = Array.isArray(ctx.dimCols) ? ctx.dimCols : [];
+      const upperSql   = String(gptSql || '').toUpperCase();
+
+      // [검증1] 사용자가 선택한 차원 컬럼이 최종 SQL 에 존재하는가
+      //   (GPT 가 차원을 임의 제거하는 케이스 방지)
+      for (const col of dimCols) {
+        if (!col) continue;
+        const rx = new RegExp('\\b' + col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+        if (!rx.test(gptSql)) {
+          issues.push(`dimension_dropped:${col}`);
+        }
+      }
+
+      // [검증2] 차원이 GROUP BY 에 포함됐는가 (집계 함수가 있는 경우에만)
+      //   집계가 없는 조회 (단순 SELECT ... FROM ...) 는 GROUP BY 불필요
+      const hasAggregate = /\b(SUM|AVG|COUNT|MIN|MAX)\s*\(/i.test(gptSql);
+      if (hasAggregate && dimCols.length > 0) {
+        // 최종 GROUP BY 절 추출 (마지막 GROUP BY … 이후 ORDER BY / LIMIT 이전까지)
+        const gbMatch = gptSql.match(/GROUP\s+BY\s+([^;]*?)(?:\s+ORDER\s+BY|\s+LIMIT|\s*$)/i);
+        const gbClause = gbMatch ? gbMatch[1] : '';
+        for (const col of dimCols) {
+          if (!col) continue;
+          // "x.MATERIAL_NM" / "MATERIAL_NM" / "t.MATERIAL_NM" 등 어떤 alias 로든 등장하면 OK
+          const rx = new RegExp('\\b' + col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+          if (!rx.test(gbClause)) {
+            issues.push(`dimension_missing_from_group_by:${col}`);
+          }
+        }
+      }
+
+      // [검증3] 프롬프트가 증가율/퍼센트/대비/차이/YoY/MoM 을 요청했는데 그런 컬럼이 실제로 생성됐는가
+      const wantsGrowth =
+        /(증가율|감소율|퍼센트|%|대비|증감|차이|비율|yoy|mom|month.*over.*month|year.*over.*year|전월|전년|월별\s*비교)/i.test(promptText);
+      if (wantsGrowth) {
+        //  - alias 에 '증가율'/'퍼센트'/'차이'/'증감' 이 있거나
+        //  - a/b*100 또는 (a-b)*100 같은 계산 표현이 있으면 OK
+        const hasGrowthAlias  = /AS\s+['"`]?\s*(증가율|감소율|퍼센트|차이|증감|비율|YoY|MoM|%)/i.test(gptSql);
+        const hasGrowthCalc   = /\*\s*100(\.0)?/.test(gptSql) || /-\s*SUM\s*\(/i.test(upperSql);
+        if (!hasGrowthAlias && !hasGrowthCalc) {
+          issues.push('growth_column_missing');
+        }
+      }
+
+      // [검증4] "월별 비교/증가율 등" 프롬프트에서 최상위 집계 규칙 위반 검사
+      //   조건: 프롬프트가 위 kw 에 매칭 AND SQL 에 서브쿼리 (FROM (SELECT ...) x) 가 있음
+      //   위반: 서브쿼리 안에 SUM(CASE WHEN ...) 가 있음
+      //         → 내부에서 집계된 것 → 우리가 원하는 구조 아님 → 거부
+      //   허용: 서브쿼리 없이 flat SELECT (SUM CASE WHEN 이 최상위이므로 OK)
+      const kwMatch = wantsGrowth;
+      if (kwMatch) {
+        // 서브쿼리 여부 확인 — FROM ( SELECT ... ) [AS] alias 패턴
+        const hasSubquery = /FROM\s*\(\s*SELECT\b/i.test(gptSql);
+        if (hasSubquery) {
+          // 서브쿼리 부분만 추출: 첫 번째 FROM ( 부터 매칭되는 ) 까지
+          //   간단한 depth 카운터로 서브쿼리 본문 잡기
+          const startIdx = gptSql.search(/FROM\s*\(\s*SELECT\b/i);
+          if (startIdx >= 0) {
+            // '(' 위치 찾기
+            const parenStart = gptSql.indexOf('(', startIdx);
+            let depth = 0;
+            let end = -1;
+            for (let i = parenStart; i < gptSql.length; i++) {
+              const ch = gptSql[i];
+              if (ch === '(') depth++;
+              else if (ch === ')') {
+                depth--;
+                if (depth === 0) { end = i; break; }
+              }
+            }
+            if (end > parenStart) {
+              const subBody = gptSql.substring(parenStart + 1, end);
+              // 서브쿼리 안에 SUM(CASE WHEN ... ) 가 있으면 위반
+              //   ※ CASE WHEN 자체는 row-level 이라 OK, SUM 이 감싼 형태가 문제
+              if (/\bSUM\s*\(\s*CASE\s+WHEN\b/i.test(subBody)) {
+                issues.push('inner_aggregate_on_case_when');
+              }
+              // 서브쿼리 안 SUM/AVG/COUNT 개수 카운트 (2개 이상이면 강한 위반)
+              const innerAggCount = (subBody.match(/\b(SUM|AVG|COUNT)\s*\(/gi) || []).length;
+              if (innerAggCount >= 2) {
+                issues.push(`inner_aggregate_count:${innerAggCount}`);
+              } else if (innerAggCount === 1) {
+                warnings.push(`inner_aggregate_count:1`);
+              }
+            }
+          }
+        }
+      }
+
+      // [검증5] SELECT/FROM/GROUP BY 균형 sanity (최소한의 파싱 안전성)
+      const openParen  = (gptSql.match(/\(/g) || []).length;
+      const closeParen = (gptSql.match(/\)/g) || []).length;
+      if (openParen !== closeParen) {
+        issues.push(`paren_mismatch:${openParen}vs${closeParen}`);
+      }
+
+      return { ok: issues.length === 0, issues, warnings };
+    }
+
     // ── 헬퍼 함수 ──
     const calcPrevMonth = (ym) => {
       const y = parseInt(ym.slice(0, 4), 10);
@@ -7770,8 +7889,6 @@ app.post('/api/builder/query', async (req, res) => {
               '   이때 원래 범위를 축소하거나 변경하지 말고 반드시 확장(BETWEEN 또는 IN)만 하세요.\n' +
               '7. [계산지표(Metric) 산식] 섹션에 명시된 alias 가 SELECT 절에 있으면 반드시 명시된 "산식 전체" 를 사용하세요. ' +
               '   - 산식 안의 일부 컬럼(예: ZAMT055)만 추출해 단순 SUM 으로 대체하지 마세요.\n' +
-              '   - 월별 비교 요청("4월 5월 차이", "전월 대비 증가율") 시 산식의 각 SUM(컬럼) 을 ' +
-              '`SUM(CASE WHEN CALMONTH = \'YYYYMM\' THEN 컬럼 ELSE 0 END)` 형태로 변환하세요.\n' +
               '8. 추가 프롬프트의 비교/증가율/그룹화 요청은 반드시 SQL 에 반영하세요.\n' +
               '   - "4월 5월 차이" → 4월값, 5월값, 차이 3개 컬럼 생성\n' +
               '   - "전월 대비 증가율" → 전월값, 당월값, 증감액, 증가율(%) 4개 컬럼 생성\n' +
@@ -7783,7 +7900,61 @@ app.post('/api/builder/query', async (req, res) => {
               '   - 잘못된 예: SELECT `MATERIAL_NM` FROM `bw_profitability_data`\n' +
               '   - 올바른 예: SELECT MATERIAL_NM FROM bw_profitability_data\n' +
               '   - AS 뒤의 한글 alias 만 작은따옴표로 감쌉니다 (예: AS \'4월 영업이익\')\n' +
-              '   - WHERE 조건값은 작은따옴표로 감쌉니다 (예: CALMONTH = \'202604\')'
+              '   - WHERE 조건값은 작은따옴표로 감쌉니다 (예: CALMONTH = \'202604\')\n' +
+              '\n' +
+              '=========================================================\n' +
+              '[★★★★★ 최상위 집계 규칙 (Top-level Aggregation Rule) — 성능 필수 ★★★★★]\n' +
+              '월별 비교/증감액/증가율/감소율/퍼센트/비율/YoY/MoM/월별 차이 등 "비교 지표" 를\n' +
+              '만들 때는 반드시 아래 2단 구조로 작성하세요.\n' +
+              '\n' +
+              '### 원칙: SUM/AVG/COUNT 는 최상위 SELECT 단계에서만 수행\n' +
+              '- 내부 서브쿼리(FROM 절 안) 에는 **row-level 계산 컬럼만** 만드세요.\n' +
+              '- 최종 바깥 SELECT 에서 `SUM(x.컬럼)` 형태로 집계하세요.\n' +
+              '- **내부 서브쿼리 안에 SUM(CASE WHEN ...) 를 넣지 마세요.** (실행계획이 무거워져 timeout 유발)\n' +
+              '\n' +
+              '### 잘못된 예 (내부에서 이미 집계 — 금지):\n' +
+              '  SELECT MATERIAL_NM, cost_202603, cost_202604, (cost_202604 - cost_202603) AS 증감액\n' +
+              '  FROM (\n' +
+              '    SELECT MATERIAL_NM,\n' +
+              '      SUM(CASE WHEN CALMONTH = \'202603\' THEN 산식 ELSE 0 END) AS cost_202603,   -- ❌ 내부 SUM 금지\n' +
+              '      SUM(CASE WHEN CALMONTH = \'202604\' THEN 산식 ELSE 0 END) AS cost_202604    -- ❌ 내부 SUM 금지\n' +
+              '    FROM bw_profitability_data\n' +
+              '    WHERE CALMONTH BETWEEN \'202603\' AND \'202604\'\n' +
+              '    GROUP BY MATERIAL_NM\n' +
+              '  ) t\n' +
+              '\n' +
+              '### 올바른 예 (내부 row-level + 외부 SUM):\n' +
+              '  SELECT x.MATERIAL_NM AS \'자재 명\',\n' +
+              '         SUM(x.cost_202603) AS \'2026년 3월 매출원가(제품)\',\n' +
+              '         SUM(x.cost_202604) AS \'2026년 4월 매출원가(제품)\',\n' +
+              '         SUM(x.cost_202604) - SUM(x.cost_202603) AS \'증감액\',\n' +
+              '         CASE WHEN SUM(x.cost_202603) = 0 THEN NULL\n' +
+              '              ELSE (SUM(x.cost_202604) - SUM(x.cost_202603)) * 100.0 / SUM(x.cost_202603)\n' +
+              '         END AS \'증가율(%)\'\n' +
+              '  FROM (\n' +
+              '    SELECT MATERIAL_NM,\n' +
+              '      CASE WHEN CALMONTH = \'202603\' THEN (COALESCE(ZAMT006,0)+COALESCE(ZAMT007,0)+...) ELSE 0 END AS cost_202603,\n' +
+              '      CASE WHEN CALMONTH = \'202604\' THEN (COALESCE(ZAMT006,0)+COALESCE(ZAMT007,0)+...) ELSE 0 END AS cost_202604\n' +
+              '    FROM bw_profitability_data\n' +
+              '    WHERE CALMONTH BETWEEN \'202603\' AND \'202604\'\n' +
+              '  ) x\n' +
+              '  GROUP BY x.MATERIAL_NM\n' +
+              '\n' +
+              '### Metric 산식 처리\n' +
+              '- Metric 산식(예: COALESCE(ZAMT006,0)+COALESCE(ZAMT007,0)+... ) 자체는 row-level 산식입니다.\n' +
+              '- 산식 안에 SUM 을 씌우지 말고, 그대로 내부 서브쿼리의 CASE WHEN 안에 넣으세요.\n' +
+              '- 외부 SELECT 에서 SUM(x.cost_YYYYMM) 형태로 집계하세요.\n' +
+              '\n' +
+              '### 기존 차원(GROUP BY 컬럼) 보존\n' +
+              '- 사용자가 조회 필드로 선택한 차원(예: MATERIAL_NM, PLANT_NM 등)은 반드시 유지하세요.\n' +
+              '- 최상위 SELECT 에 `x.차원컬럼` 을 포함하고, 최상위 GROUP BY 에도 `x.차원컬럼` 을 넣으세요.\n' +
+              '- 절대 차원 컬럼을 임의로 제거하지 마세요.\n' +
+              '\n' +
+              '### 적용 대상 프롬프트 키워드\n' +
+              '"전월 대비", "N월 대비", "증감액", "증가율", "감소율", "퍼센트", "%", "비율",\n' +
+              '"YoY", "MoM", "월별 비교", "지표별 차이", "월 차이" 등이 프롬프트에 있으면\n' +
+              '반드시 위 2단 구조로 작성하세요.\n' +
+              '=========================================================\n'
             },
             { role: 'user', content: gptPrompt },
           ],
@@ -7832,7 +8003,46 @@ app.post('/api/builder/query', async (req, res) => {
           }
         }
 
+        // ─── [2026-07-01 PR #214] 최상위 집계 규칙 & 차원 보존 검증 ──────
+        //   GPT 가 "SUM/AVG/COUNT 는 최상위 SELECT 에서만" 규칙을 지켰는지,
+        //   사용자가 선택한 차원 컬럼이 유지됐는지, 증가율 요청에 실제 증가율 컬럼이
+        //   생성됐는지 검증. 실패 시 기본 SQL fallback 으로 조용히 전환.
+        let structureIssueDetected = false;
+        let structureIssues = [];
+        let structureWarnings = [];
         if (isSafe && /^SELECT/i.test(gptSql) && !metricLossDetected) {
+          try {
+            const validationResult = validateGptSqlStructure(gptSql, {
+              promptText: prompt || '',
+              dimCols: Array.isArray(group_by) ? group_by : [],
+            });
+            structureIssues   = validationResult.issues || [];
+            structureWarnings = validationResult.warnings || [];
+            if (!validationResult.ok) {
+              structureIssueDetected = true;
+              console.warn('[Builder] GPT SQL 구조 검증 실패 → 기본 SQL fallback. 사유:', structureIssues.join(', '));
+              log.stage('gpt_sql_structure_invalid', {
+                issues: structureIssues,
+                warnings: structureWarnings,
+                dim_cols: Array.isArray(group_by) ? group_by : [],
+                sql_preview: gptSql.substring(0, 300),
+              });
+            } else if (structureWarnings.length > 0) {
+              // 경고만 있으면 실행 허용하되 로그로 남김 (opt-in 튜닝 자료)
+              log.stage('gpt_sql_structure_warn', {
+                warnings: structureWarnings,
+                sql_preview: gptSql.substring(0, 300),
+              });
+            }
+          } catch (validationErr) {
+            // 검증 로직 자체가 실패하면 방어적으로 통과 (원본 GPT SQL 흐름 유지)
+            //   운영에서 예상 못한 SQL 형태가 검증기를 터뜨려서 정상 요청까지 막지 않도록.
+            console.error('[Builder] validateGptSqlStructure 예외 (fail-open):', validationErr && validationErr.message);
+            log.error('gpt_sql_structure_validator_error', validationErr, {});
+          }
+        }
+
+        if (isSafe && /^SELECT/i.test(gptSql) && !metricLossDetected && !structureIssueDetected) {
           sql = gptSql;
           finalParams = [];
           gptStatus = 'applied';
@@ -7865,6 +8075,19 @@ app.post('/api/builder/query', async (req, res) => {
           log.error('sql_parse_failed', new Error('metric_loss'), {
             outcome: 'metric_loss',
             reason: 'GPT 가 Metric 산식을 단순화함',
+          });
+        } else if (structureIssueDetected) {
+          // [PR #214] 구조 검증 실패 (내부 서브쿼리에 SUM/CASE, 차원 누락, 증가율 컬럼 미생성 등)
+          //   → 기본 SQL 로 조용히 fallback. 사용자 화면에는 안내만 표시됨 (PR #213 흐름).
+          //   운영에서는 이 stage 를 grep 하여 GPT 프롬프트 튜닝 자료로 활용.
+          console.log('[Builder] GPT SQL 구조 검증 실패 → 기본 SQL 유지. 사유:', structureIssues.join(', '));
+          gptStatus = 'structure_invalid';
+          gptErrorMessage = 'GPT 응답이 SQL 구조 규칙(최상위 집계/차원 보존) 을 지키지 않아 기본 SQL 을 유지했습니다.';
+          log.error('sql_parse_failed', new Error('structure_invalid'), {
+            outcome: 'structure_invalid',
+            issues: structureIssues,
+            warnings: structureWarnings,
+            sql_preview: gptSql.substring(0, 300),
           });
         } else {
           gptStatus = 'skipped';
