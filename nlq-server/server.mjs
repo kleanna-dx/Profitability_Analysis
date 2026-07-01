@@ -8658,6 +8658,52 @@ async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, 
 }
 
 // ============================================================
+// [2026-07-01 PR #209] Admin: requestId 로 저장된 final SQL 조회
+// ============================================================
+//   사용 케이스:
+//     프로덕션에서 사용자가 "화면 SQL 이 base SQL 로 보인다" 신고 → response_delivery_failed
+//     인 경우 프론트는 응답을 못 받아 확인 불가. 그러나 서버는 /tmp/nlq-final-sql-<reqid>.sql
+//     로 실제 실행한 SQL 을 파일로 저장했음. 이 엔드포인트로 관리자가 즉시 조회 가능.
+//
+//   응답:
+//     200 { requestId, sql, stored_at, size_bytes, source: 'file'|'memory' }
+//     404 { error: 'not_found', tried: [...] }
+//     403 관리자 아님
+//
+//   보안: requireAdmin. requestId 는 /^[a-z0-9-]{6,64}$/ 만 허용 (path traversal 방지).
+// ============================================================
+app.get('/api/admin/final-sql/:requestId', requireAdmin, async (req, res) => {
+  const rid = String(req.params.requestId || '');
+  if (!/^[a-z0-9-]{6,64}$/i.test(rid)) {
+    return res.status(400).json({ error: 'invalid_request_id' });
+  }
+  const filePath = `/tmp/nlq-final-sql-${rid}.sql`;
+  try {
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      const content = fs.readFileSync(filePath, 'utf8');
+      return res.json({
+        requestId: rid,
+        sql: content,
+        stored_at: stat.mtime.toISOString(),
+        size_bytes: stat.size,
+        source: 'file',
+        file_path: filePath,
+      });
+    }
+    return res.status(404).json({
+      error: 'not_found',
+      tried: [filePath],
+      hint: 'Final SQL file is written only when gpt_status is "applied" or "rule_based". ' +
+            'For older requests, check nlq-server.log for stage="final_sql_analysis" with this requestId.',
+    });
+  } catch (fsErr) {
+    console.error('[Admin] final-sql read error:', fsErr.message);
+    return res.status(500).json({ error: 'read_failed', message: fsErr.message });
+  }
+});
+
+// ============================================================
 // API: 빌더 히스토리 조회/삭제 (user_id 기반 필터링)
 // ============================================================
 app.get('/api/builder/history', async (req, res) => {
