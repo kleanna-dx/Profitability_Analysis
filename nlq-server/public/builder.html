@@ -1318,7 +1318,11 @@
                                 aria-expanded="false"
                                 aria-controls="sqlPreviewBody">
                             <span class="sql-preview-toggle-label">
-                                <span class="badge">생성된 SQL</span>
+                                <!-- [2026-07-01 PR #209] '생성된 SQL' → '실제 실행된 SQL' 로 변경
+                                     사용자가 화면 SQL 이 GPT/rule 로 보완된 최종본 (DB 에 실제로
+                                     날아간 SQL) 임을 명확히 알 수 있도록 라벨 강화. -->
+                                <span class="badge" title="이 SQL 은 GPT/rule 보완이 반영된, DB 에 실제로 실행된 최종 SQL 입니다.">실제 실행된 SQL</span>
+                                <span id="sqlPreviewRequestId" style="opacity:.65;font-size:11px;margin-left:6px;"></span>
                                 <span id="sqlPreviewToggleText">보기</span>
                             </span>
                             <i class="fas fa-chevron-down chevron"></i>
@@ -2864,6 +2868,36 @@ async function executeQuery() {
     document.getElementById('errorBox').classList.remove('active');
     document.getElementById('resultsSection').classList.remove('active');
 
+    // ─── [2026-07-01 PR #209] 문제 A/B: 이전 요청의 SQL preview / 결과 잔존 방지 ─────
+    //  사용자 신고 (requestId=mr1l9udvsjab):
+    //    로그상 gpt_status=applied, sql_length=3851 (증가율 컬럼 포함된 GPT SQL 이 실행됨)
+    //    이지만 화면에 표시된 "생성된 SQL" 은 base SQL 로 보임 → 실제로는 응답 전달 실패
+    //    (response_delivery_failed) 로 프론트가 응답을 못 받고, 이전 요청의 화면이
+    //    그대로 남아 사용자가 "실행된 final SQL" 로 오해한 케이스.
+    //
+    //  대응:
+    //    1) executeQuery 시작 시점에 이전 SQL preview / 원본 스냅샷 / 편집 모드를
+    //       모두 초기화.
+    //    2) fetch 실패/timeout/response 파싱 실패 시에도 아래 catch 에서 재차 초기화.
+    //    3) sqlPreview 를 "실행 중 (대기)" placeholder 로 명시 표시 → 화면이 비어있는
+    //       상태가 명확해짐.
+    try {
+        const sp = document.getElementById('sqlPreview');
+        const spText = document.getElementById('sqlPreviewText');
+        if (sp && spText) {
+            spText.innerHTML = '<span style="opacity:.6;">(실행 중… 응답 도착 시 실제 실행된 SQL 이 여기에 표시됩니다)</span>';
+            sp.classList.add('active');   // 영역 자체는 노출해서 대기 상태를 알림
+            sp.classList.remove('expanded');
+            sp.classList.remove('editing');
+        }
+        // 편집 모드 취소용 원본 스냅샷도 초기화 (이전 결과의 SQL 이 남지 않도록)
+        lastGeneratedSql = '';
+        // edit 상태 플래그가 있다면 리셋 (있을 때만)
+        if (typeof isSqlEditMode !== 'undefined' && isSqlEditMode) {
+            isSqlEditMode = false;
+        }
+    } catch (_) { /* 방어적 — 초기화 실패해도 본 요청 흐름은 계속 */ }
+
     const hasAgg = selectedFields.some(f => f.aggregate);
     const groupBy = hasAgg ? selectedFields.filter(f => !f.aggregate && !f.is_metric).map(f => f.column) : [];
 
@@ -3072,6 +3106,18 @@ async function executeQuery() {
             // [2026-06-24] 원본 SQL 별도 보존 — 편집 모드 진입/취소 시 사용
             lastGeneratedSql = data.sql;
             document.getElementById('sqlPreviewText').innerHTML = highlightSQL(data.sql);
+            // [2026-07-01 PR #209] requestId 도 함께 표시 → 사용자가 서버 로그에서
+            //   해당 요청의 final_sql_analysis / db_execute_start stage 를 찾을 수 있음
+            const reqIdSpan = document.getElementById('sqlPreviewRequestId');
+            if (reqIdSpan) {
+                if (data.requestId) {
+                    reqIdSpan.textContent = `(reqId: ${data.requestId})`;
+                    reqIdSpan.title = `서버 로그에서 requestId="${data.requestId}" 로 stage="final_sql_analysis" 를 검색하면 실행된 SQL 전체를 확인할 수 있습니다.`;
+                } else {
+                    reqIdSpan.textContent = '';
+                    reqIdSpan.title = '';
+                }
+            }
             const sp = document.getElementById('sqlPreview');
             sp.classList.add('active');
             // [2026-06-16] 피벗 재생성 시에도 SQL 영역은 항상 접힘 상태로 시작
@@ -3086,6 +3132,26 @@ async function executeQuery() {
         displayResults(data);
     } catch(e) {
         document.getElementById('loading').classList.remove('active');
+        // ─── [2026-07-01 PR #209] 실패 시 SQL preview 를 명시적으로 비움 ────────
+        //   응답이 도착 못 한 상황이므로 화면의 SQL 영역이 이전 요청의 SQL 을 그대로
+        //   보여주지 않도록 "표시할 SQL 없음" 상태로 리셋. (문제 A/B 재현 방지)
+        try {
+            const sp = document.getElementById('sqlPreview');
+            const spText = document.getElementById('sqlPreviewText');
+            if (sp && spText) {
+                spText.innerHTML =
+                    '<span style="opacity:.6;">' +
+                    '(응답이 도착하지 않아 이번 요청의 실행 SQL 은 확인할 수 없습니다.<br>' +
+                    '서버 로그 stage=&quot;final_sql_analysis&quot; / &quot;db_execute_start&quot; 또는 ' +
+                    '<code>/tmp/nlq-final-sql-&lt;requestId&gt;.sql</code> 을 확인해 주세요)' +
+                    '</span>';
+                sp.classList.add('active');
+                sp.classList.remove('expanded');
+                sp.classList.remove('editing');
+            }
+            lastGeneratedSql = '';
+        } catch (_) { /* ignore */ }
+
         // [2026-06-30 PR #198] AbortError 안내 — prompt 유무로 GPT/DB 분기
         if (e && (e.name === 'AbortError' || /aborted/i.test(e.message || ''))) {
             const hasPrompt = !!(payload && payload.prompt && String(payload.prompt).trim());
@@ -3093,7 +3159,9 @@ async function executeQuery() {
                 showError('요청 처리 시간이 초과되었습니다 (프론트 180s timeout).<br>' +
                           'DB 조회 또는 추가 프롬프트 처리에 시간이 오래 걸렸을 수 있습니다.<br>' +
                           '&middot; 프롬프트를 짧게 줄이거나,<br>' +
-                          '&middot; 조회 기간(시작/종료 년월) 을 좁혀서 재시도해 주세요.');
+                          '&middot; 조회 기간(시작/종료 년월) 을 좁혀서 재시도해 주세요.<br>' +
+                          '<span style="opacity:.7;font-size:12px;">서버 로그에서 requestId 로 stage="final_sql_analysis" 를 검색하면 ' +
+                          '실제 실행된 SQL 과 증가율/차이 컬럼 반영 여부를 확인할 수 있습니다.</span>');
             } else {
                 showError('DB 조회 시간이 초과되었습니다 (프론트 180s timeout).<br>' +
                           '선택한 지표/기간의 데이터 양이 많아 DB 쿼리가 오래 걸린 것으로 보입니다.<br>' +
@@ -3116,6 +3184,40 @@ function showError(msg, sql) {
     if (sql) html += `<code>${sql}</code>`;
     document.getElementById('errorBox').innerHTML = html;
     document.getElementById('errorBox').classList.add('active');
+    // ─── [2026-07-01 PR #209] 오류 발생 시 SQL preview 도 명시적으로 리셋 ─────
+    //   이전에는 오류 시 sqlPreview 를 그대로 두어 사용자가 실패한 요청의 SQL 을
+    //   "이번 요청의 결과" 로 오해할 수 있었음. 오류 안내 배너와 함께 SQL 영역도
+    //   실패 상태를 명시.
+    try {
+        const spText = document.getElementById('sqlPreviewText');
+        const sp = document.getElementById('sqlPreview');
+        const reqIdSpan = document.getElementById('sqlPreviewRequestId');
+        if (spText && sp) {
+            // 서버가 sql 을 함께 보냈다면 그것을 표시 (예: 500 오류인데 base SQL 은 만들어진 케이스),
+            // 아니면 명시적 empty placeholder 로.
+            if (sql) {
+                spText.innerHTML = highlightSQL(sql);
+            } else {
+                spText.innerHTML =
+                    '<span style="opacity:.6;">' +
+                    '(오류로 인해 이번 요청의 실행 SQL 은 표시되지 않습니다. ' +
+                    '서버 로그에서 requestId 로 stage=&quot;final_sql_analysis&quot; 를 검색하거나 ' +
+                    '<code>/api/admin/final-sql/&lt;requestId&gt;</code> 를 조회해 주세요)' +
+                    '</span>';
+            }
+            sp.classList.add('active');
+            sp.classList.remove('expanded');
+            sp.classList.remove('editing');
+        }
+        // requestId 표시도 갱신 (에러 응답에도 requestId 가 포함될 수 있음)
+        // 호출부에서 data.requestId 를 전달받지 않으므로 여기선 클리어
+        if (reqIdSpan) {
+            reqIdSpan.textContent = '';
+            reqIdSpan.title = '';
+        }
+        // 편집 원본도 리셋 → 재실행 시 이전 SQL 이 살아나지 않도록
+        lastGeneratedSql = '';
+    } catch (_) { /* ignore */ }
 }
 
 function highlightSQL(sql) {
