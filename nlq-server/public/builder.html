@@ -2898,7 +2898,14 @@ async function executeQuery() {
         }
     } catch (_) { /* 방어적 — 초기화 실패해도 본 요청 흐름은 계속 */ }
 
-    const hasAgg = selectedFields.some(f => f.aggregate);
+    // ─── [2026-07-01 PR #210] hasAgg 판정에 Metric 필드 포함 ────────────────
+    //   과거: hasAgg = selectedFields.some(f => f.aggregate) — Metric 은 aggregate=''
+    //         로 전송되므로 hasAgg=false 로 잘못 판정되어 group_by=[] 로 감.
+    //   수정: Metric 필드도 항상 집계로 취급 (백엔드 wrapMetricFormulaAggregated 가
+    //         SUM 자동 감싸므로 최종 SELECT 절에는 집계 함수가 들어감).
+    //   Note: 백엔드도 자체 판정/자동 보정 하므로 여기 실수해도 결과는 정상.
+    //         하지만 payload group_by 도 정확하게 넘겨야 로그·이력 저장이 일관됨.
+    const hasAgg = selectedFields.some(f => f.aggregate || f.is_metric);
     const groupBy = hasAgg ? selectedFields.filter(f => !f.aggregate && !f.is_metric).map(f => f.column) : [];
 
     // 날짜 조건 수집

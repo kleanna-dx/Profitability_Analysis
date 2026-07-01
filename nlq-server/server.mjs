@@ -7248,16 +7248,95 @@ app.post('/api/builder/query', async (req, res) => {
       const userWhere = buildUserConditions(finalParams);
       if (userWhere) whereParts.push(userWhere);
 
-      // GROUP BY
-      // 정책: 사용자가 명시 선택한 group_by 필드만 처리 (CALMONTH/CALDAY 자동 추가 없음)
-      // 프론트엔드에서 기간 필드(CALMONTH/CALDAY) 미선택 시 피벗 실행이 차단됨
-      const groupParts = [];
-      if (group_by && group_by.length > 0) {
-        for (const g of group_by) {
-          // Metric 필드는 GROUP BY에서 제외 (산식이므로)
-          if (g.startsWith('METRIC__')) continue;
-          if (validCols.has(g)) groupParts.push(g);
+      // ─── [2026-07-01 PR #210] GROUP BY 자동 산출 (사용자 요청) ─────────────
+      //   문제: 사용자가 UI 에서 [CALMONTH, CALDAY, MATERIAL_NM, Metric(매출원가)] 선택 시
+      //         프론트는 hasAgg = selectedFields.some(f => f.aggregate) 로 판정하는데
+      //         Metric 필드는 payload 에서 aggregate='' 로 전송되므로 hasAgg=false 로 잘못 판정
+      //         → group_by=[] 로 전송됨.
+      //         반면 백엔드 SELECT 절은 wrapMetricFormulaAggregated 로 SUM 자동 감싸기 적용
+      //         → SUM(...) + 일반 컬럼 (CALMONTH 등) 이 GROUP BY 없이 공존하는 위험한 SQL 생성.
+      //         MariaDB ONLY_FULL_GROUP_BY 가 꺼져 있어 에러 대신 "임의 1행" 결과가 나옴.
+      //
+      //   해결: 백엔드에서 fields 를 dimension / metric(집계) 로 자체 분류하고
+      //         "집계 지표가 하나라도 있으면 dimension 컬럼 전부를 GROUP BY 에 자동 추가".
+      //         프론트에서 온 group_by 는 상위 우선순위로 존중하되, 누락이 있으면 보완.
+      //
+      //   판정 규칙:
+      //     - Metric 필드 (col.startsWith('METRIC__') && metricFormulaMap[col]) → 집계 지표
+      //     - SUM/COUNT/AVG/MAX/MIN aggregate 지정 필드 → 집계 지표
+      //     - 그 외 (aggregate 없음, non-Metric) → dimension 후보
+      // ─────────────────────────────────────────────────────────────────────
+      const dimensionCols = [];      // GROUP BY 후보 (사용자 선택 차원)
+      const metricAliases = [];      // 집계 지표 alias (진단 로그용)
+      let hasAggregateMetric = false;
+      for (const f of fields) {
+        const col = f.column;
+        const agg = f.aggregate;
+        const alias = f.alias || col;
+        const isMetric = col.startsWith('METRIC__') && metricFormulaMap[col];
+        const isExplicitAgg = agg && ['SUM','COUNT','AVG','MAX','MIN'].includes(String(agg).toUpperCase());
+        if (isMetric) {
+          // Metric: wrapMetricFormulaAggregated 가 SUM 자동 감싸므로 항상 집계로 취급
+          //   (row-level 산식이든 SUM 포함 산식이든 최종 SELECT 절엔 집계 함수가 들어감)
+          hasAggregateMetric = true;
+          metricAliases.push(alias);
+        } else if (isExplicitAgg) {
+          hasAggregateMetric = true;
+          metricAliases.push(`${agg.toUpperCase()}(${col})`);
+        } else {
+          // dimension 후보. Metric prefix 는 SELECT 에서만 쓰이고 GROUP BY 에는 들어가면 안 됨
+          if (!col.startsWith('METRIC__') && validCols.has(col)) {
+            dimensionCols.push(col);
+          }
         }
+      }
+
+      // GROUP BY 산출
+      //   1) 사용자(프론트) 가 명시한 group_by 를 우선 반영
+      //   2) 집계 지표가 있는데 dimension 컬럼이 GROUP BY 에 누락되어 있으면 자동 추가
+      const groupParts = [];
+      const groupBySeen = new Set();
+      const addToGroup = (c) => {
+        if (!c || groupBySeen.has(c)) return;
+        if (c.startsWith('METRIC__')) return;   // Metric 은 GROUP BY 에 넣지 않음
+        if (!validCols.has(c)) return;
+        groupParts.push(c);
+        groupBySeen.add(c);
+      };
+      // (1) 프론트 group_by 존중
+      if (group_by && group_by.length > 0) {
+        for (const g of group_by) addToGroup(g);
+      }
+      // (2) 집계 지표가 있으면 dimension 컬럼 전부를 GROUP BY 에 강제 포함
+      const autoAddedDims = [];
+      if (hasAggregateMetric && dimensionCols.length > 0) {
+        for (const d of dimensionCols) {
+          if (!groupBySeen.has(d)) {
+            addToGroup(d);
+            autoAddedDims.push(d);
+          }
+        }
+      }
+      const groupByAutoCorrected = autoAddedDims.length > 0;
+
+      // 자체 판정 결과를 stage 로그로 남김 (사용자 요청 #5 항목)
+      log.stage('group_by_resolution', {
+        selected_fields: fields.map(f => ({
+          column: f.column,
+          alias: f.alias || f.column,
+          aggregate: f.aggregate || null,
+          is_metric: !!(f.column && f.column.startsWith('METRIC__')),
+        })),
+        dimension_cols: dimensionCols,
+        metric_cols_or_aliases: metricAliases,
+        has_aggregate_metric: hasAggregateMetric,
+        group_by_from_frontend: Array.isArray(group_by) ? group_by : [],
+        generated_group_by_cols: groupParts,
+        group_by_auto_corrected: groupByAutoCorrected,
+        auto_added_dims: autoAddedDims,
+      });
+      if (groupByAutoCorrected) {
+        console.log(`[Builder][PR #210] GROUP BY 자동 보정: 프론트=${JSON.stringify(group_by || [])} → 최종=${JSON.stringify(groupParts)} (auto_added=${JSON.stringify(autoAddedDims)}) reqId=${log.requestId}`);
       }
 
       let orderClause = '';
@@ -7271,12 +7350,60 @@ app.post('/api/builder/query', async (req, res) => {
       if (groupParts.length > 0) sql += ` GROUP BY ${groupParts.join(', ')}`;
       if (orderClause) sql += ` ${orderClause}`;
       sql += ` LIMIT ${safeLimit}`;
+
+      // ─── [2026-07-01 PR #210] SQL 방어적 검증 (사용자 요청 #3, #4) ────────
+      //   MariaDB/MySQL 이 ONLY_FULL_GROUP_BY 를 끄고 운영되는 경우
+      //   집계함수 + 일반 컬럼 + GROUP BY 부재 조합이 에러 없이 "임의 1행" 을 반환.
+      //   여기서 SQL 문자열을 직접 검사해서 그 조합을 감지하고 강제 보정.
+      //
+      //   판정 방법 (SELECT 절만 스캔):
+      //     - hasAggFn: /\b(SUM|COUNT|AVG|MAX|MIN)\s*\(/i 매치
+      //     - hasBareCol: SELECT 절에 알려진 dimension 컬럼이 non-aggregated 로 나옴
+      //     - GROUP BY 부재: /\bGROUP\s+BY\b/i 매치 실패
+      //   위 3 조건 모두 참이면 fields 기반으로 GROUP BY 를 다시 붙임.
+      // ─────────────────────────────────────────────────────────────────────
+      try {
+        const selectMatch = sql.match(/^\s*SELECT\s+([\s\S]*?)\s+FROM\s+/i);
+        const selectClause = selectMatch ? selectMatch[1] : '';
+        const hasAggFn = /\b(SUM|COUNT|AVG|MAX|MIN)\s*\(/i.test(selectClause);
+        const hasGroupBy = /\bGROUP\s+BY\b/i.test(sql);
+        // dimension 컬럼 중 실제로 select 에 non-aggregate 로 나온 것 탐지
+        const bareDimsInSelect = dimensionCols.filter(d => {
+          const re = new RegExp('(^|[^A-Z0-9_])' + d + '(\\s+AS|\\s*,|\\s*$)', 'i');
+          return re.test(selectClause);
+        });
+        if (hasAggFn && bareDimsInSelect.length > 0 && !hasGroupBy) {
+          // 방어적 재삽입: LIMIT/ORDER 앞에 GROUP BY 삽입
+          const gb = ' GROUP BY ' + bareDimsInSelect.join(', ');
+          if (/\bORDER\s+BY\b/i.test(sql)) {
+            sql = sql.replace(/\bORDER\s+BY\b/i, gb + ' ORDER BY');
+          } else if (/\bLIMIT\b/i.test(sql)) {
+            sql = sql.replace(/\bLIMIT\b/i, gb + ' LIMIT');
+          } else {
+            sql = sql + gb;
+          }
+          log.stage('group_by_defensive_injected', {
+            reason: 'aggregate_with_bare_dim_but_no_group_by',
+            injected_cols: bareDimsInSelect,
+            has_agg_fn: true,
+            has_group_by_after: /\bGROUP\s+BY\b/i.test(sql),
+          });
+          console.warn(`[Builder][PR #210] 방어 검증에서 GROUP BY 재삽입: cols=${JSON.stringify(bareDimsInSelect)} reqId=${log.requestId}`);
+        }
+      } catch (validationErr) {
+        log.error('group_by_validation_failed', validationErr, {
+          sql_length: sql.length,
+        });
+      }
+
       log.stage('base_sql_built', {
         mode: 'normal',
         sql_preview: sql.substring(0, 500),
         sql_length: sql.length,
         param_count: finalParams.length,
         group_by_cols: groupParts,
+        has_aggregate_metric: hasAggregateMetric,
+        group_by_auto_corrected: groupByAutoCorrected,
       });
     }
 
