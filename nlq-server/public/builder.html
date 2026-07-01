@@ -3112,15 +3112,19 @@ async function executeQuery() {
                 const diagText = data.rule_diagnostics
                     ? `<div style="font-size:11px;opacity:.7;margin-top:6px;">진단: metric=${data.rule_diagnostics.metric_count}, 추출월=[${(data.rule_diagnostics.months_found || []).join(',')}], 차이키워드=${data.rule_diagnostics.has_diff}, 사유=${data.rule_diagnostics.skip_reason || '-'}</div>`
                     : '';
-                banner.innerHTML = `<b>⚠ 추가 프롬프트가 반영되지 않았습니다.</b><br>` +
+                // [PR #212] 색상 변경: 빨강(위협적) → 초록(안내성)
+                //   사용자 피드백: 배너가 너무 빨개서 위협적으로 느껴짐.
+                //   기본 SQL 결과는 정상적으로 제공되고 있고 GPT 재시도는 선택사항이므로
+                //   경고보다는 안내(정보) 톤이 적절함.
+                banner.innerHTML = `<b>ⓘ 추가 프롬프트가 반영되지 않았습니다.</b><br>` +
                                    `${reasonText} 아래 결과는 추가 프롬프트를 제외한 <b>기본 SQL</b> 의 결과입니다.<br>` +
-                                   `<button type="button" onclick="executeQuery()" style="margin-top:8px;padding:6px 14px;background:#d32f2f;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:13px;"><i class="fas fa-redo"></i> 다시 시도</button>` +
-                                   `<button type="button" onclick="document.getElementById('errorBox').classList.remove('active')" style="margin-top:8px;margin-left:8px;padding:6px 14px;background:#fff;color:#d32f2f;border:1px solid #d32f2f;border-radius:4px;cursor:pointer;font-size:13px;">기본 SQL 결과 그대로 사용</button>` +
+                                   `<button type="button" onclick="executeQuery()" style="margin-top:8px;padding:6px 14px;background:#2e7d32;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:13px;"><i class="fas fa-redo"></i> 다시 시도</button>` +
+                                   `<button type="button" onclick="document.getElementById('errorBox').classList.remove('active')" style="margin-top:8px;margin-left:8px;padding:6px 14px;background:#fff;color:#2e7d32;border:1px solid #2e7d32;border-radius:4px;cursor:pointer;font-size:13px;">기본 SQL 결과 그대로 사용</button>` +
                                    diagText;
                 banner.classList.add('active');
-                banner.style.background = '#ffebee';
-                banner.style.border = '1px solid #ef9a9a';
-                banner.style.color = '#b71c1c';
+                banner.style.background = '#e8f5e9';
+                banner.style.border = '1px solid #a5d6a7';
+                banner.style.color = '#1b5e20';
                 // 자동 사라짐 없음 — 사용자가 액션을 선택해야 함
             } else if (data.gpt_message) {
                 banner.innerHTML = `<b>ℹ 안내:</b> ${data.gpt_message}`;
