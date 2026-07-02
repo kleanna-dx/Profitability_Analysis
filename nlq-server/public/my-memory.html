@@ -51,12 +51,6 @@
         .progress-fill.warn{background:linear-gradient(90deg,#f59e0b,#fbbf24);}
         .progress-fill.danger{background:linear-gradient(90deg,#dc2626,#ef4444);}
 
-        /* Type Group */
-        .type-group{margin-bottom:24px;}
-        .type-title{font-size:14px;font-weight:700;color:#334155;margin-bottom:10px;display:flex;align-items:center;gap:8px;}
-        .type-title .badge-count{background:#eef2ff;color:#4338ca;font-size:11px;font-weight:700;padding:2px 10px;border-radius:12px;}
-        .type-empty{padding:14px;background:#fafbff;border:1px dashed #e0e7ff;border-radius:10px;color:#94a3b8;font-size:13px;text-align:center;}
-
         /* Rule Item */
         .rule-item{border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin-bottom:8px;transition:all .15s;background:#fff;position:relative;}
         .rule-item:hover{border-color:#c7d2fe;background:#fafbff;box-shadow:0 2px 8px rgba(79,70,229,.05);}
@@ -402,38 +396,13 @@ function renderRules() {
         return;
     }
 
-    // 유형별 그룹핑
-    const groups = { term_alias: [], query_preference: [], metric_preference: [] };
-    for (const m of allMemories) {
-        const type = groups[m.memory_type] ? m.memory_type : 'term_alias';
-        groups[type].push(m);
-    }
-
-    // 활성 우선 정렬 + 최근 업데이트 순
-    Object.keys(groups).forEach(k => {
-        groups[k].sort((a, b) => {
-            if ((a.is_active === 'Y') !== (b.is_active === 'Y')) return a.is_active === 'Y' ? -1 : 1;
-            return new Date(b.updated_at) - new Date(a.updated_at);
-        });
+    // 활성 우선 정렬 + 최근 업데이트 순 (전체 단일 리스트)
+    const sorted = [...allMemories].sort((a, b) => {
+        if ((a.is_active === 'Y') !== (b.is_active === 'Y')) return a.is_active === 'Y' ? -1 : 1;
+        return new Date(b.updated_at) - new Date(a.updated_at);
     });
 
-    const html = Object.keys(groups).map(type => {
-        const meta = MEMORY_TYPE_META[type];
-        const items = groups[type];
-        return `
-        <div class="type-group">
-            <div class="type-title">
-                <span>${meta.emoji}</span>
-                <span>${meta.label}</span>
-                <span class="badge-count">${items.length}</span>
-            </div>
-            ${items.length === 0
-                ? `<div class="type-empty">이 유형에 등록된 규칙이 없습니다</div>`
-                : items.map(m => renderRuleItem(m)).join('')}
-        </div>`;
-    }).join('');
-
-    container.innerHTML = html;
+    container.innerHTML = sorted.map(m => renderRuleItem(m)).join('');
 }
 
 function renderRuleItem(m) {
