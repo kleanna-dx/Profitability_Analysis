@@ -18,6 +18,78 @@
 // 모든 함수는 외부 의존성(pool, openai, model)을 인자로 받아 모듈 독립성을 유지.
 // ============================================================
 
+// ─── 산식(formula) 오버라이드 감지 헬퍼 ─────────────────────────
+// ★ 원칙:
+//   1. 자연어질의 답변은 학습관리(Ontology/Metric)가 최우선.
+//   2. Metric 산식(계산식)은 사용자가 개인 규칙으로 바꿀 수 없다.
+//   3. 산식을 개인 규칙으로 만드는 어떤 시도도 저장 단계에서 차단한다.
+//
+// 검사 대상: rule_json 뿐 아니라 normalized_meaning / trigger_text /
+//           user_expression 같은 텍스트 필드까지 전부 훑는다.
+//
+// 감지 패턴:
+//   - JSON 키: "formula", "sql"
+//   - SQL 예약어/집계함수: SELECT, SUM(, AVG(, COUNT(, MIN(, MAX(, CASE WHEN
+//   - 산술식이 섞인 지표 계산 시도: 컬럼명/한글 지표명 + 사칙연산 + 숫자
+//     예) "매출액 / 영업이익 * 100", "SUM(ZAMT099) - SUM(ZAMT100)"
+//   - "산식", "계산식", "formula" 라는 단어가 직접 등장
+// ─────────────────────────────────────────────────────────────
+const _FORMULA_KEYWORDS_REGEX = /"formula"|"sql"\s*:|\bselect\s|\bsum\s*\(|\bavg\s*\(|\bcount\s*\(|\bmin\s*\(|\bmax\s*\(|\bcase\s+when\b|\bgroup\s+by\b|\bhaving\b/i;
+const _FORMULA_WORD_REGEX = /산식|계산식|계산\s*방법|공식|수식/;
+// 지표성 산술식: 한글 2자 이상 또는 영문 컬럼명 뒤에 +-*/ 연산자와 다른 피연산자가 이어지는 형태
+const _ARITHMETIC_FORMULA_REGEX = /(?:[가-힣A-Za-z_][가-힣A-Za-z_0-9]{1,})\s*[\+\-\*\/]\s*(?:[가-힣A-Za-z_0-9\(]|\d)/;
+
+/**
+ * 산식 오버라이드 시도인지 판정.
+ * @param {string} text - 검사할 문자열 (null/undefined 허용)
+ * @returns {{ blocked: boolean, reason?: string }}
+ */
+export function detectFormulaOverride(text) {
+  if (!text || typeof text !== 'string') return { blocked: false };
+  const s = text.trim();
+  if (!s) return { blocked: false };
+
+  if (_FORMULA_KEYWORDS_REGEX.test(s)) {
+    return { blocked: true, reason: 'SQL/집계함수/JSON formula 키' };
+  }
+  if (_FORMULA_WORD_REGEX.test(s)) {
+    return { blocked: true, reason: '"산식/계산식/공식/수식" 표현' };
+  }
+  if (_ARITHMETIC_FORMULA_REGEX.test(s)) {
+    // 단, 백분율/단위 표기(예: "70%", "3.5배") 같은 흔한 표현은 예외로 통과
+    // → 규칙: 사칙연산이 있어야 하고, 피연산자 중 하나 이상이 영문/한글 식별자여야 산식으로 간주
+    const hasIdentifierBothSides = /(?:[가-힣A-Za-z_][가-힣A-Za-z_0-9]{1,})\s*[\+\-\*\/]\s*(?:[가-힣A-Za-z_][가-힣A-Za-z_0-9]{0,}|\([^)]*\))/.test(s);
+    if (hasIdentifierBothSides) {
+      return { blocked: true, reason: '식별자 + 사칙연산 조합 (산식 형태)' };
+    }
+  }
+  return { blocked: false };
+}
+
+/**
+ * user memory payload 전체 필드에서 산식 시도 검사.
+ * @param {object} payload - { rule_json, normalized_meaning, trigger_text, user_expression, ... }
+ * @returns {{ blocked: boolean, field?: string, reason?: string }}
+ */
+export function detectFormulaOverrideInPayload(payload) {
+  if (!payload || typeof payload !== 'object') return { blocked: false };
+  const fields = ['rule_json', 'normalized_meaning', 'trigger_text', 'user_expression'];
+  for (const f of fields) {
+    const v = payload[f];
+    const check = detectFormulaOverride(typeof v === 'string' ? v : (v ? JSON.stringify(v) : ''));
+    if (check.blocked) {
+      return { blocked: true, field: f, reason: check.reason };
+    }
+  }
+  return { blocked: false };
+}
+
+// 산식 차단 시 사용자에게 반환하는 표준 안내 문구
+export const FORMULA_OVERRIDE_MESSAGE =
+  '지표 계산식(예: 영업이익율 계산 방법)은 회사 공식 표준이라 개인 규칙으로 바꿀 수 없습니다. ' +
+  '자연어질의 답변은 항상 학습관리에 등록된 산식을 최우선으로 사용합니다. ' +
+  '계산식 변경이 필요하면 학습관리 담당자에게 요청해 주세요.';
+
 // ─── 의도 라벨 (사용자 표시용) ─────────────────────────────────
 export const INTENT_LABELS = {
   data_query:      '데이터 조회',
@@ -1162,14 +1234,23 @@ export async function handleMemorySave({ query, activeDomain, conversationContex
     let rule_json_str = null;
     if (parsed.rule_json && typeof parsed.rule_json === 'object') {
       rule_json_str = JSON.stringify(parsed.rule_json);
-      // 산식 오버라이드 방지
-      if (/"formula"|"sql"|"select "|"sum\(|"case when/i.test(rule_json_str.toLowerCase())) {
-        return buildConversationalResponse({
-          intent: 'memory_save',
-          answer: '⚠️ 지표 계산식(예: 영업이익율 계산 방법)은 회사 전체가 공유하는 표준이라 개인 규칙으로 바꿀 수 없어요. 계산식 변경이 필요하면 학습관리 담당자에게 요청해 주세요.',
-          referenced: [],
-        });
-      }
+    }
+
+    // ★ 산식 오버라이드 방지 — 모든 필드(rule_json + 텍스트 필드) 전수 검사
+    //   자연어질의 답변은 학습관리(metric.formula)가 최우선. 개인 규칙은 산식을 덮어쓸 수 없음.
+    const _formulaCheck = detectFormulaOverrideInPayload({
+      rule_json: rule_json_str,
+      normalized_meaning: parsed.normalized_meaning,
+      trigger_text: parsed.trigger_text,
+      user_expression: parsed.user_expression,
+    });
+    if (_formulaCheck.blocked) {
+      console.log(`[Intent:memory_save] 산식 시도 차단 (field=${_formulaCheck.field}, reason=${_formulaCheck.reason}, userId=${userId})`);
+      return buildConversationalResponse({
+        intent: 'memory_save',
+        answer: `⚠️ ${FORMULA_OVERRIDE_MESSAGE}`,
+        referenced: [],
+      });
     }
 
     const [ins] = await pool.query(
