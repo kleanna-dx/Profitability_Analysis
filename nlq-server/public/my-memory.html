@@ -191,8 +191,9 @@
         </div>
         <div class="form-hint warn">
             <i class="fas fa-exclamation-triangle"></i>
-            <strong>Metric 산식 오버라이드는 저장이 거부됩니다.</strong>
-            <code>formula</code>, <code>sql</code>, <code>SELECT</code>, <code>SUM(</code>, <code>CASE WHEN</code> 등의 키워드는 사용할 수 없습니다.
+            <strong>회사 공식 계산식(예: 영업이익율 계산 방법)은 개인 규칙으로 바꿀 수 없습니다.</strong>
+            지표 계산식은 회사 전체가 공유하는 표준이라 개인이 바꾸면 부서 간 숫자가 어긋납니다.
+            계산식 변경이 필요하면 <strong>학습관리 담당자</strong>에게 요청해 주세요.
         </div>
 
         <div class="modal-actions">
@@ -216,10 +217,48 @@
         <!-- 안내 -->
         <div class="info-box">
             <div class="info-title"><i class="fas fa-info-circle"></i>개인 규칙이란?</div>
-            GPT-5.5 는 매 요청마다 상태를 잃어버리는 <strong>Stateless</strong> 이므로,
-            "앞으로 <code>rt</code>는 두루마리로 불러줘" 같은 개인 규칙은 채팅을 벗어나면 잊습니다.
-            여기 저장된 규칙은 <strong>당신의 계정에만</strong> 매 요청 프롬프트에 자동 주입되어 GPT 가 기억하는 것처럼 동작하게 합니다.
-            (사용자당 활성 <strong>최대 50개</strong>, 서비스 공통 Metric/Ontology 는 오버라이드 불가)
+            <p style="margin-bottom:10px;">
+                AI 챗봇은 대화가 끝나면 이전 대화 내용을 기억하지 못합니다.
+                예를 들어 "앞으로 <code>rt</code>는 두루마리로 불러줘"라고 알려줘도, 새 대화창을 열면 잊어버립니다.
+                <strong>이 페이지에 저장한 규칙은 당신 계정으로 질문할 때마다 AI에게 자동으로 알려주기 때문에</strong>
+                AI가 계속 기억하는 것처럼 동작합니다. <em>(내 계정에만 적용됩니다. 다른 사용자에게는 영향 없음)</em>
+            </p>
+
+            <div style="background:rgba(255,255,255,.55);border-radius:8px;padding:10px 14px;margin-top:8px;">
+                <div style="font-weight:700;color:#065f46;margin-bottom:6px;">
+                    <i class="fas fa-check-circle"></i> 이런 규칙은 저장할 수 있어요
+                </div>
+                <ul style="margin:0;padding-left:22px;line-height:1.8;font-size:12.5px;color:#334155;">
+                    <li><strong>내가 쓰는 별명 알려주기</strong> — 예: "<code>rt</code>는 두루마리를 뜻해"</li>
+                    <li><strong>질문할 때 원하는 결과 형태</strong> — 예: "매출 물어볼 때는 영업이익율도 같이 보여줘"</li>
+                    <li><strong>지표를 볼 때 개인 선호</strong> — 예: "상위 10개만 정렬해서 보여줘"</li>
+                </ul>
+            </div>
+
+            <div style="background:rgba(254,226,226,.5);border:1px solid rgba(220,38,38,.15);border-radius:8px;padding:10px 14px;margin-top:8px;">
+                <div style="font-weight:700;color:#991b1b;margin-bottom:6px;">
+                    <i class="fas fa-ban"></i> 이런 규칙은 저장할 수 없어요
+                </div>
+                <ul style="margin:0;padding-left:22px;line-height:1.8;font-size:12.5px;color:#334155;">
+                    <li>
+                        <strong>회사 공식 계산식을 개인이 바꾸는 것</strong>
+                        <span style="color:#64748b;">— 예: "내 계정에서는 영업이익율을 (매출–원가)÷매출로 계산해"</span>
+                        <div style="font-size:11.5px;color:#7f1d1d;margin-top:2px;">
+                            → 지표 계산식은 회사 전체가 공유하는 <strong>공식 규칙</strong>이라 개인이 바꾸면 부서 간 숫자가 안 맞습니다.
+                            계산식 변경이 필요하면 <strong>학습관리 담당자</strong>에게 요청해 주세요.
+                        </div>
+                    </li>
+                    <li style="margin-top:4px;">
+                        <strong>표준 용어의 뜻 자체를 뒤바꾸는 것</strong>
+                        <span style="color:#64748b;">— 예: "매출을 '이익'이라고 부르자"</span>
+                    </li>
+                </ul>
+            </div>
+
+            <div style="font-size:11.5px;color:#4338ca;margin-top:10px;">
+                <i class="fas fa-shield-alt"></i>
+                사용자당 최대 <strong>50개</strong>까지 활성화할 수 있으며, 초과 시 아래 목록에서 불필요한 규칙을 삭제하면 됩니다.
+            </div>
         </div>
 
         <!-- 카운터 -->
