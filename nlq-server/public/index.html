@@ -218,6 +218,8 @@
         .meta-badge.rag{background:#ecfdf5;color:#059669;border:1px solid #a7f3d0;}
         .meta-badge.learned{background:#fef3c7;color:#d97706;border:1px solid #fde68a;}
         .meta-badge.fallback{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}
+        .meta-badge.memory{background:#ede9fe;color:#6d28d9;border:1px solid #ddd6fe;cursor:help;}
+        .meta-badge.memory:hover{background:#ddd6fe;}
 
         /* RAG 검색 상세 패널 */
         .rag-detail-panel{
@@ -1797,6 +1799,23 @@ function buildRagBadge(data) {
     return '<span class="meta-badge fallback"><i class="fas fa-exclamation-triangle mr-1"></i>폴백</span>';
 }
 
+// ============================================================
+// 개인 규칙 적용 배지 (Q8) — appliedUserMemories 를 뱃지로 표시
+// ============================================================
+function buildMemoryBadge(data) {
+    const mems = Array.isArray(data && data.appliedUserMemories) ? data.appliedUserMemories : [];
+    if (mems.length === 0) return '';
+    // 최대 5개까지 tooltip 에 표시
+    const labels = mems.slice(0, 5).map(m => {
+        const type = m.type || 'rule';
+        const label = m.label || `#${m.id || '?'}`;
+        return `[${type}] ${label}`;
+    });
+    if (mems.length > 5) labels.push(`... 외 ${mems.length - 5}개`);
+    const tooltip = labels.join('\n').replace(/"/g, '&quot;');
+    return `<span class="meta-badge memory" title="적용된 개인 규칙 목록:\n${tooltip}\n\n클릭하면 관리 페이지로 이동합니다." onclick="window.open('/my-memory.html','_blank')"><i class="fas fa-user-cog mr-1"></i>개인 규칙 ${mems.length}개 적용됨</span>`;
+}
+
 function buildRagDetailPanel(msgId, data) {
     if (!data.ragInfo) return '';
 
@@ -2020,6 +2039,7 @@ function appendBotMessage(data) {
                         <span class="meta-badge rows"><i class="fas fa-table mr-1"></i>${data.rowCount || 0}행</span>
                         <span class="meta-badge time"><i class="fas fa-clock mr-1"></i>${data.executionTimeMs || 0}ms</span>
                         ${buildRagBadge(data)}
+                        ${buildMemoryBadge(data)}
                     </div>
                 </div>
             </div>

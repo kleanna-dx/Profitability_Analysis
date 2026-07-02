@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>내 개인 규칙 - 수익성분석 AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
+        *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
+        body{margin:0;background:#f1f5f9;display:flex;height:100vh;overflow:hidden;}
+        @media (min-width:901px){ body{padding-left:280px;} }
+
+        /* Sidebar (permission.html 과 동일 톤) */
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;}
+        .sidebar-overlay.active{display:block;}
+        .sidebar{position:fixed;top:0;left:0;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
+        @media (max-width:900px){ .sidebar{left:-300px;} .sidebar.open{left:0;} }
+        @media (min-width:901px){ .sidebar-overlay{display:none !important;} .sidebar-close-x{display:none;} }
+        .sidebar-divider{height:1px;background:rgba(255,255,255,.1);margin:0 16px;}
+        .sidebar-menu-item{display:flex;align-items:center;gap:12px;padding:10px 24px;color:#c7d2fe;cursor:pointer;transition:all .15s;text-decoration:none;}
+        .sidebar-menu-item:hover,.sidebar-menu-item.active{background:rgba(255,255,255,.1);color:#fff;}
+
+        /* Main */
+        .main-wrapper{display:flex;flex-direction:column;flex:1;overflow:hidden;}
+        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+        .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;color:#475569;font-size:16px;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        @media (min-width:901px){ .hamburger-btn{display:none;} }
+        .content-area{flex:1;overflow-y:auto;padding:24px;}
+
+        /* Card */
+        .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);border:1px solid #e5e7eb;overflow:hidden;margin-bottom:20px;}
+        .card-header{padding:16px 20px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;gap:10px;}
+        .card-header h3{font-weight:700;font-size:15px;color:#1e293b;display:flex;align-items:center;gap:8px;margin:0;}
+        .card-body{padding:20px;}
+
+        /* Counter Pill (활성 카운터) */
+        .counter-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:20px;font-size:13px;font-weight:700;transition:all .2s;}
+        .counter-pill.safe{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;}
+        .counter-pill.warn{background:#fffbeb;color:#92400e;border:1px solid #fde68a;}
+        .counter-pill.danger{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;}
+        .counter-pill .fraction{font-size:15px;font-weight:800;}
+        .counter-pill .max{opacity:.7;}
+
+        /* Progress bar */
+        .progress-bar{height:8px;background:#f1f5f9;border-radius:99px;overflow:hidden;margin:12px 0;}
+        .progress-fill{height:100%;transition:width .3s ease;border-radius:99px;}
+        .progress-fill.safe{background:linear-gradient(90deg,#10b981,#34d399);}
+        .progress-fill.warn{background:linear-gradient(90deg,#f59e0b,#fbbf24);}
+        .progress-fill.danger{background:linear-gradient(90deg,#dc2626,#ef4444);}
+
+        /* Type Group */
+        .type-group{margin-bottom:24px;}
+        .type-title{font-size:14px;font-weight:700;color:#334155;margin-bottom:10px;display:flex;align-items:center;gap:8px;}
+        .type-title .badge-count{background:#eef2ff;color:#4338ca;font-size:11px;font-weight:700;padding:2px 10px;border-radius:12px;}
+        .type-empty{padding:14px;background:#fafbff;border:1px dashed #e0e7ff;border-radius:10px;color:#94a3b8;font-size:13px;text-align:center;}
+
+        /* Rule Item */
+        .rule-item{border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin-bottom:8px;transition:all .15s;background:#fff;position:relative;}
+        .rule-item:hover{border-color:#c7d2fe;background:#fafbff;box-shadow:0 2px 8px rgba(79,70,229,.05);}
+        .rule-item.inactive{opacity:.55;background:#f8fafc;}
+        .rule-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+        .rule-main{flex:1;min-width:0;}
+        .rule-expr{font-size:14px;font-weight:700;color:#1e293b;word-break:break-word;}
+        .rule-expr .arrow{color:#94a3b8;margin:0 6px;font-weight:400;}
+        .rule-expr .meaning{color:#4338ca;}
+        .rule-meta{font-size:11px;color:#94a3b8;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px;}
+        .rule-meta .meta-item{display:inline-flex;align-items:center;gap:4px;}
+        .rule-rulejson{background:#f8fafc;border:1px solid #f1f5f9;border-radius:6px;padding:6px 10px;font-family:'Fira Code',monospace;font-size:11px;color:#475569;margin-top:8px;word-break:break-all;white-space:pre-wrap;max-height:80px;overflow-y:auto;}
+        .rule-source{background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 10px;font-size:11px;color:#92400e;margin-top:6px;font-style:italic;}
+
+        .rule-actions{display:flex;gap:6px;flex-shrink:0;}
+        .btn-icon{width:32px;height:32px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;color:#64748b;font-size:12px;display:flex;align-items:center;justify-content:center;transition:all .15s;}
+        .btn-icon:hover{border-color:#818cf8;color:#4f46e5;background:#eef2ff;}
+        .btn-icon.btn-danger{color:#dc2626;}
+        .btn-icon.btn-danger:hover{border-color:#fecaca;background:#fef2f2;}
+        .btn-icon.btn-toggle-on{color:#059669;border-color:#a7f3d0;background:#ecfdf5;}
+        .btn-icon.btn-toggle-off{color:#94a3b8;}
+
+        /* Buttons */
+        .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;border:none;font-family:inherit;}
+        .btn-primary{background:#4f46e5;color:#fff;}
+        .btn-primary:hover{background:#4338ca;}
+        .btn-primary:disabled{background:#a5b4fc;cursor:not-allowed;}
+        .btn-outline{background:#fff;color:#4f46e5;border:1px solid #c7d2fe;}
+        .btn-outline:hover{background:#eef2ff;}
+        .btn-sm{padding:5px 12px;font-size:12px;border-radius:6px;}
+
+        /* Modal */
+        .modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:200;display:none;align-items:center;justify-content:center;backdrop-filter:blur(2px);}
+        .modal-overlay.active{display:flex;}
+        .modal{background:#fff;border-radius:16px;padding:28px;width:520px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.2);max-height:90vh;overflow-y:auto;}
+        .modal h3{font-size:18px;font-weight:700;color:#1e293b;margin:0 0 6px 0;display:flex;align-items:center;gap:8px;}
+        .modal .modal-desc{font-size:12px;color:#94a3b8;margin-bottom:18px;}
+        .modal label{display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:6px;margin-top:14px;}
+        .modal label .req{color:#dc2626;}
+        .modal input,.modal textarea,.modal select{width:100%;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;transition:all .15s;}
+        .modal input:focus,.modal textarea:focus,.modal select:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
+        .modal textarea{min-height:70px;resize:vertical;font-family:'Fira Code',monospace;font-size:12px;}
+        .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:22px;}
+        .form-hint{font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.5;}
+        .form-hint.warn{color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:8px 10px;border-radius:6px;margin-top:6px;}
+        .form-hint.warn i{margin-right:4px;}
+
+        /* Toast */
+        .toast{position:fixed;top:20px;right:20px;padding:14px 22px;border-radius:10px;font-size:13px;font-weight:600;z-index:9999;transform:translateX(140%);transition:transform .3s ease;display:flex;align-items:center;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);max-width:400px;}
+        .toast.show{transform:translateX(0);}
+        .toast-success{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;}
+        .toast-error{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;}
+        .toast-info{background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;}
+
+        /* Empty state */
+        .empty-state{padding:60px 20px;text-align:center;color:#94a3b8;}
+        .empty-state i{font-size:44px;color:#c7d2fe;margin-bottom:14px;}
+        .empty-state .title{font-size:16px;font-weight:700;color:#475569;margin-bottom:6px;}
+        .empty-state .desc{font-size:13px;line-height:1.6;max-width:480px;margin:0 auto;}
+
+        /* Info box */
+        .info-box{background:linear-gradient(135deg,#eef2ff,#e0e7ff);border:1px solid #c7d2fe;border-radius:12px;padding:14px 18px;margin-bottom:20px;font-size:13px;color:#3730a3;line-height:1.6;}
+        .info-box .info-title{font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px;}
+        .info-box code{background:rgba(255,255,255,.6);padding:1px 6px;border-radius:4px;font-family:'Fira Code',monospace;font-size:11px;color:#4338ca;}
+
+        /* 초과 경고 */
+        .over-limit-banner{background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid #fecaca;border-radius:12px;padding:14px 18px;margin-bottom:16px;color:#991b1b;font-size:13px;font-weight:600;display:flex;align-items:center;gap:10px;}
+        .over-limit-banner i{font-size:20px;}
+    </style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav id="sidebarMenu" class="py-2">
+        <!-- RBAC: 동적 렌더링 -->
+    </nav>
+    <div class="sidebar-divider"></div>
+</aside>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<!-- 규칙 편집/추가 모달 -->
+<div id="ruleModal" class="modal-overlay">
+    <div class="modal">
+        <h3 id="modalTitle"><i class="fas fa-user-cog text-indigo-500"></i>새 개인 규칙 등록</h3>
+        <p class="modal-desc">이 규칙은 GPT 요청 시 <strong>당신 계정에만</strong> 프롬프트로 주입됩니다.</p>
+
+        <input type="hidden" id="editRuleId" value="">
+
+        <label>규칙 유형 <span class="req">*</span></label>
+        <select id="fieldMemoryType" onchange="onMemoryTypeChange()">
+            <option value="term_alias">📝 용어 별칭 (내가 쓰는 표현 → 실제 의미)</option>
+            <option value="query_preference">🎯 질문 패턴 선호 (특정 질문 시 결과 형태)</option>
+            <option value="metric_preference">📊 지표 조회 선호 (지표 조회 시 개인 선호)</option>
+        </select>
+
+        <!-- term_alias 필드 -->
+        <div id="groupTermAlias">
+            <label>내가 쓰는 표현 <span class="req">*</span></label>
+            <input type="text" id="fieldUserExpression" placeholder="예: rt, 김대리, 두마" maxlength="500">
+            <div class="form-hint">GPT가 이 표현을 만나면 아래 의미로 해석합니다.</div>
+
+            <label>실제 의미 <span class="req">*</span></label>
+            <input type="text" id="fieldNormalizedMeaning" placeholder="예: 두루마리, 김철수, 두루마리" maxlength="500">
+        </div>
+
+        <!-- query_preference 필드 -->
+        <div id="groupQueryPref" style="display:none;">
+            <label>매칭할 질문 패턴 <span class="req">*</span></label>
+            <input type="text" id="fieldTriggerText" placeholder="예: 매출 조회 시, ~별 실적 물어볼 때" maxlength="500">
+            <div class="form-hint">사용자 질문이 이 패턴과 유사할 때 아래 규칙을 적용합니다.</div>
+        </div>
+
+        <label>추가 규칙 (JSON, 선택)</label>
+        <textarea id="fieldRuleJson" placeholder='{"add_columns":["영업이익율(%)"],"sort_desc":true}'></textarea>
+        <div class="form-hint">
+            예시:<br>
+            • <code>{"add_columns":["영업이익율(%)"]}</code> — 결과에 특정 컬럼 추가<br>
+            • <code>{"format":"chart"}</code> — 결과를 차트로 표시<br>
+            • <code>{"top_n":10}</code> — 상위 N개만 표시
+        </div>
+        <div class="form-hint warn">
+            <i class="fas fa-exclamation-triangle"></i>
+            <strong>Metric 산식 오버라이드는 저장이 거부됩니다.</strong>
+            <code>formula</code>, <code>sql</code>, <code>SELECT</code>, <code>SUM(</code>, <code>CASE WHEN</code> 등의 키워드는 사용할 수 없습니다.
+        </div>
+
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeRuleModal()">취소</button>
+            <button class="btn btn-primary" id="saveRuleBtn" onclick="saveRule()"><i class="fas fa-check"></i>저장</button>
+        </div>
+    </div>
+</div>
+
+<!-- MAIN -->
+<div class="main-wrapper">
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
+        <h1 class="text-lg font-bold text-slate-800"><i class="fas fa-user-cog text-indigo-500 mr-2"></i>내 개인 규칙</h1>
+        <div style="flex:1;"></div>
+        <button class="btn btn-outline btn-sm" onclick="loadMemories()"><i class="fas fa-sync-alt"></i>새로고침</button>
+        <button class="btn btn-primary" onclick="openAddModal()"><i class="fas fa-plus"></i>새 규칙 등록</button>
+    </div>
+
+    <div class="content-area">
+        <!-- 안내 -->
+        <div class="info-box">
+            <div class="info-title"><i class="fas fa-info-circle"></i>개인 규칙이란?</div>
+            GPT-5.5 는 매 요청마다 상태를 잃어버리는 <strong>Stateless</strong> 이므로,
+            "앞으로 <code>rt</code>는 두루마리로 불러줘" 같은 개인 규칙은 채팅을 벗어나면 잊습니다.
+            여기 저장된 규칙은 <strong>당신의 계정에만</strong> 매 요청 프롬프트에 자동 주입되어 GPT 가 기억하는 것처럼 동작하게 합니다.
+            (사용자당 활성 <strong>최대 50개</strong>, 서비스 공통 Metric/Ontology 는 오버라이드 불가)
+        </div>
+
+        <!-- 카운터 -->
+        <div class="card">
+            <div class="card-header">
+                <h3><i class="fas fa-chart-line text-indigo-500"></i>활성 규칙 사용량</h3>
+                <div id="counterPill" class="counter-pill safe">
+                    <i class="fas fa-check-circle"></i>
+                    <span class="fraction"><span id="activeCount">-</span> <span class="max">/ <span id="maxActive">50</span></span></span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="progress-bar"><div id="progressFill" class="progress-fill safe" style="width:0%;"></div></div>
+                <div id="usageHint" style="font-size:12px;color:#64748b;">-</div>
+
+                <!-- 50개 초과 시 노출 -->
+                <div id="overLimitBanner" class="over-limit-banner" style="display:none;margin-top:14px;">
+                    <i class="fas fa-exclamation-circle"></i>
+                    <div>
+                        <strong>활성 규칙 상한(50개)에 도달했습니다.</strong><br>
+                        새 규칙을 등록하려면 아래 목록에서 <strong>불필요한 규칙을 삭제</strong>하거나 <strong>비활성화</strong>하세요.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 규칙 목록 -->
+        <div class="card">
+            <div class="card-header">
+                <h3><i class="fas fa-list-ul text-indigo-500"></i>등록된 규칙 목록</h3>
+                <div style="font-size:12px;color:#94a3b8;">활성/비활성 모두 표시 · <span id="totalCount">-</span>개</div>
+            </div>
+            <div class="card-body" style="padding:16px 20px;">
+                <div id="rulesContainer">
+                    <div class="empty-state">
+                        <i class="fas fa-spinner fa-spin"></i>
+                        <div class="title">불러오는 중...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// =============================================================================
+// 상수
+// =============================================================================
+const MEMORY_TYPE_META = {
+    term_alias: { emoji: '📝', label: '용어 별칭', color: '#4338ca' },
+    query_preference: { emoji: '🎯', label: '질문 패턴 선호', color: '#059669' },
+    metric_preference: { emoji: '📊', label: '지표 조회 선호', color: '#b45309' },
+};
+
+let allMemories = [];   // { id, memory_type, trigger_text, user_expression, normalized_meaning, rule_json, is_active, source_query, created_at, updated_at }
+let currentStats = { active_count: 0, max_active: 50, total: 0 };
+
+// =============================================================================
+// 사이드바 (RBAC)
+// =============================================================================
+async function renderDynamicSidebar() {
+    try {
+        const res = await fetch('/api/me');
+        const me = await res.json();
+        if (!me.loggedIn) { location.href = '/login.html'; return; }
+        const nav = document.getElementById('sidebarMenu');
+        if (!me.menus || me.menus.length === 0) {
+            nav.innerHTML = '<div style="padding:12px 24px;color:#94a3b8;font-size:12px;">메뉴 없음</div>';
+            return;
+        }
+        const currentPage = '/my-memory.html';
+        nav.innerHTML = me.menus.map(m => {
+            const isActive = (m.menu_url === currentPage) ? ' active' : '';
+            const href = (m.menu_url === '/' || m.menu_url === '/index.html') ? '/' : m.menu_url;
+            return `<a href="${href}" class="sidebar-menu-item${isActive}" style="text-decoration:none;"><i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
+        }).join('');
+    } catch(e) { console.error('[Sidebar] 렌더링 실패:', e); }
+}
+
+function toggleSidebar(){ document.getElementById('sidebar').classList.toggle('open'); document.getElementById('sidebarOverlay').classList.toggle('active'); }
+function closeSidebar(){ document.getElementById('sidebar').classList.remove('open'); document.getElementById('sidebarOverlay').classList.remove('active'); }
+
+// =============================================================================
+// Toast
+// =============================================================================
+function showToast(msg, type = 'success') {
+    const t = document.getElementById('toast');
+    t.className = `toast toast-${type}`;
+    const iconMap = { success: 'check-circle', error: 'exclamation-circle', info: 'info-circle' };
+    t.innerHTML = `<i class="fas fa-${iconMap[type] || 'info-circle'}"></i>${escapeHtml(msg)}`;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+// =============================================================================
+// 목록 로드
+// =============================================================================
+async function loadMemories() {
+    const container = document.getElementById('rulesContainer');
+    container.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><div class="title">불러오는 중...</div></div>';
+    try {
+        // 비활성 규칙도 함께 표시 (사용자가 다시 활성화하거나 삭제할 수 있어야 함)
+        const res = await fetch('/api/user-memory?include_inactive=1');
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        // 서버 응답은 `items` 필드로 오지만 하위호환을 위해 `memories` 도 지원
+        allMemories = Array.isArray(data.items) ? data.items : (Array.isArray(data.memories) ? data.memories : []);
+        currentStats = {
+            active_count: data.active_count ?? 0,
+            max_active: data.max_active ?? 50,
+            total: allMemories.length,
+        };
+        renderCounter();
+        renderRules();
+    } catch (e) {
+        console.error('[Memory] 로드 실패:', e);
+        container.innerHTML = `<div class="empty-state"><i class="fas fa-exclamation-triangle" style="color:#dc2626;"></i><div class="title">불러오기 실패</div><div class="desc">${escapeHtml(e.message)}</div></div>`;
+        showToast('규칙 목록 로드 실패: ' + e.message, 'error');
+    }
+}
+
+// =============================================================================
+// 카운터
+// =============================================================================
+function renderCounter() {
+    const { active_count, max_active, total } = currentStats;
+    const pill = document.getElementById('counterPill');
+    const fill = document.getElementById('progressFill');
+    const hint = document.getElementById('usageHint');
+    const overBanner = document.getElementById('overLimitBanner');
+
+    document.getElementById('activeCount').textContent = active_count;
+    document.getElementById('maxActive').textContent = max_active;
+    document.getElementById('totalCount').textContent = total;
+
+    const ratio = max_active > 0 ? active_count / max_active : 0;
+    const pct = Math.min(100, Math.round(ratio * 100));
+    let level = 'safe';
+    let icon = 'check-circle';
+    if (active_count >= max_active) { level = 'danger'; icon = 'exclamation-circle'; }
+    else if (active_count >= 48) { level = 'danger'; icon = 'exclamation-triangle'; }
+    else if (active_count >= 40) { level = 'warn'; icon = 'exclamation-triangle'; }
+
+    pill.className = `counter-pill ${level}`;
+    pill.querySelector('i').className = `fas fa-${icon}`;
+    fill.className = `progress-fill ${level}`;
+    fill.style.width = pct + '%';
+
+    let hintText = '';
+    if (active_count >= max_active) {
+        hintText = `⛔ 활성 규칙 상한에 도달했습니다. 새 규칙을 등록하려면 기존 규칙을 삭제하거나 비활성화하세요.`;
+        overBanner.style.display = 'flex';
+    } else if (active_count >= 48) {
+        hintText = `⚠️ 상한 임박 — 남은 슬롯: ${max_active - active_count}개. 불필요한 규칙 정리를 권장합니다.`;
+        overBanner.style.display = 'none';
+    } else if (active_count >= 40) {
+        hintText = `⚠️ 활성 규칙이 많습니다. 남은 슬롯: ${max_active - active_count}개.`;
+        overBanner.style.display = 'none';
+    } else {
+        hintText = `여유 있음 — 남은 슬롯: ${max_active - active_count}개.`;
+        overBanner.style.display = 'none';
+    }
+    hint.textContent = hintText;
+}
+
+// =============================================================================
+// 규칙 렌더링
+// =============================================================================
+function renderRules() {
+    const container = document.getElementById('rulesContainer');
+    if (allMemories.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-inbox"></i>
+                <div class="title">아직 등록된 개인 규칙이 없습니다</div>
+                <div class="desc">채팅에서 "앞으로 rt는 두루마리로 불러줘" 처럼 말하면 자동 등록되거나,<br>우측 상단 <strong>+ 새 규칙 등록</strong> 버튼으로 직접 추가할 수 있습니다.</div>
+            </div>`;
+        return;
+    }
+
+    // 유형별 그룹핑
+    const groups = { term_alias: [], query_preference: [], metric_preference: [] };
+    for (const m of allMemories) {
+        const type = groups[m.memory_type] ? m.memory_type : 'term_alias';
+        groups[type].push(m);
+    }
+
+    // 활성 우선 정렬 + 최근 업데이트 순
+    Object.keys(groups).forEach(k => {
+        groups[k].sort((a, b) => {
+            if ((a.is_active === 'Y') !== (b.is_active === 'Y')) return a.is_active === 'Y' ? -1 : 1;
+            return new Date(b.updated_at) - new Date(a.updated_at);
+        });
+    });
+
+    const html = Object.keys(groups).map(type => {
+        const meta = MEMORY_TYPE_META[type];
+        const items = groups[type];
+        return `
+        <div class="type-group">
+            <div class="type-title">
+                <span>${meta.emoji}</span>
+                <span>${meta.label}</span>
+                <span class="badge-count">${items.length}</span>
+            </div>
+            ${items.length === 0
+                ? `<div class="type-empty">이 유형에 등록된 규칙이 없습니다</div>`
+                : items.map(m => renderRuleItem(m)).join('')}
+        </div>`;
+    }).join('');
+
+    container.innerHTML = html;
+}
+
+function renderRuleItem(m) {
+    const meta = MEMORY_TYPE_META[m.memory_type] || MEMORY_TYPE_META.term_alias;
+    const inactive = m.is_active !== 'Y';
+
+    // 표현 요약
+    let exprHtml = '';
+    if (m.memory_type === 'term_alias') {
+        exprHtml = `<span>${escapeHtml(m.user_expression || '(표현 없음)')}</span><span class="arrow">→</span><span class="meaning">${escapeHtml(m.normalized_meaning || '(의미 없음)')}</span>`;
+    } else if (m.memory_type === 'query_preference') {
+        exprHtml = `<span>${escapeHtml(m.trigger_text || '(패턴 없음)')}</span>`;
+    } else {
+        exprHtml = `<span>${escapeHtml(m.user_expression || m.trigger_text || '(패턴 없음)')}</span>`;
+    }
+
+    // rule_json 표시 (JSON 파싱 가능하면 pretty)
+    let ruleJsonHtml = '';
+    if (m.rule_json && String(m.rule_json).trim()) {
+        let pretty = m.rule_json;
+        try { pretty = JSON.stringify(JSON.parse(m.rule_json), null, 2); } catch(_) {}
+        ruleJsonHtml = `<div class="rule-rulejson">${escapeHtml(pretty)}</div>`;
+    }
+
+    // source_query 표시
+    let sourceHtml = '';
+    if (m.source_query && String(m.source_query).trim()) {
+        sourceHtml = `<div class="rule-source"><i class="fas fa-comment-dots"></i> 자동 추출된 원본: "${escapeHtml(m.source_query)}"</div>`;
+    }
+
+    const updatedAt = m.updated_at ? new Date(m.updated_at).toLocaleString('ko-KR') : '';
+    const toggleTitle = inactive ? '활성화' : '비활성화';
+    const toggleIcon = inactive ? 'toggle-off' : 'toggle-on';
+    const toggleCls = inactive ? 'btn-toggle-off' : 'btn-toggle-on';
+
+    return `
+    <div class="rule-item ${inactive ? 'inactive' : ''}" data-id="${m.id}">
+        <div class="rule-head">
+            <div class="rule-main">
+                <div class="rule-expr">${exprHtml}</div>
+                <div class="rule-meta">
+                    <span class="meta-item"><i class="fas fa-tag"></i>${meta.label}</span>
+                    <span class="meta-item"><i class="fas fa-clock"></i>${escapeHtml(updatedAt)}</span>
+                    <span class="meta-item"><i class="fas fa-hashtag"></i>#${m.id}</span>
+                    ${inactive ? '<span class="meta-item" style="color:#dc2626;"><i class="fas fa-pause-circle"></i>비활성</span>' : ''}
+                </div>
+                ${ruleJsonHtml}
+                ${sourceHtml}
+            </div>
+            <div class="rule-actions">
+                <button class="btn-icon ${toggleCls}" onclick="toggleActive(${m.id})" title="${toggleTitle}"><i class="fas fa-${toggleIcon}"></i></button>
+                <button class="btn-icon" onclick="openEditModal(${m.id})" title="편집"><i class="fas fa-pen"></i></button>
+                <button class="btn-icon btn-danger" onclick="deleteRule(${m.id})" title="삭제"><i class="fas fa-trash"></i></button>
+            </div>
+        </div>
+    </div>`;
+}
+
+// =============================================================================
+// 모달
+// =============================================================================
+function openAddModal() {
+    document.getElementById('modalTitle').innerHTML = '<i class="fas fa-user-cog text-indigo-500"></i>새 개인 규칙 등록';
+    document.getElementById('editRuleId').value = '';
+    document.getElementById('fieldMemoryType').value = 'term_alias';
+    document.getElementById('fieldUserExpression').value = '';
+    document.getElementById('fieldNormalizedMeaning').value = '';
+    document.getElementById('fieldTriggerText').value = '';
+    document.getElementById('fieldRuleJson').value = '';
+    onMemoryTypeChange();
+    document.getElementById('ruleModal').classList.add('active');
+}
+
+function openEditModal(id) {
+    const m = allMemories.find(x => x.id === id);
+    if (!m) { showToast('규칙을 찾을 수 없습니다', 'error'); return; }
+    document.getElementById('modalTitle').innerHTML = '<i class="fas fa-pen text-indigo-500"></i>개인 규칙 편집';
+    document.getElementById('editRuleId').value = m.id;
+    document.getElementById('fieldMemoryType').value = m.memory_type;
+    document.getElementById('fieldUserExpression').value = m.user_expression || '';
+    document.getElementById('fieldNormalizedMeaning').value = m.normalized_meaning || '';
+    document.getElementById('fieldTriggerText').value = m.trigger_text || '';
+    let ruleJsonText = '';
+    if (m.rule_json) {
+        try { ruleJsonText = JSON.stringify(JSON.parse(m.rule_json), null, 2); }
+        catch(_) { ruleJsonText = String(m.rule_json); }
+    }
+    document.getElementById('fieldRuleJson').value = ruleJsonText;
+    onMemoryTypeChange();
+    document.getElementById('ruleModal').classList.add('active');
+}
+
+function closeRuleModal() {
+    document.getElementById('ruleModal').classList.remove('active');
+}
+
+function onMemoryTypeChange() {
+    const type = document.getElementById('fieldMemoryType').value;
+    document.getElementById('groupTermAlias').style.display = (type === 'term_alias') ? '' : 'none';
+    document.getElementById('groupQueryPref').style.display = (type === 'query_preference') ? '' : 'none';
+    // metric_preference 는 rule_json 만 사용 (예: {"add_columns":["영업이익율(%)"]})
+}
+
+// =============================================================================
+// 저장 / 편집 / 삭제 / 토글
+// =============================================================================
+async function saveRule() {
+    const id = document.getElementById('editRuleId').value;
+    const memory_type = document.getElementById('fieldMemoryType').value;
+    const user_expression = document.getElementById('fieldUserExpression').value.trim();
+    const normalized_meaning = document.getElementById('fieldNormalizedMeaning').value.trim();
+    const trigger_text = document.getElementById('fieldTriggerText').value.trim();
+    const rule_json_text = document.getElementById('fieldRuleJson').value.trim();
+
+    // 유형별 필수 검증
+    if (memory_type === 'term_alias') {
+        if (!user_expression || !normalized_meaning) {
+            showToast('용어 별칭은 "표현"과 "실제 의미"가 모두 필요합니다', 'error'); return;
+        }
+    } else if (memory_type === 'query_preference') {
+        if (!trigger_text) {
+            showToast('질문 패턴 선호는 "매칭할 질문 패턴"이 필요합니다', 'error'); return;
+        }
+    } else if (memory_type === 'metric_preference') {
+        if (!trigger_text && !user_expression && !rule_json_text) {
+            showToast('지표 조회 선호는 최소 하나의 필드가 필요합니다', 'error'); return;
+        }
+    }
+
+    // rule_json 파싱 검증
+    let rule_json = null;
+    if (rule_json_text) {
+        try {
+            JSON.parse(rule_json_text);
+            rule_json = rule_json_text;
+        } catch (e) {
+            showToast('추가 규칙 JSON 형식이 올바르지 않습니다: ' + e.message, 'error'); return;
+        }
+    }
+
+    const payload = { memory_type, user_expression: user_expression || null, normalized_meaning: normalized_meaning || null, trigger_text: trigger_text || null, rule_json };
+
+    const saveBtn = document.getElementById('saveRuleBtn');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>저장 중...';
+
+    try {
+        let res;
+        if (id) {
+            res = await fetch(`/api/user-memory/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        } else {
+            res = await fetch('/api/user-memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        showToast(id ? '규칙이 수정되었습니다' : '새 규칙이 등록되었습니다', 'success');
+        closeRuleModal();
+        await loadMemories();
+    } catch (e) {
+        showToast('저장 실패: ' + e.message, 'error');
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<i class="fas fa-check"></i>저장';
+    }
+}
+
+async function deleteRule(id) {
+    const m = allMemories.find(x => x.id === id);
+    if (!m) return;
+    const label = m.user_expression || m.trigger_text || `규칙 #${id}`;
+    if (!confirm(`"${label}" 규칙을 완전히 삭제하시겠습니까?\n\n삭제된 규칙은 복구할 수 없습니다.`)) return;
+
+    try {
+        const res = await fetch(`/api/user-memory/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        showToast('규칙이 삭제되었습니다', 'success');
+        await loadMemories();
+    } catch (e) {
+        showToast('삭제 실패: ' + e.message, 'error');
+    }
+}
+
+async function toggleActive(id) {
+    const m = allMemories.find(x => x.id === id);
+    if (!m) return;
+    const nextActive = m.is_active === 'Y' ? 'N' : 'Y';
+
+    // 재활성화 시 상한 안내
+    if (nextActive === 'Y' && currentStats.active_count >= currentStats.max_active) {
+        showToast(`활성 상한(${currentStats.max_active}개)에 도달했습니다. 다른 규칙을 먼저 비활성화하세요.`, 'error');
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/user-memory/${encodeURIComponent(id)}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_active: nextActive }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        showToast(nextActive === 'Y' ? '규칙을 활성화했습니다' : '규칙을 비활성화했습니다', 'success');
+        await loadMemories();
+    } catch (e) {
+        showToast('상태 변경 실패: ' + e.message, 'error');
+    }
+}
+
+// =============================================================================
+// 초기화
+// =============================================================================
+document.addEventListener('DOMContentLoaded', () => {
+    renderDynamicSidebar();
+    loadMemories();
+    // ESC 로 모달 닫기
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeRuleModal();
+    });
+    // 모달 배경 클릭 시 닫기
+    document.getElementById('ruleModal').addEventListener('click', (e) => {
+        if (e.target.id === 'ruleModal') closeRuleModal();
+    });
+});
+</script>
+
+</body>
+</html>
