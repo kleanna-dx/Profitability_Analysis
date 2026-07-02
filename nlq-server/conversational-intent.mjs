@@ -28,6 +28,7 @@ export const INTENT_LABELS = {
   sql_explain:     'SQL 설명',
   domain_explain:  '도메인/필터 설명',
   general_chat:    '시스템 사용법',
+  memory_save:     '개인 규칙 등록',
 };
 
 // ─── 도메인-DIVISION 매핑 (server.mjs applyDomainFilter와 동일 규칙) ───
@@ -52,6 +53,24 @@ export function classifyConversationalIntentHeuristic(query, conversationContext
   if (!query || typeof query !== 'string') return null;
   const q = query.trim();
   const lower = q.toLowerCase();
+
+  // [PR: user memory] memory_save 최우선 — "앞으로 X를 Y로 …" 같은 개인 규칙 등록 요청
+  //   - "앞으로", "이제부터", "항상", "매번" + "부르/불러/불러줘/포함/추가/같이/함께"
+  //   - "X는 Y야 / X를 Y로 / X라고 부르/X 라고 부르"
+  //   - "X 질문(하)면 Y도" 형태의 룰 지시
+  //   - 위 5개 intent(sql_explain 등)보다 먼저 잡아야 오분류 방지
+  if (
+    /(앞으로|이제부터|항상|매번|늘|반드시|무조건)/.test(q) &&
+    /(불러|부르|라고 부르|라고 해|로 해석|로 표시|같이|함께|포함|추가|보여|반영|기억|저장|해줘|해 줘)/.test(q)
+  ) {
+    return 'memory_save';
+  }
+  // "X는 Y야 / X를 Y로 부를게 / X를 Y로 해줘" 형태 (앞으로/항상 없어도 매핑 선언은 잡음)
+  if (
+    /^\s*"?[^"]{1,30}"?\s*(은|는|을|를|이|가)\s*"?[^"]{1,50}"?\s*(로|으로)\s*(부를게|부르자|불러|해석|바꿔|바꾸자|봐|보자|생각|생각해|말할게|이라고|라고)/.test(q)
+  ) {
+    return 'memory_save';
+  }
 
   // [2026-06-30] 직전 턴에 SQL이 있으면, "SQL/쿼리" 단어 없이도 후속 SQL 관련 질문을
   //   sql_explain 으로 분류. 사용자 사례: "근데 넌 왜 컬럼마다 SUM을 붙여놨어?" "왜 묶지 않았어?"
@@ -183,6 +202,7 @@ export async function classifyConversationalIntentLLM(query, conversationContext
 - sql_explain     : 생성된 SQL 설명 (예: "방금 SQL 설명해줘", "이 쿼리 풀어줘")
 - domain_explain  : 현재 도메인/필터 설명 (예: "지금 어느 도메인이야", "PS와 HL 차이")
 - general_chat    : 시스템 사용법/FAQ (예: "어떻게 사용해", "뭐 할 수 있어")
+- memory_save     : 사용자가 자신의 개인 규칙/선호를 앞으로도 적용해달라고 요청 (예: "앞으로 rt는 두루마리라고 불러줘", "매출 순위 물어보면 매출액도 같이 보여줘", "이제부터 xxx는 yyy로 해석해")
 
 반드시 다음 JSON 형식으로만 응답:
 {"intent":"<라벨>","confidence":<0.0~1.0>}`;
@@ -1031,4 +1051,171 @@ export async function handleGeneralChat({ query, activeDomain, conversationConte
     intent: 'general_chat',
     answer,
   });
+}
+
+// ============================================================
+// handleMemorySave — 사용자 개인 규칙 자동 등록 (nl_user_memory)
+// ============================================================
+// - 사용자가 "앞으로 rt는 두루마리로 불러줘" 처럼 개인 규칙을 선언하면
+//   LLM 으로 규칙을 JSON 으로 추출 → 서버가 INSERT.
+// - Metric 산식 오버라이드 시도는 서버(POST /api/user-memory) 저장 단계에서 차단.
+// - 상한(50개) 초과 시 저장 실패 안내 반환.
+// - 필수 컨텍스트: userId (server.mjs 가 handler 호출 시 넘겨줌)
+// ============================================================
+export async function handleMemorySave({ query, activeDomain, conversationContext, pool, openai, model, userId }) {
+  // userId 없으면 규칙 저장 불가 (로그인 사용자만)
+  if (!userId) {
+    return buildConversationalResponse({
+      intent: 'memory_save',
+      answer: '개인 규칙을 저장하려면 로그인이 필요합니다.',
+      referenced: [],
+    });
+  }
+
+  const systemPrompt = `당신은 사용자 발화에서 "앞으로 적용할 개인 규칙"을 추출하는 파서입니다.
+사용자가 방금 말한 규칙을 다음 3가지 유형 중 하나로 분류하고, 저장용 JSON 을 생성하세요.
+
+[유형]
+- term_alias         : 사용자 개인 용어 별칭 (예: "rt 는 두루마리로 불러줘")
+                       필드: { "memory_type":"term_alias", "user_expression":"rt", "normalized_meaning":"두루마리" }
+- query_preference   : 특정 질문 패턴에 컬럼/포맷 선호 (예: "영업팀별 영업이익 순위 물으면 영업이익율도 같이")
+                       필드: { "memory_type":"query_preference", "trigger_text":"영업팀별 영업이익 순위",
+                                "rule_json": {"add_columns":["영업이익율(%)"]} }
+- metric_preference  : 특정 지표 조회 시 추가 지표/각도 함께 (예: "매출 볼 때 지급수수료도 같이")
+                       필드: { "memory_type":"metric_preference", "trigger_text":"매출",
+                                "rule_json": {"note":"지급수수료 컬럼 함께 조회"} }
+
+[절대 규칙]
+1. Metric 산식(계산식/formula/SQL 표현) 을 사용자가 바꾸려 하면 → { "reject": true, "reason": "산식은 학습관리에서만 변경 가능합니다." }
+   예: "영업이익 산식을 SUM(ZAMT099)로 바꿔줘" → reject.
+2. 시스템 전체 규칙(다른 사용자에게도 적용) 을 만들려 하면 → reject.
+3. 유형 판별이 어려우면 → { "reject": true, "reason": "규칙 의도를 파악할 수 없습니다. 예시: '앞으로 rt는 두루마리라고 불러줘'" }
+4. 규칙 하나만 추출 (여러 규칙 요청은 첫 규칙만).
+
+[응답 형식]
+반드시 아래 두 형식 중 하나로 JSON 응답:
+성공: {"memory_type":"...", "user_expression":"...", "normalized_meaning":"...", "trigger_text":"...", "rule_json":{...}, "confirm_message":"저장 확인 메시지"}
+거부: {"reject": true, "reason":"...", "confirm_message":"사용자에게 보여줄 안내"}`;
+
+  const userPrompt = `사용자 발화: "${query}"`;
+
+  let parsed = null;
+  try {
+    const resp = await openai.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: userPrompt },
+      ],
+      response_format: { type: 'json_object' },
+      max_tokens: 400,
+      temperature: 0,
+    });
+    parsed = JSON.parse(resp.choices?.[0]?.message?.content || '{}');
+  } catch (e) {
+    console.error('[Intent:memory_save] 파서 LLM 실패:', e.message);
+    return buildConversationalResponse({
+      intent: 'memory_save',
+      answer: '개인 규칙을 이해하지 못했습니다. 예를 들어 이렇게 말씀해 주세요:\n\n' +
+              '- "앞으로 rt는 두루마리라고 불러줘"\n' +
+              '- "영업팀별 영업이익 순위 물으면 영업이익율도 같이 보여줘"',
+      referenced: [],
+    });
+  }
+
+  // 거부 케이스
+  if (parsed.reject) {
+    const msg = parsed.confirm_message || parsed.reason || '이 규칙은 개인 규칙으로 저장할 수 없습니다.';
+    return buildConversationalResponse({
+      intent: 'memory_save',
+      answer: `⚠️ ${msg}`,
+      referenced: [],
+    });
+  }
+
+  // 저장 실행
+  try {
+    // 상한 검증
+    const [cnt] = await pool.query(
+      `SELECT COUNT(*) AS c FROM nl_user_memory WHERE user_id = ? AND is_active = 'Y'`,
+      [userId]
+    );
+    if (cnt[0].c >= 50) {
+      return buildConversationalResponse({
+        intent: 'memory_save',
+        answer: `⚠️ 개인 규칙이 이미 50개 등록되어 있습니다.\n\n좌측 메뉴의 **"내 개인 규칙"** 화면에서 사용하지 않는 규칙을 삭제한 뒤 다시 시도해 주세요.`,
+        referenced: [],
+      });
+    }
+
+    // 필드 검증
+    const memory_type = parsed.memory_type;
+    if (!['term_alias', 'query_preference', 'metric_preference'].includes(memory_type)) {
+      return buildConversationalResponse({
+        intent: 'memory_save',
+        answer: '규칙 유형을 판별하지 못했습니다. 다시 시도해 주세요.',
+        referenced: [],
+      });
+    }
+
+    // rule_json 문자열화 (있으면)
+    let rule_json_str = null;
+    if (parsed.rule_json && typeof parsed.rule_json === 'object') {
+      rule_json_str = JSON.stringify(parsed.rule_json);
+      // 산식 오버라이드 방지
+      if (/"formula"|"sql"|"select "|"sum\(|"case when/i.test(rule_json_str.toLowerCase())) {
+        return buildConversationalResponse({
+          intent: 'memory_save',
+          answer: '⚠️ Metric 산식(계산식) 오버라이드는 개인 규칙으로 저장할 수 없습니다. 학습관리에서 처리해야 합니다.',
+          referenced: [],
+        });
+      }
+    }
+
+    const [ins] = await pool.query(
+      `INSERT INTO nl_user_memory
+         (user_id, memory_type, trigger_text, user_expression, normalized_meaning, rule_json, source_query, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')`,
+      [
+        userId, memory_type,
+        parsed.trigger_text       ? String(parsed.trigger_text).slice(0, 500)       : null,
+        parsed.user_expression    ? String(parsed.user_expression).slice(0, 500)    : null,
+        parsed.normalized_meaning ? String(parsed.normalized_meaning).slice(0, 500) : null,
+        rule_json_str,
+        String(query).slice(0, 2000),
+      ]
+    );
+
+    const confirmMsg = parsed.confirm_message || _defaultMemorySaveConfirm(parsed);
+    return buildConversationalResponse({
+      intent: 'memory_save',
+      answer: `✅ 개인 규칙을 저장했습니다.\n\n${confirmMsg}\n\n> 이 규칙은 앞으로 이 계정의 자연어 질의에 자동 적용됩니다. 좌측 메뉴의 **"내 개인 규칙"** 에서 언제든 삭제/수정할 수 있습니다.`,
+      referenced: [{ type: 'user_memory', id: ins.insertId }],
+    });
+  } catch (dbErr) {
+    console.error('[Intent:memory_save] DB 저장 실패:', dbErr.message);
+    return buildConversationalResponse({
+      intent: 'memory_save',
+      answer: `⚠️ 개인 규칙 저장 중 오류가 발생했습니다: ${dbErr.message}`,
+      referenced: [],
+    });
+  }
+}
+
+function _defaultMemorySaveConfirm(parsed) {
+  if (parsed.memory_type === 'term_alias') {
+    return `"${parsed.user_expression}" 은/는 "${parsed.normalized_meaning}" 로 해석됩니다.`;
+  }
+  if (parsed.memory_type === 'query_preference') {
+    let extra = '';
+    if (parsed.rule_json && Array.isArray(parsed.rule_json.add_columns)) {
+      extra = ` — 다음 컬럼 함께 포함: ${parsed.rule_json.add_columns.join(', ')}`;
+    }
+    return `"${parsed.trigger_text}" 유형 질문에 개인 선호가 적용됩니다.${extra}`;
+  }
+  if (parsed.memory_type === 'metric_preference') {
+    const note = parsed.rule_json?.note || '개인 선호 반영';
+    return `"${parsed.trigger_text}" 관련 조회 시: ${note}`;
+  }
+  return '규칙이 저장되었습니다.';
 }

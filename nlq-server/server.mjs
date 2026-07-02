@@ -41,6 +41,7 @@ import {
   handleSqlExplain,
   handleDomainExplain,
   handleGeneralChat,
+  handleMemorySave,
 } from './conversational-intent.mjs';
 
 const app = express();
@@ -3621,9 +3622,10 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       pool,
       openai,
       model: GPT_MODEL,
+      userId: req.session?.user?.id || null,  // memory_save 핸들러가 필요
     };
 
-    // 6개 신규 의도 — 즉시 텍스트 응답 후 종료
+    // 7개 신규 의도 — 즉시 텍스트 응답 후 종료
     const newIntentHandlers = {
       metric_lookup:   handleMetricLookup,
       ontology_lookup: handleOntologyLookup,
@@ -3631,12 +3633,18 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       sql_explain:     handleSqlExplain,
       domain_explain:  handleDomainExplain,
       general_chat:    handleGeneralChat,
+      memory_save:     handleMemorySave,   // ★ 사용자 개인 규칙 자동 등록
     };
 
     if (newIntentHandlers[classifiedIntent]) {
       const t0 = Date.now();
       const respBody = await newIntentHandlers[classifiedIntent](intentCommonCtx);
       const elapsed = Date.now() - t0;
+
+      // memory_save 시 캐시 무효화 → 다음 자연어 요청부터 즉시 반영
+      if (classifiedIntent === 'memory_save' && intentCommonCtx.userId) {
+        _invalidateUserMemoryCache(intentCommonCtx.userId);
+      }
 
       // suggestedMode 산출 (라디오 vs 분류 불일치)
       respBody.suggestedMode = determineSuggestedMode(classifiedIntent, userQueryMode);
@@ -4102,6 +4110,23 @@ ${commonRules}
       let systemPrompt = buildResult.prompt;
       const ragContext = buildResult.ragContext;
       dateContext = buildResult.dateContext;
+
+      // ★ 사용자 계정별 개인 규칙 주입 (nl_user_memory)
+      //   우선순위: [학습관리 Ontology/Metric] 이 위에 이미 실려있고, 그 뒤에 개인 규칙 추가
+      //   → GPT 는 "서비스 공통 → 개인 규칙 → 이번 지시" 순으로 프롬프트를 읽음
+      const _memUserId = req.session?.user?.id || null;
+      const _userMemories = await loadActiveUserMemories(_memUserId);
+      const _userMemoryBlock = buildUserMemoryBlock(_userMemories);
+      if (_userMemoryBlock) {
+        systemPrompt += _userMemoryBlock;
+        console.log(`[NLQ] 사용자 개인 규칙 ${_userMemories.length}개 프롬프트 반영 (userId=${_memUserId})`);
+      }
+      // 나중에 응답 본문에 넣기 위해 request-scope 변수에 저장
+      req._appliedUserMemories = _userMemories.map(m => ({
+        id: m.id,
+        type: m.memory_type,
+        label: m.user_expression || m.trigger_text || null,
+      }));
       // ★ 사용자가 '현황집계' 라디오를 선택한 경우: 시스템 프롬프트에 명시적 지시 추가
       //   → GPT가 "알려줘" 같은 단어 때문에 analysisRequired:true로 응답하지 않도록 강제
       if (userQueryMode === 'aggregate') {
@@ -4545,6 +4570,7 @@ ${formatRule}
       ragEnabled: ragReady,
       ragInfo: ragInfo,
       analysis: analysis,  // 분석형 질문이면 텍스트 답변 포함
+      appliedUserMemories: Array.isArray(req._appliedUserMemories) ? req._appliedUserMemories : [],
     };
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
@@ -4873,6 +4899,112 @@ setTimeout(() => {
 app.get('/api/history/retention', (req, res) => {
   res.json({ days: NLQ_HISTORY_RETENTION_DAYS });
 });
+
+// ============================================================
+// 사용자 계정별 개인 규칙 (nl_user_memory) 헬퍼 — PR: user memory
+// ============================================================
+// - 매 자연어 질의마다 사용자별로 SELECT 하면 DB 부하 → 60초 캐시
+// - 상한: 사용자당 활성 규칙 최대 50개 (프롬프트 폭발 방지)
+// - Metric 산식 오버라이드 (memory_type='metric_formula') 는 저장 자체 차단
+//   → 학습관리 Metric 산식은 서비스 전체 공통 정의로 유지, 개인이 못 바꿈
+// ============================================================
+const USER_MEMORY_MAX_ACTIVE = 50;
+const USER_MEMORY_CACHE_TTL_MS = 60_000;
+const USER_MEMORY_ALLOWED_TYPES = new Set(['term_alias', 'query_preference', 'metric_preference']);
+const _userMemoryCache = new Map(); // userId → { rows, ts }
+
+function _invalidateUserMemoryCache(userId) {
+  if (userId) _userMemoryCache.delete(userId);
+}
+
+async function loadActiveUserMemories(userId) {
+  if (!userId) return [];
+  const cached = _userMemoryCache.get(userId);
+  const now = Date.now();
+  if (cached && (now - cached.ts) < USER_MEMORY_CACHE_TTL_MS) {
+    return cached.rows;
+  }
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, memory_type, trigger_text, user_expression, normalized_meaning, rule_json, created_at
+       FROM nl_user_memory
+       WHERE user_id = ? AND is_active = 'Y'
+       ORDER BY memory_type ASC, updated_at DESC
+       LIMIT ?`,
+      [userId, USER_MEMORY_MAX_ACTIVE]
+    );
+    _userMemoryCache.set(userId, { rows, ts: now });
+    return rows;
+  } catch (e) {
+    // nl_user_memory 테이블이 아직 없거나 접근 오류 시 fail-open (개인 규칙 없이 진행)
+    if (!/doesn.?t exist|Unknown table|no such table/i.test(e.message || '')) {
+      console.warn('[UserMemory] loadActiveUserMemories 실패:', e.message);
+    }
+    return [];
+  }
+}
+
+// 프롬프트 블록 조립 (SYSTEM prompt 끝에 붙임)
+// ⚠️ 학습관리 Metric 산식 오버라이드 금지 명시 — GPT 가 실수로도 개인 규칙을 산식에 적용하지 않도록
+function buildUserMemoryBlock(memories) {
+  if (!Array.isArray(memories) || memories.length === 0) return '';
+
+  const aliases  = memories.filter(m => m.memory_type === 'term_alias');
+  const qprefs   = memories.filter(m => m.memory_type === 'query_preference');
+  const mprefs   = memories.filter(m => m.memory_type === 'metric_preference');
+
+  const parts = [];
+  parts.push('\n\n[★★★ 사용자 개인 규칙 — 이 사용자에게만 적용 ★★★]');
+  parts.push('※ 아래 규칙은 위 [서비스 공통 Ontology / Metric] 을 오버라이드하지 못합니다.');
+  parts.push('  - Metric 산식(계산식)은 학습관리 등록값만 사용하세요. 아래 규칙은 표현/해석/결과 형태 개인화에만 사용합니다.');
+  parts.push('  - 용어 별칭이 Ontology 와 충돌하면 아래 개인 별칭을 우선 사용하세요.');
+
+  if (aliases.length > 0) {
+    parts.push('\n[개인 용어 별칭]');
+    for (const a of aliases) {
+      const from = (a.user_expression || '').trim();
+      const to   = (a.normalized_meaning || '').trim();
+      if (from && to) {
+        parts.push(`- "${from}" 은/는 "${to}" 로 해석하세요. (사용자 개인 별칭)`);
+      }
+    }
+  }
+
+  if (qprefs.length > 0) {
+    parts.push('\n[질문 패턴별 결과 형태 선호]');
+    for (const q of qprefs) {
+      const trg = (q.trigger_text || '').trim();
+      let extra = '';
+      if (q.rule_json) {
+        try {
+          const rj = typeof q.rule_json === 'string' ? JSON.parse(q.rule_json) : q.rule_json;
+          if (rj && Array.isArray(rj.add_columns) && rj.add_columns.length > 0) {
+            extra = ` → 다음 컬럼도 함께 SELECT 하세요: ${rj.add_columns.map(c => `"${c}"`).join(', ')}`;
+          }
+          if (rj && rj.note) extra += ` (${rj.note})`;
+        } catch (_) {}
+      }
+      if (trg) parts.push(`- 사용자가 "${trg}" 유형 질문을 하면${extra || ' → 개인 선호 반영'}`);
+    }
+  }
+
+  if (mprefs.length > 0) {
+    parts.push('\n[지표 조회 시 개인 선호]');
+    for (const m of mprefs) {
+      let desc = '';
+      if (m.rule_json) {
+        try {
+          const rj = typeof m.rule_json === 'string' ? JSON.parse(m.rule_json) : m.rule_json;
+          if (rj && rj.note) desc = rj.note;
+        } catch (_) {}
+      }
+      const trg = (m.trigger_text || m.user_expression || '').trim();
+      if (trg) parts.push(`- "${trg}" 관련 지표 조회 시: ${desc || '개인 선호 반영'}`);
+    }
+  }
+
+  return parts.join('\n');
+}
 
 // ============================================================
 // 이력 저장 헬퍼 함수
@@ -5229,6 +5361,232 @@ app.get('/api/favorite-questions/check', async (req, res) => {
     res.json({ success: true, exists: rows.length > 0, id: rows[0]?.id || null, query_hash: hash });
   } catch (err) {
     console.error('[GET /api/favorite-questions/check] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 사용자 계정별 개인 규칙 CRUD — nl_user_memory
+// ============================================================
+// - 자연어 질의(/api/nlq) 및 빌더(/api/builder/query) 프롬프트 조립 시
+//   loadActiveUserMemories(userId) 로 이 테이블에서 규칙을 읽어 SYSTEM 프롬프트에 주입.
+// - 저장 정책:
+//   • memory_type 은 term_alias | query_preference | metric_preference 3가지만 허용
+//   • 활성(is_active='Y') 규칙은 사용자당 최대 50개 (초과 시 저장 거부)
+//   • Metric 산식 오버라이드 (예: memory_type='metric_formula') 는 허용하지 않음
+// - 자동 등록 경로(intent classifier)와 수동 UI 경로가 같은 저장 로직을 공유.
+// ============================================================
+
+// [helper] 저장 파라미터 검증 + 정규화 (오류 시 { error } 반환)
+function _normalizeUserMemoryPayload(body) {
+  const memory_type = String(body.memory_type || '').trim();
+  if (!USER_MEMORY_ALLOWED_TYPES.has(memory_type)) {
+    return { error: `memory_type 은 다음 중 하나여야 합니다: ${[...USER_MEMORY_ALLOWED_TYPES].join(', ')}` };
+  }
+  const user_expression    = body.user_expression    ? String(body.user_expression).trim().slice(0, 500) : null;
+  const normalized_meaning = body.normalized_meaning ? String(body.normalized_meaning).trim().slice(0, 500) : null;
+  const trigger_text       = body.trigger_text       ? String(body.trigger_text).trim().slice(0, 500) : null;
+  const source_query       = body.source_query       ? String(body.source_query).slice(0, 2000) : null;
+
+  // rule_json 은 문자열이면 JSON.parse 검증만
+  let rule_json = null;
+  if (body.rule_json !== undefined && body.rule_json !== null && body.rule_json !== '') {
+    if (typeof body.rule_json === 'string') {
+      try { JSON.parse(body.rule_json); rule_json = body.rule_json; }
+      catch (_) { return { error: 'rule_json 은 유효한 JSON 문자열이어야 합니다.' }; }
+    } else {
+      try { rule_json = JSON.stringify(body.rule_json); }
+      catch (_) { return { error: 'rule_json 직렬화 실패' }; }
+    }
+  }
+
+  // 타입별 필수 필드 체크
+  if (memory_type === 'term_alias') {
+    if (!user_expression || !normalized_meaning) {
+      return { error: 'term_alias 는 user_expression 과 normalized_meaning 둘 다 필요합니다.' };
+    }
+  } else if (memory_type === 'query_preference') {
+    if (!trigger_text) {
+      return { error: 'query_preference 는 trigger_text 가 필요합니다.' };
+    }
+  } else if (memory_type === 'metric_preference') {
+    if (!trigger_text && !user_expression) {
+      return { error: 'metric_preference 는 trigger_text 또는 user_expression 중 하나 이상 필요합니다.' };
+    }
+  }
+
+  // ★ Metric 산식 오버라이드 방지 — rule_json 안에 formula/sql 을 넣으려는 시도 차단
+  if (rule_json) {
+    const rjLower = rule_json.toLowerCase();
+    if (/"formula"|"sql"|"select "|"sum\(|"case when/i.test(rjLower)) {
+      return { error: 'Metric 산식(계산식) 오버라이드는 개인 규칙으로 저장할 수 없습니다. 학습관리에 요청해 주세요.' };
+    }
+  }
+
+  return {
+    memory_type, user_expression, normalized_meaning,
+    trigger_text, rule_json, source_query,
+  };
+}
+
+// [helper] 저장 시 상한(50) 검증
+async function _checkUserMemoryLimit(userId) {
+  const [cnt] = await pool.query(
+    `SELECT COUNT(*) AS c FROM nl_user_memory WHERE user_id = ? AND is_active = 'Y'`,
+    [userId]
+  );
+  return { current: cnt[0].c, max: USER_MEMORY_MAX_ACTIVE };
+}
+
+// GET /api/user-memory — 현재 사용자의 규칙 목록
+app.get('/api/user-memory', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const includeInactive = String(req.query.include_inactive || '') === '1';
+    const [rows] = await pool.query(
+      `SELECT id, memory_type, trigger_text, user_expression, normalized_meaning, rule_json,
+              is_active, source_query, created_at, updated_at
+       FROM nl_user_memory
+       WHERE user_id = ? ${includeInactive ? '' : "AND is_active = 'Y'"}
+       ORDER BY memory_type ASC, updated_at DESC
+       LIMIT 500`,
+      [userId]
+    );
+    const [cntRow] = await pool.query(
+      `SELECT COUNT(*) AS c FROM nl_user_memory WHERE user_id = ? AND is_active = 'Y'`,
+      [userId]
+    );
+    res.json({
+      success: true,
+      items: rows,
+      active_count: cntRow[0].c,
+      max_active: USER_MEMORY_MAX_ACTIVE,
+    });
+  } catch (err) {
+    console.error('[GET /api/user-memory] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/user-memory — 신규 규칙 등록 (수동 UI + 자동 추출 공용)
+app.post('/api/user-memory', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+
+    const payload = _normalizeUserMemoryPayload(req.body || {});
+    if (payload.error) return res.status(400).json({ error: payload.error });
+
+    // 상한 검증
+    const { current, max } = await _checkUserMemoryLimit(userId);
+    if (current >= max) {
+      return res.status(400).json({
+        error: `개인 규칙이 이미 ${max}개 등록되어 있습니다. "내 개인 규칙" 화면에서 사용하지 않는 규칙을 삭제한 뒤 다시 시도해 주세요.`,
+        limit_reached: true,
+        current, max,
+      });
+    }
+
+    const [r] = await pool.query(
+      `INSERT INTO nl_user_memory
+         (user_id, memory_type, trigger_text, user_expression, normalized_meaning, rule_json, source_query, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')`,
+      [userId, payload.memory_type, payload.trigger_text, payload.user_expression,
+       payload.normalized_meaning, payload.rule_json, payload.source_query]
+    );
+    _invalidateUserMemoryCache(userId);
+    res.json({ success: true, id: r.insertId });
+  } catch (err) {
+    console.error('[POST /api/user-memory] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/user-memory/:id — 규칙 수정 (내용/활성상태)
+app.patch('/api/user-memory/:id', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'invalid id' });
+
+    // 소유권 확인
+    const [own] = await pool.query(
+      `SELECT id, is_active FROM nl_user_memory WHERE id = ? AND user_id = ?`,
+      [id, userId]
+    );
+    if (own.length === 0) return res.status(404).json({ error: '해당 규칙을 찾을 수 없습니다.' });
+
+    const body = req.body || {};
+    const updates = [];
+    const params = [];
+
+    // 필드 부분 수정
+    if (body.trigger_text !== undefined)       { updates.push('trigger_text = ?');       params.push(body.trigger_text ? String(body.trigger_text).slice(0, 500) : null); }
+    if (body.user_expression !== undefined)    { updates.push('user_expression = ?');    params.push(body.user_expression ? String(body.user_expression).slice(0, 500) : null); }
+    if (body.normalized_meaning !== undefined) { updates.push('normalized_meaning = ?'); params.push(body.normalized_meaning ? String(body.normalized_meaning).slice(0, 500) : null); }
+    if (body.rule_json !== undefined) {
+      let rj = null;
+      if (body.rule_json !== null && body.rule_json !== '') {
+        if (typeof body.rule_json === 'string') {
+          try { JSON.parse(body.rule_json); rj = body.rule_json; }
+          catch (_) { return res.status(400).json({ error: 'rule_json 은 유효한 JSON 이어야 합니다.' }); }
+        } else {
+          rj = JSON.stringify(body.rule_json);
+        }
+        if (/"formula"|"sql"|"select "|"sum\(|"case when/i.test(String(rj).toLowerCase())) {
+          return res.status(400).json({ error: 'Metric 산식(계산식) 오버라이드는 개인 규칙으로 저장할 수 없습니다.' });
+        }
+      }
+      updates.push('rule_json = ?'); params.push(rj);
+    }
+    if (body.is_active !== undefined) {
+      const newActive = (body.is_active === 'Y' || body.is_active === true || body.is_active === 1) ? 'Y' : 'N';
+      // 비활성 → 활성 전환 시 상한 검증
+      if (own[0].is_active !== 'Y' && newActive === 'Y') {
+        const { current, max } = await _checkUserMemoryLimit(userId);
+        if (current >= max) {
+          return res.status(400).json({
+            error: `이미 활성 규칙 ${max}개가 등록되어 있어 활성화할 수 없습니다.`,
+            limit_reached: true, current, max,
+          });
+        }
+      }
+      updates.push('is_active = ?'); params.push(newActive);
+    }
+
+    if (updates.length === 0) return res.status(400).json({ error: '변경할 필드가 없습니다.' });
+    params.push(id, userId);
+    await pool.query(
+      `UPDATE nl_user_memory SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+      params
+    );
+    _invalidateUserMemoryCache(userId);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[PATCH /api/user-memory/:id] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/user-memory/:id — 규칙 완전 삭제 (하드 삭제)
+app.delete('/api/user-memory/:id', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'invalid id' });
+
+    const [r] = await pool.query(
+      `DELETE FROM nl_user_memory WHERE id = ? AND user_id = ?`,
+      [id, userId]
+    );
+    if (r.affectedRows === 0) return res.status(404).json({ error: '해당 규칙을 찾을 수 없습니다.' });
+    _invalidateUserMemoryCache(userId);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[DELETE /api/user-memory/:id] error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -7845,8 +8203,28 @@ app.post('/api/builder/query', async (req, res) => {
             '절대 산식의 일부 컬럼만 추출해 단순 SUM 하지 마세요. GROUP BY 가 있는데 산식이 row-level 인 채로 SELECT 절에 두면 그룹 내 임의 row 값이 나오는 잘못된 결과가 됩니다.\n';
         }
 
+        // ★ 사용자 계정별 개인 규칙 주입 (nl_user_memory) — builder 경로
+        //   metricGuide(서비스 공통 Metric 산식) 뒤, 사용자의 이번 [추가 요청] 앞에 배치
+        //   → GPT 는 "공통 Metric 산식(오버라이드 금지) → 개인 규칙(표현/해석) → 이번 지시" 순으로 읽음
+        let userMemoryGuide = '';
+        try {
+          const _bMemUserId = req.session?.user?.id || null;
+          const _bUserMemories = await loadActiveUserMemories(_bMemUserId);
+          userMemoryGuide = buildUserMemoryBlock(_bUserMemories);
+          req._appliedUserMemories = _bUserMemories.map(m => ({
+            id: m.id, type: m.memory_type,
+            label: m.user_expression || m.trigger_text || null,
+          }));
+          if (userMemoryGuide) {
+            log.stage('user_memory_injected', { count: _bUserMemories.length, user_id: _bMemUserId });
+          }
+        } catch (memErr) {
+          // fail-open: 개인 규칙 로딩 실패해도 GPT 호출은 그대로 진행
+          console.warn('[Builder] user memory 로딩 실패 (진행 계속):', memErr.message);
+        }
+
         const userPromptText = `\n\n[추가 요청]\n${prompt}`;
-        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${metricGuide}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
+        const gptPrompt = `[테이블 스키마]\n${TABLE_SCHEMA}\n\n[기본 SQL]\n${resolvedSql}${metricGuide}${userMemoryGuide}${userPromptText}\n\n위 기본 SQL을 기반으로 요청사항을 반영한 완성된 SELECT 문을 작성해주세요.\n반드시 위 스키마에 존재하는 컬럼명만 사용하세요.\nWHERE 조건의 값은 반드시 리터럴 값으로 직접 작성하세요 (? 파라미터 바인딩 사용 금지).\nSELECT 문만 작성하고 JSON 형식이 아닌 순수 SQL만 반환하세요.`;
         // [2026-06-29 PR #196] GPT 호출 timeout 40s → 90s 상향
         //   - 운영 로그에서 40s 도달 시점에 abort 다발 발생 확인 (reqId=mqyzh7wsve1x 등)
         //     → 프롬프트가 길어지면(현재 약 9.5KB) gpt-5.5 응답이 40s 를 넘기는 사례 다수
@@ -8500,6 +8878,8 @@ app.post('/api/builder/query', async (req, res) => {
     }
     // 응답에 requestId 포함 (Nginx 매칭용)
     responseObj.requestId = log.requestId;
+    // 사용자 개인 규칙 적용 배지용
+    responseObj.appliedUserMemories = Array.isArray(req._appliedUserMemories) ? req._appliedUserMemories : [];
     if (hasCompare && measureFields.length > 0) {
       // dimFields, joinDimFields는 비교모드 블록 내 변수 → 여기서 재계산
       const allDimAliases = fields.filter(f => {
@@ -11424,6 +11804,71 @@ async function ensureFavoriteQuestionsTable() {
   }
 }
 
+// ============================================================
+// 사용자 계정별 개인 규칙(nl_user_memory) 마이그레이션 — PR: user memory
+// ============================================================
+// - GPT-5.5 는 stateless 이므로 사용자가 "앞으로 rt는 두루마리로 불러줘"
+//   같은 개인 규칙을 말해도 채팅방을 벗어나면 잊는다.
+// - 계정별 장기 기억을 위해 개인 규칙을 이 테이블에 저장하고,
+//   매 요청마다 SYSTEM 프롬프트에 로드해서 GPT 에게 알려준다.
+// - 우선순위: 학습관리(Ontology/Metric, 서비스 공통) > 이 테이블(개인) 순으로 프롬프트 조립
+//   단, 용어 별칭(term_alias) 은 개인이 오버라이드 가능 (표현/해석)
+//   Metric 산식(계산식) 오버라이드는 저장 자체를 거부 (데이터 정합성 보호)
+// ============================================================
+async function ensureUserMemoryTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS nl_user_memory (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id VARCHAR(100) NOT NULL COMMENT '사용자 로그인 ID',
+        memory_type VARCHAR(50) NOT NULL COMMENT 'term_alias | query_preference | metric_preference',
+        trigger_text VARCHAR(500) NULL COMMENT 'query_preference 에서 매칭할 사용자 질문 패턴',
+        user_expression VARCHAR(500) NULL COMMENT 'term_alias 에서 사용자가 쓰는 표현 (예: rt)',
+        normalized_meaning VARCHAR(500) NULL COMMENT 'term_alias 에서 실제 의미 (예: 두루마리)',
+        rule_json TEXT NULL COMMENT '확장 규칙 JSON (예: {"add_columns":["영업이익율(%)"]})',
+        is_active CHAR(1) NOT NULL DEFAULT 'Y' COMMENT '활성 여부 (Y/N)',
+        source_query TEXT NULL COMMENT '규칙이 자동 추출된 원본 사용자 발화 (감사용)',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_user_active (user_id, is_active),
+        INDEX idx_user_type (user_id, memory_type),
+        INDEX idx_updated (updated_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='사용자 계정별 GPT 개인화 규칙'
+    `);
+    console.log('[Migration] nl_user_memory 테이블 준비 완료');
+
+    // "내 개인 규칙" 메뉴 자동 등록 (이미 시드된 프로덕션에도 재기동만으로 반영)
+    try {
+      await pool.query(`
+        INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order, is_active)
+        VALUES ('my_memory', '내 개인 규칙', '/my-memory.html', 'fas fa-user-cog', 8, 1)
+        ON DUPLICATE KEY UPDATE
+          menu_name = VALUES(menu_name),
+          menu_url = VALUES(menu_url),
+          icon_class = VALUES(icon_class),
+          is_active = VALUES(is_active)
+      `);
+      // 모든 역할(admin/user)에 메뉴 매핑 — 개인 규칙은 로그인한 모든 사용자가 사용 가능
+      await pool.query(`
+        INSERT INTO role_menus (role_id, menu_id)
+        SELECT r.id, m.id
+          FROM roles r CROSS JOIN menus m
+         WHERE m.menu_code = 'my_memory'
+           AND NOT EXISTS (
+             SELECT 1 FROM role_menus rm
+              WHERE rm.role_id = r.id AND rm.menu_id = m.id
+           )
+      `);
+      console.log('[Migration] 내 개인 규칙 메뉴 등록/매핑 완료');
+    } catch (menuErr) {
+      // menus/role_menus 테이블이 아직 없을 수 있음 (첫 실행) — fail-open, ensureRbacTables 가 이후에 시드
+      console.warn('[Migration] my_memory 메뉴 등록 스킵 (RBAC 테이블 준비 전일 수 있음):', menuErr.message);
+    }
+  } catch (e) {
+    console.error('[Migration] nl_user_memory 마이그레이션 실패:', e.message);
+  }
+}
+
 const httpServer = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 NLQ Server running on http://0.0.0.0:${PORT}`);
 
@@ -11444,6 +11889,9 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
 
   // 자주질문(즐겨찾기) 테이블 마이그레이션
   await ensureFavoriteQuestionsTable();
+
+  // 사용자 계정별 개인 규칙(nl_user_memory) 마이그레이션
+  await ensureUserMemoryTable();
 
   // 서버 시작 시 RAG 인덱스 자동 빌드 (비동기, 서버 응답에 영향 없음)
   try {
