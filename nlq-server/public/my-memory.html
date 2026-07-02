@@ -149,60 +149,6 @@
 <!-- Toast -->
 <div id="toast" class="toast"></div>
 
-<!-- 규칙 편집/추가 모달 -->
-<div id="ruleModal" class="modal-overlay">
-    <div class="modal">
-        <h3 id="modalTitle"><i class="fas fa-user-cog text-indigo-500"></i>새 개인 규칙 등록</h3>
-        <p class="modal-desc">이 규칙은 GPT 요청 시 <strong>당신 계정에만</strong> 프롬프트로 주입됩니다.</p>
-
-        <input type="hidden" id="editRuleId" value="">
-
-        <label>규칙 유형 <span class="req">*</span></label>
-        <select id="fieldMemoryType" onchange="onMemoryTypeChange()">
-            <option value="term_alias">📝 용어 별칭 (내가 쓰는 표현 → 실제 의미)</option>
-            <option value="query_preference">🎯 질문 패턴 선호 (특정 질문 시 결과 형태)</option>
-            <option value="metric_preference">📊 지표 조회 선호 (지표 조회 시 개인 선호)</option>
-        </select>
-
-        <!-- term_alias 필드 -->
-        <div id="groupTermAlias">
-            <label>내가 쓰는 표현 <span class="req">*</span></label>
-            <input type="text" id="fieldUserExpression" placeholder="예: rt, 김대리, 두마" maxlength="500">
-            <div class="form-hint">GPT가 이 표현을 만나면 아래 의미로 해석합니다.</div>
-
-            <label>실제 의미 <span class="req">*</span></label>
-            <input type="text" id="fieldNormalizedMeaning" placeholder="예: 두루마리, 김철수, 두루마리" maxlength="500">
-        </div>
-
-        <!-- query_preference 필드 -->
-        <div id="groupQueryPref" style="display:none;">
-            <label>매칭할 질문 패턴 <span class="req">*</span></label>
-            <input type="text" id="fieldTriggerText" placeholder="예: 매출 조회 시, ~별 실적 물어볼 때" maxlength="500">
-            <div class="form-hint">사용자 질문이 이 패턴과 유사할 때 아래 규칙을 적용합니다.</div>
-        </div>
-
-        <label>추가 규칙 (JSON, 선택)</label>
-        <textarea id="fieldRuleJson" placeholder='{"add_columns":["영업이익율(%)"],"sort_desc":true}'></textarea>
-        <div class="form-hint">
-            예시:<br>
-            • <code>{"add_columns":["영업이익율(%)"]}</code> — 결과에 특정 컬럼 추가<br>
-            • <code>{"format":"chart"}</code> — 결과를 차트로 표시<br>
-            • <code>{"top_n":10}</code> — 상위 N개만 표시
-        </div>
-        <div class="form-hint warn">
-            <i class="fas fa-exclamation-triangle"></i>
-            <strong>회사 공식 계산식(예: 영업이익율 계산 방법)은 개인 규칙으로 바꿀 수 없습니다.</strong>
-            지표 계산식은 회사 전체가 공유하는 표준이라 개인이 바꾸면 부서 간 숫자가 어긋납니다.
-            계산식 변경이 필요하면 <strong>학습관리 담당자</strong>에게 요청해 주세요.
-        </div>
-
-        <div class="modal-actions">
-            <button class="btn btn-outline" onclick="closeRuleModal()">취소</button>
-            <button class="btn btn-primary" id="saveRuleBtn" onclick="saveRule()"><i class="fas fa-check"></i>저장</button>
-        </div>
-    </div>
-</div>
-
 <!-- MAIN -->
 <div class="main-wrapper">
     <div class="top-bar">
@@ -210,7 +156,6 @@
         <h1 class="text-lg font-bold text-slate-800"><i class="fas fa-user-cog text-indigo-500 mr-2"></i>내 개인 규칙</h1>
         <div style="flex:1;"></div>
         <button class="btn btn-outline btn-sm" onclick="loadMemories()"><i class="fas fa-sync-alt"></i>새로고침</button>
-        <button class="btn btn-primary" onclick="openAddModal()"><i class="fas fa-plus"></i>새 규칙 등록</button>
     </div>
 
     <div class="content-area">
@@ -223,6 +168,16 @@
                 <strong>이 페이지에 저장한 규칙은 당신 계정으로 질문할 때마다 AI에게 자동으로 알려주기 때문에</strong>
                 AI가 계속 기억하는 것처럼 동작합니다. <em>(내 계정에만 적용됩니다. 다른 사용자에게는 영향 없음)</em>
             </p>
+
+            <!-- 등록/삭제 방법 안내 -->
+            <div style="background:rgba(255,255,255,.7);border-left:3px solid #4f46e5;border-radius:6px;padding:10px 14px;margin:10px 0;font-size:12.5px;color:#3730a3;line-height:1.7;">
+                <div style="font-weight:700;margin-bottom:4px;"><i class="fas fa-comments"></i> 규칙 등록/관리 방법</div>
+                <ul style="margin:0;padding-left:22px;">
+                    <li><strong>등록</strong>은 <a href="/" style="color:#4f46e5;font-weight:700;text-decoration:underline;">채팅 화면</a>에서 "앞으로 <code>rt</code>는 두루마리로 불러줘" 처럼 <strong>대화로만</strong> 가능합니다. (AI가 자동으로 감지해 저장)</li>
+                    <li><strong>이 화면에서는 저장된 규칙을 <span style="color:#dc2626;">확인 · 잠시 끄기 · 삭제</span>만 할 수 있습니다.</strong></li>
+                    <li>규칙 내용을 바꾸고 싶으면 <strong>기존 규칙을 삭제한 뒤 채팅에서 다시 말해</strong> 주세요.</li>
+                </ul>
+            </div>
 
             <div style="background:rgba(255,255,255,.55);border-radius:8px;padding:10px 14px;margin-top:8px;">
                 <div style="font-weight:700;color:#065f46;margin-bottom:6px;">
@@ -442,7 +397,7 @@ function renderRules() {
             <div class="empty-state">
                 <i class="fas fa-inbox"></i>
                 <div class="title">아직 등록된 개인 규칙이 없습니다</div>
-                <div class="desc">채팅에서 "앞으로 rt는 두루마리로 불러줘" 처럼 말하면 자동 등록되거나,<br>우측 상단 <strong>+ 새 규칙 등록</strong> 버튼으로 직접 추가할 수 있습니다.</div>
+                <div class="desc">채팅에서 "앞으로 rt는 두루마리로 불러줘" 처럼 말하면 <strong>자동으로 등록</strong>됩니다.<br>이 화면에서는 저장된 규칙을 <strong>확인 · 잠시 끄기 · 삭제</strong>만 할 수 있습니다.</div>
             </div>`;
         return;
     }
@@ -529,8 +484,7 @@ function renderRuleItem(m) {
                 ${sourceHtml}
             </div>
             <div class="rule-actions">
-                <button class="btn-icon ${toggleCls}" onclick="toggleActive(${m.id})" title="${toggleTitle}"><i class="fas fa-${toggleIcon}"></i></button>
-                <button class="btn-icon" onclick="openEditModal(${m.id})" title="편집"><i class="fas fa-pen"></i></button>
+                <button class="btn-icon ${toggleCls}" onclick="toggleActive(${m.id})" title="${toggleTitle} (잠시 끄기/켜기)"><i class="fas fa-${toggleIcon}"></i></button>
                 <button class="btn-icon btn-danger" onclick="deleteRule(${m.id})" title="삭제"><i class="fas fa-trash"></i></button>
             </div>
         </div>
@@ -540,111 +494,10 @@ function renderRuleItem(m) {
 // =============================================================================
 // 모달
 // =============================================================================
-function openAddModal() {
-    document.getElementById('modalTitle').innerHTML = '<i class="fas fa-user-cog text-indigo-500"></i>새 개인 규칙 등록';
-    document.getElementById('editRuleId').value = '';
-    document.getElementById('fieldMemoryType').value = 'term_alias';
-    document.getElementById('fieldUserExpression').value = '';
-    document.getElementById('fieldNormalizedMeaning').value = '';
-    document.getElementById('fieldTriggerText').value = '';
-    document.getElementById('fieldRuleJson').value = '';
-    onMemoryTypeChange();
-    document.getElementById('ruleModal').classList.add('active');
-}
-
-function openEditModal(id) {
-    const m = allMemories.find(x => x.id === id);
-    if (!m) { showToast('규칙을 찾을 수 없습니다', 'error'); return; }
-    document.getElementById('modalTitle').innerHTML = '<i class="fas fa-pen text-indigo-500"></i>개인 규칙 편집';
-    document.getElementById('editRuleId').value = m.id;
-    document.getElementById('fieldMemoryType').value = m.memory_type;
-    document.getElementById('fieldUserExpression').value = m.user_expression || '';
-    document.getElementById('fieldNormalizedMeaning').value = m.normalized_meaning || '';
-    document.getElementById('fieldTriggerText').value = m.trigger_text || '';
-    let ruleJsonText = '';
-    if (m.rule_json) {
-        try { ruleJsonText = JSON.stringify(JSON.parse(m.rule_json), null, 2); }
-        catch(_) { ruleJsonText = String(m.rule_json); }
-    }
-    document.getElementById('fieldRuleJson').value = ruleJsonText;
-    onMemoryTypeChange();
-    document.getElementById('ruleModal').classList.add('active');
-}
-
-function closeRuleModal() {
-    document.getElementById('ruleModal').classList.remove('active');
-}
-
-function onMemoryTypeChange() {
-    const type = document.getElementById('fieldMemoryType').value;
-    document.getElementById('groupTermAlias').style.display = (type === 'term_alias') ? '' : 'none';
-    document.getElementById('groupQueryPref').style.display = (type === 'query_preference') ? '' : 'none';
-    // metric_preference 는 rule_json 만 사용 (예: {"add_columns":["영업이익율(%)"]})
-}
-
 // =============================================================================
-// 저장 / 편집 / 삭제 / 토글
+// 삭제 / 토글
+// (등록/편집은 채팅 자동 등록 경로만 사용 — UI 진입점 제거됨)
 // =============================================================================
-async function saveRule() {
-    const id = document.getElementById('editRuleId').value;
-    const memory_type = document.getElementById('fieldMemoryType').value;
-    const user_expression = document.getElementById('fieldUserExpression').value.trim();
-    const normalized_meaning = document.getElementById('fieldNormalizedMeaning').value.trim();
-    const trigger_text = document.getElementById('fieldTriggerText').value.trim();
-    const rule_json_text = document.getElementById('fieldRuleJson').value.trim();
-
-    // 유형별 필수 검증
-    if (memory_type === 'term_alias') {
-        if (!user_expression || !normalized_meaning) {
-            showToast('용어 별칭은 "표현"과 "실제 의미"가 모두 필요합니다', 'error'); return;
-        }
-    } else if (memory_type === 'query_preference') {
-        if (!trigger_text) {
-            showToast('질문 패턴 선호는 "매칭할 질문 패턴"이 필요합니다', 'error'); return;
-        }
-    } else if (memory_type === 'metric_preference') {
-        if (!trigger_text && !user_expression && !rule_json_text) {
-            showToast('지표 조회 선호는 최소 하나의 필드가 필요합니다', 'error'); return;
-        }
-    }
-
-    // rule_json 파싱 검증
-    let rule_json = null;
-    if (rule_json_text) {
-        try {
-            JSON.parse(rule_json_text);
-            rule_json = rule_json_text;
-        } catch (e) {
-            showToast('추가 규칙 JSON 형식이 올바르지 않습니다: ' + e.message, 'error'); return;
-        }
-    }
-
-    const payload = { memory_type, user_expression: user_expression || null, normalized_meaning: normalized_meaning || null, trigger_text: trigger_text || null, rule_json };
-
-    const saveBtn = document.getElementById('saveRuleBtn');
-    saveBtn.disabled = true;
-    saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>저장 중...';
-
-    try {
-        let res;
-        if (id) {
-            res = await fetch(`/api/user-memory/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        } else {
-            res = await fetch('/api/user-memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        }
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        showToast(id ? '규칙이 수정되었습니다' : '새 규칙이 등록되었습니다', 'success');
-        closeRuleModal();
-        await loadMemories();
-    } catch (e) {
-        showToast('저장 실패: ' + e.message, 'error');
-    } finally {
-        saveBtn.disabled = false;
-        saveBtn.innerHTML = '<i class="fas fa-check"></i>저장';
-    }
-}
-
 async function deleteRule(id) {
     const m = allMemories.find(x => x.id === id);
     if (!m) return;
@@ -693,14 +546,6 @@ async function toggleActive(id) {
 document.addEventListener('DOMContentLoaded', () => {
     renderDynamicSidebar();
     loadMemories();
-    // ESC 로 모달 닫기
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') closeRuleModal();
-    });
-    // 모달 배경 클릭 시 닫기
-    document.getElementById('ruleModal').addEventListener('click', (e) => {
-        if (e.target.id === 'ruleModal') closeRuleModal();
-    });
 });
 </script>
 
