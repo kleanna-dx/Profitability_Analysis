@@ -1166,7 +1166,7 @@ export async function handleMemorySave({ query, activeDomain, conversationContex
       if (/"formula"|"sql"|"select "|"sum\(|"case when/i.test(rule_json_str.toLowerCase())) {
         return buildConversationalResponse({
           intent: 'memory_save',
-          answer: '⚠️ Metric 산식(계산식) 오버라이드는 개인 규칙으로 저장할 수 없습니다. 학습관리에서 처리해야 합니다.',
+          answer: '⚠️ 지표 계산식(예: 영업이익율 계산 방법)은 회사 전체가 공유하는 표준이라 개인 규칙으로 바꿀 수 없어요. 계산식 변경이 필요하면 학습관리 담당자에게 요청해 주세요.',
           referenced: [],
         });
       }

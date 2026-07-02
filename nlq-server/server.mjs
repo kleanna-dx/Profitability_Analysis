@@ -5419,7 +5419,7 @@ function _normalizeUserMemoryPayload(body) {
   if (rule_json) {
     const rjLower = rule_json.toLowerCase();
     if (/"formula"|"sql"|"select "|"sum\(|"case when/i.test(rjLower)) {
-      return { error: 'Metric 산식(계산식) 오버라이드는 개인 규칙으로 저장할 수 없습니다. 학습관리에 요청해 주세요.' };
+      return { error: '지표 계산식(예: 영업이익율 계산 방법)은 회사 공통 표준이라 개인 규칙으로 바꿀 수 없습니다. 계산식 변경이 필요하면 학습관리 담당자에게 요청해 주세요.' };
     }
   }
 
@@ -5536,7 +5536,7 @@ app.patch('/api/user-memory/:id', async (req, res) => {
           rj = JSON.stringify(body.rule_json);
         }
         if (/"formula"|"sql"|"select "|"sum\(|"case when/i.test(String(rj).toLowerCase())) {
-          return res.status(400).json({ error: 'Metric 산식(계산식) 오버라이드는 개인 규칙으로 저장할 수 없습니다.' });
+          return res.status(400).json({ error: '지표 계산식(예: 영업이익율 계산 방법)은 회사 공통 표준이라 개인 규칙으로 바꿀 수 없습니다. 계산식 변경이 필요하면 학습관리 담당자에게 요청해 주세요.' });
         }
       }
       updates.push('rule_json = ?'); params.push(rj);
