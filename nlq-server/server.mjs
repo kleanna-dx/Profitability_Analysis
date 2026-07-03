@@ -4168,20 +4168,63 @@ ${commonRules}
       console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady}, 모드: ${userQueryMode})`);
 
       // RAG 검색 상세 정보 수집
+      //   ★ ragContext 안에는 표준 카테고리(schema/ontology/metric/code_mapping/feedback/rule/join_condition)
+      //     외에도 type_groups({원가:[...]}), type_matched_spans([{start,end,matchedText,type}]) 같은
+      //     비표준 필드가 들어올 수 있음.
+      //     - type_groups: 객체 → arr.length undefined, 원소에 .text 없음
+      //     - type_matched_spans: 배열이지만 원소에 .text/.score 없음
+      //   → 배열 여부 + text/score 존재 여부를 방어적으로 체크해서 500 오류 방지.
       if (ragContext) {
+        // 방어적으로 배열만 카운트
+        const chunksUsed = Object.values(ragContext).reduce((s, arr) => {
+          return s + (Array.isArray(arr) ? arr.length : 0);
+        }, 0);
         ragInfo = {
           mode: 'rag',
-          chunksUsed: Object.values(ragContext).reduce((s, arr) => s + arr.length, 0),
+          chunksUsed,
           promptLength: systemPrompt.length,
           details: {},
         };
         for (const [cat, items] of Object.entries(ragContext)) {
-          if (items.length > 0) {
-            ragInfo.details[cat] = items.map(i => ({
-              text: i.text.substring(0, 80),
-              score: Math.round(i.score * 1000) / 1000,
-            }));
+          // 배열이 아닌 필드(type_groups 등)는 skip
+          if (!Array.isArray(items) || items.length === 0) continue;
+          // 각 원소도 text/score 없을 수 있으므로 방어적으로 처리
+          ragInfo.details[cat] = items.map(i => {
+            const rawText = (i && typeof i.text === 'string') ? i.text : String(i?.text ?? '');
+            const rawScore = (i && typeof i.score === 'number') ? i.score : 0;
+            return {
+              text: rawText.substring(0, 80),
+              score: Math.round(rawScore * 1000) / 1000,
+            };
+          });
+        }
+
+        // ★ 원가/비용 그룹 라우팅 로그 (requestId 기반 상세 추적)
+        //   detected_group_type, matched_columns, null_field_columns, selected_domain
+        if (ragContext.type_groups && Object.keys(ragContext.type_groups).length > 0) {
+          const groupTypes = Object.keys(ragContext.type_groups);
+          const allMatchedCols = [];
+          const nullFieldCols = [];
+          for (const gt of groupTypes) {
+            const cols = ragContext.type_groups[gt] || [];
+            for (const c of cols) {
+              allMatchedCols.push(c.column_name);
+              // 설명이 비어있는 컬럼 추적 (프롬프트 품질 저하 원인 진단용)
+              if (!c.description || String(c.description).trim() === '') {
+                nullFieldCols.push(`${c.column_name}(description)`);
+              }
+            }
           }
+          const matchedSpansSummary = (ragContext.type_matched_spans || [])
+            .map(s => s.matchedText).join(', ');
+          console.log(
+            `[RAG][${getCurrentRequestId() || 'no-req-id'}] 원가/비용 그룹 라우팅: ` +
+            `detected_group_type=[${groupTypes.join(',')}] ` +
+            `matched_spans=[${matchedSpansSummary}] ` +
+            `matched_columns=[${allMatchedCols.join(',')}] ` +
+            `null_field_columns=[${nullFieldCols.join(',') || 'none'}] ` +
+            `selected_domain=${activeDomain}`
+          );
         }
       }
 
