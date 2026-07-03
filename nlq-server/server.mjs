@@ -5318,30 +5318,61 @@ app.get('/api/ontology', requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// cost_type 정규화: '원가' | '비용' | null 만 반환
+function _normalizeCostType(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const s = String(v).trim();
+  if (s === '원가' || s === '비용') return s;
+  return null;
+}
+
 // 추가
 app.post('/api/ontology', requireAdmin, async (req, res) => {
   const { column_name, table_name, description, data_type } = req.body;
   const dc = req.body.domain_code || await getActiveDomain(req);
   if (!column_name) return res.status(400).json({ error: 'column_name 필수' });
+  const cost_type = _normalizeCostType(req.body.cost_type);
   try {
     const [r] = await pool.query(
-      'INSERT INTO ontology_column (domain_code, column_name, table_name, description, data_type) VALUES (?,?,?,?,?)',
-      [dc, column_name, table_name || 'bw_profitability_data', description || '', data_type || '']
+      'INSERT INTO ontology_column (domain_code, column_name, table_name, description, data_type, cost_type) VALUES (?,?,?,?,?,?)',
+      [dc, column_name, table_name || 'bw_profitability_data', description || '', data_type || '', cost_type]
     );
     // is_active 는 DB DEFAULT 1 로 자동 활성화됨
-    res.json({ id: r.insertId, domain_code: dc, column_name, table_name: table_name || 'bw_profitability_data', description, data_type, is_active: 1 });
+    res.json({ id: r.insertId, domain_code: dc, column_name, table_name: table_name || 'bw_profitability_data', description, data_type, cost_type, is_active: 1 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // 수정
 app.put('/api/ontology/:id', requireAdmin, async (req, res) => {
   const { column_name, table_name, description, data_type } = req.body;
+  // cost_type 이 body 에 포함된 경우에만 갱신 (undefined 면 기존값 유지)
+  const hasCostType = Object.prototype.hasOwnProperty.call(req.body, 'cost_type');
   try {
-    await pool.query(
-      'UPDATE ontology_column SET column_name=?, table_name=?, description=?, data_type=? WHERE id=?',
-      [column_name, table_name, description, data_type, req.params.id]
-    );
+    if (hasCostType) {
+      const cost_type = _normalizeCostType(req.body.cost_type);
+      await pool.query(
+        'UPDATE ontology_column SET column_name=?, table_name=?, description=?, data_type=?, cost_type=? WHERE id=?',
+        [column_name, table_name, description, data_type, cost_type, req.params.id]
+      );
+    } else {
+      await pool.query(
+        'UPDATE ontology_column SET column_name=?, table_name=?, description=?, data_type=? WHERE id=?',
+        [column_name, table_name, description, data_type, req.params.id]
+      );
+    }
     res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 원가/비용 구분 인라인 저장 (드롭다운 즉시 반영)
+// body: { cost_type: '원가' | '비용' | null | '' }
+app.patch('/api/ontology/:id/cost-type', requireAdmin, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const cost_type = _normalizeCostType(req.body?.cost_type);
+    await pool.query('UPDATE ontology_column SET cost_type=? WHERE id=?', [cost_type, id]);
+    // 프롬프트 빌드 시점에 매번 DB 조회하므로 RAG 재빌드 불필요.
+    res.json({ success: true, id: Number(id), cost_type });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -11386,6 +11417,23 @@ async function ensureBookmarkShareTables() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='쿼리 공유 테이블'
     `);
     console.log('[Migration] 북마크/공유 테이블 준비 완료');
+
+    // ============================================================
+    // ontology_column 에 cost_type (원가/비용 구분) 컬럼 추가
+    //   NULL  → 구분 없음 (기본)
+    //   '원가' → 원가 항목 (ZAMT006, ZAMT007, ...)
+    //   '비용' → 비용 항목 (ZAMT048, ZAMT049, ...)
+    // 자연어질의에서 "원가항목/비용항목" 키워드 매칭 시 그룹 컬럼 목록 노출.
+    // ============================================================
+    const [ctCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ontology_column' AND COLUMN_NAME = 'cost_type'`
+    );
+    if (ctCols.length === 0) {
+      await pool.query(`ALTER TABLE ontology_column ADD COLUMN cost_type VARCHAR(10) DEFAULT NULL COMMENT '원가/비용 구분 (원가|비용|NULL)' AFTER is_active`);
+      await pool.query(`CREATE INDEX idx_ontology_cost_type ON ontology_column(cost_type)`);
+      console.log('[Migration] ontology_column 에 cost_type 컬럼 추가 완료');
+    }
   } catch (e) {
     console.error('[Migration] 북마크/공유 마이그레이션 실패:', e.message);
   }

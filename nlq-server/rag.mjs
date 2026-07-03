@@ -355,7 +355,52 @@ async function searchRelevantMeta(pool, query, options = {}) {
 
   console.log(`[RAG] 검색 결과: schema=${result.schema.length}, ontology=${result.ontology.length}, metric=${result.metric.length}, code_mapping=${result.code_mapping.length}, feedback=${result.feedback.length}, rule=${result.rule.length}`);
 
+  // ============================================================
+  // 5. 원가/비용 항목 그룹 첨부 (결정적)
+  //   - 사용자 질문에 "원가항목/원가 항목/원가" 또는 "비용항목/비용 항목/비용"
+  //     키워드가 있으면 해당 그룹의 활성 컬럼 목록을 첨부.
+  //   - RAG topK 유사도 검색이 그룹의 일부 컬럼만 뽑아오는 문제를 방지.
+  // ============================================================
+  try {
+    const costTypes = _detectCostTypesInQuery(query);
+    if (costTypes.length > 0) {
+      const placeholders = costTypes.map(() => '?').join(',');
+      const params = [...costTypes];
+      let sql = `SELECT cost_type, column_name, description
+                 FROM ontology_column
+                 WHERE cost_type IN (${placeholders})
+                   AND is_active = 1`;
+      if (domainCode) {
+        sql += ` AND domain_code = ?`;
+        params.push(domainCode);
+      }
+      sql += ` ORDER BY cost_type, column_name`;
+      const [ctRows] = await pool.query(sql, params);
+      result.cost_groups = {};
+      for (const r of ctRows) {
+        if (!result.cost_groups[r.cost_type]) result.cost_groups[r.cost_type] = [];
+        result.cost_groups[r.cost_type].push({
+          column_name: r.column_name,
+          description: r.description || '',
+        });
+      }
+      console.log(`[RAG] 원가/비용 그룹 첨부: ${costTypes.join(',')} → ${ctRows.length}개 컬럼`);
+    }
+  } catch (e) {
+    console.warn('[RAG] 원가/비용 그룹 조회 실패 (무시):', e.message);
+  }
+
   return result;
+}
+
+// 사용자 질문에서 원가/비용 키워드 감지
+// 반환: ['원가'] | ['비용'] | ['원가', '비용'] | []
+function _detectCostTypesInQuery(query) {
+  if (!query || typeof query !== 'string') return [];
+  const types = [];
+  if (/원가\s*항목|원가/.test(query)) types.push('원가');
+  if (/비용\s*항목|비용/.test(query)) types.push('비용');
+  return types;
 }
 
 // ============================================================
@@ -405,6 +450,24 @@ function ragResultToPromptContext(ragResult) {
       ctx += `    SQL 표현식: ${sqlExpr}\n`;
     }
     ctx += `  ※ row-level 산식은 위 "SQL 표현식"을 그대로 사용하세요 (전체를 SUM()으로 감싼 형태). 컬럼별 SUM 분배 금지.\n`;
+  }
+
+  // 원가/비용 항목 그룹 (사용자 질문에 "원가항목/비용항목" 키워드가 있을 때만)
+  if (ragResult.cost_groups && Object.keys(ragResult.cost_groups).length > 0) {
+    for (const [ct, cols] of Object.entries(ragResult.cost_groups)) {
+      if (!cols || cols.length === 0) continue;
+      ctx += `\n[${ct} 항목 그룹 — "${ct}항목" 질의 시 대상 컬럼 목록]\n`;
+      for (const c of cols) {
+        ctx += `- ${c.column_name}: ${c.description || '(설명 없음)'}\n`;
+      }
+      ctx += `※ 사용자가 "${ct}항목 중 가장 큰 항목", "${ct}항목 TOP N" 같은 질문을 하면\n`;
+      ctx += `  위 컬럼들을 UNION ALL 로 SUM 하여 항목명(설명) 기준으로 비교하는 SQL 을 생성하세요.\n`;
+      ctx += `  결과의 '항목명' 컬럼에는 컬럼코드가 아니라 위의 설명(description) 을 사용하세요.\n`;
+      ctx += `  예시 구조:\n`;
+      ctx += `    SELECT '<설명1>' AS 항목명, SUM(<컬럼1>) AS 금액 FROM bw_profitability_data WHERE <필터> \n`;
+      ctx += `    UNION ALL SELECT '<설명2>' AS 항목명, SUM(<컬럼2>) AS 금액 FROM bw_profitability_data WHERE <필터>\n`;
+      ctx += `    ... ORDER BY 금액 DESC LIMIT N;\n`;
+    }
   }
 
   // 관련 코드매핑

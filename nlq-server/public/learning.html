@@ -478,6 +478,7 @@
                                     <th class="sort-th" data-sort-key="description" onclick="toggleOntologySort('description')" title="클릭하여 설명 기준 정렬"><i class="fas fa-sort" style="font-size:10px;margin-right:4px;opacity:.7;"></i>설명<span class="sort-ico" id="ontSortIco_description"><span class="arr arr-up">▲</span><span class="arr arr-down">▼</span></span></th>
                                     <th>데이터타입</th>
                                     <th style="width:90px;text-align:center;" title="비활성 컬럼은 자연어질의/비주얼쿼리빌더에 노출되지 않습니다.">활성</th>
+                                    <th style="width:120px;text-align:center;" title="원가/비용 항목 그룹. 자연어질의에서 '원가항목/비용항목' 질의 시 자동으로 대상 컬럼으로 선택됩니다.">원가/비용 구분</th>
                                     <th style="min-width:250px;">동의어</th>
                                     <th style="width:80px;">작업</th>
                                 </tr>
@@ -1291,11 +1292,11 @@ function renderOntology() {
         }
     }
     if (totalCount === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">등록된 Ontology 컬럼이 없습니다.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">등록된 Ontology 컬럼이 없습니다.</td></tr>';
         return;
     }
     if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-400 py-8">검색 결과가 없습니다. <button class="btn btn-outline btn-sm" style="margin-left:8px;" onclick="clearOntSearch()"><i class="fas fa-times"></i> 검색 해제</button></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">검색 결과가 없습니다. <button class="btn btn-outline btn-sm" style="margin-left:8px;" onclick="clearOntSearch()"><i class="fas fa-times"></i> 검색 해제</button></td></tr>';
         return;
     }
     tbody.innerHTML = rows.map((c, i) => {
@@ -1326,6 +1327,14 @@ function renderOntology() {
                     <span class="toggle-slider"></span>
                 </label>
                 <span class="toggle-label ${lblCls}" id="ont-lbl-${c.id}">${lblTxt}</span>
+            </td>
+            <td style="text-align:center;">
+                <select class="cost-type-select" onchange="updateCostType(${c.id}, this.value, this)" title="자연어질의 '원가항목/비용항목' 질의 시 자동 매칭됩니다."
+                        style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;background:#fff;cursor:pointer;min-width:76px;">
+                    <option value=""     ${(c.cost_type==null||c.cost_type==='')?'selected':''}>없음</option>
+                    <option value="원가" ${c.cost_type==='원가'?'selected':''}>원가</option>
+                    <option value="비용" ${c.cost_type==='비용'?'selected':''}>비용</option>
+                </select>
             </td>
             <td>
                 <div class="flex flex-wrap items-center gap-1">
@@ -1377,6 +1386,40 @@ async function toggleOntologyActive(id, checkboxEl) {
         checkboxEl.checked = !newVal;
     } finally {
         checkboxEl.disabled = false;
+    }
+}
+
+// 원가/비용 구분 인라인 저장 (드롭다운 즉시 반영)
+async function updateCostType(id, value, selectEl) {
+    const prev = selectEl.getAttribute('data-prev') || '';
+    // value: '' | '원가' | '비용'
+    selectEl.disabled = true;
+    try {
+        const res = await fetch('/api/ontology/' + id + '/cost-type', {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ cost_type: value || null })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || ('HTTP ' + res.status));
+        }
+        const data = await res.json();
+        const applied = data.cost_type == null ? '' : data.cost_type;
+        // 로컬 데이터 동기화
+        const item = ontologyData.find(x => x.id === id);
+        if (item) item.cost_type = applied || null;
+        selectEl.setAttribute('data-prev', applied);
+        // 시각적 피드백 (선택된 색상 잠깐 강조)
+        selectEl.style.background = applied ? '#eef2ff' : '#fff';
+        selectEl.style.borderColor = applied ? '#818cf8' : '#d1d5db';
+        setTimeout(() => { selectEl.style.transition = 'background .4s ease'; }, 0);
+    } catch (e) {
+        alert('원가/비용 구분 저장 실패: ' + e.message);
+        // 롤백
+        selectEl.value = prev;
+    } finally {
+        selectEl.disabled = false;
     }
 }
 
