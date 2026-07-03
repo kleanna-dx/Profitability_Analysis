@@ -422,7 +422,10 @@
                     <div class="flex items-center gap-3 flex-wrap">
                         <h2 class="text-sm font-bold text-gray-800">Ontology 관리</h2>
                         <span class="badge badge-blue" id="ontologyCount">0개</span>
-                        <!-- ★ Ontology 검색 영역 (전체 / 컬럼명 / 설명) -->
+                        <!-- ★ Ontology 검색 영역 (전체 / 컬럼명 / 설명 / 동의어)
+                             [2026-07-03] 사용자 요청: 검색 대상에 '동의어' 컬럼도 포함.
+                             예: '상품원가'는 설명이 아니라 동의어로 등록되어 있어 기존에는
+                             검색이 안 됐음. '전체' 스코프 선택 시 컬럼명 + 설명 + 동의어 모두 매칭. -->
                         <div class="ont-search-wrap" style="display:flex;gap:6px;align-items:center;">
                             <select id="ontSearchScope" onchange="onOntSearchChange()" style="
                                 padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;
@@ -431,9 +434,10 @@
                                 <option value="all">전체</option>
                                 <option value="column_name">컬럼명</option>
                                 <option value="description">설명</option>
+                                <option value="synonym">동의어</option>
                             </select>
                             <div style="position:relative;width:260px;">
-                                <input type="text" id="ontSearchInput" placeholder="검색어를 입력하세요 (부분 일치)" oninput="onOntSearchChange()" style="
+                                <input type="text" id="ontSearchInput" placeholder="컬럼명·설명·동의어 부분 일치 검색" oninput="onOntSearchChange()" style="
                                     width:100%;padding:6px 30px 6px 10px;border:1px solid #cbd5e1;border-radius:6px;
                                     font-size:13px;background:#fff;height:34px;box-sizing:border-box;
                                 "/>
@@ -784,7 +788,10 @@ let ontologyData = [];
 let ontologySortKey = null;   // 'column_name' | 'description' | null
 let ontologySortDir = null;   // 'asc' | 'desc' | null
 // Ontology 검색 상태
-let ontSearchScope = 'all';   // 'all' | 'column_name' | 'description'
+// [2026-07-03] 검색 대상에 '동의어' 추가 (사용자 요청)
+//   - 'all' 은 컬럼명 + 설명 + 동의어 를 모두 검색 대상으로 함
+//   - 'synonym' 은 동의어만 (여러 동의어 중 하나라도 매치되면 포함)
+let ontSearchScope = 'all';   // 'all' | 'column_name' | 'description' | 'synonym'
 let ontSearchTerm  = '';      // 사용자 입력 (trim된 소문자)
 let metricData = [];
 // Metric 정렬 상태: null/'asc'/'desc' 3단계 토글
@@ -1138,21 +1145,42 @@ function toggleOntologySort(key) {
 }
 
 // ============================================================
-// Ontology 검색 (LIKE %term% — 전체 / 컬럼명 / 설명)
+// Ontology 검색 (LIKE %term% — 전체 / 컬럼명 / 설명 / 동의어)
 // - 빈 검색어: 전체 목록 반환
-// - 대소문자 무시
+// - 대소문자 무시, 부분 일치 (LIKE %term%)
 // - 검색 후 결과에 정렬 적용 (검색·정렬·활성/비활성 호환)
+// [2026-07-03] 동의어 컬럼도 검색 대상에 포함
+//   - c.synonyms: [{id, text}, ...]  (DB 저장분)
+//   - pendingOntAdds: [{colId, text, tempId}, ...]  (미저장 추가분)
+//   - pendingOntDeletes: [synId, ...]  (미저장 삭제분 — 여전히 검색 대상에 포함:
+//     삭제 예정이라도 UI에는 아직 표시되고 있으므로 검색 결과에도 노출해야 자연스러움)
+//   - 여러 동의어 중 하나라도 term 을 포함하면 매칭 (some)
 // ============================================================
 function getFilteredOntologyData() {
     const term = (ontSearchTerm || '').trim().toLowerCase();
     if (!term) return ontologyData;
+    // 특정 컬럼(c)의 동의어 텍스트 목록 수집 (저장분 + 미저장 추가분)
+    //   - 미저장 추가분은 사용자가 방금 입력한 것으로, 검색 대상에 포함해야 즉시 찾아짐
+    //   - 미저장 삭제분은 화면에 여전히 (취소소선 표시로) 남아있으므로 포함
+    const collectSynTexts = (c) => {
+        const saved = Array.isArray(c.synonyms) ? c.synonyms.map(s => (s && s.text) || '') : [];
+        const pending = pendingOntAdds
+            .filter(p => p && p.colId === c.id)
+            .map(p => p.text || '');
+        return saved.concat(pending);
+    };
+    const matchSynonym = (c) => {
+        const list = collectSynTexts(c);
+        return list.some(t => t && t.toString().toLowerCase().includes(term));
+    };
     return ontologyData.filter(c => {
         const col  = (c.column_name || '').toString().toLowerCase();
         const desc = (c.description || '').toString().toLowerCase();
         if (ontSearchScope === 'column_name') return col.includes(term);
         if (ontSearchScope === 'description') return desc.includes(term);
-        // 'all'
-        return col.includes(term) || desc.includes(term);
+        if (ontSearchScope === 'synonym')     return matchSynonym(c);
+        // 'all' — 컬럼명 + 설명 + 동의어 모두 대상
+        return col.includes(term) || desc.includes(term) || matchSynonym(c);
     });
 }
 
@@ -1283,6 +1311,7 @@ function renderOntology() {
         if (isFiltering) {
             const scopeLabel = ontSearchScope === 'column_name' ? '컬럼명'
                              : ontSearchScope === 'description' ? '설명'
+                             : ontSearchScope === 'synonym'     ? '동의어'
                              : '전체';
             infoEl.innerHTML = `<i class="fas fa-filter" style="margin-right:4px;color:#3b82f6;"></i>${scopeLabel} 검색: <b>${rows.length}</b>건 (전체 ${totalCount}건 중)`;
             infoEl.style.display = 'inline-block';
