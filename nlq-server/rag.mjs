@@ -362,29 +362,29 @@ async function searchRelevantMeta(pool, query, options = {}) {
   //   - RAG topK 유사도 검색이 그룹의 일부 컬럼만 뽑아오는 문제를 방지.
   // ============================================================
   try {
-    const costTypes = _detectCostTypesInQuery(query);
-    if (costTypes.length > 0) {
-      const placeholders = costTypes.map(() => '?').join(',');
-      const params = [...costTypes];
-      let sql = `SELECT cost_type, column_name, description
+    const types = _detectTypesInQuery(query);
+    if (types.length > 0) {
+      const placeholders = types.map(() => '?').join(',');
+      const params = [...types];
+      let sql = `SELECT type, column_name, description
                  FROM ontology_column
-                 WHERE cost_type IN (${placeholders})
+                 WHERE type IN (${placeholders})
                    AND is_active = 1`;
       if (domainCode) {
         sql += ` AND domain_code = ?`;
         params.push(domainCode);
       }
-      sql += ` ORDER BY cost_type, column_name`;
-      const [ctRows] = await pool.query(sql, params);
-      result.cost_groups = {};
-      for (const r of ctRows) {
-        if (!result.cost_groups[r.cost_type]) result.cost_groups[r.cost_type] = [];
-        result.cost_groups[r.cost_type].push({
+      sql += ` ORDER BY type, column_name`;
+      const [typeRows] = await pool.query(sql, params);
+      result.type_groups = {};
+      for (const r of typeRows) {
+        if (!result.type_groups[r.type]) result.type_groups[r.type] = [];
+        result.type_groups[r.type].push({
           column_name: r.column_name,
           description: r.description || '',
         });
       }
-      console.log(`[RAG] 원가/비용 그룹 첨부: ${costTypes.join(',')} → ${ctRows.length}개 컬럼`);
+      console.log(`[RAG] 원가/비용 그룹 첨부: ${types.join(',')} → ${typeRows.length}개 컬럼`);
     }
   } catch (e) {
     console.warn('[RAG] 원가/비용 그룹 조회 실패 (무시):', e.message);
@@ -395,7 +395,7 @@ async function searchRelevantMeta(pool, query, options = {}) {
 
 // 사용자 질문에서 원가/비용 키워드 감지
 // 반환: ['원가'] | ['비용'] | ['원가', '비용'] | []
-function _detectCostTypesInQuery(query) {
+function _detectTypesInQuery(query) {
   if (!query || typeof query !== 'string') return [];
   const types = [];
   if (/원가\s*항목|원가/.test(query)) types.push('원가');
@@ -453,8 +453,8 @@ function ragResultToPromptContext(ragResult) {
   }
 
   // 원가/비용 항목 그룹 (사용자 질문에 "원가항목/비용항목" 키워드가 있을 때만)
-  if (ragResult.cost_groups && Object.keys(ragResult.cost_groups).length > 0) {
-    for (const [ct, cols] of Object.entries(ragResult.cost_groups)) {
+  if (ragResult.type_groups && Object.keys(ragResult.type_groups).length > 0) {
+    for (const [ct, cols] of Object.entries(ragResult.type_groups)) {
       if (!cols || cols.length === 0) continue;
       ctx += `\n[${ct} 항목 그룹 — "${ct}항목" 질의 시 대상 컬럼 목록]\n`;
       for (const c of cols) {

@@ -1329,11 +1329,11 @@ function renderOntology() {
                 <span class="toggle-label ${lblCls}" id="ont-lbl-${c.id}">${lblTxt}</span>
             </td>
             <td style="text-align:center;">
-                <select class="cost-type-select" onchange="updateCostType(${c.id}, this.value, this)" title="자연어질의 '원가항목/비용항목' 질의 시 자동 매칭됩니다."
+                <select class="type-select" onchange="updateType(${c.id}, this.value, this)" title="자연어질의 '원가항목/비용항목' 질의 시 자동 매칭됩니다."
                         style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;background:#fff;cursor:pointer;min-width:76px;">
-                    <option value=""     ${(c.cost_type==null||c.cost_type==='')?'selected':''}>없음</option>
-                    <option value="원가" ${c.cost_type==='원가'?'selected':''}>원가</option>
-                    <option value="비용" ${c.cost_type==='비용'?'selected':''}>비용</option>
+                    <option value=""     ${(c.type==null||c.type==='')?'selected':''}>없음</option>
+                    <option value="원가" ${c.type==='원가'?'selected':''}>원가</option>
+                    <option value="비용" ${c.type==='비용'?'selected':''}>비용</option>
                 </select>
             </td>
             <td>
@@ -1390,25 +1390,25 @@ async function toggleOntologyActive(id, checkboxEl) {
 }
 
 // 원가/비용 구분 인라인 저장 (드롭다운 즉시 반영)
-async function updateCostType(id, value, selectEl) {
+async function updateType(id, value, selectEl) {
     const prev = selectEl.getAttribute('data-prev') || '';
     // value: '' | '원가' | '비용'
     selectEl.disabled = true;
     try {
-        const res = await fetch('/api/ontology/' + id + '/cost-type', {
+        const res = await fetch('/api/ontology/' + id + '/type', {
             method: 'PATCH',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ cost_type: value || null })
+            body: JSON.stringify({ type: value || null })
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.error || ('HTTP ' + res.status));
         }
         const data = await res.json();
-        const applied = data.cost_type == null ? '' : data.cost_type;
+        const applied = data.type == null ? '' : data.type;
         // 로컬 데이터 동기화
         const item = ontologyData.find(x => x.id === id);
-        if (item) item.cost_type = applied || null;
+        if (item) item.type = applied || null;
         selectEl.setAttribute('data-prev', applied);
         // 시각적 피드백 (선택된 색상 잠깐 강조)
         selectEl.style.background = applied ? '#eef2ff' : '#fff';
