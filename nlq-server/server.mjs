@@ -1348,9 +1348,11 @@ COUNTRY_NM   | VARCHAR(100)  | 국가 명
 BIC_ZKUNN2       | VARCHAR(20)   | 영업사원 코드
 BIC_ZKUNN2_NM    | VARCHAR(100) | 영업사원 명
 CUSTOMER     | VARCHAR(20)   | 고객 코드
-CUSTOMER_NM  | VARCHAR(100)  | 고객 명
+CUSTOMER_NM  | VARCHAR(100)  | 고객 명 (⚠️ WHERE 조건 시 REPLACE(CUSTOMER_NM,' ','') LIKE '%공백제거값%' 형태 필수)
 MATERIAL     | VARCHAR(30)   | 자재 코드 (예: FRT-NEE0004A)
 MATERIAL_NM  | VARCHAR(100)  | 자재 명 (예: 깨끗한나라 2겹 화장지 45m 18롤)
+                              ⚠️ DB 저장값에 공백 포함 — WHERE 조건 시 반드시
+                                 REPLACE(MATERIAL_NM,' ','') LIKE '%공백제거값%' 형태로 작성
 
 -- 수량 단위 --
 BIC_ZBOXUNIT     | VARCHAR(5)    | BOX단위
@@ -1510,6 +1512,37 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 
 ■ SELECT/GROUP BY 목적으로는 DIVISION_NM 을 사용해도 됨 (표시용).
   단, WHERE 조건에서는 사용 금지.
+
+[★★★★★ 자재명/고객명 공백 무시 검색 규칙 (Name Search Rule) — 최상위 우선순위 ★★★★★]
+
+🚨 MATERIAL_NM (자재명), CUSTOMER_NM (고객명) 컬럼을 WHERE 조건으로 사용할 때는
+   **반드시 REPLACE(컬럼, ' ', '') 로 공백을 제거한 뒤 비교** 하세요.
+
+■ 이유:
+  DB 저장 값은 공백을 포함하는 경우가 많지만 (예: "깨끗한나라 순수소프티 100매"),
+  사용자는 공백 없이 입력하는 경우가 흔합니다 (예: "순수소프티100매").
+  일반 LIKE 로는 매칭이 실패하므로 양쪽 모두 공백을 제거한 기준으로 비교해야 함.
+
+■ 정답 패턴 (반드시 사용):
+  ✓ WHERE REPLACE(MATERIAL_NM, ' ', '') LIKE '%순수소프티100매%'
+  ✓ WHERE REPLACE(CUSTOMER_NM, ' ', '') LIKE '%메디프렌즈%'
+  ✓ WHERE REPLACE(MATERIAL_NM, ' ', '') = '깨끗한나라순수소프티100매'
+  ✓ WHERE REPLACE(x.MATERIAL_NM, ' ', '') LIKE '%값%'   (alias 도 동일)
+
+■ 절대 금지 패턴 (자동 교정 후처리 대상):
+  ✗ WHERE MATERIAL_NM LIKE '%순수소프티100매%'    ← DB 값에 공백 있으면 0건
+  ✗ WHERE CUSTOMER_NM LIKE '%메디프렌즈%'         ← 동일
+  ✗ WHERE MATERIAL_NM = '순수소프티 100매'        ← 사용자 입력에 공백 위치 다르면 0건
+
+■ 리터럴 값 정규화:
+  사용자 입력의 공백은 **모두 제거한 값을 리터럴로** 넣으세요.
+  예) 사용자: "순수소프티 100매" → 리터럴: '순수소프티100매'
+       사용자: "메디 프렌즈"     → 리터럴: '메디프렌즈'
+
+■ 적용 범위:
+  - MATERIAL_NM, CUSTOMER_NM 두 컬럼에만 적용 (다른 _NM 컬럼은 대상 아님)
+  - =, <>, !=, LIKE, NOT LIKE 모두 동일 규칙
+  - SELECT / GROUP BY / ORDER BY 목적으로는 원본 컬럼 그대로 사용 (표시용은 REPLACE 감쌈 불필요)
 
 [★★★ 최우선 규칙 — 컬럼명 사용 (절대 위반 금지) ★★★]
 
@@ -3437,7 +3470,43 @@ function applyDomainFilter(inputSql, domainCode) {
   // WHERE 절이 있는지 검사. 첫 번째 WHERE의 기존 조건을 괄호로 감싸고
   // 앞에 DIVISION = '<val>' AND 를 삽입.
   // WHERE의 종료 지점은 GROUP BY / HAVING / ORDER BY / LIMIT / UNION / 서브쿼리 끝 ')' / 세미콜론 / SQL 끝
-  const whereTerminator = /(\bGROUP\s+BY\b|\bHAVING\b|\bORDER\s+BY\b|\bLIMIT\b|\bUNION\b|\)|;|$)/i;
+  //
+  // ★ 괄호/문자열 리터럴을 고려한 안전한 종료 지점 탐색 (2026-07-03 버그픽스):
+  //   - 단순 정규식 /\)|;|$/ 은 REPLACE(MATERIAL_NM, ' ', '') 같은 함수 호출 안의 ')' 를
+  //     WHERE 종료로 잘못 인식하는 문제가 있음.
+  //   - 이를 방지하기 위해 문자열 밖 & 괄호 뎁스 0 에서만 종료 토큰을 인식하도록 수동 스캔.
+  const whereEndKeywords = /^(GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION)\b/i;
+  function findWhereEnd(rest) {
+    let depth = 0;
+    let inStr = false;
+    let strCh = null;
+    for (let i = 0; i < rest.length; i++) {
+      const ch = rest[i];
+      if (inStr) {
+        // 문자열 리터럴 종료 (기본 SQL: '' 이스케이프, 여기선 단순 매칭)
+        if (ch === strCh) {
+          // 연속 두 개는 이스케이프
+          if (rest[i + 1] === strCh) { i++; continue; }
+          inStr = false;
+          strCh = null;
+        }
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        inStr = true; strCh = ch; continue;
+      }
+      if (ch === '(') { depth++; continue; }
+      if (ch === ')') {
+        if (depth === 0) return i;   // 서브쿼리 종료 ')'
+        depth--; continue;
+      }
+      if (depth !== 0) continue;
+      if (ch === ';') return i;
+      // 키워드 검사 (뎁스 0 에서만)
+      if (whereEndKeywords.test(rest.slice(i))) return i;
+    }
+    return -1;
+  }
   const whereRegex = /\bWHERE\b\s+/i;
   const whereMatch = whereRegex.exec(inputSql);
 
@@ -3445,13 +3514,12 @@ function applyDomainFilter(inputSql, domainCode) {
   if (whereMatch) {
     const before = inputSql.slice(0, whereMatch.index + whereMatch[0].length);
     const rest = inputSql.slice(whereMatch.index + whereMatch[0].length);
-    // rest 안에서 WHERE 종료 지점을 찾는다
-    whereTerminator.lastIndex = 0;
-    const termMatch = whereTerminator.exec(rest);
+    // rest 안에서 WHERE 종료 지점을 찾는다 (괄호/문자열 인식)
+    const endIdx = findWhereEnd(rest);
     let cond, tail;
-    if (termMatch && termMatch[0]) {
-      cond = rest.slice(0, termMatch.index).trim();
-      tail = rest.slice(termMatch.index);
+    if (endIdx >= 0) {
+      cond = rest.slice(0, endIdx).trim();
+      tail = rest.slice(endIdx);
     } else {
       cond = rest.trim();
       tail = '';
@@ -3478,13 +3546,13 @@ function applyDomainFilter(inputSql, domainCode) {
     const before = inputSql.slice(0, insertPos);
     const rest = inputSql.slice(insertPos);
     // rest의 첫 토큰이 GROUP/HAVING/ORDER/LIMIT/UNION/세미콜론/끝이면 그 앞에 WHERE 삽입
-    whereTerminator.lastIndex = 0;
-    const termMatch = whereTerminator.exec(rest);
-    if (termMatch && termMatch.index > 0) {
-      const head = rest.slice(0, termMatch.index);
-      const tail = rest.slice(termMatch.index);
+    // (findWhereEnd 를 재사용 — 괄호/문자열 인식)
+    const endIdx = findWhereEnd(rest);
+    if (endIdx > 0) {
+      const head = rest.slice(0, endIdx);
+      const tail = rest.slice(endIdx);
       result = `${before}${head} WHERE DIVISION = '${targetDivision}' ${tail}`;
-    } else if (termMatch && termMatch.index === 0) {
+    } else if (endIdx === 0) {
       // 바로 다음에 절이 오는 경우 (예: FROM bw_profitability_data ORDER BY ...)
       result = `${before} WHERE DIVISION = '${targetDivision}' ${rest}`;
     } else {
@@ -3663,6 +3731,96 @@ function applyDivisionFromQuery(inputSql, query) {
     console.log(`[NLQ] 질의 텍스트 기반 DIVISION 강제 주입: "${det.matchedText}" → DIVISION='${det.division}'`);
   }
   return injected;
+}
+
+// ============================================================
+// [★★★ 자재명/고객명 공백 무시 검색 규칙 (2026-07-03) ★★★]
+//   - DB 저장 값: "깨끗한나라 순수소프티 100매" (공백 포함)
+//   - 사용자 입력: "순수소프티100매" (공백 없이)
+//     → 일반 LIKE 로는 매칭 실패
+//   - 정책: MATERIAL_NM / CUSTOMER_NM 컬럼의 =, LIKE 비교 시
+//     양쪽(컬럼값과 검색 리터럴) 모두 공백을 제거한 뒤 비교
+//         REPLACE(MATERIAL_NM, ' ', '') LIKE '%공백제거값%'
+//   - 다른 컬럼(예: DIVISION_NM)에는 적용 안 함 (안전)
+//   - 이미 REPLACE 로 감싸진 조건은 중복 처리하지 않음 (멱등성)
+// ============================================================
+
+/**
+ * SQL 후처리: MATERIAL_NM / CUSTOMER_NM 을 대상으로 하는
+ *   =, <>, !=, LIKE, NOT LIKE 조건을 REPLACE(컬럼, ' ', '') 형태로 변환.
+ *
+ * 처리 케이스 (case-insensitive, 컬럼명은 별칭 포함):
+ *   1) MATERIAL_NM LIKE '%X%'                → REPLACE(MATERIAL_NM,' ','') LIKE '%X_공백제거%'
+ *   2) x.MATERIAL_NM LIKE '%X%'              → REPLACE(x.MATERIAL_NM,' ','') LIKE '%X_공백제거%'
+ *   3) MATERIAL_NM NOT LIKE '%X%'            → REPLACE(MATERIAL_NM,' ','') NOT LIKE '%X_공백제거%'
+ *   4) MATERIAL_NM = 'X'                     → REPLACE(MATERIAL_NM,' ','') = 'X_공백제거'
+ *   5) MATERIAL_NM <> 'X' / !=               → REPLACE(MATERIAL_NM,' ','') <> 'X_공백제거'
+ *   6) CUSTOMER_NM 도 동일하게 처리
+ *
+ * 처리하지 않는 케이스 (안전):
+ *   - 이미 REPLACE(MATERIAL_NM, ...) 로 감싸진 조건
+ *   - IN / IS NULL / IS NOT NULL
+ *   - 서브쿼리 참조
+ *
+ * @param {string} inputSql
+ * @returns {string}
+ */
+function normalizeNameSearchFilter(inputSql) {
+  if (!inputSql || typeof inputSql !== 'string') return inputSql;
+  let s = inputSql;
+  const rewrites = [];
+
+  const TARGET_COLS = ['MATERIAL_NM', 'CUSTOMER_NM'];
+
+  for (const col of TARGET_COLS) {
+    // 대상 컬럼 참조: 앞에 옵션 alias("t." 등) 허용, 앞뒤 단어경계 필요.
+    //   또한 이미 REPLACE(...) 안에 들어있으면 처리 안 함 (negative lookbehind로 배제)
+    //   MySQL/MariaDB 는 함수명 대소문자 무시 → REPLACE/replace 모두 스킵
+    //   정규식:
+    //     - 앞: "REPLACE(" 나 " REPLACE ( " 로 감싸진 상태가 아니어야 함
+    //     - 컬럼: (알파벳_)*.MATERIAL_NM  또는  MATERIAL_NM  (대소문자 무시)
+    //     - 뒤 공백 후: LIKE | NOT LIKE | = | <> | != 중 하나
+    //     - 그 뒤 리터럴: '...' 또는 "..."
+    //   ※ 사용자가 쓴 원본 컬럼명 (대소문자) 은 그대로 유지해 SQL 가독성 보존
+    //
+    // step 1) LIKE / NOT LIKE
+    {
+      // group1: 옵션 alias ("x." 등)
+      // group2: 실제 매치된 컬럼명 (원본 그대로 보존)
+      const likeRe = new RegExp(
+        `(?<!\\bREPLACE\\s*\\(\\s*)((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)\\b(${col})\\b` +
+        `\\s+(NOT\\s+)?LIKE\\s+(['"])([^'"]*)\\4`,
+        'gi'
+      );
+      s = s.replace(likeRe, (m, alias, colMatched, notWord, quote, val) => {
+        const stripped = val.replace(/\s+/g, '');
+        const notStr = notWord ? 'NOT ' : '';
+        const colRef = `${alias || ''}${colMatched}`;
+        rewrites.push(`${m} → REPLACE(${colRef},' ','') ${notStr}LIKE ${quote}${stripped}${quote}`);
+        return `REPLACE(${colRef}, ' ', '') ${notStr}LIKE ${quote}${stripped}${quote}`;
+      });
+    }
+
+    // step 2) =, <>, !=
+    {
+      const eqRe = new RegExp(
+        `(?<!\\bREPLACE\\s*\\(\\s*)((?:[A-Za-z_][A-Za-z0-9_]*\\.)?)\\b(${col})\\b` +
+        `\\s*(=|<>|!=)\\s*(['"])([^'"]*)\\4`,
+        'gi'
+      );
+      s = s.replace(eqRe, (m, alias, colMatched, op, quote, val) => {
+        const stripped = val.replace(/\s+/g, '');
+        const colRef = `${alias || ''}${colMatched}`;
+        rewrites.push(`${m} → REPLACE(${colRef},' ','') ${op} ${quote}${stripped}${quote}`);
+        return `REPLACE(${colRef}, ' ', '') ${op} ${quote}${stripped}${quote}`;
+      });
+    }
+  }
+
+  if (rewrites.length > 0) {
+    console.log(`[NLQ] 자재명/고객명 공백 무시 검색 자동 변환: ${rewrites.join(' | ')}`);
+  }
+  return s;
 }
 
 // ============================================================
@@ -4537,10 +4695,13 @@ ${commonRules}
     //   3) applyDomainFilter: 현재 선택 도메인(PS/HL) 기준 DIVISION 주입 (MGMT 는 no-op)
     //   4) applyDivisionFromQuery: MGMT 상태에서도 질의에 HL/PS 언급이 있으면 강제 주입
     //      (PS/HL 도메인에서는 이미 3)에서 주입되었으므로 no-op)
+    //   5) normalizeNameSearchFilter: MATERIAL_NM / CUSTOMER_NM LIKE 조건을
+    //      REPLACE(col,' ','') LIKE '%공백제거값%' 형태로 변환 (공백 무시 검색)
     sql = normalizeDivisionFilter(sql);
     sql = scrubDivisionFilter(sql);
     sql = applyDomainFilter(sql, activeDomain);
     sql = applyDivisionFromQuery(sql, query);
+    sql = normalizeNameSearchFilter(sql);
     // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
     const sqlUpper = sql.toUpperCase().trim();
@@ -4603,10 +4764,11 @@ ${sqlValidation.reason}
         const retryParsed = JSON.parse(retryRaw);
         if (retryParsed.sql) {
           sql = await applyMetricFormulaReplacement(retryParsed.sql, activeDomain);
-          // ★ 재생성 경로에도 사업부 명칭 고정 매핑 적용 (동일 로직)
+          // ★ 재생성 경로에도 사업부 명칭 고정 매핑 + 자재명/고객명 공백 무시 규칙 적용
           sql = normalizeDivisionFilter(sql);
           sql = applyDomainFilter(sql, activeDomain);
           sql = applyDivisionFromQuery(sql, query);
+          sql = normalizeNameSearchFilter(sql);
           // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
           // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
           const reval = validateSqlPreExecution(sql);
@@ -8538,6 +8700,8 @@ app.post('/api/builder/query', async (req, res) => {
       sql = normalizeDivisionFilter(sql);
       sql = scrubDivisionFilter(sql);
       sql = applyDomainFilter(sql, activeDomainForBuilder);
+      // ★ 자재명/고객명 공백 무시 검색 (MATERIAL_NM / CUSTOMER_NM)
+      sql = normalizeNameSearchFilter(sql);
       if (sql !== sqlBefore) {
         console.log(`[Builder] 도메인 필터 적용: domain=${activeDomainForBuilder}`);
       }
