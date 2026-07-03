@@ -508,19 +508,28 @@ function ragResultToPromptContext(ragResult) {
     ctx += `  - 결과 '항목명' 컬럼에는 컬럼코드(ZAMT049)가 아니라 설명(description, 예: "소모품비") 을 사용하세요.\n`;
 
     for (const [ct, cols] of Object.entries(ragResult.type_groups)) {
-      if (!cols || cols.length === 0) continue;
+      if (!Array.isArray(cols) || cols.length === 0) continue;
       ctx += `\n[${ct} 항목 그룹 — 대상 컬럼 목록 (${cols.length}개)]\n`;
       for (const c of cols) {
-        ctx += `- ${c.column_name}: ${c.description || '(설명 없음)'}\n`;
+        // 방어적: column_name/description 이 null/undefined 여도 안전
+        const cn = (c && c.column_name) ? String(c.column_name) : '(unknown)';
+        const desc = (c && c.description != null && String(c.description).trim() !== '')
+          ? String(c.description)
+          : cn; // 설명이 없으면 컬럼코드로 fallback (요구사항 6번)
+        ctx += `- ${cn}: ${desc}\n`;
       }
     }
 
     ctx += `\n📝 예시 SQL 구조 (그룹 조회):\n`;
-    ctx += `  SELECT '<설명1>' AS 항목명, SUM(<컬럼1>) AS 금액 FROM bw_profitability_data WHERE <필터>\n`;
+    ctx += `  SELECT '<설명1 또는 컬럼코드>' AS 항목명, SUM(COALESCE(<컬럼1>, 0)) AS 금액\n`;
+    ctx += `    FROM bw_profitability_data WHERE <필터>\n`;
     ctx += `  UNION ALL\n`;
-    ctx += `  SELECT '<설명2>' AS 항목명, SUM(<컬럼2>) AS 금액 FROM bw_profitability_data WHERE <필터>\n`;
+    ctx += `  SELECT '<설명2 또는 컬럼코드>' AS 항목명, SUM(COALESCE(<컬럼2>, 0)) AS 금액\n`;
+    ctx += `    FROM bw_profitability_data WHERE <필터>\n`;
     ctx += `  ...\n`;
     ctx += `  ORDER BY 금액 DESC LIMIT N;\n`;
+    ctx += `\n  ⚠️ 각 컬럼은 NULL 이 포함될 수 있으므로 반드시 SUM(COALESCE(컬럼, 0)) 형태로 감싸세요.\n`;
+    ctx += `  ⚠️ 항목명(설명)에는 위 목록의 "설명" 을 사용하고, 설명이 비어있으면 컬럼코드를 그대로 넣으세요.\n`;
     ctx += `\n💡 반대로, 사용자가 "매출원가", "상품원가", "제조원가" 같은 특정 지표명을 명시했다면\n`;
     ctx += `   이 그룹이 아니라 [관련 컬럼 정보] 또는 [관련 Metric] 섹션의 개별 지표를 사용하세요.\n`;
   }
