@@ -1303,8 +1303,8 @@ CO_AREA      | VARCHAR(10)   | 관리회계 영역 (예: A100)
 CO_AREA_NM   | VARCHAR(100)  | 관리회계 영역명
 PROFIT_CTR   | VARCHAR(20)   | 손익 센터 (10자리, 선행0 포함. 예: 0000002000=제지사업부, 0000001000=생활용품사업부)
 PROFIT_CTR_NM| VARCHAR(100)  | 손익센터명
-DIVISION     | VARCHAR(5)    | 제품군 코드 (예: 10=PS, 20=HL)
-DIVISION_NM  | VARCHAR(100)  | 제품군명
+DIVISION     | VARCHAR(5)    | 사업부/제품군 코드 (반드시 이 코드로 필터: 10=PS(페이퍼솔루션), 20=HL(홈앤라이프))
+DIVISION_NM  | VARCHAR(100)  | 사업부/제품군명 (⚠️ 배포 환경별로 값이 다를 수 있어 필터에 사용 금지 — 반드시 DIVISION 코드 사용)
 PLANT        | VARCHAR(10)   | 플랜트 코드 (예: P100, P200, P300, P400, P500)
 PLANT_NM     | VARCHAR(100)  | 플랜트명
 DISTR_CHAN   | VARCHAR(5)    | 유통 경로 코드 (예: 10=내수, 20=로컬, 30=수출)
@@ -1481,6 +1481,35 @@ async function getDataDateContext() {
 // 핵심 규칙만 포함한 경량 기본 프롬프트 (RAG 컨텍스트가 동적으로 추가됨)
 const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문가입니다.
 사용자의 자연어 질문을 MariaDB SQL로 변환합니다.
+
+[★★★★★ 사업부 필터 절대 규칙 (Division Filter Rule) — 최상위 우선순위 ★★★★★]
+
+🚨 사업부 필터는 **반드시 DIVISION 코드** 를 사용하세요. DIVISION_NM 은 절대 사용 금지!
+
+■ 고정 매핑 규칙:
+  - "PS" / "ps" / "PS사업부" / "PS 사업부" / "페이퍼솔루션" / "페이퍼솔루션 사업부" → DIVISION = '10'
+  - "HL" / "hl" / "HL사업부" / "HL 사업부" / "홈앤라이프" / "홈앤라이프 사업부"    → DIVISION = '20'
+
+■ 절대 금지 패턴 (사용 시 자동 교정 후처리 대상):
+  ✗ DIVISION_NM = 'HL'
+  ✗ DIVISION_NM = 'PS'
+  ✗ DIVISION_NM = '홈앤라이프'
+  ✗ DIVISION_NM = '페이퍼솔루션'
+  ✗ DIVISION_NM LIKE '%HL%'
+  ✗ DIVISION_NM LIKE '%PS%'
+  ✗ DIVISION_NM LIKE '%홈앤라이프%'
+  ✗ DIVISION_NM LIKE '%페이퍼솔루션%'
+
+■ 정답 패턴:
+  ✓ WHERE DIVISION = '10'  ← "PS", "페이퍼솔루션", "페이퍼솔루션 사업부"
+  ✓ WHERE DIVISION = '20'  ← "HL", "홈앤라이프", "홈앤라이프 사업부"
+
+■ 이유:
+  DIVISION_NM 은 배포 환경/시점에 따라 저장 값이 다를 수 있음 (예: 'HL' vs '홈앤라이프').
+  DIVISION 코드는 절대 변경되지 않는 표준값이므로 필터 조건은 반드시 코드로 작성.
+
+■ SELECT/GROUP BY 목적으로는 DIVISION_NM 을 사용해도 됨 (표시용).
+  단, WHERE 조건에서는 사용 금지.
 
 [★★★ 최우선 규칙 — 컬럼명 사용 (절대 위반 금지) ★★★]
 
@@ -3470,6 +3499,173 @@ function applyDomainFilter(inputSql, domainCode) {
 }
 
 // ============================================================
+// [★★★ 사업부 명칭 고정 매핑 규칙 (2026-07-03) ★★★]
+//   - DB 저장 값이 배포 환경별로 다를 수 있음:
+//       'PS'/'HL' (샌드박스)  vs  '페이퍼솔루션'/'홈앤라이프' (운영)
+//   - LLM 은 흔히 사용자가 쓴 표현 그대로 DIVISION_NM='HL' 같은 조건을 만드는데,
+//     실제 DB DIVISION_NM 이 다른 값이면 결과가 0건이 됨.
+//   - 정책: 사업부 필터는 항상 **DIVISION 코드** 로 표준화 (환경 무관하게 정상 동작)
+//       PS/페이퍼솔루션/PS사업부 → DIVISION = '10'
+//       HL/홈앤라이프/HL사업부   → DIVISION = '20'
+// ============================================================
+
+/**
+ * 사용자 질의에서 HL/PS 사업부 언급을 감지.
+ *   포괄 표현 - 지원되는 별칭:
+ *     PS 계열: 'PS', 'ps', 'PS사업부', 'PS 사업부', '페이퍼솔루션', '페이퍼솔루션 사업부'
+ *     HL 계열: 'HL', 'hl', 'HL사업부', 'HL 사업부', '홈앤라이프', '홈앤라이프 사업부'
+ *
+ *   ★ 오탐 방지:
+ *     - PS/HL 은 대문자 단독 토큰일 때만 매칭 (한글/영숫자 뒤에 붙은 부분 문자열 제외)
+ *       (예: "APS" / "HELP" / "psi" 는 매칭 안 됨)
+ *     - '페이퍼솔루션'/'홈앤라이프' 는 한글이므로 앞뒤 한글 아닐 때만 (여기선 완전 별칭)
+ *
+ * @param {string} query 자연어 질의
+ * @returns {{division: '10'|'20'|null, divisionCode: 'PS'|'HL'|null, matchedText: string|null}}
+ */
+function detectDivisionInQuery(query) {
+  if (!query || typeof query !== 'string') {
+    return { division: null, divisionCode: null, matchedText: null };
+  }
+
+  // 한글 포괄 표현 (가장 명확)
+  //   앞: 한글이 아니거나 문자열 시작
+  //   뒤: 문장부호/공백/조사/사업부/기타 표현 허용
+  const HL_KOR = /(?<![가-힣])홈앤라이프(?:\s*사업부)?(?![가-힣])/;
+  const PS_KOR = /(?<![가-힣])페이퍼솔루션(?:\s*사업부)?(?![가-힣])/;
+
+  // 영문 약칭 표현 (오탐 방지)
+  //   앞: 한글/영숫자 아님 (문자열 시작 또는 공백/구두점)
+  //   뒤: '사업부' 또는 한글/영숫자 아님 (공백/구두점/문장끝)
+  //   대소문자 무시 (예: hl, HL, Hl 모두 허용)
+  const HL_ENG = /(?<![가-힣A-Za-z0-9])HL(?:\s*사업부)?(?![A-Za-z0-9])/i;
+  const PS_ENG = /(?<![가-힣A-Za-z0-9])PS(?:\s*사업부)?(?![A-Za-z0-9])/i;
+
+  let hlMatch = HL_KOR.exec(query) || HL_ENG.exec(query);
+  let psMatch = PS_KOR.exec(query) || PS_ENG.exec(query);
+
+  // 둘 다 매칭되면 정책상 "먼저 나온 것" 우선 (일반적으로 사용자가 초점 두는 사업부)
+  //   실제로는 두 개가 동시에 등장하는 케이스는 드물지만, 이런 경우 명확한 우선순위 필요.
+  if (hlMatch && psMatch) {
+    return hlMatch.index < psMatch.index
+      ? { division: '20', divisionCode: 'HL', matchedText: hlMatch[0] }
+      : { division: '10', divisionCode: 'PS', matchedText: psMatch[0] };
+  }
+  if (hlMatch) return { division: '20', divisionCode: 'HL', matchedText: hlMatch[0] };
+  if (psMatch) return { division: '10', divisionCode: 'PS', matchedText: psMatch[0] };
+  return { division: null, divisionCode: null, matchedText: null };
+}
+
+/**
+ * SQL 후처리: 잘못된 DIVISION_NM 조건을 DIVISION 코드 조건으로 자동 교정.
+ *
+ *   교정 대상 (LLM 이 흔히 만드는 잘못된 패턴):
+ *     - DIVISION_NM = 'HL' / "HL" → DIVISION = '20'
+ *     - DIVISION_NM = 'PS' / "PS" → DIVISION = '10'
+ *     - DIVISION_NM = '홈앤라이프' / "홈앤라이프" → DIVISION = '20'
+ *     - DIVISION_NM = '페이퍼솔루션' / "페이퍼솔루션" → DIVISION = '10'
+ *     - DIVISION_NM LIKE '%HL%' → DIVISION = '20'
+ *     - DIVISION_NM LIKE '%PS%' → DIVISION = '10'
+ *     - DIVISION_NM LIKE '%홈앤라이프%' → DIVISION = '20'
+ *     - DIVISION_NM LIKE '%페이퍼솔루션%' → DIVISION = '10'
+ *
+ *   ★ 다른 DIVISION_NM 값(예: 특정 배포 환경에서 '생활용품' 같은 특수 케이스)은 건드리지 않음.
+ *     오직 위 알려진 별칭만 안전하게 교정.
+ *
+ * @param {string} inputSql
+ * @returns {string} 교정된 SQL
+ */
+function normalizeDivisionFilter(inputSql) {
+  if (!inputSql || typeof inputSql !== 'string') return inputSql;
+  let s = inputSql;
+  const rewrites = [];
+
+  // 1) 등호 매칭: DIVISION_NM = 'X' / "X"
+  //    쿼트 안의 값이 아래 별칭이면 DIVISION = '코드' 로 교체
+  //    (연산자: = , <> , != , IS  — 여기선 =/IN 만 다룸)
+  const EQ_MAP = {
+    HL: '20', hl: '20',
+    PS: '10', ps: '10',
+    '홈앤라이프': '20',
+    '페이퍼솔루션': '10',
+    '홈앤라이프사업부': '20',
+    '페이퍼솔루션사업부': '10',
+  };
+  for (const [alias, code] of Object.entries(EQ_MAP)) {
+    // 따옴표 안에 공백이 들어간 경우도 지원: '홈앤라이프 사업부'
+    const aliasSpaced = alias.replace('사업부', ' 사업부');
+    for (const a of [alias, aliasSpaced]) {
+      // = 매칭
+      const eqRe = new RegExp(`\\bDIVISION_NM\\s*=\\s*['"]${escapeRegex(a)}['"]`, 'g');
+      s = s.replace(eqRe, (m) => {
+        rewrites.push(`${m} → DIVISION = '${code}'`);
+        return `DIVISION = '${code}'`;
+      });
+    }
+  }
+
+  // 2) LIKE 매칭: DIVISION_NM LIKE '%X%' 형태
+  //    LIKE 는 % 위치가 다양하므로 (앞/뒤/양쪽) 안에 별칭 문자열이 포함되면 교정
+  const LIKE_ALIASES = Object.entries(EQ_MAP);
+  for (const [alias, code] of LIKE_ALIASES) {
+    const likeRe = new RegExp(
+      `\\bDIVISION_NM\\s+(?:NOT\\s+)?LIKE\\s+['"][%_]*${escapeRegex(alias)}[%_]*['"]`,
+      'gi'
+    );
+    s = s.replace(likeRe, (m) => {
+      // NOT LIKE 는 부정이므로 조심 — 반대 코드로 하면 오작동. 단순히 건드리지 않음.
+      if (/\bNOT\s+LIKE\b/i.test(m)) return m;
+      rewrites.push(`${m} → DIVISION = '${code}'`);
+      return `DIVISION = '${code}'`;
+    });
+  }
+
+  // 3) IN 매칭: DIVISION_NM IN ('HL','PS',...) → 원소 하나짜리이거나 명확한 케이스만 처리.
+  //    복수 IN 은 정책 결정이 애매하므로 여기서는 건드리지 않음 (안전 우선).
+
+  if (rewrites.length > 0) {
+    console.log(`[NLQ] DIVISION_NM 조건 자동 교정: ${rewrites.join(' | ')}`);
+  }
+  return s;
+}
+
+// 정규식 특수문자 이스케이프
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 질의 텍스트 기반 DIVISION 강제 주입 (applyDomainFilter 의 확장).
+ *   - MGMT 도메인이라도 질문에 "HL 영업이익" 같은 표현이 있으면 DIVISION='20' 을 강제 주입
+ *   - PS/HL 도메인이면서 질문에 반대 사업부가 명시된 경우는 사용자 의도가 명확하므로
+ *     질문 언급을 우선 (applyDomainFilter 의 도메인 조건은 scrubDivisionFilter 로 미리 제거된 후 실행되어야 안전)
+ *   - 이미 SQL 에 DIVISION 조건이 있으면 건드리지 않음
+ *
+ * @param {string} inputSql
+ * @param {string} query 원본 자연어 질의
+ * @returns {string}
+ */
+function applyDivisionFromQuery(inputSql, query) {
+  if (!inputSql || typeof inputSql !== 'string') return inputSql;
+  const det = detectDivisionInQuery(query);
+  if (!det.division) return inputSql;
+  // bw_profitability_data 참조하지 않으면 건드리지 않음
+  if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
+  // 이미 DIVISION 조건 있으면 skip (applyDomainFilter 와 동일 정책)
+  if (/\bDIVISION\b\s*(=|<>|!=|<|>|\sIN\b|\sLIKE\b|\sBETWEEN\b)/i.test(inputSql)) {
+    return inputSql;
+  }
+  // 없으면 applyDomainFilter 와 동일 로직으로 주입
+  // → 임시 도메인 코드를 만들어 applyDomainFilter 를 재사용
+  const before = inputSql;
+  const injected = applyDomainFilter(inputSql, det.divisionCode);
+  if (injected !== before) {
+    console.log(`[NLQ] 질의 텍스트 기반 DIVISION 강제 주입: "${det.matchedText}" → DIVISION='${det.division}'`);
+  }
+  return injected;
+}
+
+// ============================================================
 // Helper: Dummy 행 제거 (결과 후필터) — 안전망
 // - 서버 응답 data 배열에서 어떤 컬럼이든 값이 정확히 'Dummy' (대소문자 무시) 인 행 제거
 // - SQL 자동주입이 적용 안 된 경우(서브쿼리/UNION/CTE/JOIN 등)에도 보호
@@ -4333,8 +4529,18 @@ ${commonRules}
     //   - 해결: applyDomainFilter 호출 전에 scrubDivisionFilter 로 기존 DIVISION 조건을
     //     모두 제거한 뒤, 현재 선택 도메인 기준으로 새로 주입
     //   - 정책: "학습 SQL 은 쿼리 구조만 재사용, DIVISION 은 실행 시점에 동적 주입"
+    // ★ [사업부 명칭 고정 매핑] 순서:
+    //   1) normalizeDivisionFilter: 잘못된 DIVISION_NM='HL'/LIKE 등을 DIVISION='20' 로 자동 교정
+    //   2) scrubDivisionFilter: 학습 SQL 재사용 시 남아있는 이전 도메인 조건 제거
+    //      → normalizeDivisionFilter 가 만든 DIVISION 조건도 학습 SQL 이면 함께 제거되어 도메인 재주입 대상이 됨
+    //      → 다만 질의 텍스트 언급 우선 정책 때문에 applyDivisionFromQuery 로 다시 보정
+    //   3) applyDomainFilter: 현재 선택 도메인(PS/HL) 기준 DIVISION 주입 (MGMT 는 no-op)
+    //   4) applyDivisionFromQuery: MGMT 상태에서도 질의에 HL/PS 언급이 있으면 강제 주입
+    //      (PS/HL 도메인에서는 이미 3)에서 주입되었으므로 no-op)
+    sql = normalizeDivisionFilter(sql);
     sql = scrubDivisionFilter(sql);
     sql = applyDomainFilter(sql, activeDomain);
+    sql = applyDivisionFromQuery(sql, query);
     // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
     const sqlUpper = sql.toUpperCase().trim();
@@ -4397,7 +4603,10 @@ ${sqlValidation.reason}
         const retryParsed = JSON.parse(retryRaw);
         if (retryParsed.sql) {
           sql = await applyMetricFormulaReplacement(retryParsed.sql, activeDomain);
+          // ★ 재생성 경로에도 사업부 명칭 고정 매핑 적용 (동일 로직)
+          sql = normalizeDivisionFilter(sql);
           sql = applyDomainFilter(sql, activeDomain);
+          sql = applyDivisionFromQuery(sql, query);
           // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
           // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
           const reval = validateSqlPreExecution(sql);
@@ -8325,6 +8534,8 @@ app.post('/api/builder/query', async (req, res) => {
     try {
       const activeDomainForBuilder = await getActiveDomain(req);
       const sqlBefore = sql;
+      // ★ 사업부 명칭 고정 매핑: DIVISION_NM='HL' 등 잘못된 조건을 코드 기반으로 교정
+      sql = normalizeDivisionFilter(sql);
       sql = scrubDivisionFilter(sql);
       sql = applyDomainFilter(sql, activeDomainForBuilder);
       if (sql !== sqlBefore) {
