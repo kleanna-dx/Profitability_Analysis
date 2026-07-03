@@ -21,6 +21,7 @@ import {
   addToIndex,
   removeFromIndex,
   getRagStats,
+  _detectTypesInQuery,
 } from './rag.mjs';
 // [2026-06-29] 요청 단위 단계별 로그 — /api/builder/* timeout 추적용
 //   - 로그 파일: /data/analytics/logs/nlq-server.log (운영) / ./logs/nlq-server.log (샌드박스)
@@ -1974,6 +1975,38 @@ async function matchSynonymsDirectly(query, domainCode) {
   // ★ 도메인 전체 Metric 맵 로드 (재귀 확장용)
   const metricMap = await loadMetricMap(dc);
   const queryUpper = query.toUpperCase();
+
+  // ★★★ [원가/비용 그룹 라우팅 가드] ★★★
+  //   사용자가 "원가 항목/원가항목/원가 중/원가에서/원가 관련/원가성/원가별/원가와/원가는..."
+  //   같은 포괄 표현으로 질문한 경우, "원가" 그룹의 모든 컬럼을 대상으로 UNION ALL SUM 해야 함.
+  //   → 이 경우 "매출원가/상품원가/제조원가" 같은 특정 지표성 동의어가 잘못 매칭되면 안 됨.
+  //
+  //   [정책]
+  //   - typeDetection.isGroupQuery === true 이고 matchedText 가 순수 "원가"/"비용" (또는 공백 포함) 이면
+  //     → matched synonym 이 그 span 안에 포함되면 스킵.
+  //   - 그러나 사용자가 "매출원가" 라고 명시적으로 쓴 경우 (matchedText 는 여전히 "원가" 부분이지만
+  //     동의어 "매출원가" 는 typeSpan 밖에서 시작함) → 매칭 유지.
+  //   - 즉, 동의어 매칭 span 이 typeSpan 에 완전 포함될 때만 스킵.
+  const typeDetection = _detectTypesInQuery(query);
+  const typeSpans = typeDetection.isGroupQuery ? (typeDetection.matchedSpans || []) : [];
+  if (typeSpans.length > 0) {
+    console.log(`[Synonym Guard] 원가/비용 포괄 표현 감지: [${typeSpans.map(s => s.matchedText).join(', ')}] → 이 span 안의 짧은 동의어 매칭은 스킵`);
+  }
+  // 동의어 매칭 span 이 typeSpan 안에 완전 포함되는지 검사
+  //   syn 예: "원가" 동의어가 있고, query = "원가 항목 중..." → typeSpan = "원가 항목"(0-6)
+  //           동의어 매칭 "원가"(0-2) 는 typeSpan 안 → 스킵.
+  //           동의어 "매출원가"(0-4) 는 query 에 없음 → 스킵 대상 아님.
+  //   syn 예: query = "매출원가와 원가 항목 둘 다" → typeSpan = "원가 항목"(6-11)
+  //           동의어 "매출원가"(0-4) 는 typeSpan 밖 → 유지.
+  //           동의어 "원가"(query 에 두 번 등장) 중 span (6-8) 은 typeSpan 안 → 스킵,
+  //             but (2-4) 는 typeSpan 밖 → 유지 (사용자 의도상 "매출원가"는 특정 지표).
+  //   그런데 짧은 동의어 "원가" 가 매출원가 안의 "원가"(2-4)를 매칭시키면 그것도 잘못이므로,
+  //   이 짧은 동의어 매칭은 typeSpan 밖에서만 유지되도록 하면 됨 (기존 longest-match-wins 정책이
+  //   "매출원가" 동의어가 있다면 "원가" 를 스킵하지만, "매출원가" 동의어가 등록돼있지 않을 수도 있음).
+  const isInsideTypeSpan = (qStart, qEnd) => {
+    return typeSpans.some(ts => ts.start <= qStart && qEnd <= ts.end);
+  };
+
   try {
     // =========================================================
     // 1단계: Ontology 동의어 정확 매칭 (최우선순위, domain_code 필터)
@@ -2027,6 +2060,17 @@ async function matchSynonymsDirectly(query, domainCode) {
         console.log(`[Synonym] longest-match-wins: "${cand.row.synonym_text}"→${cand.row.column_name} 스킵 (더 긴 동의어에 포함됨)`);
         continue;
       }
+      // ★ 원가/비용 그룹 라우팅 가드: typeSpan 안에 완전 포함된 동의어 매칭은 스킵
+      //   예: query="원가 항목 중..." 에서 typeSpan="원가 항목"(0-6),
+      //       동의어 "원가"(qStart=0, qEnd=2) → typeSpan 안 → 스킵 (그룹 조회로 처리됨)
+      //   예: query="매출원가 알려줘" 에서 typeSpans=[] → 이 가드 스킵 없음, 정상 매칭
+      //   예: query="매출원가와 원가 항목" 에서 typeSpan="원가 항목"(6-11),
+      //       동의어 "원가" 는 qStart=2(매출원가 안) → typeSpan 밖 → 유지
+      //       (단, "매출원가" 동의어가 있다면 longest-match-wins 로 이미 우선 매칭됨)
+      if (isInsideTypeSpan(cand.qStart, cand.qEnd)) {
+        console.log(`[Synonym Guard] typeSpan-inside: "${cand.row.synonym_text}"→${cand.row.column_name} 스킵 (원가/비용 그룹 라우팅)`);
+        continue;
+      }
       claimedSpans.push([cand.qStart, cand.qEnd]);
       matched.push({
         synonym: cand.row.synonym_text,
@@ -2073,6 +2117,11 @@ async function matchSynonymsDirectly(query, domainCode) {
       // 그러나 strict contained(짧은 동의어가 더 긴 동의어에 포함) 인 경우는 스킵
       if (contained && !sameSpan) {
         console.log(`[Metric] longest-match-wins: "${row.synonym_text}"→${row.metric_code} 스킵 (더 긴 동의어에 포함됨)`);
+        continue;
+      }
+      // ★ 원가/비용 그룹 라우팅 가드 (Ontology 1단계와 동일 로직)
+      if (isInsideTypeSpan(cand.qStart, cand.qEnd)) {
+        console.log(`[Metric Guard] typeSpan-inside: "${row.synonym_text}"→${row.metric_code} 스킵 (원가/비용 그룹 라우팅)`);
         continue;
       }
       if (!sameSpan) claimedSpans.push([cand.qStart, cand.qEnd]);
