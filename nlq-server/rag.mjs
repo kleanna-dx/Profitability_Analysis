@@ -355,7 +355,94 @@ async function searchRelevantMeta(pool, query, options = {}) {
 
   console.log(`[RAG] 검색 결과: schema=${result.schema.length}, ontology=${result.ontology.length}, metric=${result.metric.length}, code_mapping=${result.code_mapping.length}, feedback=${result.feedback.length}, rule=${result.rule.length}`);
 
+  // ============================================================
+  // 5. 원가/비용 항목 그룹 첨부 (결정적)
+  //   - 사용자 질문에 "원가항목/원가 항목/원가" 또는 "비용항목/비용 항목/비용"
+  //     키워드가 있으면 해당 그룹의 활성 컬럼 목록을 첨부.
+  //   - RAG topK 유사도 검색이 그룹의 일부 컬럼만 뽑아오는 문제를 방지.
+  // ============================================================
+  try {
+    const detection = _detectTypesInQuery(query);
+    if (detection.isGroupQuery) {
+      const placeholders = detection.types.map(() => '?').join(',');
+      const params = [...detection.types];
+      let sql = `SELECT type, column_name, description
+                 FROM ontology_column
+                 WHERE type IN (${placeholders})
+                   AND is_active = 1`;
+      if (domainCode) {
+        sql += ` AND domain_code = ?`;
+        params.push(domainCode);
+      }
+      sql += ` ORDER BY type, column_name`;
+      const [typeRows] = await pool.query(sql, params);
+      result.type_groups = {};
+      for (const r of typeRows) {
+        if (!result.type_groups[r.type]) result.type_groups[r.type] = [];
+        result.type_groups[r.type].push({
+          column_name: r.column_name,
+          description: r.description || '',
+        });
+      }
+      // 매칭된 텍스트 정보도 첨부 (server.mjs 에서 동의어 매칭 가드에 활용)
+      result.type_matched_spans = detection.matchedSpans;
+      console.log(`[RAG] 원가/비용 포괄 표현 감지: [${detection.matchedSpans.map(s => s.matchedText).join(', ')}] → 그룹 ${detection.types.join(',')} (${typeRows.length}개 컬럼)`);
+    }
+  } catch (e) {
+    console.warn('[RAG] 원가/비용 그룹 조회 실패 (무시):', e.message);
+  }
+
   return result;
+}
+
+// ============================================================
+// 사용자 질문에서 "원가/비용 포괄 표현" 감지
+// 반환: { types: ['원가'|'비용'...], isGroupQuery: bool, matchedSpans: [{start,end,matchedText,type}] }
+//
+// ★ 핵심 원칙: "포괄 표현" 만 감지, "특정 지표명" 은 제외
+//   포괄 표현 (감지 O): '원가', '원가 항목', '원가항목', '원가 중', '원가에서',
+//                        '원가 관련', '원가성', '원가별', '원가 컬럼', '원가 TOP',
+//                        '원가와/원가는/원가의/원가을...' (조사 붙은 경우)
+//   특정 지표명 (감지 X): '매출원가', '매출원가(제품)', '상품원가', '제조원가',
+//                          '기타매출원가', '원가율' 등
+//                          → matchSynonymsDirectly() 에서 개별 지표로 처리됨
+//
+// ★ 판정 규칙:
+//   1. '원가'/'비용' 앞에 한글이 있으면 지표명으로 간주 → 제외 (예: 매출원가, 상품원가)
+//   2. '원가'/'비용' 뒤에:
+//      - 포괄 접미사 (항목/중/에서/관련/성/별/컬럼/전체/TOP) → 포괄 표현
+//      - 조사 (와/과/및/이/가/은/는/을/를/의/도/만/라/랑) → 포괄 표현
+//      - 공백/문장끝 (한글이 아닌 것) → 포괄 표현
+//      - 다른 한글 (예: '원가율', '원가계정') → 지표명으로 간주, 제외
+// ============================================================
+function _detectTypesInQuery(query) {
+  if (!query || typeof query !== 'string') {
+    return { types: [], isGroupQuery: false, matchedSpans: [] };
+  }
+  const types = new Set();
+  const matchedSpans = [];
+
+  // 포괄 접미사 (원가/비용 바로 뒤에 오면 포괄 판정)
+  const GENERIC_SUFFIX = '(?:\\s*(?:항목|항목별|중|에서|관련|성|별|컬럼|전체)|\\s*TOP)';
+  // 조사 (원가/비용 바로 뒤에 붙으면 포괄 판정)
+  const JOSA = '(?:와|과|및|이|가|은|는|을|를|의|도|만|라|랑)';
+
+  const patterns = {
+    // (?<![가-힣])원가 : 앞에 한글 없어야 함 → 매출원가/상품원가/제조원가 배제
+    // 뒤: 포괄접미사 | 조사 | 한글아님(공백/구두점/문장끝)
+    '원가': new RegExp(`(?<![가-힣])원가(?:${GENERIC_SUFFIX}|${JOSA}|(?![가-힣]))`, 'g'),
+    '비용': new RegExp(`(?<![가-힣])비용(?:${GENERIC_SUFFIX}|${JOSA}|(?![가-힣]))`, 'g'),
+  };
+
+  for (const [type, re] of Object.entries(patterns)) {
+    let m;
+    while ((m = re.exec(query)) !== null) {
+      matchedSpans.push({ start: m.index, end: m.index + m[0].length, matchedText: m[0], type });
+      types.add(type);
+    }
+  }
+
+  return { types: [...types], isGroupQuery: types.size > 0, matchedSpans };
 }
 
 // ============================================================
@@ -405,6 +492,37 @@ function ragResultToPromptContext(ragResult) {
       ctx += `    SQL 표현식: ${sqlExpr}\n`;
     }
     ctx += `  ※ row-level 산식은 위 "SQL 표현식"을 그대로 사용하세요 (전체를 SUM()으로 감싼 형태). 컬럼별 SUM 분배 금지.\n`;
+  }
+
+  // 원가/비용 항목 그룹 (사용자 질문에 "원가항목/비용항목" 등 포괄 표현이 감지된 경우만)
+  if (ragResult.type_groups && Object.keys(ragResult.type_groups).length > 0) {
+    const detectedSpans = (ragResult.type_matched_spans || []).map(s => `"${s.matchedText}"`).join(', ');
+    ctx += `\n[★ 원가/비용 그룹 라우팅 — 포괄 표현 감지됨]\n`;
+    ctx += `사용자 질의에서 다음 포괄 표현이 감지되었습니다: ${detectedSpans || '(감지된 표현 없음)'}\n`;
+    ctx += `이 질의는 특정 지표(매출원가/상품원가/제조원가 등) 조회가 아니라 "구분값별 컬럼 묶음 비교" 요청입니다.\n`;
+    ctx += `아래 그룹에 속한 컬럼들만 UNION ALL 로 SUM 하여 항목명(설명) 기준으로 비교하세요.\n`;
+    ctx += `\n🚫 이 그룹 조회 시 다음 금지사항을 반드시 지키세요:\n`;
+    ctx += `  - 위 그룹 컬럼 이외의 지표성 컬럼(예: ZAMT034 "매출원가 계", ZAMT005 "매출원가(제품)" 등)을 SELECT 에 섞지 마세요.\n`;
+    ctx += `  - [관련 컬럼 정보] 섹션에 "매출원가" 같은 항목이 보여도, 사용자가 "원가/비용 + 포괄 표현" 으로\n`;
+    ctx += `    질문했으므로 그것은 우선순위가 낮습니다. 반드시 아래 그룹만 사용하세요.\n`;
+    ctx += `  - 결과 '항목명' 컬럼에는 컬럼코드(ZAMT049)가 아니라 설명(description, 예: "소모품비") 을 사용하세요.\n`;
+
+    for (const [ct, cols] of Object.entries(ragResult.type_groups)) {
+      if (!cols || cols.length === 0) continue;
+      ctx += `\n[${ct} 항목 그룹 — 대상 컬럼 목록 (${cols.length}개)]\n`;
+      for (const c of cols) {
+        ctx += `- ${c.column_name}: ${c.description || '(설명 없음)'}\n`;
+      }
+    }
+
+    ctx += `\n📝 예시 SQL 구조 (그룹 조회):\n`;
+    ctx += `  SELECT '<설명1>' AS 항목명, SUM(<컬럼1>) AS 금액 FROM bw_profitability_data WHERE <필터>\n`;
+    ctx += `  UNION ALL\n`;
+    ctx += `  SELECT '<설명2>' AS 항목명, SUM(<컬럼2>) AS 금액 FROM bw_profitability_data WHERE <필터>\n`;
+    ctx += `  ...\n`;
+    ctx += `  ORDER BY 금액 DESC LIMIT N;\n`;
+    ctx += `\n💡 반대로, 사용자가 "매출원가", "상품원가", "제조원가" 같은 특정 지표명을 명시했다면\n`;
+    ctx += `   이 그룹이 아니라 [관련 컬럼 정보] 또는 [관련 Metric] 섹션의 개별 지표를 사용하세요.\n`;
   }
 
   // 관련 코드매핑
@@ -497,4 +615,5 @@ export {
   removeFromIndex,
   getRagStats,
   createEmbedding,
+  _detectTypesInQuery,  // server.mjs 에서 동의어 매칭 가드용
 };
