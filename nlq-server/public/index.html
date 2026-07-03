@@ -1580,23 +1580,30 @@ async function sendQuery(query) {
             //   - 단계명도 'response_not_json'(파싱 실패) → 'gateway_or_proxy_timeout' 으로 변경
             const isHtml = contentType.includes('text/html') || /<html[\s>]/i.test(text);
             let inferredType, inferredStage, userMessage;
+            // [2026-07-03] 사용자용 메시지 정리
+            //   - nginx HTML 원문은 화면 상단에 노출하지 않고, 정리된 안내 문구만 표시
+            //   - 상세 요청 ID 는 아래 requestIdHtml 로 별도 노출
+            //   - 관리자용 원문은 "오류 상세보기" 토글 안에서만 (아래 renderResponseSnippet 참고)
             if ((res.status === 504 || res.status === 408) && isHtml) {
                 inferredType = 'gateway_timeout';
                 inferredStage = 'gateway_or_proxy_timeout';
-                userMessage = '게이트웨이/프록시 타임아웃이 발생했습니다. (HTTP ' + res.status + ')\n' +
-                              '백엔드는 분석을 계속 수행 중일 수 있습니다. 잠시 후 [최근 이력] 에서 결과를 확인해주세요.';
+                userMessage = '분석 시간이 오래 걸려 요청이 시간 초과되었습니다. (HTTP ' + res.status + ')\n' +
+                              '백엔드에서는 처리가 계속 진행 중일 수 있으니 [최근 이력] 에서 결과를 확인해 주세요.';
             } else if (res.status === 504 || res.status === 408) {
                 inferredType = 'timeout';
                 inferredStage = 'response_not_json';
-                userMessage = '요청 시간이 초과되었습니다. (HTTP ' + res.status + ')';
+                userMessage = '분석 시간이 오래 걸려 요청이 시간 초과되었습니다. (HTTP ' + res.status + ')\n' +
+                              '잠시 후 [최근 이력] 에서 결과를 확인하거나 다시 시도해 주세요.';
             } else if (res.status === 502 || res.status === 503) {
                 inferredType = 'system';
                 inferredStage = 'upstream_unavailable';
-                userMessage = '서버를 일시적으로 사용할 수 없습니다. (HTTP ' + res.status + ') 잠시 후 다시 시도해주세요.';
+                userMessage = '서버를 일시적으로 사용할 수 없습니다. (HTTP ' + res.status + ')\n' +
+                              '잠시 후 다시 시도해 주세요.';
             } else {
                 inferredType = 'system';
                 inferredStage = 'response_not_json';
-                userMessage = '서버 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (서버가 재시작 중일 수 있습니다)';
+                userMessage = '서버 응답 형식이 올바르지 않습니다. (HTTP ' + res.status + ')\n' +
+                              '잠시 후 다시 시도해 주세요. (서버가 재시작 중일 수 있습니다)';
             }
             const details = {
                 requestId: xRequestId,
@@ -2254,7 +2261,29 @@ function appendErrorMessage(msg, details) {
             fmt('에러 코드',       details.code);
             fmt('서버 메시지',     details.message);
             fmt('실패 SQL',        details.failedSql);
-            fmt('응답 본문(앞부분)', details.responseSnippet);
+            // [2026-07-03] 응답 본문(앞부분) — nginx HTML/CSS 원문이 그대로 노출되어
+            //   사용자가 이해하지 못하는 잡음이 되는 문제 해결.
+            //   - HTML/CSS 로 감지되면 요약 문구로 대체 (nginx 게이트웨이 응답 등)
+            //   - 관리자에게만 원문 노출 (isAdmin 플래그)
+            //   - 짧은 JSON/텍스트 응답은 그대로 표시 (진단에 유용)
+            (function renderResponseSnippet() {
+                const snippet = details.responseSnippet;
+                if (!snippet || typeof snippet !== 'string') return;
+                const ct = String(details.contentType || '').toLowerCase();
+                const looksHtml = ct.includes('text/html') || /<html[\s>]|<!doctype/i.test(snippet);
+                const isGatewayHtml = looksHtml && (details.errorType === 'gateway_timeout' || details.httpStatus === 504 || details.httpStatus === 502 || details.httpStatus === 503 || details.httpStatus === 408);
+                if (isGatewayHtml && !details.isAdmin) {
+                    // 일반 사용자: HTML 원문 감춤 + 요약 문구
+                    fmt('응답 본문 요약', 'nginx/게이트웨이 HTML 응답 (사용자 화면에는 원문을 표시하지 않습니다). 상세는 요청 ID 로 서버 로그에서 확인 가능합니다.');
+                    return;
+                }
+                if (looksHtml && !details.isAdmin) {
+                    fmt('응답 본문 요약', '비-JSON HTML 응답 (' + snippet.length + ' bytes). 상세는 서버 로그에서 확인 가능합니다.');
+                    return;
+                }
+                // 관리자이거나 HTML 이 아닌 경우 → 원문 표시 (기존 동작)
+                fmt('응답 본문(앞부분)', snippet);
+            })();
             fmt('질의 모드',       details.queryMode);
             fmt('의도',            details.intent);
             fmt('도메인',          details.domain);
@@ -2334,7 +2363,7 @@ function appendErrorMessage(msg, details) {
                 <p style="color:#dc2626;font-size:13px;font-weight:500;margin-bottom:2px;">
                     오류가 발생했습니다${badgeHtml}
                 </p>
-                <p style="color:#991b1b;font-size:12px;">${esc(msg)}</p>
+                <p style="color:#991b1b;font-size:12px;white-space:pre-wrap;line-height:1.55;">${esc(msg)}</p>
                 ${requestIdHtml}
                 ${detailsHtml}
             </div>

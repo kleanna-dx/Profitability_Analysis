@@ -26,7 +26,7 @@ import {
 // [2026-06-29] 요청 단위 단계별 로그 — /api/builder/* timeout 추적용
 //   - 로그 파일: /data/analytics/logs/nlq-server.log (운영) / ./logs/nlq-server.log (샌드박스)
 //   - 모든 /api/* 요청에 requestId 부여 (Nginx X-Request-Id 헤더 우선)
-import { requestIdMiddleware, createReqLogger, LOG_FILE_PATH } from './lib/reqLogger.mjs';
+import { requestIdMiddleware, createReqLogger, reqLogger, LOG_FILE_PATH } from './lib/reqLogger.mjs';
 // Phase 1: 후속 대화 의도 분류기 + 6개 신규 핸들러 (PR #201)
 //   - 8 intent (data_query/analysis/metric_lookup/ontology_lookup/troubleshooting/sql_explain/domain_explain/general_chat)
 //   - 3-tier 분류 (휴리스틱 → LLM → 라디오 fallback)
@@ -104,6 +104,19 @@ function toStoredPassword(input) {
 //   4) 모든 요청의 로그는 메모리 LRU(최근 200건) 에 보관 →
 //      클라이언트가 504 같은 비-JSON 응답을 받았을 때
 //      `/api/nlq/error-log/:requestId` 로 사후 조회 가능
+//
+// [2026-07-03] 자연어질의 파일 로그 통합 (nlq-server.log 미러링)
+//   - 기존에는 /api/builder/* (createReqLogger) 만 pino 파일에 남았고
+//     /api/nlq 는 captureLogsMiddleware 만 사용해 메모리+PM2 out 로그만 남음
+//     → 운영자가 nlq-server.log 를 봐도 자연어질의 오류를 찾을 수 없었음
+//   - 해결: captureLogsMiddleware 안에서 pino (reqLogger) 로도 동일 requestId 로
+//     아래 이벤트들을 파일에 기록:
+//       * request_received (진입)
+//       * console line 마다 (LOG/INFO/WARN/ERROR, 짧게 축약)
+//       * stage 변경마다 (setRequestStage)
+//       * request_finished / request_aborted (종료)
+//   - 이로써 비주얼쿼리빌더와 동일하게 `grep '"requestId":"xxx"' nlq-server.log`
+//     한 줄로 자연어질의 요청의 전체 흐름을 추적 가능
 // ============================================================
 const REQ_LOG_RING_SIZE = parseInt(process.env.NLQ_REQ_LOG_RING_SIZE || '200', 10);
 const REQ_LOG_LRU_SIZE = parseInt(process.env.NLQ_REQ_LOG_LRU_SIZE || '200', 10);
@@ -148,10 +161,23 @@ function getCurrentRequestId() {
   return getRequestCtx()?.requestId || null;
 }
 
-/** 현재 요청 컨텍스트에 stage 기록 (가장 최근 stage 가 응답에 노출됨) */
+/** 현재 요청 컨텍스트에 stage 기록 (가장 최근 stage 가 응답에 노출됨)
+ *  + [2026-07-03] pino 파일(nlq-server.log)에도 동일 requestId 로 기록
+ *    → 운영자가 파일 로그로 자연어질의 요청 흐름을 추적 가능
+ */
 function setRequestStage(stage) {
   const ctx = getRequestCtx();
-  if (ctx) ctx.lastStage = stage;
+  if (!ctx) return;
+  ctx.lastStage = stage;
+  try {
+    reqLogger.info({
+      stage,
+      elapsed_ms: Date.now() - (ctx.startedAt || Date.now()),
+      requestId: ctx.requestId,
+      api: ctx.url || null,
+      userId: ctx.userId || null,
+    });
+  } catch (_) { /* 로그 실패는 요청 처리에 영향 주지 않음 */ }
 }
 
 // 원본 console 메서드 보관 (한 번만 wrap)
@@ -171,12 +197,29 @@ function _fmtArg(a) {
 function _captureLine(level, args) {
   const ctx = getRequestCtx();
   if (!ctx) return;
-  const line = `[${new Date().toISOString()}] [${level}] ${args.map(_fmtArg).join(' ')}`;
+  const msg = args.map(_fmtArg).join(' ');
+  const line = `[${new Date().toISOString()}] [${level}] ${msg}`;
   ctx.logLines.push(line);
   // 링버퍼 — 200줄 초과 시 앞쪽 제거
   if (ctx.logLines.length > REQ_LOG_RING_SIZE) {
     ctx.logLines.splice(0, ctx.logLines.length - REQ_LOG_RING_SIZE);
   }
+  // [2026-07-03] pino 파일에도 미러링 (nlq-server.log)
+  //   - 자연어질의 API 의 console.log/error 를 파일 로그에 requestId 로 남김
+  //   - 라인 길이 1000자 제한 (초당 수백 줄 방어)
+  try {
+    const truncated = msg.length > 1000 ? (msg.slice(0, 1000) + '…') : msg;
+    const payload = {
+      requestId: ctx.requestId,
+      api: ctx.url || null,
+      userId: ctx.userId || null,
+      console: true,
+      msg: truncated,
+    };
+    if (level === 'ERROR') reqLogger.error(payload);
+    else if (level === 'WARN') reqLogger.warn(payload);
+    else reqLogger.info(payload);
+  } catch (_) { /* 로그 실패는 요청 처리에 영향 주지 않음 */ }
 }
 console.log = (...args) => { _captureLine('LOG', args); _origConsole.log(...args); };
 console.info = (...args) => { _captureLine('INFO', args); _origConsole.info(...args); };
@@ -201,11 +244,40 @@ function captureLogsMiddleware(req, res, next) {
   };
   // 응답 헤더로 노출 (CORS 환경에서도 브라우저가 읽을 수 있도록 expose)
   res.setHeader('X-Request-Id', requestId);
+
+  // [2026-07-03] pino 파일에도 요청 진입 기록 (nlq-server.log)
+  //   - 자연어질의 오류를 nlq-server.log 에서 조회 가능하도록 통합
+  try {
+    reqLogger.info({
+      stage: 'request_received',
+      requestId,
+      api: ctx.url,
+      method: ctx.method,
+      userId: ctx.userId,
+      userRole: ctx.userRole,
+    });
+  } catch (_) {}
+
   // 응답 완료 시 LRU 에 기록
   res.on('finish', () => {
     ctx.finishedAt = Date.now();
     ctx.statusCode = res.statusCode;
     rememberRequestLog(requestId, ctx);
+    // [2026-07-03] 파일 로그에도 종료 이벤트
+    try {
+      const payload = {
+        stage: 'request_finished',
+        requestId,
+        api: ctx.url,
+        statusCode: ctx.statusCode,
+        elapsed_ms: ctx.finishedAt - ctx.startedAt,
+        lastStage: ctx.lastStage,
+        userId: ctx.userId,
+      };
+      if (ctx.statusCode >= 500) reqLogger.error(payload);
+      else if (ctx.statusCode >= 400) reqLogger.warn(payload);
+      else reqLogger.info(payload);
+    } catch (_) {}
   });
   res.on('close', () => {
     if (!ctx.finishedAt) {
@@ -214,6 +286,19 @@ function captureLogsMiddleware(req, res, next) {
       ctx.statusCode = res.statusCode || 0;
       ctx.aborted = true;
       rememberRequestLog(requestId, ctx);
+      // [2026-07-03] 파일 로그: 중단(abort) 이벤트 — 504 원인 추적용 핵심
+      try {
+        reqLogger.warn({
+          stage: 'request_aborted',
+          requestId,
+          api: ctx.url,
+          statusCode: ctx.statusCode,
+          elapsed_ms: ctx.finishedAt - ctx.startedAt,
+          lastStage: ctx.lastStage,
+          userId: ctx.userId,
+          reason: 'client_or_gateway_closed_before_finish',
+        });
+      } catch (_) {}
     }
   });
   requestLogStorage.run(ctx, () => next());
