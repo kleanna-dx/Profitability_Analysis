@@ -52,6 +52,8 @@ INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, descri
 ('PS', 'CUST_GROUP_NM', 'bw_profitability_data', '고객그룹 명',        'varchar(100)'),
 ('PS', 'CUST_GRP1',     'bw_profitability_data', '고객 그룹 1',        'varchar(5)'),
 ('PS', 'CUST_GRP1_NM',  'bw_profitability_data', '고객그룹1 명',       'varchar(100)'),
+('PS', 'ZZKVGR7',       'bw_profitability_data', '고객 그룹 7',        'varchar(5)'),
+('PS', 'ZZKVGR7_NM',    'bw_profitability_data', '고객그룹7 명',       'varchar(100)'),
 ('PS', 'COUNTRY',       'bw_profitability_data', '국가',               'varchar(5)'),
 ('PS', 'COUNTRY_NM',    'bw_profitability_data', '국가 명',            'varchar(100)'),
 ('PS', 'ZKUNN2',        'bw_profitability_data', '영업사원',           'varchar(20)'),
