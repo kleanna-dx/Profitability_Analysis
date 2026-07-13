@@ -61,6 +61,7 @@ public class SapRfcSyncService {
             "INCOTERMS", "INCOTERMS_NM",
             "CUST_GROUP", "CUST_GROUP_NM",
             "CUST_GRP1", "CUST_GRP1_NM",
+            "ZZKVGR7", "ZZKVGR7_NM",
             "COUNTRY", "COUNTRY_NM",
             "BIC_ZKUNN2", "BIC_ZKUNN2_NM",
             "CUSTOMER", "CUSTOMER_NM",
