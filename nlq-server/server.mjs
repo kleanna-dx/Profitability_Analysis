@@ -6966,7 +6966,7 @@ app.get('/api/builder/columns', async (req, res) => {
       'BIC_ZJPCODE': 'product', 'BIC_ZJPCODE_NM': 'product', 'BIC_ZBRAND': 'product', 'BIC_ZBRAND_NM': 'product', 'BIC_ZSBRAND': 'product', 'BIC_ZSBRAND_NM': 'product',
       'MATERIAL': 'product', 'MATERIAL_NM': 'product',
       'BILL_TYPE': 'trade', 'BILL_TYPE_NM': 'trade', 'INCOTERMS': 'trade', 'INCOTERMS_NM': 'trade', 'CUST_GROUP': 'trade', 'CUST_GROUP_NM': 'trade',
-      'CUST_GRP1': 'trade', 'CUST_GRP1_NM': 'trade', 'COUNTRY': 'trade', 'COUNTRY_NM': 'trade', 'BIC_ZKUNN2': 'trade', 'BIC_ZKUNN2_NM': 'trade', 'CUSTOMER': 'trade', 'CUSTOMER_NM': 'trade',
+      'CUST_GRP1': 'trade', 'CUST_GRP1_NM': 'trade', 'ZZKVGR7': 'trade', 'ZZKVGR7_NM': 'trade', 'COUNTRY': 'trade', 'COUNTRY_NM': 'trade', 'BIC_ZKUNN2': 'trade', 'BIC_ZKUNN2_NM': 'trade', 'CUSTOMER': 'trade', 'CUSTOMER_NM': 'trade',
       'BIC_ZBOXUNIT': 'unit', 'BIC_ZBAGUNIT': 'unit', 'BIC_ZUNIT': 'unit', 'CURRENCY': 'unit',
       'BIC_ZQTY_BOX': 'quantity', 'BIC_ZQTY_BAG': 'quantity', 'BIC_ZQTY_KE': 'quantity',
     };
