@@ -905,16 +905,47 @@ let historyCache = []; // 이력 캐시
 let chatSessionId = crypto.randomUUID();
 let dataDateContext = null;  // 마감 최신월 컨텍스트 (서버에서 조회)
 
-const SUGGESTIONS = [
-    '손익센터별 총매출 합계',
-    '플랜트별 매출 순위',
-    'SKU별 매출 TOP 5',
-    '내수 vs 수출 매출 비교',
-    '전월대비 순매출 증가율 TOP 10 품목',
-    '브랜드별 판매수량 합계',
-    '고객그룹별 매출총이익',
-    '영업팀별 영업이익 순위',
-];
+// 도메인별 예시 질문 (fallback 은 PS)
+const SUGGESTIONS_BY_DOMAIN = {
+    PS: [
+        '손익센터별 총매출 합계',
+        '플랜트별 매출 순위',
+        'SKU별 매출 TOP 5',
+        '내수 vs 수출 매출 비교',
+        '전월대비 순매출 증가율 TOP 10 품목',
+        '브랜드별 판매수량 합계',
+        '고객그룹별 매출총이익',
+        '영업팀별 영업이익 순위',
+    ],
+    HL: [
+        '손익센터별 총매출 합계',
+        '플랜트별 매출 순위',
+        'SKU별 매출 TOP 5',
+        '내수 vs 수출 매출 비교',
+        '전월대비 순매출 증가율 TOP 10 품목',
+        '브랜드별 판매수량 합계',
+        '고객그룹별 매출총이익',
+        '영업팀별 영업이익 순위',
+        '거래처별 영업이익과 영업이익율',
+    ],
+};
+function getSuggestionsForDomain(dc) {
+    return SUGGESTIONS_BY_DOMAIN[dc] || SUGGESTIONS_BY_DOMAIN.PS;
+}
+// 현재 도메인 기준으로 예시 칩을 다시 그림 (초기 로드 및 도메인 변경 시 호출)
+function renderSuggestionChips() {
+    const fc = document.getElementById('fixedChipContainer');
+    if (!fc) return;
+    // '예시:' 라벨을 제외한 기존 칩만 제거
+    Array.from(fc.querySelectorAll('button.chip-sm')).forEach(b => b.remove());
+    getSuggestionsForDomain(currentDomain).forEach(s => {
+        const btn = document.createElement('button');
+        btn.className = 'chip-sm';
+        btn.textContent = s;
+        btn.onclick = () => sendQuery(s);
+        fc.appendChild(btn);
+    });
+}
 
 const SCHEMA_COLUMNS = [
     ['CALMONTH','VARCHAR(10)','달력연도/월'],['CALDAY','VARCHAR(10)','달력일'],
@@ -1045,6 +1076,7 @@ async function selectForceDomain(dc) {
     hideDomainForceOverlay();
     renderDomainSelectorBar();
     updateDomainInfoBanner();
+    renderSuggestionChips();
 }
 
 async function onDomainBtnClick(dc) {
@@ -1061,7 +1093,7 @@ async function onDomainBtnClick(dc) {
 async function switchDomain(dc) {
     try {
         await fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:dc}) });
-        currentDomain = dc; renderDomainSelectorBar(); updateDomainInfoBanner();
+        currentDomain = dc; renderDomainSelectorBar(); updateDomainInfoBanner(); renderSuggestionChips();
     } catch(e) { console.error('[Domain] switch 실패:', e); }
 }
 
@@ -1117,14 +1149,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Suggestion chips - fixed bar (always visible above input)
-    const fc = document.getElementById('fixedChipContainer');
-    SUGGESTIONS.forEach(s => {
-        const btn = document.createElement('button');
-        btn.className = 'chip-sm';
-        btn.textContent = s;
-        btn.onclick = () => sendQuery(s);
-        fc.appendChild(btn);
-    });
+    renderSuggestionChips();
 
     // Schema table in sidebar
     const st = document.getElementById('sideSchemaTable');
@@ -3544,6 +3569,7 @@ async function restoreSession(sessionKey, hintDomain) {
             sessionDomainLocked = true;
             renderDomainSelectorBar();
             updateDomainInfoBanner();
+            renderSuggestionChips();
             // users.domain_code 영구 저장 — 다음 진입 시 자동 복원
             fetch('/api/me/domain', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain_code:currentDomain}) }).catch(() => {});
         } else if (sessionDomain) {
