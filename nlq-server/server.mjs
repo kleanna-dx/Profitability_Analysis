@@ -1711,7 +1711,9 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 3. 계산 지표는 반드시 아래 제공된 메트릭/컬럼 정보만 사용 (새로운 수식 창작 금지)
 4. 결과 행은 최대 1000행 (LIMIT 1000)
 5. **금액 표시**: FORMAT(SUM(ZAMT***), 0) AS 별칭. **ORDER BY에는 FORMAT 별칭 사용 금지!** → ORDER BY SUM(ZAMT***) DESC 사용
-6. 비율: ROUND(..., 1), 소수점 1자리
+6. **비율/율(%) 표시**: FORMAT(ROUND(<비율식>, 1), 1) AS 별칭 — 소수 1자리 + 천 단위 콤마 필수.
+   예) FORMAT(ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1), 1) AS '영업이익률(%)'
+   ORDER BY 에는 FORMAT 별칭 사용 금지 → ORDER BY <비율식> DESC 사용
 7. GROUP BY 시 반드시 집계 함수 사용
 8. 컬럼 alias는 한글, 사용자가 이해하기 쉬운 의미 있는 이름 사용
 9. 정렬: 금액 DESC, 코드 ASC
@@ -2544,7 +2546,7 @@ async function buildRAGSystemPrompt(query, domainCode) {
       if (hasColumnLevelMetric) {
         synonymContext += `\n[column-level 산식 사용 예시]\n`;
         synonymContext += `  원본 산식이 이미 "SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100" 처럼 SUM()을 포함하면:\n`;
-        synonymContext += `  ✓ 정답: 그대로 복사 → SELECT ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1) AS '영업이익률(%)'\n`;
+        synonymContext += `  ✓ 정답: 그대로 복사 + FORMAT 감싸기 → SELECT FORMAT(ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1), 1) AS '영업이익률(%)'\n`;
         synonymContext += `  ✗ 금지: 한 번 더 SUM() 감싸기 (중첩 집계 금지) — SUM(SUM(ZAMT055)/...) ✗\n`;
       }
     }
@@ -2791,7 +2793,136 @@ async function buildFallbackContext(domainCode) {
 //         · 학습 데이터 경로(matchedSql) 도 사용자가 직접 작성/검증한 SQL 이므로
 //           건드리지 않는다.
 // - 남기는 후처리: FORMAT() 인자 누락 보정 (운영 안전장치).
+// - 남기는 후처리: 율(%) 별칭에 FORMAT 미적용 시 자동 감싸기.
 // ============================================================
+
+/**
+ * SQL 문자열 내에서 AS 별칭이 '(%)' 또는 '%'로 끝나는 ROUND(...) 표현식을
+ * 자동으로 FORMAT(ROUND(...), N) 형태로 감싼다. (운영 안전장치)
+ *
+ * 처리 예:
+ *   ROUND(SUM(A)/NULLIF(SUM(B),0)*100, 1) AS '영업이익률(%)'
+ *   → FORMAT(ROUND(SUM(A)/NULLIF(SUM(B),0)*100, 1), 1) AS '영업이익률(%)'
+ *
+ * 처리하지 않는 케이스:
+ *   - 별칭이 (%) / % 로 끝나지 않는 표현식 (금액/수량 등)
+ *   - 이미 FORMAT(...) 으로 감싼 경우
+ *   - ROUND 가 아닌 표현식 (LLM 이 다른 형태를 쓴 경우는 그대로 둔다 — 리스크 최소화)
+ */
+function wrapPercentRoundWithFormat(sql) {
+  if (!sql || typeof sql !== 'string') return sql;
+
+  // 큰따옴표/작은따옴표/백틱을 지원하는 별칭 리터럴 정규식
+  // AS 는 대소문자 무시, 공백 개수도 유연하게.
+  // 별칭 마지막 문자가 %  또는 %) 로 끝나는지 검사.
+  // 매치 대상: ROUND ... AS '별칭%'  (백트래킹 최소화를 위해 좁은 패턴)
+  const percentAliasRe = /\bROUND\s*\(/gi;
+
+  let out = '';
+  let idx = 0;
+  while (idx < sql.length) {
+    percentAliasRe.lastIndex = idx;
+    const m = percentAliasRe.exec(sql);
+    if (!m) {
+      out += sql.slice(idx);
+      break;
+    }
+
+    const roundStart = m.index;
+    const openParen = roundStart + m[0].length - 1; // '(' 위치
+    // 괄호 매칭으로 ROUND(...) 의 닫는 괄호 위치 찾기
+    let depth = 1;
+    let p = openParen + 1;
+    let inStr = null;
+    while (p < sql.length && depth > 0) {
+      const ch = sql[p];
+      if (inStr) {
+        if (ch === '\\') { p += 2; continue; }
+        if (ch === inStr) inStr = null;
+      } else if (ch === "'" || ch === '"' || ch === '`') {
+        inStr = ch;
+      } else if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (depth === 0) break;
+      p++;
+    }
+    if (depth !== 0) {
+      // 매칭 실패 (SQL 이 이상함) — 이 매치 스킵
+      out += sql.slice(idx, roundStart + m[0].length);
+      idx = roundStart + m[0].length;
+      continue;
+    }
+    const roundEnd = p; // ')' 위치
+    const roundExpr = sql.slice(roundStart, roundEnd + 1); // "ROUND(...)"
+    const roundInner = sql.slice(openParen + 1, roundEnd); // ROUND 인자 내부
+
+    // ROUND 인자에서 top-level 콤마로 소수 자릿수 추출
+    let d2 = 0, hasComma = false, digits = '0';
+    for (let i = 0; i < roundInner.length; i++) {
+      const ch = roundInner[i];
+      if (ch === '(') d2++;
+      else if (ch === ')') d2--;
+      else if (ch === ',' && d2 === 0) {
+        hasComma = true;
+        digits = roundInner.slice(i + 1).trim();
+        break;
+      }
+    }
+    if (!hasComma) digits = '0';
+    // digits 가 순수 정수인지 확인 (아니면 안전하게 1 사용)
+    if (!/^-?\d+$/.test(digits)) digits = '1';
+
+    // 이 ROUND 다음에 오는 AS 별칭이 %/(%) 로 끝나는지 확인
+    // 뒤이어 공백 + (AS)? + 공백 + 따옴표별칭  형태를 훑는다
+    let tail = roundEnd + 1;
+    // 공백 스킵
+    while (tail < sql.length && /\s/.test(sql[tail])) tail++;
+    // 'AS' 옵션
+    if (tail + 1 < sql.length && sql.slice(tail, tail + 2).toUpperCase() === 'AS' && /\s/.test(sql[tail + 2] || '')) {
+      tail += 2;
+      while (tail < sql.length && /\s/.test(sql[tail])) tail++;
+    }
+    // 따옴표 별칭 (', ", `)
+    const quoteCh = sql[tail];
+    let isPercentAlias = false;
+    let aliasEnd = -1;
+    if (quoteCh === "'" || quoteCh === '"' || quoteCh === '`') {
+      // 닫는 따옴표 찾기
+      let q = tail + 1;
+      while (q < sql.length) {
+        if (sql[q] === '\\') { q += 2; continue; }
+        if (sql[q] === quoteCh) { aliasEnd = q; break; }
+        q++;
+      }
+      if (aliasEnd > 0) {
+        const aliasBody = sql.slice(tail + 1, aliasEnd);
+        // % 또는 (%) 로 끝나는가?
+        if (/(%|\(%\))\s*$/.test(aliasBody)) isPercentAlias = true;
+      }
+    }
+
+    // 이미 FORMAT( 으로 감싸져 있는지 확인 (ROUND 앞 문자열 검사)
+    // ROUND 바로 앞에 "FORMAT(" 이 있으면 스킵 (이중 감싸기 방지)
+    let before = roundStart - 1;
+    while (before >= 0 && /\s/.test(sql[before])) before--;
+    const alreadyWrapped = before >= 0 && sql[before] === '(' &&
+      /FORMAT\s*$/i.test(sql.slice(Math.max(0, before - 8), before));
+
+    if (isPercentAlias && !alreadyWrapped) {
+      // 감싸기
+      const wrapped = `FORMAT(${roundExpr}, ${digits})`;
+      console.log(`[NLQ] 율(%) FORMAT 자동 감싸기: ${roundExpr.slice(0, 60)}... → FORMAT(..., ${digits})`);
+      out += sql.slice(idx, roundStart) + wrapped;
+      idx = roundEnd + 1;
+    } else {
+      // 그대로 두기 (다음 ROUND 매치 계속)
+      out += sql.slice(idx, roundEnd + 1);
+      idx = roundEnd + 1;
+    }
+  }
+  return out;
+}
+
 async function applyMetricFormulaReplacement(inputSql, _domainCode) {
   if (!inputSql) return inputSql;
   try {
@@ -2816,6 +2947,16 @@ async function applyMetricFormulaReplacement(inputSql, _domainCode) {
       }
       return m;
     });
+
+    // ------------------------------------------------------------
+    // 율(%) 별칭에 FORMAT 미적용 시 자동 보정 (안전장치)
+    //   예) ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1) AS '영업이익률(%)'
+    //       → FORMAT(ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1), 1) AS '영업이익률(%)'
+    //   - AS 별칭이 '(%)' 또는 '%'로 끝나는 표현식만 대상.
+    //   - 이미 FORMAT 으로 감싼 표현식은 건드리지 않음.
+    //   - ROUND 의 소수 자릿수 인자를 그대로 FORMAT 의 두 번째 인자로 사용.
+    // ------------------------------------------------------------
+    result = wrapPercentRoundWithFormat(result);
 
     return result;
   } catch (e) {
