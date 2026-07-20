@@ -4467,25 +4467,36 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         const dc = await getDataDateContext();
         dateContext = dc;
         const calmonth = extractCalmonthFromQuery(query, dc);
-        const analysisSql = await buildAnalysisSQL(activeDomain, calmonth);
-        console.log(`[NLQ] 분석경로 → ${intent} (CALMONTH=${calmonth})`);
 
-        // 도메인 필터 자동 주입
-        let finalSql = applyDomainFilter(analysisSql, activeDomain);
-        // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
+        // ★ 방안 B: KPI overview(전체 도메인 합계)는 원인 분석(interpretation)에만 필요.
+        //   data_analysis(특정 데이터 조회/분석: 상관분석·집계·필터링 등)에는
+        //   질문과 무관한 배경 수치를 프롬프트에 주입하지 않도록 스킵한다.
+        //   (사용자 질문이 "상관관계"인데 답변에 "당월 순매출 xx원..."이 인용되는 버그 방지)
+        let finalSql = null;
+        let rows = [];
+        let execTime = 0;
+        if (intent === 'interpretation') {
+          const analysisSql = await buildAnalysisSQL(activeDomain, calmonth);
+          console.log(`[NLQ] 분석경로 → ${intent} (CALMONTH=${calmonth}) — KPI overview 조회`);
 
-        // DB 실행 — 전체 KPI(overview)
-        const startTime = Date.now();
-        let rows;
-        try {
-          const r = await pool.query(finalSql);
-          rows = filterDummyRows(r[0]);
-        } catch (e) {
-          console.warn('[NLQ] 전체 KPI 조회 실패 → 빈 결과로 진행:', e.message);
-          rows = [];
+          // 도메인 필터 자동 주입
+          finalSql = applyDomainFilter(analysisSql, activeDomain);
+          // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
+
+          // DB 실행 — 전체 KPI(overview)
+          const startTime = Date.now();
+          try {
+            const r = await pool.query(finalSql);
+            rows = filterDummyRows(r[0]);
+          } catch (e) {
+            console.warn('[NLQ] 전체 KPI 조회 실패 → 빈 결과로 진행:', e.message);
+            rows = [];
+          }
+          execTime = Date.now() - startTime;
+          console.log(`[NLQ] 분석용 KPI SQL 실행: ${execTime}ms, ${rows.length}행`);
+        } else {
+          console.log(`[NLQ] 분석경로 → ${intent} (CALMONTH=${calmonth}) — KPI overview 스킵 (data_analysis: 질문 무관 배경수치 배제)`);
         }
-        const execTime = Date.now() - startTime;
-        console.log(`[NLQ] 분석용 KPI SQL 실행: ${execTime}ms, ${rows.length}행`);
 
         // ★ NEW: 사용자 질문의 구체 대상을 좁혀 원인 분석용 보조 SQL을 LLM으로 생성·실행
         //   "왜 Blanq-Bright ... 매출이 갑자기 증가됐어?" 같은 질문에서
@@ -4606,7 +4617,7 @@ ${commonRules}
         const userContent = hasAnyData
           ? `${dateInfo}\n\n${analysisFormatRule}\n\n${metricBlockForUser}[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n` +
             (rows.length > 0
-              ? `[참고용 — 도메인 전체 KPI 합계 (단일 행)]\n${overviewText}\n\n`
+              ? `[참고용 — 도메인 전체 KPI 합계 (단일 행, 배경 컨텍스트)]\n${overviewText}\n\n※ 위 KPI 합계는 도메인 전체 배경 데이터입니다. 사용자가 명시적으로 이 KPI 수치(예: "당월 순매출은?", "매출총이익 얼마?")를 물어본 경우가 아니라면, 답변 본문에 이 숫자들을 절대 인용하지 마세요. 사용자 질문의 초점(상관관계·비교·원인 등)에만 집중해서 답하세요.\n\n`
               : '') +
             (detailText
               ? `[★ 원인 분석용 상세 조회 결과 — 이 데이터를 핵심 근거로 답변하세요]\n${detailText}\n\n`
