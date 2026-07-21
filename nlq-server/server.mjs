@@ -4148,12 +4148,102 @@ function validateAnalysisResults(plan, execRecord) {
 }
 
 // ────────────────────────────────────────────────────────────
+// [4-a] inferAnalysisUnit — plan.dimensions 에서 분석 단위·수량사 자동 추론
+//   dimensions 이름/컬럼을 힌트로 사용해
+//     - unitLabel: "거래처" / "품목" / "플랜트" / "기간" / "고객" / "제품군" ...
+//     - unitCounter: "개" / "개월" / "년" / "건" ...
+//     - unitLabelPhrase: "분석 대상 거래처" / "분석 대상 기간" ...
+//   을 산출. 이는 최종 답변 LLM 이 "유효 건수/제외 건수" 같은 generic 표현
+//   대신 분석 단위에 맞는 자연스러운 문구를 쓰도록 하는 힌트.
+// ────────────────────────────────────────────────────────────
+function inferAnalysisUnit(plan) {
+  const dims = Array.isArray(plan.dimensions) ? plan.dimensions : [];
+
+  // 기본값: 원천 데이터 (dimensions 가 없거나 애매할 때)
+  let unitLabel = '데이터';
+  let unitCounter = '건';
+  let unitLabelPhrase = '분석 대상 데이터';
+
+  if (dims.length === 0) {
+    return { unitLabel, unitCounter, unitLabelPhrase, source: 'default_no_dimensions' };
+  }
+
+  // dimensions[0] 이 분석의 주 단위 — 이름·컬럼을 힌트로 사용
+  const primary = dims[0] || {};
+  const dimName = String(primary.name || '').toLowerCase();
+  const cols = (primary.columns || []).map(c => String(c).toUpperCase());
+  const colsJoined = cols.join(' ');
+
+  // 컬럼 기반 판별 (가장 신뢰도 높음)
+  //   CUSTOMER / CUSTOMER_NM → 거래처 (개)
+  //   MATERIAL / MATERIAL_NM → 품목 (개)
+  //   PLANT / WERKS         → 플랜트 (개)
+  //   CALMONTH              → 기간 (개월)
+  //   FISCPER / FISCYEAR    → 회계기간 (개)
+  //   PRODH*                → 제품군 (개)
+  //   CUSTGRP               → 고객그룹 (개)
+  //   DIVISION              → 사업부 (개)
+  const colHints = [
+    { match: /CUSTOMER/,  unit: '거래처',   counter: '개' },
+    { match: /MATERIAL/,  unit: '품목',     counter: '개' },
+    { match: /^PLANT|WERKS/, unit: '플랜트', counter: '개' },
+    { match: /CALMONTH/,  unit: '기간',     counter: '개월' },
+    { match: /FISCPER|FISCYEAR/, unit: '회계기간', counter: '개' },
+    { match: /PRODH/,     unit: '제품군',   counter: '개' },
+    { match: /CUSTGRP/,   unit: '고객그룹', counter: '개' },
+    { match: /DIVISION/,  unit: '사업부',   counter: '개' },
+    { match: /SALESORG/,  unit: '영업조직', counter: '개' },
+    { match: /BILL_TYPE|BILLTYPE/, unit: '청구유형', counter: '개' },
+  ];
+  for (const h of colHints) {
+    if (h.match.test(colsJoined)) {
+      unitLabel = h.unit; unitCounter = h.counter;
+      unitLabelPhrase = `분석 대상 ${h.unit}`;
+      return { unitLabel, unitCounter, unitLabelPhrase, source: `column:${cols.find(c => h.match.test(c))}` };
+    }
+  }
+
+  // 이름 기반 판별 (컬럼에서 못 찾은 경우)
+  const nameHints = [
+    { keys: ['거래처','고객사','업체'],           unit: '거래처',   counter: '개' },
+    { keys: ['품목','자재','제품','sku'],           unit: '품목',     counter: '개' },
+    { keys: ['플랜트','공장'],                    unit: '플랜트',   counter: '개' },
+    { keys: ['월','기간','달'],                    unit: '기간',     counter: '개월' },
+    { keys: ['년','연도','회계연도'],              unit: '기간',     counter: '년' },
+    { keys: ['고객그룹'],                          unit: '고객그룹', counter: '개' },
+    { keys: ['제품군','상품군'],                   unit: '제품군',   counter: '개' },
+    { keys: ['사업부','divisi'],                   unit: '사업부',   counter: '개' },
+    { keys: ['영업조직'],                          unit: '영업조직', counter: '개' },
+  ];
+  for (const h of nameHints) {
+    if (h.keys.some(k => dimName.includes(k))) {
+      unitLabel = h.unit; unitCounter = h.counter;
+      unitLabelPhrase = `분석 대상 ${h.unit}`;
+      return { unitLabel, unitCounter, unitLabelPhrase, source: `name:${primary.name}` };
+    }
+  }
+
+  // 마지막 fallback: 첫 dimension 이름을 그대로 label 로 사용
+  if (primary.name) {
+    unitLabel = String(primary.name);
+    unitCounter = '개';
+    unitLabelPhrase = `분석 대상 ${unitLabel}`;
+    return { unitLabel, unitCounter, unitLabelPhrase, source: 'name_fallback' };
+  }
+
+  return { unitLabel, unitCounter, unitLabelPhrase, source: 'default_fallback' };
+}
+
+// ────────────────────────────────────────────────────────────
 // [4] generateFinalAnalysisAnswer — 제한된 컨텍스트로 최종 답변 생성
 // ────────────────────────────────────────────────────────────
 async function generateFinalAnalysisAnswer(query, plan, execRecord) {
   const cm = (plan.period && plan.period.from) || '';
   const cmLabel = cm ? `${cm.substring(0,4)}년 ${parseInt(cm.substring(4,6))}월` : '';
   const domainVal = (plan.domain && plan.domain.value) || '';
+
+  // ── 분석 단위·수량사 자동 추론 (예: 거래처/개, 품목/개, 기간/개월)
+  const unit = inferAnalysisUnit(plan);
 
   // 실제 계산 결과만 요약 — 사용자 질문과 무관한 KPI 오버뷰는 포함 안 함
   const summary = {
@@ -4163,19 +4253,34 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
     baseRowCount: execRecord.baseRowCount,
     executionStatus: execRecord.baseError ? 'ERROR' : 'SUCCESS',
     executionError: execRecord.baseError || null,
+    // ── 분석 단위 정보 (LLM 이 "유효 건수/제외 건수" 대신 사용할 자연스러운 표현)
+    analysisUnit: {
+      label: unit.unitLabel,                         // "거래처" / "품목" / "기간" ...
+      counter: unit.unitCounter,                     // "개" / "개월" / "년" / "건"
+      phrase: unit.unitLabelPhrase,                  // "분석 대상 거래처"
+    },
   };
 
   const computed = (execRecord.postOps && execRecord.postOps.computed) || {};
 
   // 상관관계
   if (computed.correlation) {
+    const validN = computed.correlation.validCount;
+    const excludedN = computed.correlation.excludedCount;
     summary.correlation = {
       x: computed.correlation.xMetric,
       y: computed.correlation.yMetric,
-      validCount: computed.correlation.validCount,
-      excludedCount: computed.correlation.excludedCount,
+      // ── 내부 검증용 (기존 필드 유지)
+      validCount: validN,
+      excludedCount: excludedN,
       coefficient: computed.correlation.coefficient === null ? null : Number(computed.correlation.coefficient.toFixed(4)),
       interpretation: computed.correlation.interpretation,
+      // ── 사용자 친화 필드 (LLM 이 이 값들을 자연어로 사용)
+      analyzedTargetPhrase: `${unit.unitLabelPhrase} ${validN}${unit.unitCounter}`,   // "분석 대상 거래처 84개"
+      excludedTargetPhrase: excludedN > 0
+        ? `제외된 ${unit.unitLabel} ${excludedN}${unit.unitCounter}`
+        : null,                                                                        // 0이면 null → 프롬프트에서 생략
+      totalCandidateCount: validN + excludedN,       // 전체 후보 수 = 유효 + 제외
     };
   }
 
@@ -4183,6 +4288,8 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
   if (computed.topN) {
     summary.topN = {
       n: computed.topN.n,
+      // 사용자 친화 표현: "상위 5개 거래처"
+      titlePhrase: `상위 ${computed.topN.n}${unit.unitCounter} ${unit.unitLabel}`,
       rows: computed.topN.rows.slice(0, computed.topN.n).map(r => {
         const out = {};
         for (const k of Object.keys(r)) {
@@ -4198,6 +4305,8 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
   if (computed.contribution) {
     summary.contribution = {
       total: computed.contribution.total,
+      // 사용자 친화 표현
+      totalTargetPhrase: `${unit.unitLabelPhrase} 전체`,
       topRows: computed.contribution.rows.slice(0, 10).map(r => {
         const out = {};
         for (const k of Object.keys(r)) {
@@ -4212,6 +4321,7 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
   // 기간 비교
   if (execRecord.priorRows && execRecord.priorRows.length > 0) {
     summary.priorPeriodRowCount = execRecord.priorRows.length;
+    summary.priorPeriodPhrase = `이전 기간 ${unit.unitLabelPhrase} ${execRecord.priorRows.length}${unit.unitCounter}`;
   }
 
   // 기본 결과 샘플 (상관관계·TOP_N 없을 때 raw 결과 일부)
@@ -4244,15 +4354,38 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
 3. 사용자가 명시적으로 요청하지 않은 KPI(예: 도메인 전체 매출/영업이익)는 답변에 인용하지 마세요.
 4. **산식 설명이 목적이 아닙니다** — 결과 수치로 사용자 질문에 답하는 게 목적.
    산식은 결과 해석에 필요한 최소 한도로만 언급.
-5. 상관관계 결과가 있으면: **상관계수 값 + 해석 + 유효/제외 건수**를 명시.
-6. 데이터 사후 조건(NULLIF, Dummy 제외 등)으로 제외된 건이 있으면 짧게 언급.
+5. 상관관계 결과가 있으면: **상관계수 값 + 해석 + 분석 대상 수**를 명시 (아래 규칙 11~14 참조).
+6. **제외된 대상이 있을 때만** 제외 사유·건수를 언급. 0 이면 언급 자체를 생략.
 7. 답변은 마크다운. **YYYY년 M월** 형식의 년월은 반드시 굵게.
 8. 500~800자 내외로 결과 중심으로 작성. 완결된 문장으로 종료.
 9. 실행 오류가 있으면 사용자에게 짧게 안내하고 원인 확정 어려움을 명시. 임의 결과 만들지 말 것.
 10. **variance=0 (분산 0) 로 상관계수가 null 인 경우**:
-    - 해당 축의 값이 전 행 동일하다는 사실을 결과로 보고 (예: "y축 '영업이익률' 은 이번 도메인·기간에서 전 거래처가 0.00으로 산출됨").
-    - 이는 **실제 계산 결과의 특성**이며, 상관계수를 임의로 만들지 말 것.
-    - "산식 재검토가 필요"하다는 안내를 짧게 첨부 (도메인 raw 컬럼 데이터 상황상 값이 안 나올 수 있음).`;
+    - 해당 축의 값이 전 행 동일하다는 사실을 결과로 보고.
+    - 상관계수를 임의로 만들지 말 것.
+    - "산식 재검토가 필요"하다는 안내를 짧게 첨부.
+
+[분석 대상 수 표현 규칙 — 매우 중요]
+11. **"유효 건수", "제외 건수" 라는 generic 표현을 절대 쓰지 마세요.**
+    반드시 [실제 실행 결과] 의 \`analysisUnit\` 및 각 op 의 \`analyzedTargetPhrase\` 를 그대로 사용.
+    - ✗ 금지: "유효 건수: 84건", "제외 건수: 0건", "유효 데이터 84개"
+    - ✓ 권장: "분석 대상 거래처: 84개", "상위 5개 거래처", "분석 대상 기간: 12개월"
+    수량사는 대상에 맞게: 거래처/품목/플랜트/제품군 → "개", 월 → "개월", 연도 → "년", 원천 데이터 → "건".
+
+12. **excludedCount 가 0 이면 제외 관련 문장·항목을 아예 출력하지 마세요.**
+    - ✗ 금지: "제외된 거래처: 0개", "제외 데이터: 없음", "제외 건수 0건"
+    - ✓ 기본 출력: 상관계수 값 + 해석 + 분석 대상 수 만.
+    필요 시 자연어 한 문장으로 "산식 계산이 가능한 거래처 84개를 모두 분석에 반영했습니다." 정도만 허용.
+    "모든 거래처가 포함되었습니다" 같은 범위가 모호한 표현은 금지 — 반드시 "분석 대상 거래처 84개가 모두" 형태로.
+
+13. **excludedCount > 0 인 경우에만** 다음 형식으로 상세 안내:
+    "전체 후보 거래처 X개 중 [사유 요약] Y개를 제외하고, 최종 Z개 거래처를 대상으로 분석했습니다."
+    (X = totalCandidateCount, Y = excludedCount, Z = validCount).
+
+14. TOP-N / Contribution / 기타 op 도 동일 원칙:
+    분석 단위(거래처/품목/기간 등)를 명시하고, 수량사는 맞는 것으로.
+    내부 필드명(baseRowCount, validCount, excludedCount, priorPeriodRowCount 등)을
+    **그대로 사용자 답변에 노출하지 마세요.** 반드시 \`analyzedTargetPhrase\` /
+    \`titlePhrase\` / \`totalTargetPhrase\` / \`priorPeriodPhrase\` 등을 활용.`;
 
   const userContent = `[사용자 원문 질문]
 ${query}
