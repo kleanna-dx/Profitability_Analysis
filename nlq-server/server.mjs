@@ -3689,6 +3689,27 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 3. 한 질문이 여러 분석을 요구할 수 있음 (예: "TOP5 매출 거래처와 그들의 영업이익률 상관관계") →
    operations 를 여러 개 조합.
 
+3-1. **★ 파생 지표(비율/원단위)의 재료 metric도 반드시 함께 포함 (매우 중요)**
+   비율·원단위 등 파생 지표 (예: 영업이익률 = 영업이익/순매출, 지급수수료 원단위 = 지급수수료/판매중량)는
+   사용자에게 결과표로 보여줄 때 파생값만 있으면 검증이 어렵습니다.
+   → **분자·분모에 해당하는 재료 지표(raw metric)도 metrics 배열에 함께 반드시 포함**하세요.
+
+   예1) 사용자: "거래처별 영업이익률과 지급수수료(변동) 원단위의 상관관계"
+     ✗ 나쁨: metrics = [영업이익률, 지급수수료(변동) 원단위]  ← 파생값만 있어서 사용자가 계산 근거 확인 불가
+     ✓ 좋음: metrics = [순매출, 영업이익, 영업이익률, 지급수수료(변동), 판매중량, 지급수수료(변동) 원단위]
+             ← 사용자가 표에서 분자·분모·파생값을 모두 확인 가능
+
+   예2) 사용자: "품목별 매출액과 판매수량의 상관관계"
+     이미 raw 지표만 사용 중 → 추가할 재료 없음. 그대로 metrics = [매출액, 판매수량].
+
+   원칙: metric.formula 에 "SUM(A)/NULLIF(SUM(B),0)" 같은 나눗셈이 있으면,
+   분자 SUM(A) 와 분모 SUM(B) 를 각각 별도 metric 으로도 추가하세요.
+   재료 metric 이름은 학습관리 등록명(예: "영업이익", "순매출") 을 우선 사용, 없으면 명확한 한글명 부여.
+   operations 의 CALCULATE_METRICS.metrics 에도 이 재료 metric 들을 함께 포함.
+
+   ※ 단, 분자/분모가 학습관리에도 raw 컬럼에도 명확히 대응하는 개념이 아닌 경우(예: 매우 복잡한 조합식)에는
+     무리하게 재료 metric 을 만들지 말고 파생 지표만 두어도 됩니다.
+
 4. dimensions 는 최소한만. 사용자가 "거래처별"이라 하면 CUSTOMER + CUSTOMER_NM 두 컬럼 묶어 하나의 dimension.
 
 5. period 는 사용자가 명시한 기간 → USER_QUERY.
@@ -4385,7 +4406,22 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
     분석 단위(거래처/품목/기간 등)를 명시하고, 수량사는 맞는 것으로.
     내부 필드명(baseRowCount, validCount, excludedCount, priorPeriodRowCount 등)을
     **그대로 사용자 답변에 노출하지 마세요.** 반드시 \`analyzedTargetPhrase\` /
-    \`titlePhrase\` / \`totalTargetPhrase\` / \`priorPeriodPhrase\` 등을 활용.`;
+    \`titlePhrase\` / \`totalTargetPhrase\` / \`priorPeriodPhrase\` 등을 활용.
+
+[답변 구성 및 표 중복 방지 규칙 — 매우 중요]
+15. **거래처별/품목별/기간별 계산 결과표는 별도 UI 컴포넌트로 사용자에게 표시됩니다.**
+    → 답변 텍스트 안에 이 표를 마크다운 표(| A | B |) 로 다시 그리지 마세요. **표 반복 금지**.
+    - ✗ 금지: 답변에 \`| 거래처 | 순매출 | 영업이익 | ... |\` 같은 세부 데이터 표 포함
+    - ✓ 권장: 답변은 요약 텍스트만 (상관계수, 해석, 분석 대상 수).
+    특정 거래처를 언급하려면 문장으로 서술 (예: "매출액이 가장 큰 거래처는 A입니다").
+    단, TOP-N 결과의 순위표는 op 특성상 표시 가치가 있으므로 6행 이하일 때만 허용.
+
+16. **답변은 다음 순서로 구성**:
+    (1) 전체 분석 결과 요약 (예: 상관계수 값 + 해석 문장)
+    (2) 분석 대상 수 (예: "분석 대상 거래처 84개")
+    (3) [\`excludedCount > 0\` 인 경우에만] 제외 사유·건수 안내 (규칙 13 형식)
+    (4) 필요 시 짧은 해석 보조 문장 (사용자 이해를 돕는 결론)
+    → 상세 계산 결과 표는 별도 UI에서 표시되므로 텍스트에 포함하지 않음.`;
 
   const userContent = `[사용자 원문 질문]
 ${query}
@@ -5490,10 +5526,54 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         setRequestStage('analysis_answer_generate');
         const { answer: analysis, summary } = await generateFinalAnalysisAnswer(query, plan, execRecord);
 
+        // ── [5-b] 분석 결과 상세표(거래처별/품목별/기간별 1행씩 집계) 프론트에 노출
+        //   - 이전에는 rows:[] 로 텍스트만 반환했으나, 사용자 요청에 따라
+        //     상관계수·TOP-N 등의 계산 근거가 된 집계 결과를 표로 함께 제공.
+        //   - baseRows 는 이미 dimensions 별 GROUP BY 결과 (거래처당 1행 등) 형태.
+        //   - 원본 컬럼명(CUSTOMER 등) → 사용자 친화 라벨은 resolveColumnLabels 재사용.
+        //   - LLM 최종 답변은 규칙 15 에 의해 표를 텍스트로 반복하지 않음.
+        const detailRows = (execRecord.postOps && Array.isArray(execRecord.postOps.baseRows))
+          ? execRecord.postOps.baseRows.map(r => {
+              const out = {};
+              for (const k of Object.keys(r)) {
+                const v = r[k];
+                if (v === null || v === undefined) out[k] = null;
+                else if (typeof v === 'bigint') out[k] = Number(v);
+                else if (v instanceof Date) out[k] = v.toISOString();
+                else out[k] = v;
+              }
+              return out;
+            })
+          : [];
+        // 컬럼 라벨 해석 (한글 alias 는 그대로, 영문 raw 컬럼은 comment/ontology 우선)
+        let detailColumnLabels = {};
+        try {
+          detailColumnLabels = await resolveColumnLabels(detailRows, execRecord.baseSql || '', activeDomain);
+        } catch (e) {
+          console.warn('[AnalysisPlan] columnLabels 해석 실패 (무시):', e.message);
+        }
+        // 컬럼 순서: dimension 컬럼 먼저, 그다음 metric 컬럼 순 (plan 순서 유지)
+        const detailColumnOrder = [];
+        const seen = new Set();
+        for (const d of (plan.dimensions || [])) {
+          for (const col of (d.columns || [])) {
+            if (!seen.has(col)) { detailColumnOrder.push(col); seen.add(col); }
+          }
+        }
+        for (const m of (plan.metrics || [])) {
+          if (m && m.name && !seen.has(m.name)) { detailColumnOrder.push(m.name); seen.add(m.name); }
+        }
+        // baseRows 실제 키 중 남은 것 추가 (fallback)
+        if (detailRows.length > 0) {
+          for (const k of Object.keys(detailRows[0])) {
+            if (!seen.has(k)) { detailColumnOrder.push(k); seen.add(k); }
+          }
+        }
+
         const nlqUserIdAnalysis = req.session?.user?.id || null;
         saveHistory(
           nlqUserIdAnalysis, query, execRecord.baseSql,
-          analysis, 'analysis', {}, [],
+          analysis, 'analysis', {}, detailRows,
           execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
@@ -5503,10 +5583,16 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           answerType: 'result_based',           // RESULT_BASED 경로
           answer: analysis,
           analysis: analysis,
-          rows: [], rowCount: 0,
+          // ★ 분석 결과 상세표: 거래처별/품목별/기간별 등 집계 결과 (거래처당 1행)
+          //   프론트는 이 rows 를 페이지네이션·정렬·검색이 가능한 표로 렌더.
+          rows: detailRows,
+          data: detailRows,                     // 기존 aggregate 응답과 필드명 호환
+          rowCount: detailRows.length,
+          columnLabels: detailColumnLabels,     // { CUSTOMER: "거래처", ...}
+          columnOrder: detailColumnOrder,       // ["CUSTOMER","CUSTOMER_NM","순매출",...]
           sql: execRecord.baseSql,               // ← 실제 실행 SQL 노출 (진단·투명성)
           explanation: null,
-          chartType: 'analysis', chartConfig: {},
+          chartType: 'table', chartConfig: {},   // ← 표 탭이 기본 활성
           analysisPlan: plan,                    // 진단용 (프론트에서는 무시 가능)
           executionSummary: summary,             // 진단용
           validation: validation,                // 진단용
