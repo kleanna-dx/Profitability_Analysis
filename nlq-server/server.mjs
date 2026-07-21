@@ -3681,7 +3681,7 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
     { "type": "GROUP_BY", "dimensions": ["표시명"] },
     { "type": "CALCULATE_METRICS", "metrics": ["표시명"] },
     { "type": "SORT", "by": "표시명", "order": "DESC|ASC" },
-    { "type": "TOP_N", "n": 10 },
+    { "type": "TOP_N", "n": 10, "by": "표시명(정렬 지표)", "partitionBy": "표시명(그룹축, 선택)" },
     { "type": "PEARSON_CORRELATION", "xMetric": "표시명X", "yMetric": "표시명Y" },
     { "type": "COMPARE_PERIODS", "current": "YYYYMM", "prior": "YYYYMM", "metrics": [...] },
     { "type": "CONTRIBUTION_ANALYSIS", "totalMetric": "...", "byDimension": "..." },
@@ -3725,6 +3725,40 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 
 3. 한 질문이 여러 분석을 요구할 수 있음 (예: "TOP5 매출 거래처와 그들의 영업이익률 상관관계") →
    operations 를 여러 개 조합.
+
+3-0. **★★★ 월별/카테고리별 TOP N — 반드시 partitionBy 지정 ★★★**
+   사용자가 "월별 TOP N", "각 월 별 TOP N", "달별 상위 N개",
+   "카테고리별 TOP N", "부문별 TOP N" 처럼 **그룹 축마다 각각 상위 N 개** 를
+   요구하면 반드시 TOP_N 에 partitionBy 를 지정하세요.
+
+   - dimensions 에는 그룹축 (예: 달력연월) 과 상위를 뽑을 축 (예: 자재코드+자재명) 을 모두 포함
+   - TOP_N.partitionBy 에 그룹축의 표시명(dimension.name) 을 지정
+   - TOP_N.by 에는 정렬 기준 metric 표시명을 지정
+   - operations 에 별도 SORT 를 넣지 말고 TOP_N.by / TOP_N.order 로 처리 권장
+   - 결과는 partition × N 개 행이 반환됨 (예: 3~6월 4개월 × TOP5 = 20 행)
+
+   예) "2026년 3월부터 6월까지 월별 SKU 매출 TOP5"
+   {
+     "period": { "from": "202603", "to": "202606", "source": "USER_QUERY" },
+     "dimensions": [
+       { "name": "달력연월", "columns": ["CALMONTH"] },
+       { "name": "자재",     "columns": ["MATERIAL","MATERIAL_NM"] }
+     ],
+     "metrics": [ { "name": "순매출", "formula": "SUM(...)" } ],
+     "operations": [
+       { "type":"GROUP_BY", "dimensions":["달력연월","자재"] },
+       { "type":"CALCULATE_METRICS", "metrics":["순매출"] },
+       { "type":"TOP_N", "n": 5, "by":"순매출", "order":"DESC", "partitionBy":"달력연월" }
+     ]
+   }
+
+   ✗ 금지 패턴: partitionBy 없이 { "type":"TOP_N", "n":5 } 만 두는 것.
+     → 이 경우 전체에서 상위 5 개만 뽑히므로 대부분 특정 한 달에서만
+        결과가 나오고 다른 달은 완전히 사라집니다. 명백한 버그.
+
+   partitionBy 를 쓰는 판단 기준: **"각 ○○별로 TOP N"** 처럼 그룹축이
+   질의에 명시된 경우. 단일 축 TOP N ("올해 매출 TOP10 거래처") 은
+   partitionBy 없이 그대로.
 
 3-1. **★ 파생 지표(비율/원단위)의 재료 metric도 반드시 함께 포함 (매우 중요)**
    비율·원단위 등 파생 지표 (예: 영업이익률 = 영업이익/순매출, 지급수수료 원단위 = 지급수수료/판매중량)는
@@ -3945,8 +3979,101 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   const selectClause = selectParts.length > 0 ? selectParts.join(', ') : '1';
   const whereClause = whereParts.join(' AND ');
   const groupByClause = groupByParts.length > 0 ? ` GROUP BY ${groupByParts.join(', ')}` : '';
-  // LIMIT: dimension 있으면 넉넉히, 없으면 1
-  const limit = groupByParts.length > 0 ? 5000 : 1;
+
+  // ────────────────────────────────────────────────────────
+  // [2026-07-21] TOP_N.partitionBy 감지 → CTE + ROW_NUMBER 로 재작성
+  //
+  // 배경(버그): "3~6월 월별 SKU 매출 TOP5" 같은 질의에서
+  //   ① base SQL 이 `LIMIT 5000` 로 잘려 특정 월 데이터가 사라지고
+  //   ② 애플리케이션 후처리 TOP_N 이 partition 개념 없이 전체 rows 에서
+  //      slice(0,n) 만 하여 3월 상위 5개만 나오고 4·5·6월은 결과에 없었음.
+  //
+  // 해결: plan.operations 에 { type:'TOP_N', n:5, partitionBy:'달력연월', by:'순매출' }
+  //       가 오면 DB 단에서 CTE + ROW_NUMBER 로 월별 순위를 계산하고
+  //       상위 N 개만 반환. 애플리케이션 slice 는 우회 (아래 runPostOperations 참조).
+  //
+  // 규칙:
+  //   - partitionBy 는 plan.dimensions[i].name (한글 표시명) 이어야 함.
+  //     → dimAliasByName 으로 실제 컬럼명 lookup
+  //   - orderBy 는 topOp.by 또는 별도 SORT op 의 by (없으면 첫 metric alias)
+  //   - orderDir 은 topOp.order / SORT.order (기본 DESC)
+  //   - LIMIT 은 partition 후처리로 이미 축소되므로 최종 SELECT 에는 붙이지 않음
+  // ────────────────────────────────────────────────────────
+  const operations = Array.isArray(plan.operations) ? plan.operations : [];
+  const topOp = operations.find(o => String(o?.type || '').toUpperCase() === 'TOP_N');
+  const sortOp = operations.find(o => String(o?.type || '').toUpperCase() === 'SORT');
+
+  let partitionColSql = null;      // 예: `CALMONTH`
+  let orderColAlias = null;        // 예: `순매출`
+  let topN = null;
+  let orderDirSql = 'DESC';
+
+  if (topOp && groupByParts.length > 0) {
+    const nRaw = parseInt(topOp.n, 10);
+    if (Number.isFinite(nRaw) && nRaw > 0) topN = Math.min(nRaw, 1000);
+
+    // partitionBy: plan dimension name → 실제 컬럼명 lookup
+    const partitionName = topOp.partitionBy || topOp.partition_by;
+    if (partitionName && dimAliasByName[partitionName]) {
+      partitionColSql = `\`${dimAliasByName[partitionName]}\``;
+    }
+
+    // orderBy: topOp.by 또는 SORT.by → metric alias 이거나 컬럼 alias
+    const byName = topOp.by || (sortOp && sortOp.by) || null;
+    if (byName && (metricAliasByName[byName] || dimAliasByName[byName])) {
+      orderColAlias = `\`${byName}\``;
+    } else if (byName) {
+      // alias map 에 없어도 metric name 후보로 사용 (백틱 감쌈)
+      orderColAlias = `\`${String(byName).replace(/`/g, '')}\``;
+    } else {
+      // fallback: 첫 metric alias
+      const firstMetric = Object.keys(metricAliasByName)[0];
+      if (firstMetric) orderColAlias = `\`${firstMetric}\``;
+    }
+
+    const dirRaw = String(topOp.order || (sortOp && sortOp.order) || 'DESC').toUpperCase();
+    orderDirSql = dirRaw === 'ASC' ? 'ASC' : 'DESC';
+  }
+
+  const useCte = topN !== null && partitionColSql && orderColAlias;
+
+  if (useCte) {
+    // partition + ROW_NUMBER 로 재작성. base 는 LIMIT 없이 전체 집계.
+    // 최종 결과는 partition_col ASC, 순위 ASC 로 안정 정렬.
+    const rankAlias = '순위';
+    const cteSql =
+      `WITH _base AS (` +
+        `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause}` +
+      `), ` +
+      `_ranked AS (` +
+        `SELECT _base.*, ` +
+        `ROW_NUMBER() OVER (PARTITION BY ${partitionColSql} ORDER BY ${orderColAlias} ${orderDirSql}) AS \`${rankAlias}\` ` +
+        `FROM _base` +
+      `) ` +
+      `SELECT * FROM _ranked WHERE \`${rankAlias}\` <= ${topN} ` +
+      `ORDER BY ${partitionColSql} ASC, \`${rankAlias}\` ASC`;
+
+    return {
+      sql: cteSql,
+      dimAliasByName,
+      metricAliasByName,
+      rankInfo: {
+        partitionCol: partitionColSql.replace(/`/g, ''),
+        rankAlias,
+        n: topN,
+        orderBy: orderColAlias.replace(/`/g, ''),
+        orderDir: orderDirSql,
+      },
+    };
+  }
+
+  // ────────────────────────────────────────────────────────
+  // 일반 경로: LIMIT 안전상한 (dimension 있으면 50000, 없으면 1).
+  // [2026-07-21] 5000 → 50000 상향: 장기간 · 다차원 집계 시 임의 절단 방지.
+  //   최종 사용자에게 노출되는 결과는 후처리 TOP_N / summary 슬라이스로
+  //   축소되므로 base SQL 을 조금 더 관대하게 열어둠.
+  // ────────────────────────────────────────────────────────
+  const limit = groupByParts.length > 0 ? 50000 : 1;
 
   const sql = `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause} LIMIT ${limit}`;
 
@@ -4022,8 +4149,21 @@ function runPostOperations(plan, baseRows) {
 
       if (type === 'TOP_N') {
         const n = Math.max(1, Math.min(1000, parseInt(op.n) || 10));
-        workingRows = workingRows.slice(0, n);
-        results.computed.topN = { n, rows: workingRows };
+        // [2026-07-21] partitionBy 지정 시 DB 단(CTE + ROW_NUMBER)에서 이미
+        //   partition 별 상위 N 개만 반환됨 → 여기서 slice(0,n) 를 하면
+        //   첫 partition 만 잘려나오므로 우회. rows 는 partition × N 그대로 유지.
+        const isPartitioned = !!(op.partitionBy || op.partition_by);
+        if (isPartitioned) {
+          results.computed.topN = {
+            n,
+            rows: workingRows,
+            partitioned: true,
+            partitionBy: op.partitionBy || op.partition_by,
+          };
+        } else {
+          workingRows = workingRows.slice(0, n);
+          results.computed.topN = { n, rows: workingRows, partitioned: false };
+        }
         continue;
       }
 
@@ -4410,11 +4550,22 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
 
   // TOP_N
   if (computed.topN) {
+    // [2026-07-21] partition-topN 인 경우 rows 는 이미 partition × N 개로
+    //   DB 단에서 구성됨. 여기서 slice(0,n) 을 하면 첫 partition 만 남고
+    //   나머지 partition (예: 4월·5월·6월) 이 사라짐 → 전체 유지.
+    const isPartitioned = !!computed.topN.partitioned;
+    const rowsForSummary = isPartitioned
+      ? computed.topN.rows
+      : computed.topN.rows.slice(0, computed.topN.n);
     summary.topN = {
       n: computed.topN.n,
-      // 사용자 친화 표현: "상위 5개 거래처"
-      titlePhrase: `상위 ${computed.topN.n}${unit.unitCounter} ${unit.unitLabel}`,
-      rows: computed.topN.rows.slice(0, computed.topN.n).map(r => {
+      partitioned: isPartitioned,
+      partitionBy: computed.topN.partitionBy || null,
+      // 사용자 친화 표현: partition 이면 "월별 상위 5개 자재", 아니면 "상위 5개 자재"
+      titlePhrase: isPartitioned
+        ? `${computed.topN.partitionBy || '그룹'}별 상위 ${computed.topN.n}${unit.unitCounter} ${unit.unitLabel}`
+        : `상위 ${computed.topN.n}${unit.unitCounter} ${unit.unitLabel}`,
+      rows: rowsForSummary.map(r => {
         const out = {};
         for (const k of Object.keys(r)) {
           const v = r[k];
