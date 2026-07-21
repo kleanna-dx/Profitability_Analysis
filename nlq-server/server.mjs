@@ -3492,6 +3492,848 @@ async function runAnalysisSqls(safeQueries) {
 }
 
 // ============================================================
+// ═══════════════════════════════════════════════════════════════
+// ★★★ AnalysisPlan 파이프라인 (2026-07 신규) ★★★
+// ═══════════════════════════════════════════════════════════════
+// 목적:
+//   - "분석질문" 모드의 응답 정확도를 위해 사용자 질문 문장을
+//     키워드로 분기하지 않고, LLM이 전체 문맥으로 필요한 분석 작업을
+//     스스로 계획하고, 백엔드가 그 계획을 실제 데이터로 실행한 뒤,
+//     결과 검증까지 마친 뒤 최종 답변을 생성.
+//
+// 흐름:
+//   1) generateAnalysisPlan(query, ...)
+//      → LLM이 AnalysisPlan JSON 생성
+//        · requiresDataExecution (설명 vs 실제 결과)
+//        · dimensions, metrics, filters, operations, expectedResults
+//   2) executeAnalysisPlan(plan)
+//      → dimensions+metrics 로 base SQL 자동 생성 → 실행
+//      → operations 순차 적용 (CORRELATION, TOP_N, COMPARE_PERIODS 등은
+//        후처리 함수로 계산)
+//   3) validateAnalysisResults(plan, execResult)
+//      → expectedResults 항목별로 실제 값이 채워졌는지 검증
+//      → 실패 시 LLM에게 사유를 알려주고 plan 수정 요청 (최대 1회 재시도)
+//   4) generateFinalAnalysisAnswer(plan, execResult)
+//      → 제한된 컨텍스트(실제 결과만)로 최종 답변 생성
+// ============================================================
+
+// ────────────────────────────────────────────────────────────
+// [1] generateAnalysisPlan — LLM이 사용자 질문을 문맥 전체로 판단하여
+//     실행 계획을 생성. 특정 키워드에 의존하지 않고 목적을 추론.
+// ────────────────────────────────────────────────────────────
+async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationContext, options = {}) {
+  const dc = activeDomain || 'PS';
+
+  // ── metric 카탈로그 (설명 + 산식)
+  let metricCatalog = '';
+  let metricSqlMap = {};
+  try {
+    const metricMap = await loadMetricMap(dc);
+    const lines = [];
+    for (const [code, meta] of Object.entries(metricMap)) {
+      if (!meta || !meta.description) continue;
+      const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
+      let sqlExpr;
+      if (meta.aggregation === 'CALC') sqlExpr = expanded;
+      else if (meta.aggregation === 'SUM') sqlExpr = `SUM(${expanded})`;
+      else if (['AVG','COUNT','MAX','MIN'].includes(meta.aggregation)) sqlExpr = `${meta.aggregation}(${expanded})`;
+      else sqlExpr = expanded;
+      lines.push(`- "${meta.description}" (code=${code}): ${sqlExpr}`);
+      metricSqlMap[meta.description] = sqlExpr;
+    }
+    metricCatalog = lines.join('\n');
+  } catch (e) {
+    console.warn('[AnalysisPlan] metric 카탈로그 로드 실패:', e.message);
+  }
+
+  // ── 컬럼 카탈로그
+  let columnCatalog = '';
+  try {
+    const [actualCols] = await pool.query(
+      `SELECT COLUMN_NAME, COLUMN_COMMENT
+         FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME='bw_profitability_data'
+        ORDER BY ORDINAL_POSITION`
+    );
+    const ontoDesc = {};
+    try {
+      const [ontoRows] = await pool.query(
+        `SELECT column_name, description FROM ontology_column WHERE domain_code=? AND is_active=1`, [dc]
+      );
+      for (const r of ontoRows) if (r.description) ontoDesc[r.column_name.toUpperCase()] = r.description;
+    } catch(_) {}
+    columnCatalog = actualCols
+      .map(c => `- ${c.COLUMN_NAME}${(ontoDesc[c.COLUMN_NAME.toUpperCase()] || c.COLUMN_COMMENT) ? ` (${ontoDesc[c.COLUMN_NAME.toUpperCase()] || c.COLUMN_COMMENT})` : ''}`)
+      .join('\n');
+  } catch (e) {
+    console.warn('[AnalysisPlan] 컬럼 카탈로그 로드 실패:', e.message);
+  }
+
+  const cm = dateCtx.latestMonth || '';
+  const prevCm = dateCtx.prevMonth || '';
+  const cmLabel = cm ? `${cm.substring(0,4)}년 ${parseInt(cm.substring(4,6))}월` : '';
+  const prevLabel = prevCm ? `${prevCm.substring(0,4)}년 ${parseInt(prevCm.substring(4,6))}월` : '';
+
+  // 대화 컨텍스트 (직전 턴 SQL/답변 참조)
+  let convCtx = '';
+  if (Array.isArray(conversationContext) && conversationContext.length > 0) {
+    const last = [...conversationContext].reverse().find(c => c && (c.sql || c.explanation));
+    if (last) {
+      convCtx = `\n[직전 턴 참조]\n${last.sql ? `- 직전 SQL: ${String(last.sql).substring(0, 300)}` : ''}${last.explanation ? `\n- 직전 답변 요지: ${String(last.explanation).substring(0, 200)}` : ''}`;
+    }
+  }
+
+  // 재시도 시 이전 시도의 실패 사유 + 실제 컬럼별 값 유무 진단
+  let retryHint = '';
+  if (options.retryReason) {
+    retryHint = `\n\n[★ 이전 시도 실패 — 이 사유를 반영해 계획 수정]\n${options.retryReason}\n이전 계획: ${JSON.stringify(options.previousPlan || {}, null, 2).substring(0, 800)}`;
+
+    // 재시도 시에만 활성 도메인 + 활성 기간에서 ZAMT 컬럼들의 실제 값 유무를 진단해 프롬프트에 첨부
+    //  → 값이 모두 0/NULL 인 컬럼은 어느 것인지 LLM이 알 수 있어야 대체 공식 선택 가능
+    try {
+      const div = dc === 'PS' ? '10' : (dc === 'HL' ? '20' : null);
+      const cmForDiag = (options.previousPlan?.period?.from) || cm;
+      if (div && cmForDiag) {
+        const zamtCols = [];
+        for (let i = 1; i <= 55; i++) zamtCols.push('ZAMT' + String(i).padStart(3, '0'));
+        const selectParts = zamtCols.map(c => `SUM(${c}) AS \`${c}\``).join(', ');
+        const [diagRows] = await pool.query(
+          `SELECT ${selectParts} FROM bw_profitability_data WHERE CALMONTH=? AND DIVISION=?`,
+          [cmForDiag, div]
+        );
+        if (diagRows && diagRows[0]) {
+          const dataStatus = [];
+          const emptyCols = [];
+          const nonEmptyCols = [];
+          for (const c of zamtCols) {
+            const v = Number(diagRows[0][c]);
+            if (!Number.isFinite(v) || v === 0) emptyCols.push(c);
+            else nonEmptyCols.push(c);
+          }
+          dataStatus.push(`- 값이 있는 raw 컬럼 (SUM≠0): ${nonEmptyCols.join(', ') || '(없음)'}`);
+          dataStatus.push(`- 값이 없는 raw 컬럼 (SUM=0): ${emptyCols.join(', ') || '(없음)'}`);
+          retryHint += `\n\n[★ 활성 도메인(${dc}) · 기간(${cmForDiag}) 에서 실제 데이터 값 유무]\n${dataStatus.join('\n')}\n※ 값이 없는 컬럼을 formula 에 넣으면 결과가 0 이 됩니다. 반드시 값이 있는 컬럼 중심으로 formula 재설계.`;
+        }
+      }
+    } catch (e) {
+      console.warn('[AnalysisPlan] 재시도 진단 조회 실패:', e.message);
+    }
+  }
+
+  const systemPrompt = `당신은 사용자 자연어 질문을 실행 가능한 AnalysisPlan(JSON)으로 변환하는 분석 계획 수립기입니다.
+사용자 문장의 특정 단어("분석해줘", "계산해줘", "상관관계" 등)에 의존하지 말고
+전체 문맥을 이해해 사용자가 실제로 알고 싶은 것이 무엇인지 판단하세요.
+
+[출력할 AnalysisPlan JSON 구조]
+{
+  "requiresDataExecution": true | false,   // 실제 DB 계산 필요 여부
+  "userGoal": "사용자가 알고 싶은 것 (한 문장, 한국어)",
+  "answerMode": "RESULT_BASED" | "CONCEPT_EXPLANATION",
+  "domain": { "value": "PS|HL", "source": "USER_QUERY|UI_FILTER" },
+  "period": { "from": "YYYYMM", "to": "YYYYMM", "source": "USER_QUERY|UI_FILTER" },
+  "dimensions": [                          // GROUP BY 축
+    { "name": "표시명(한글)", "columns": ["COL_CODE","COL_NAME"] }
+  ],
+  "metrics": [                             // SELECT 지표
+    { "name": "표시명(한글)", "formula": "SUM(...)/NULLIF(SUM(...),0)" }
+  ],
+  "filters": [                             // 추가 WHERE 조건
+    { "column": "COL", "op": "=|LIKE|IN|>=", "value": "..." }
+  ],
+  "operations": [                          // 실행할 후처리 (여러 개 가능, 순서 중요)
+    { "type": "GROUP_BY", "dimensions": ["표시명"] },
+    { "type": "CALCULATE_METRICS", "metrics": ["표시명"] },
+    { "type": "SORT", "by": "표시명", "order": "DESC|ASC" },
+    { "type": "TOP_N", "n": 10 },
+    { "type": "PEARSON_CORRELATION", "xMetric": "표시명X", "yMetric": "표시명Y" },
+    { "type": "COMPARE_PERIODS", "current": "YYYYMM", "prior": "YYYYMM", "metrics": [...] },
+    { "type": "CONTRIBUTION_ANALYSIS", "totalMetric": "...", "byDimension": "..." },
+    { "type": "TREND_ANALYSIS", "metric": "...", "months": 3 }
+  ],
+  "expectedResults": [                     // 최종 답변에 반드시 있어야 할 값 (검증용)
+    "validRowCount", "excludedRowCount",
+    "correlationCoefficient", "topRankRows",
+    "currentValue", "priorValue", "changePct",
+    "resultInterpretation"                 // 결과 해석 텍스트
+  ],
+  "notes": "판단 근거를 짧게 한국어로 (사용자 목적 요약 등)"
+}
+
+[판단 지침 — 매우 중요]
+1. requiresDataExecution 판단은 오직 "사용자가 최종적으로 실제 데이터상의 결론을 요구하는가" 로.
+   - "영업이익률은 어떻게 계산해?" → false (개념/산식 설명만)
+   - "거래처별 영업이익률을 계산해서 결과 보여줘" → true
+   - "지급수수료 높은 거래처일수록 영업이익률 낮은 편이야?" → true (거래처별 계산 + 상관관계 필요)
+   ※ 특정 동사 포함 여부가 아니라 문맥으로 판단.
+
+2. 사용자가 요청한 지표가 [학습관리 등록 지표 목록]에 있으면 그 산식을 그대로 사용.
+   목록에 없으면 [사용 가능 컬럼]에서 raw 컬럼 조합으로 산식 작성.
+   지급수수료 원단위처럼 사용자가 산식을 직접 명시했다면 그 산식 그대로 사용.
+
+2-1. **★ 지표 개념 vs raw 컬럼 이름 구분 (매우 중요)**
+   사용자가 개념(예: "영업이익", "매출총이익")을 언급했지만 학습관리에 그 개념이 등록되어 있지 않고
+   같은 이름의 raw 컬럼(예: ZAMT055="영업이익")만 존재하는 경우:
+   - 그 raw 컬럼이 해당 도메인에서 실제로 사용되는지 확신할 수 없다면 SUM(ZAMT055) 단독 사용은 위험.
+   - 학습관리에 등록된 관련 지표들의 산식을 조합해 개념을 재구성하는 것을 우선 고려.
+     예) PS 도메인에서 "영업이익" 미등록이지만 "매출총이익" 등록 → "영업이익 ≈ 매출총이익 - 판관비 합"으로 대체.
+   - 사용자가 산식을 직접 명시(예: "영업이익/순매출")한 경우, 그 좌변("영업이익")도 학습관리·raw 상태를
+     모두 검토해 실제로 값이 존재하는 방향으로 formula 를 선택하세요.
+   - 즉 사용자의 "말"이 아니라 실제 그 도메인에서 값이 나오는 방향으로 formula 선택.
+
+2-2. **★ 재시도 시 variance=0 (분산 0) 진단 대응**
+   이전 시도에서 상관계수가 null 이고 variance=0 (특히 특정 축의 원본 컬럼이 모두 0) 이라는 진단이 있으면:
+   - 그 축의 metric formula 를 반드시 다른 조합으로 교체하세요. 같은 formula 재사용 금지.
+   - 우선순위: (a) 학습관리 등록된 관련 지표 조합, (b) 도메인에서 실제 값이 있는 raw 컬럼 조합.
+   - 예) x축이 ZAMT055 (모두 0) 라면 → 매출총이익 학습관리 산식 - 판관비류 컬럼들(ZAMT038,039,040,041,045 등) 조합.
+
+3. 한 질문이 여러 분석을 요구할 수 있음 (예: "TOP5 매출 거래처와 그들의 영업이익률 상관관계") →
+   operations 를 여러 개 조합.
+
+4. dimensions 는 최소한만. 사용자가 "거래처별"이라 하면 CUSTOMER + CUSTOMER_NM 두 컬럼 묶어 하나의 dimension.
+
+5. period 는 사용자가 명시한 기간 → USER_QUERY.
+   명시하지 않으면 UI 기간(당월: ${cmLabel} / CALMONTH='${cm}') 사용 → UI_FILTER.
+
+6. expectedResults 는 답변에 반드시 담아야 할 결과 항목만. 상관분석이면 상관계수·유효/제외 건수 필수.
+
+7. answerMode:
+   - requiresDataExecution=true → RESULT_BASED
+   - false → CONCEPT_EXPLANATION
+
+8. **결과 요청인데 SQL 실행이 불가능한 경우가 아니라면 requiresDataExecution=true 를 유지**하세요.
+   설명만 하고 종료하기 위해 false 를 쓰지 마세요.
+
+[기간 컨텍스트]
+- 당월: ${cmLabel} (CALMONTH='${cm}')
+- 전월: ${prevLabel} (CALMONTH='${prevCm}')
+- 활성 도메인 (UI 필터): ${dc}
+
+[★ 학습관리 등록 지표 (지표성 컬럼은 반드시 이 산식 사용)]
+${metricCatalog || '(없음)'}
+
+[★ 사용 가능 실제 컬럼 — 이 목록에 없는 컬럼명 만들지 말 것]
+${columnCatalog || '(없음)'}
+${convCtx}${retryHint}
+
+[출력 형식]
+반드시 위 JSON 스키마만 하나 반환. 다른 설명·마크다운·코드블록 금지.`;
+
+  let raw;
+  try {
+    const completion = await openai.chat.completions.create({
+      model: GPT_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: query },
+      ],
+      temperature: 0.1,  // 계획 생성은 결정적으로
+      response_format: { type: 'json_object' },
+      max_tokens: 4000,   // 산식이 긴 경우(예: 매출원가 27개 컬럼 합) truncation 방지
+    });
+    raw = completion.choices[0].message.content;
+  } catch (e) {
+    console.error('[AnalysisPlan] LLM 호출 실패:', e.message);
+    throw new Error(`AnalysisPlan 생성 실패: ${e.message}`);
+  }
+
+  let plan;
+  try {
+    plan = JSON.parse(raw);
+  } catch (e) {
+    // JSON 파싱 실패 시 한 번만 짧은 재시도 (LLM 확률적 오류 또는 truncation 대응)
+    console.warn('[AnalysisPlan] JSON 파싱 실패 → 1회 재요청:', String(raw || '').slice(0, 200));
+    try {
+      const retry = await openai.chat.completions.create({
+        model: GPT_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt + '\n\n[재요청] 앞서 반환한 JSON 이 파싱되지 않았습니다. 반드시 완결된 유효한 JSON 하나만 반환하세요.' },
+          { role: 'user', content: query },
+        ],
+        temperature: 0.05,
+        response_format: { type: 'json_object' },
+        max_tokens: 4000,
+      });
+      raw = retry.choices[0].message.content;
+      plan = JSON.parse(raw);
+    } catch (e2) {
+      console.error('[AnalysisPlan] JSON 파싱 재시도도 실패:', String(raw || '').slice(0, 300));
+      throw new Error('AnalysisPlan JSON 파싱 실패');
+    }
+  }
+
+  // metric formula 를 실제 SQL 표현식으로 재확인 (LLM이 학습관리 산식을 잘 옮겼는지)
+  // — 사용자 산식이 명시된 경우는 존중, 이름만 참조한 경우는 metricSqlMap 으로 교체
+  if (Array.isArray(plan.metrics)) {
+    for (const m of plan.metrics) {
+      if (!m.formula && m.name && metricSqlMap[m.name]) {
+        m.formula = metricSqlMap[m.name];
+      }
+    }
+  }
+
+  // 도메인·기간 기본값 채움
+  plan.domain = plan.domain || { value: dc, source: 'UI_FILTER' };
+  if (!plan.domain.value) plan.domain.value = dc;
+  plan.period = plan.period || { from: cm, to: cm, source: 'UI_FILTER' };
+  if (!plan.period.from) plan.period.from = cm;
+  if (!plan.period.to) plan.period.to = plan.period.from;
+
+  return plan;
+}
+
+// ────────────────────────────────────────────────────────────
+// [2-a] buildAggregationSqlFromPlan — plan의 dimensions/metrics/filters
+//        로 GROUP BY SELECT 자동 생성 (LLM이 SQL 문법을 직접 작성하지 않도록)
+// ────────────────────────────────────────────────────────────
+function buildAggregationSqlFromPlan(plan, calmonth) {
+  const dims = Array.isArray(plan.dimensions) ? plan.dimensions : [];
+  const mets = Array.isArray(plan.metrics) ? plan.metrics : [];
+  const filters = Array.isArray(plan.filters) ? plan.filters : [];
+
+  const selectParts = [];
+  const groupByParts = [];
+
+  // dimensions
+  const dimAliasByName = {};
+  for (const d of dims) {
+    if (!Array.isArray(d.columns) || d.columns.length === 0) continue;
+    // 여러 컬럼(코드+명) 을 dimension 하나로 묶기 위해 각 컬럼 각각 SELECT 하되 GROUP BY 에 모두 넣는다
+    for (const col of d.columns) {
+      selectParts.push(`\`${col}\``);
+      groupByParts.push(`\`${col}\``);
+    }
+    dimAliasByName[d.name] = d.columns[d.columns.length - 1];  // 이름 컬럼(뒤쪽) 을 대표 alias 로
+  }
+
+  // metrics — alias 는 한글 name, SQL 은 산식 그대로 (metricSqlMap 로 이미 산식 채워짐)
+  const metricAliasByName = {};
+  for (const m of mets) {
+    if (!m.formula) continue;
+    const alias = m.name || `metric_${Object.keys(metricAliasByName).length + 1}`;
+    selectParts.push(`(${m.formula}) AS \`${alias}\``);
+    metricAliasByName[alias] = m.formula;
+  }
+
+  const whereParts = [`CALMONTH='${calmonth}'`];
+  for (const f of filters) {
+    if (!f.column || !f.op) continue;
+    const col = String(f.column).replace(/[^A-Za-z0-9_]/g, '');
+    if (!col) continue;
+    const opUp = String(f.op).toUpperCase();
+    if (opUp === 'IN' && Array.isArray(f.value)) {
+      const escaped = f.value.map(v => `'${String(v).replace(/'/g, "''")}'`).join(',');
+      whereParts.push(`\`${col}\` IN (${escaped})`);
+    } else if (['=', '!=', '>', '<', '>=', '<=', 'LIKE'].includes(opUp)) {
+      const v = String(f.value ?? '').replace(/'/g, "''");
+      whereParts.push(`\`${col}\` ${opUp} '${v}'`);
+    }
+  }
+
+  const selectClause = selectParts.length > 0 ? selectParts.join(', ') : '1';
+  const whereClause = whereParts.join(' AND ');
+  const groupByClause = groupByParts.length > 0 ? ` GROUP BY ${groupByParts.join(', ')}` : '';
+  // LIMIT: dimension 있으면 넉넉히, 없으면 1
+  const limit = groupByParts.length > 0 ? 5000 : 1;
+
+  const sql = `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause} LIMIT ${limit}`;
+
+  return { sql, dimAliasByName, metricAliasByName };
+}
+
+// ────────────────────────────────────────────────────────────
+// [2-b] Post-op 실행기 — CORRELATION, TOP_N, COMPARE_PERIODS 등 후처리
+// ────────────────────────────────────────────────────────────
+function pearsonCorrelation(xs, ys) {
+  const n = xs.length;
+  if (n < 3) return null;
+  let sumX = 0, sumY = 0;
+  for (let i = 0; i < n; i++) { sumX += xs[i]; sumY += ys[i]; }
+  const mx = sumX / n, my = sumY / n;
+  let num = 0, dxx = 0, dyy = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - mx, dy = ys[i] - my;
+    num += dx * dy;
+    dxx += dx * dx;
+    dyy += dy * dy;
+  }
+  const denom = Math.sqrt(dxx * dyy);
+  if (denom === 0) return null;
+  return num / denom;
+}
+
+function interpretCorrelation(r) {
+  const abs = Math.abs(r);
+  const dir = r >= 0 ? '양(+)의' : '음(-)의';
+  let strength;
+  if (abs < 0.1) strength = '거의 없음';
+  else if (abs < 0.3) strength = '약한';
+  else if (abs < 0.5) strength = '뚜렷한';
+  else if (abs < 0.7) strength = '중간 정도의';
+  else if (abs < 0.9) strength = '강한';
+  else strength = '매우 강한';
+  return `${dir} ${strength} 상관관계`;
+}
+
+function runPostOperations(plan, baseRows) {
+  const results = {
+    baseRows: baseRows,
+    baseRowCount: baseRows.length,
+    computed: {},   // { operationType: { ... } }
+    diagnostics: [],
+  };
+
+  if (!Array.isArray(plan.operations)) return results;
+
+  let workingRows = [...baseRows];
+
+  for (const op of plan.operations) {
+    if (!op || !op.type) continue;
+    const type = String(op.type).toUpperCase();
+
+    try {
+      if (type === 'GROUP_BY' || type === 'CALCULATE_METRICS') {
+        // 이미 base SQL 에서 처리됨
+        continue;
+      }
+
+      if (type === 'SORT') {
+        const byKey = op.by;
+        const order = String(op.order || 'DESC').toUpperCase() === 'ASC' ? 1 : -1;
+        workingRows.sort((a, b) => {
+          const va = Number(a[byKey]); const vb = Number(b[byKey]);
+          if (Number.isNaN(va) || Number.isNaN(vb)) return 0;
+          return (va - vb) * order;
+        });
+        continue;
+      }
+
+      if (type === 'TOP_N') {
+        const n = Math.max(1, Math.min(1000, parseInt(op.n) || 10));
+        workingRows = workingRows.slice(0, n);
+        results.computed.topN = { n, rows: workingRows };
+        continue;
+      }
+
+      if (type === 'PEARSON_CORRELATION' || type === 'CORRELATION') {
+        const xKey = op.xMetric;
+        const yKey = op.yMetric;
+        if (!xKey || !yKey) { results.diagnostics.push(`CORRELATION: xMetric/yMetric 누락`); continue; }
+        const pairs = [];
+        let excluded = 0;
+        for (const r of baseRows) {
+          const x = Number(r[xKey]); const y = Number(r[yKey]);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) { excluded++; continue; }
+          pairs.push([x, y]);
+        }
+        if (pairs.length < 3) {
+          results.diagnostics.push(`CORRELATION: 유효 데이터 ${pairs.length}건으로 상관계수 계산 불가 (최소 3건 필요)`);
+          results.computed.correlation = {
+            xMetric: xKey, yMetric: yKey,
+            validCount: pairs.length,
+            excludedCount: excluded,
+            coefficient: null,
+            interpretation: '유효 데이터 부족으로 상관계수 산출 불가',
+          };
+          continue;
+        }
+        const xs = pairs.map(p => p[0]);
+        const ys = pairs.map(p => p[1]);
+        const r = pearsonCorrelation(xs, ys);
+
+        // ── 진단 통계: variance=0 (분산 0) 인 경우 어떤 축이 상수인지 알려줌
+        //    → 재시도 LLM 이 formula 자체를 수정할 수 있도록 힌트 제공
+        const axisStats = (arr, name) => {
+          const min = Math.min(...arr);
+          const max = Math.max(...arr);
+          const uniq = new Set(arr.map(v => v.toFixed(6))).size;
+          const allZero = arr.every(v => v === 0);
+          return { name, min, max, uniqueValues: uniq, allZero, constant: uniq <= 1 };
+        };
+        const xStats = axisStats(xs, xKey);
+        const yStats = axisStats(ys, yKey);
+
+        const varianceDiag = [];
+        if (xStats.constant) varianceDiag.push(`x축 '${xKey}' 은(는) 전 행이 동일값 (${xStats.allZero ? '모두 0' : `상수=${xStats.min}`}) → 분산 0 → 상관계수 산출 불가`);
+        if (yStats.constant) varianceDiag.push(`y축 '${yKey}' 은(는) 전 행이 동일값 (${yStats.allZero ? '모두 0' : `상수=${yStats.min}`}) → 분산 0 → 상관계수 산출 불가`);
+
+        if (r === null && varianceDiag.length > 0) {
+          results.diagnostics.push(`CORRELATION variance=0 상세: ${varianceDiag.join(' / ')}`);
+          // 대체 공식 후보를 명시적으로 넣어 재시도 LLM 이 즉시 반영하게 함
+          const hint = [];
+          if (xStats.allZero) hint.push(`x축(${xKey}) formula 재검토 필요 — 원본 컬럼이 비어있을 수 있음`);
+          if (yStats.allZero) hint.push(`y축(${yKey}) formula 재검토 필요 — 원본 컬럼이 비어있을 수 있음`);
+          if (hint.length) results.diagnostics.push(`CORRELATION 재시도 힌트: ${hint.join(' / ')}`);
+        }
+
+        results.computed.correlation = {
+          xMetric: xKey, yMetric: yKey,
+          validCount: pairs.length,
+          excludedCount: excluded,
+          coefficient: r,
+          interpretation: r === null ? '분산이 0이라 상관계수 산출 불가' : interpretCorrelation(r),
+          xStats, yStats,
+          varianceZero: r === null,
+        };
+        continue;
+      }
+
+      if (type === 'COMPARE_PERIODS') {
+        // 이 op 는 별도 SQL 로 prior 기간을 조회해야 함 → execute 단계에서 처리
+        results.diagnostics.push(`COMPARE_PERIODS 는 execute 단계에서 별도 SQL 실행`);
+        continue;
+      }
+
+      if (type === 'CONTRIBUTION_ANALYSIS') {
+        const totalKey = op.totalMetric;
+        if (!totalKey) { results.diagnostics.push('CONTRIBUTION: totalMetric 누락'); continue; }
+        let total = 0;
+        for (const r of baseRows) {
+          const v = Number(r[totalKey]);
+          if (Number.isFinite(v)) total += v;
+        }
+        const withPct = baseRows.map(r => {
+          const v = Number(r[totalKey]);
+          const pct = (Number.isFinite(v) && total !== 0) ? (v / total * 100) : null;
+          return { ...r, __contributionPct: pct };
+        }).sort((a, b) => (Number(b[totalKey]) || 0) - (Number(a[totalKey]) || 0));
+        results.computed.contribution = { total, rows: withPct.slice(0, 20) };
+        continue;
+      }
+
+      if (type === 'TREND_ANALYSIS') {
+        // trend 는 별도 SQL 필요 → execute 단계에서 처리
+        results.diagnostics.push('TREND_ANALYSIS 는 execute 단계에서 별도 SQL 실행');
+        continue;
+      }
+
+      results.diagnostics.push(`알 수 없는 operation type: ${type}`);
+    } catch (e) {
+      results.diagnostics.push(`operation ${type} 실행 중 오류: ${e.message}`);
+    }
+  }
+
+  results.workingRows = workingRows;
+  return results;
+}
+
+// ────────────────────────────────────────────────────────────
+// [2-c] executeAnalysisPlan — plan 을 실제 DB 로 실행
+// ────────────────────────────────────────────────────────────
+async function executeAnalysisPlan(plan, activeDomain) {
+  const domain = (plan.domain && plan.domain.value) || activeDomain || 'PS';
+  const calmonth = (plan.period && plan.period.from) || '';
+
+  const execRecord = {
+    baseSql: null,
+    baseRowCount: 0,
+    baseExecMs: 0,
+    baseError: null,
+    priorSql: null,
+    priorRows: [],
+    priorError: null,
+    postOps: null,
+    diagnostics: [],
+  };
+
+  // ── base SQL 생성 및 실행
+  const built = buildAggregationSqlFromPlan(plan, calmonth);
+  let baseSql = applyDomainFilter(built.sql, domain);
+  execRecord.baseSql = baseSql;
+
+  // 사전검증
+  const v = validateSqlPreExecution(baseSql);
+  if (!v.valid) {
+    execRecord.baseError = `SQL 사전 검증 실패: ${v.reason}`;
+    execRecord.diagnostics.push(execRecord.baseError);
+    return execRecord;
+  }
+
+  const t0 = Date.now();
+  let baseRows = [];
+  try {
+    const [r] = await pool.query(baseSql);
+    baseRows = filterDummyRows(r);
+    execRecord.baseRowCount = baseRows.length;
+  } catch (e) {
+    execRecord.baseError = e.message;
+    execRecord.diagnostics.push(`base SQL 실행 실패: ${e.message}`);
+    return execRecord;
+  }
+  execRecord.baseExecMs = Date.now() - t0;
+
+  // ── COMPARE_PERIODS 있으면 prior 기간도 실행
+  const cmpOp = (plan.operations || []).find(o => String(o.type).toUpperCase() === 'COMPARE_PERIODS');
+  if (cmpOp && cmpOp.prior) {
+    const priorPlan = { ...plan, period: { ...plan.period, from: cmpOp.prior, to: cmpOp.prior } };
+    const priorBuilt = buildAggregationSqlFromPlan(priorPlan, cmpOp.prior);
+    const priorSql = applyDomainFilter(priorBuilt.sql, domain);
+    execRecord.priorSql = priorSql;
+    try {
+      const [pr] = await pool.query(priorSql);
+      execRecord.priorRows = filterDummyRows(pr);
+    } catch (e) {
+      execRecord.priorError = e.message;
+      execRecord.diagnostics.push(`prior SQL 실행 실패: ${e.message}`);
+    }
+  }
+
+  // ── 후처리 (SORT, TOP_N, CORRELATION, CONTRIBUTION)
+  execRecord.postOps = runPostOperations(plan, baseRows);
+  execRecord.diagnostics = execRecord.diagnostics.concat(execRecord.postOps.diagnostics || []);
+
+  return execRecord;
+}
+
+// ────────────────────────────────────────────────────────────
+// [3] validateAnalysisResults — expectedResults 대비 실제 실행 결과 검증
+// ────────────────────────────────────────────────────────────
+function validateAnalysisResults(plan, execRecord) {
+  const missing = [];
+  const notes = [];
+  const expected = Array.isArray(plan.expectedResults) ? plan.expectedResults : [];
+
+  if (execRecord.baseError) {
+    return { ok: false, missing: ['baseExecution'], notes: [`base SQL 실행 실패: ${execRecord.baseError}`] };
+  }
+
+  const post = execRecord.postOps || {};
+  const computed = post.computed || {};
+
+  for (const key of expected) {
+    const k = String(key).toLowerCase();
+
+    if (k.includes('correlation') && k.includes('coeff')) {
+      if (!computed.correlation || computed.correlation.coefficient === null || computed.correlation.coefficient === undefined) {
+        missing.push('correlationCoefficient');
+      }
+      continue;
+    }
+    if (k.includes('validcount') || k.includes('validrow') || k.includes('validcustomer')) {
+      if (!computed.correlation || typeof computed.correlation.validCount !== 'number') {
+        // base 결과 행수로 대체 확인
+        if (execRecord.baseRowCount === 0) missing.push('validRowCount');
+      }
+      continue;
+    }
+    if (k.includes('excluded')) {
+      if (!computed.correlation || typeof computed.correlation.excludedCount !== 'number') {
+        // 기본은 0으로 간주하므로 누락 아님
+      }
+      continue;
+    }
+    if (k.includes('top') || k.includes('rank')) {
+      if (!computed.topN && execRecord.baseRowCount === 0) missing.push('topRankRows');
+      continue;
+    }
+    if (k.includes('current') || k.includes('prior') || k.includes('change') || k.includes('growth')) {
+      if (execRecord.baseRowCount === 0) missing.push('periodComparisonValues');
+      continue;
+    }
+    if (k.includes('interpretation')) {
+      // 해석 텍스트는 최종답변 LLM 이 생성 — 여기선 검증하지 않음
+      continue;
+    }
+    // 기타: base 결과 존재 여부
+    if (execRecord.baseRowCount === 0 && !computed.correlation) {
+      missing.push(String(key));
+    }
+  }
+
+  // 근본 조건: 실제 결과가 아무것도 없으면 실패
+  if (execRecord.baseRowCount === 0 && Object.keys(computed).length === 0) {
+    return { ok: false, missing: missing.length ? missing : ['anyResult'], notes: ['실행 결과가 완전히 비어있음 (기간·필터 확인 필요)'] };
+  }
+
+  return { ok: missing.length === 0, missing, notes };
+}
+
+// ────────────────────────────────────────────────────────────
+// [4] generateFinalAnalysisAnswer — 제한된 컨텍스트로 최종 답변 생성
+// ────────────────────────────────────────────────────────────
+async function generateFinalAnalysisAnswer(query, plan, execRecord) {
+  const cm = (plan.period && plan.period.from) || '';
+  const cmLabel = cm ? `${cm.substring(0,4)}년 ${parseInt(cm.substring(4,6))}월` : '';
+  const domainVal = (plan.domain && plan.domain.value) || '';
+
+  // 실제 계산 결과만 요약 — 사용자 질문과 무관한 KPI 오버뷰는 포함 안 함
+  const summary = {
+    userGoal: plan.userGoal || '',
+    appliedPeriod: cmLabel,
+    appliedDomain: domainVal,
+    baseRowCount: execRecord.baseRowCount,
+    executionStatus: execRecord.baseError ? 'ERROR' : 'SUCCESS',
+    executionError: execRecord.baseError || null,
+  };
+
+  const computed = (execRecord.postOps && execRecord.postOps.computed) || {};
+
+  // 상관관계
+  if (computed.correlation) {
+    summary.correlation = {
+      x: computed.correlation.xMetric,
+      y: computed.correlation.yMetric,
+      validCount: computed.correlation.validCount,
+      excludedCount: computed.correlation.excludedCount,
+      coefficient: computed.correlation.coefficient === null ? null : Number(computed.correlation.coefficient.toFixed(4)),
+      interpretation: computed.correlation.interpretation,
+    };
+  }
+
+  // TOP_N
+  if (computed.topN) {
+    summary.topN = {
+      n: computed.topN.n,
+      rows: computed.topN.rows.slice(0, computed.topN.n).map(r => {
+        const out = {};
+        for (const k of Object.keys(r)) {
+          const v = r[k];
+          out[k] = typeof v === 'bigint' ? Number(v) : v;
+        }
+        return out;
+      }),
+    };
+  }
+
+  // Contribution
+  if (computed.contribution) {
+    summary.contribution = {
+      total: computed.contribution.total,
+      topRows: computed.contribution.rows.slice(0, 10).map(r => {
+        const out = {};
+        for (const k of Object.keys(r)) {
+          const v = r[k];
+          out[k] = typeof v === 'bigint' ? Number(v) : v;
+        }
+        return out;
+      }),
+    };
+  }
+
+  // 기간 비교
+  if (execRecord.priorRows && execRecord.priorRows.length > 0) {
+    summary.priorPeriodRowCount = execRecord.priorRows.length;
+  }
+
+  // 기본 결과 샘플 (상관관계·TOP_N 없을 때 raw 결과 일부)
+  if (!computed.correlation && !computed.topN && !computed.contribution && execRecord.baseRowCount > 0) {
+    const baseRows = execRecord.postOps.baseRows || [];
+    summary.resultSample = baseRows.slice(0, 20).map(r => {
+      const out = {};
+      for (const k of Object.keys(r)) {
+        const v = r[k];
+        out[k] = typeof v === 'bigint' ? Number(v) : v;
+      }
+      return out;
+    });
+    summary.resultSampleTotalRows = baseRows.length;
+  }
+
+  // 산식 (사용자 질문에서 언급된 지표만)
+  const usedFormulas = (plan.metrics || [])
+    .filter(m => m && m.name && m.formula)
+    .map(m => `- **${m.name}** = \`${m.formula}\``)
+    .join('\n');
+
+  const systemPrompt = `당신은 기업 수익성 분석 전문 컨설턴트입니다.
+아래는 사용자 질문을 위해 백엔드가 실제 DB에서 계산한 결과입니다.
+이 결과 수치만을 근거로 사용자 질문에 답하세요.
+
+[엄수 규칙]
+1. **아래 [실제 실행 결과]에 있는 숫자만 인용**하세요. 여기 없는 숫자는 절대 만들지 마세요.
+2. "일반적으로", "통상적으로" 같은 일반론 금지. 실제 계산 결과에만 근거.
+3. 사용자가 명시적으로 요청하지 않은 KPI(예: 도메인 전체 매출/영업이익)는 답변에 인용하지 마세요.
+4. **산식 설명이 목적이 아닙니다** — 결과 수치로 사용자 질문에 답하는 게 목적.
+   산식은 결과 해석에 필요한 최소 한도로만 언급.
+5. 상관관계 결과가 있으면: **상관계수 값 + 해석 + 유효/제외 건수**를 명시.
+6. 데이터 사후 조건(NULLIF, Dummy 제외 등)으로 제외된 건이 있으면 짧게 언급.
+7. 답변은 마크다운. **YYYY년 M월** 형식의 년월은 반드시 굵게.
+8. 500~800자 내외로 결과 중심으로 작성. 완결된 문장으로 종료.
+9. 실행 오류가 있으면 사용자에게 짧게 안내하고 원인 확정 어려움을 명시. 임의 결과 만들지 말 것.
+10. **variance=0 (분산 0) 로 상관계수가 null 인 경우**:
+    - 해당 축의 값이 전 행 동일하다는 사실을 결과로 보고 (예: "y축 '영업이익률' 은 이번 도메인·기간에서 전 거래처가 0.00으로 산출됨").
+    - 이는 **실제 계산 결과의 특성**이며, 상관계수를 임의로 만들지 말 것.
+    - "산식 재검토가 필요"하다는 안내를 짧게 첨부 (도메인 raw 컬럼 데이터 상황상 값이 안 나올 수 있음).`;
+
+  const userContent = `[사용자 원문 질문]
+${query}
+
+[적용된 기간 및 도메인]
+- 기간: ${cmLabel}
+- 도메인: ${domainVal}
+
+[사용자 질문에서 필요한 지표 산식]
+${usedFormulas || '(별도 산식 없음)'}
+
+[실제 실행 결과 — 백엔드가 계산한 값]
+${JSON.stringify(summary, null, 2)}
+
+[사용자 목적(계획 단계에서 판단)]
+${plan.userGoal || ''}
+
+위 실제 결과만 근거로 사용자 질문에 답변하세요.`;
+
+  const completion = await openai.chat.completions.create({
+    model: GPT_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent },
+    ],
+    temperature: 0.3,
+    max_tokens: 2500,
+  });
+  let answer = completion.choices[0].message.content.trim();
+  answer = boldYearMonth(answer);
+  return { answer, summary };
+}
+
+// ────────────────────────────────────────────────────────────
+// [5] generateConceptAnswer — 개념/산식 설명 (DB 조회 없음, plan 기반)
+// ────────────────────────────────────────────────────────────
+async function generateConceptAnswer(query, plan, activeDomain) {
+  // 학습관리 산식 카탈로그를 참고할 수 있도록 짧게 전달
+  let metricLines = '';
+  try {
+    const metricMap = await loadMetricMap(activeDomain || 'PS');
+    const lines = [];
+    for (const [code, meta] of Object.entries(metricMap)) {
+      if (!meta || !meta.description) continue;
+      const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
+      let sqlExpr;
+      if (meta.aggregation === 'CALC') sqlExpr = expanded;
+      else if (meta.aggregation === 'SUM') sqlExpr = `SUM(${expanded})`;
+      else sqlExpr = `${meta.aggregation}(${expanded})`;
+      lines.push(`- ${meta.description} = ${sqlExpr}`);
+    }
+    metricLines = lines.join('\n');
+  } catch(_) {}
+
+  const systemPrompt = `당신은 기업 수익성·재무 데이터 도메인 전문가입니다.
+사용자가 용어나 개념·산식의 설명을 요청했습니다. **실제 데이터 조회 없이** 정의와 산식만 간결하게 설명하세요.
+
+[규칙]
+- 한국어. 200~500자 내외.
+- 마크다운. 핵심 용어는 굵게.
+- 실제 데이터 수치는 절대 인용하지 마세요 (수치는 없음).
+- 사용자가 학습관리에 등록한 산식이 있으면 그 산식을 우선 인용.
+
+[학습관리 등록 산식 (참고용)]
+${metricLines || '(없음)'}
+`;
+  const completion = await openai.chat.completions.create({
+    model: GPT_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: query },
+    ],
+    temperature: 0.2,
+    max_tokens: 900,
+  });
+  let answer = completion.choices[0].message.content.trim();
+  answer = boldYearMonth(answer);
+  return answer;
+}
+
+// ============================================================
 // Helper: SQL 사전 검증 (LLM이 생성한 SQL의 명백한 오류 패턴 탐지)
 // - LLM이 만들 수 있는 "Invalid use of group function" 같은 실행 시 오류를
 //   실행 전에 잡아내어 자동 재요청 또는 친절한 에러 메시지로 전환
@@ -4235,12 +5077,27 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   // - metric_lookup / ontology_lookup / troubleshooting / sql_explain
   //   / domain_explain / general_chat 은 즉시 처리하여 텍스트 응답 반환
   // - data_query / analysis 는 기존 흐름으로 통과 (try 블록으로 진입)
+  //
+  // ★ 2026-07 (AnalysisPlan 파이프라인 도입):
+  //   사용자가 라디오에서 '분석질문'을 명시적으로 선택한 경우
+  //   Phase 1 신규 intent 자동분류를 스킵한다.
+  //   이유: heuristic 규칙("어떻게 ... 계산"→metric_lookup 등)이
+  //   상관분석·비교분석 질문("영업이익률은 영업이익/순매출로 계산하고, 상관관계 알려줘")
+  //   같이 산식을 명시한 결과요청까지 오분류하여 AnalysisPlan 파이프라인에
+  //   도달하지 못하게 하는 문제가 있음.
+  //   → analysis 모드에서는 AnalysisPlan LLM이 문맥 전체로 판단.
   // ============================================================
   let classifiedIntent = null;
   let classificationTier = null;
   let classificationConfidence = null;
+  const skipPhase1IntentRouting = (userQueryMode === 'analysis');
   try {
-    const cls = await classifyConversationalIntent(query, conversationContext, userQueryMode, openai, GPT_MODEL);
+    if (skipPhase1IntentRouting) {
+      console.log(`[NLQ:Intent] 분석질문 모드 → Phase 1 자동분류 스킵 (AnalysisPlan 파이프라인이 문맥 전체로 판단)`);
+    }
+    const cls = skipPhase1IntentRouting
+      ? { intent: null, tier: 'skipped_analysis_mode', confidence: 0 }
+      : await classifyConversationalIntent(query, conversationContext, userQueryMode, openai, GPT_MODEL);
     classifiedIntent = cls.intent;
     classificationTier = cls.tier;
     classificationConfidence = cls.confidence;
@@ -4264,7 +5121,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       general_chat:    handleGeneralChat,
     };
 
-    if (newIntentHandlers[classifiedIntent]) {
+    if (!skipPhase1IntentRouting && newIntentHandlers[classifiedIntent]) {
       const t0 = Date.now();
       const respBody = await newIntentHandlers[classifiedIntent](intentCommonCtx);
       const elapsed = Date.now() - t0;
@@ -4390,66 +5247,44 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       console.log(`[NLQ] 사용자 선택: 현황집계 → 표+SQL 경로 강제 (키워드 자동감지 비활성)`);
     }
     if (!matchedSql && isAnalysisMode) {
-      console.log(`[NLQ] 🧠 분석형 질문 처리 → 의도 분류 → 경로 분기`);
-      setRequestStage('analysis_intent_classify');
+      console.log(`[NLQ] 🧠 분석형 질문 처리 → AnalysisPlan 파이프라인`);
+      setRequestStage('analysis_plan_generate');
       try {
-        // ============================================================
-        // ★ 의도 분류: 사용자 질문이 개념설명 / 데이터분석 / 해석 중 무엇인지 판단
-        // ============================================================
-        const intent = await classifyAnalysisIntent(query, openai, GPT_MODEL);
-        setRequestStage(`analysis_${intent || 'unknown'}`);
+        // ══════════════════════════════════════════════════════════════
+        // ★★★ AnalysisPlan 파이프라인 (신규 · 키워드 하드코딩 제거) ★★★
+        //   [1] generateAnalysisPlan  → LLM이 문맥 전체로 실행 계획 수립
+        //   [2] concept 경로: requiresDataExecution=false → 설명만 (DB 없음)
+        //   [3] result 경로: executeAnalysisPlan → dimensions+metrics 기반 SQL
+        //                                        + 후처리 op(상관·TOP·비교 등)
+        //   [4] validateAnalysisResults → expectedResults 채움 검증
+        //       (누락 시 실패 사유와 함께 plan 1회 재생성)
+        //   [5] generateFinalAnalysisAnswer → 실제 결과만 담아 최종 답변
+        // ══════════════════════════════════════════════════════════════
+        const dc = await getDataDateContext();
+        dateContext = dc;
 
-        // ─────────────────────────────────────────────────────────
-        // 경로 1: 개념/용어 설명 (concept) — DB 조회 없이 정의만
-        // ─────────────────────────────────────────────────────────
-        if (intent === 'concept') {
-          console.log(`[NLQ] 분석경로 → concept (개념설명, DB 조회 생략)`);
+        // ── [1] AnalysisPlan 생성 (1차)
+        let plan = await generateAnalysisPlan(query, activeDomain, dc, conversationContext);
+        console.log(`[AnalysisPlan] 1차 생성 완료: requiresDataExecution=${plan.requiresDataExecution}, ` +
+          `answerMode=${plan.answerMode}, dims=${(plan.dimensions||[]).length}, ` +
+          `metrics=${(plan.metrics||[]).length}, ops=${(plan.operations||[]).length}, ` +
+          `expected=${(plan.expectedResults||[]).length}`);
 
-          const conceptCompletion = await openai.chat.completions.create({
-            model: GPT_MODEL,
-            messages: [
-              {
-                role: 'system',
-                content: `당신은 기업 수익성·재무 데이터 도메인 전문가입니다.
-사용자가 용어나 개념의 정의를 물었습니다. 데이터 조회 없이 **개념/용어 정의만** 간결하게 설명하세요.
-
-[답변 작성 규칙]
-1. 정의를 한두 문장으로 명확하게 제시
-2. 필요 시 예시 1~2개를 짧게 추가 (괄호 안 또는 한 줄)
-3. **KPI 수치, 데이터 분석, 시사점, 제언은 절대 포함하지 말 것**
-4. **"긍정적 시사점", "부정적 시사점", "제언" 같은 섹션 금지**
-5. 한국어, 친절하고 전문적인 톤
-6. 200~400자 이내로 핵심만
-7. 마크다운 굵게(**)는 핵심 용어에만 최소한으로 사용
-8. 데이터에 없는 내용 추측 금지
-9. 모든 문장은 완결된 형태로 종료`,
-              },
-              { role: 'user', content: query },
-            ],
-            temperature: 0.2,
-            max_tokens: 800,
-          });
-
-          let conceptAnswer = conceptCompletion.choices[0].message.content.trim();
-
-          // ★ 후처리: 년월 굵게 (LLM이 빠뜨려도 보장)
-          conceptAnswer = boldYearMonth(conceptAnswer);
-
-          // 이력 저장 (SQL 없음)
+        // ── [2] 개념 설명 (실제 데이터 실행 불필요)
+        if (plan.requiresDataExecution === false || plan.answerMode === 'CONCEPT_EXPLANATION') {
+          setRequestStage('analysis_concept');
+          console.log(`[AnalysisPlan] 경로: CONCEPT (DB 실행 없이 개념/산식 설명)`);
+          const conceptAnswer = await generateConceptAnswer(query, plan, activeDomain);
           const nlqUserIdConcept = req.session?.user?.id || null;
           saveHistory(
             nlqUserIdConcept, query, null,
-            conceptAnswer,
-            'analysis',
-            {},
-            [],
+            conceptAnswer, 'analysis', {}, [],
             0, 0, 'SUCCESS', null, session_id || null, activeDomain
           ).catch(e => console.error('[History] 저장 실패:', e.message));
-
           return res.json({
             success: true,
             isAnalysisAnswer: true,
-            answerType: 'concept',  // ★ 의도 유형 표기
+            answerType: 'concept',
             answer: conceptAnswer,
             analysis: conceptAnswer,
             rows: [],
@@ -4458,226 +5293,91 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             explanation: null,
             chartType: 'analysis',
             chartConfig: {},
+            analysisPlan: plan,  // 진단용
           });
         }
 
-        // ─────────────────────────────────────────────────────────
-        // 경로 2/3: data_analysis 또는 interpretation — DB 조회 필요
-        // ─────────────────────────────────────────────────────────
-        const dc = await getDataDateContext();
-        dateContext = dc;
-        const calmonth = extractCalmonthFromQuery(query, dc);
+        // ── [3] 결과 요청 경로: executeAnalysisPlan
+        setRequestStage('analysis_execute');
+        let execRecord = await executeAnalysisPlan(plan, activeDomain);
+        console.log(`[AnalysisPlan] 1차 실행: baseRows=${execRecord.baseRowCount}, ` +
+          `err=${execRecord.baseError || '-'}, ops_diag=${execRecord.diagnostics.length}`);
 
-        // ★ 방안 B: KPI overview(전체 도메인 합계)는 원인 분석(interpretation)에만 필요.
-        //   data_analysis(특정 데이터 조회/분석: 상관분석·집계·필터링 등)에는
-        //   질문과 무관한 배경 수치를 프롬프트에 주입하지 않도록 스킵한다.
-        //   (사용자 질문이 "상관관계"인데 답변에 "당월 순매출 xx원..."이 인용되는 버그 방지)
-        let finalSql = null;
-        let rows = [];
-        let execTime = 0;
-        if (intent === 'interpretation') {
-          const analysisSql = await buildAnalysisSQL(activeDomain, calmonth);
-          console.log(`[NLQ] 분석경로 → ${intent} (CALMONTH=${calmonth}) — KPI overview 조회`);
-
-          // 도메인 필터 자동 주입
-          finalSql = applyDomainFilter(analysisSql, activeDomain);
-          // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
-
-          // DB 실행 — 전체 KPI(overview)
-          const startTime = Date.now();
+        // ── [4] 결과 검증 → 실패 시 plan 1회 재생성 후 재실행
+        let validation = validateAnalysisResults(plan, execRecord);
+        console.log(`[AnalysisPlan] 1차 검증: ok=${validation.ok}, missing=${JSON.stringify(validation.missing)}`);
+        if (!validation.ok) {
+          const reason = `missing=${validation.missing.join(',')} | notes=${validation.notes.join(' / ')} | baseError=${execRecord.baseError || '-'} | diag=${(execRecord.diagnostics||[]).join(' / ')}`;
+          console.log(`[AnalysisPlan] 재시도 (plan 수정 요청): ${reason}`);
+          setRequestStage('analysis_replan');
           try {
-            const r = await pool.query(finalSql);
-            rows = filterDummyRows(r[0]);
-          } catch (e) {
-            console.warn('[NLQ] 전체 KPI 조회 실패 → 빈 결과로 진행:', e.message);
-            rows = [];
-          }
-          execTime = Date.now() - startTime;
-          console.log(`[NLQ] 분석용 KPI SQL 실행: ${execTime}ms, ${rows.length}행`);
-        } else {
-          console.log(`[NLQ] 분석경로 → ${intent} (CALMONTH=${calmonth}) — KPI overview 스킵 (data_analysis: 질문 무관 배경수치 배제)`);
-        }
-
-        // ★ NEW: 사용자 질문의 구체 대상을 좁혀 원인 분석용 보조 SQL을 LLM으로 생성·실행
-        //   "왜 Blanq-Bright ... 매출이 갑자기 증가됐어?" 같은 질문에서
-        //   품목/거래처/채널/단가/수량 등 다각도 데이터를 확보한다.
-        let detailQueries = [];
-        let detailResults = [];
-        try {
-          detailQueries = await generateAnalysisSqls(query, activeDomain, dc, conversationContext);
-          if (detailQueries.length > 0) {
-            console.log(`[NLQ] 원인분석 보조 SQL ${detailQueries.length}개 실행`);
-            detailResults = await runAnalysisSqls(detailQueries);
-          } else {
-            console.log('[NLQ] 원인분석 보조 SQL 생성 결과 0개 (질문에서 구체 대상 식별 실패)');
-          }
-        } catch (e) {
-          console.warn('[NLQ] 원인분석 보조 SQL 단계 전체 실패 (스킵):', e.message);
-        }
-
-        // LLM 분석 답변 생성
-        const dateInfo = `[기간 참고] 당월=${dc.latestLabel}, 전월=${dc.prevLabel}. "당월", "이번달", "전월" 등 상대적 기간 표현 시 반드시 실제 년월을 괄호로 병기.`;
-        // ★ 답변 출력 규칙 (전역 규칙) — analysis 경로
-        const analysisFormatRule = `[답변 출력 규칙]\n- "YYYY년 M월" 형태의 년월 표현은 반드시 **굵게(마크다운 **)** 강조하세요. 예: **2026년 5월**\n- 조회 결과에 'Dummy' 값이 있으면 본문에 언급하지 마세요. (사용자에게 노출되지 않습니다)`;
-
-        // ★ Metric(학습관리 산식) 정의 — 답변에서 지표명을 언급할 때 이 정의를 따르도록 LLM에 전달
-        //   사용자가 학습관리에서 영업이익/매출총이익 등의 산식을 수정하면 즉시 반영됨.
-        let metricDefinitionsBlock = '';
-        try {
-          const answerMetricMap = await loadMetricMap(activeDomain);
-          const lines = [];
-          for (const [code, meta] of Object.entries(answerMetricMap)) {
-            if (!meta || !meta.description) continue;
-            const expanded = expandMetricFormula(meta.formula, answerMetricMap, new Set([code]), 0);
-            let sqlExpr;
-            if (meta.aggregation === 'CALC') sqlExpr = expanded;
-            else if (meta.aggregation === 'SUM') sqlExpr = `SUM(${expanded})`;
-            else if (['AVG','COUNT','MAX','MIN'].includes(meta.aggregation)) sqlExpr = `${meta.aggregation}(${expanded})`;
-            else sqlExpr = expanded;
-            lines.push(`- **${meta.description}** = \`${sqlExpr}\``);
-          }
-          if (lines.length > 0) {
-            metricDefinitionsBlock = `[★ 학습관리 등록 지표 정의 — 답변에서 아래 지표를 언급할 때 이 정의 그대로 따를 것]\n${lines.join('\n')}\n\n` +
-              `※ 위 정의는 사용자가 학습관리 화면에서 등록한 산식입니다. 답변에서 영업이익/매출총이익 등의 수치를 인용할 때, 보조 조회 SQL이 위 정의대로 계산되었는지 확인하고 인용하세요. 만약 raw 컬럼(예: ZAMT055)을 단순 SUM한 결과를 가져왔는데 위 산식과 다르면, **그 수치를 답변에 그대로 옮기지 말고** "해당 지표는 학습관리 산식 기준으로 재계산이 필요합니다"로 안내하세요.`;
-          }
-        } catch (e) {
-          console.warn('[NLQ] 답변용 metric 정의 로드 실패:', e.message);
-        }
-
-        const dataForAnalysis = rows.slice(0, 50);
-        const overviewText = JSON.stringify(dataForAnalysis, (key, val) =>
-          typeof val === 'bigint' ? Number(val) : val
-        , 2);
-
-        // 상세 분석 결과 직렬화
-        const detailText = detailResults.length > 0
-          ? detailResults.map((d, i) => {
-              const rowsJson = JSON.stringify(d.rows, (k, v) => typeof v === 'bigint' ? Number(v) : v, 2);
-              return `### 보조 조회 ${i+1}: ${d.label}\n[SQL]\n${d.sql}\n[결과 ${d.rowCount}행${d.error ? ` — 실행 오류: ${d.error}` : ''}]\n${rowsJson}`;
-            }).join('\n\n')
-          : '';
-
-        const cmLabel = calmonth ? `${calmonth.substring(0,4)}년 ${parseInt(calmonth.substring(4,6))}월` : dc.latestLabel;
-
-        // ─────────────────────────────────────────────────────────
-        // 의도별 시스템 프롬프트 분기
-        //   ★ 변경 핵심:
-        //   - 고정 KPI 멘트/고정 섹션 강제 금지
-        //   - 실제 조회 결과의 수치만으로 근거 작성
-        //   - 데이터 부족 시 "최대한 추측 + 확정 불가" 명시
-        // ─────────────────────────────────────────────────────────
-        const commonRules = `[엄수 규칙 — 데이터 기반 답변]
-- 답변은 반드시 아래 제공된 **실제 조회 결과의 수치**에 기반해서 작성하세요.
-- "전체 KPI 기준", "일반적으로", "통상적으로" 같은 **고정 멘트/일반론 문구를 사용하지 마세요**.
-- 데이터에 해당 수치가 있으면 **반드시 원문 그대로 인용**하세요 (예: "당월 순매출 12,345,678원").
-- 상위/하위, 증가/감소, 비중 등을 말할 때 반드시 데이터의 구체 행을 근거로 들것.
-- **고정된 "긍정 시사점/부정 시사점/제언" 섹션 구조를 기계적으로 붙이지 마세요.** 질문이 요구하는 답변에 집중하세요.
-- 데이터에서 원인을 충분히 판단할 수 없으면, **현재 가용 데이터로 가능한 추측을 먼저 제시**한 뒤
-  마지막에 한 줄로 "**현재 데이터만으로는 원인 확정이 어렵다**"고 명시하고, 어떤 추가 데이터가 있으면
-  확정 가능한지(예: 거래처별 마진, 마케팅 캠페인 이력 등)를 1~2가지 제안하세요.
-- 금액은 억/만 단위로 변환 (예: 45,409,440,210원 → 약 454억원). 단, 원본 숫자가 작으면 그대로 표기.
-- 마크다운 형식(제목·볼드·리스트). 모든 문장은 완결되게 종료. 700자 내외.
-
-[★ 지표 인용 규칙 — 학습관리 산식 준수]
-- 영업이익, 매출총이익, 매출원가, 판매관리비, 마케팅비, 순매출 등 **학습관리에 등록된 지표**를 답변에서 언급할 때,
-  사용자 메시지에 함께 제공된 [학습관리 등록 지표 정의]의 산식을 기준으로만 해석·인용하세요.
-- 보조 조회 SQL이 지표 정의와 다르게(예: 등록된 산식은 \`SUM(ZAMT035)-SUM(ZAMT036)-...\` 인데 보조 조회는 \`SUM(ZAMT055)\` 만 사용) 계산된 경우,
-  **그 수치를 답변에 그대로 옮기지 말고** "해당 지표는 학습관리 산식 기준으로 재계산이 필요합니다"로 안내하세요.
-- 임의로 지표 산식을 추측해서 새로 만들어 인용하지 마세요. 등록된 정의에 없는 지표는 raw 데이터로만 설명하세요.`;
-
-        let analysisSystemPrompt;
-        if (intent === 'data_analysis') {
-          analysisSystemPrompt = `당신은 기업 수익성 분석 전문 컨설턴트입니다.
-사용자가 **특정 데이터의 조회/분석**을 요청했습니다. 데이터 수치를 정확히 인용해 답변하세요.
-
-${commonRules}
-
-[추가 지침]
-- 사용자가 묻는 항목의 수치를 먼저 명확히 제시한 뒤, 보조 데이터로 맥락을 더하세요.
-- 시사점/제언은 사용자가 명시적으로 요청했을 때만 1~2줄.`;
-        } else {
-          // interpretation: 원인·시사점·제언
-          analysisSystemPrompt = `당신은 기업 수익성 분석 전문 컨설턴트입니다.
-사용자가 **원인 분석/시사점/해석**을 요청했습니다. 제공된 데이터에 입각해 원인을 추적·설명하세요.
-
-${commonRules}
-
-[원인 분석 접근 방식 — 가능한 한 다음 관점을 데이터로 확인]
-1. 전월/당월 수치 비교 (절대값·증가액·증가율)
-2. 판매수량 변동 vs 단가 변동 (수량 효과 vs 가격 효과)
-3. 거래처/채널/플랜트/손익센터별 기여도 (특정 거래처가 견인했는가?)
-4. 신규 매출(전월 0)인지 vs 기존 거래처 반복 매출의 확대인지
-5. 일회성 대량 거래의 가능성
-
-각 관점 중 **데이터로 확인 가능한 것만** 짧게 근거 인용. 확인 불가한 관점은 가설로 1~2가지 제안.`;
-        }
-
-        const hasAnyData = (rows && rows.length > 0) || detailResults.some(d => d.rowCount > 0);
-        const metricBlockForUser = metricDefinitionsBlock ? `${metricDefinitionsBlock}\n\n` : '';
-        const userContent = hasAnyData
-          ? `${dateInfo}\n\n${analysisFormatRule}\n\n${metricBlockForUser}[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n` +
-            (rows.length > 0
-              ? `[참고용 — 도메인 전체 KPI 합계 (단일 행, 배경 컨텍스트)]\n${overviewText}\n\n※ 위 KPI 합계는 도메인 전체 배경 데이터입니다. 사용자가 명시적으로 이 KPI 수치(예: "당월 순매출은?", "매출총이익 얼마?")를 물어본 경우가 아니라면, 답변 본문에 이 숫자들을 절대 인용하지 마세요. 사용자 질문의 초점(상관관계·비교·원인 등)에만 집중해서 답하세요.\n\n`
-              : '') +
-            (detailText
-              ? `[★ 원인 분석용 상세 조회 결과 — 이 데이터를 핵심 근거로 답변하세요]\n${detailText}\n\n`
-              : `[원인 분석용 상세 조회 결과 없음]\n질문에서 구체 대상(품목/거래처 등)을 식별하지 못했거나 조회 결과가 0행입니다. 가용 데이터만으로 답하되, 마지막에 "현재 데이터만으로는 원인 확정이 어렵다"고 명시하세요.\n\n`) +
-            `위 데이터에 입각해 사용자 질문에 답하세요. 고정 KPI 멘트나 일반론은 절대 쓰지 마세요. 영업이익/매출총이익/매출원가 등 학습관리에 등록된 지표는 위 [학습관리 등록 지표 정의]의 산식 기준으로만 인용하세요.`
-          : `${dateInfo}\n\n${analysisFormatRule}\n\n${metricBlockForUser}[사용자 질문]\n${query}\n\n[분석 대상 기간] ${cmLabel}\n\n[조회 결과]: 0행 (전체 KPI·보조 조회 모두 결과 없음)\n\n해당 기간/대상의 데이터가 없습니다. 사용자에게 가능한 원인(미적재/대상명 불일치 등)을 친절히 안내하고, "**현재 데이터만으로는 원인 확정이 어렵다**"로 마무리하세요.`;
-
-        const analysisCompletion = await openai.chat.completions.create({
-          model: GPT_MODEL,
-          messages: [
-            { role: 'system', content: analysisSystemPrompt },
-            { role: 'user', content: userContent },
-          ],
-          temperature: 0.3,
-          max_tokens: 3000,
-        });
-
-        let analysis = analysisCompletion.choices[0].message.content.trim();
-        const analysisFinishReason = analysisCompletion.choices[0].finish_reason;
-        if (analysisFinishReason === 'length' && analysis.length > 0) {
-          const lastCleanEnd = Math.max(
-            analysis.lastIndexOf('다.'),
-            analysis.lastIndexOf('요.'),
-            analysis.lastIndexOf('세요.'),
-            analysis.lastIndexOf('니다.'),
-            analysis.lastIndexOf('시오.'),
-          );
-          if (lastCleanEnd > analysis.length * 0.5) {
-            const cutPos = analysis.indexOf('.', lastCleanEnd) + 1;
-            analysis = analysis.substring(0, cutPos).trim();
+            plan = await generateAnalysisPlan(query, activeDomain, dc, conversationContext, {
+              retryReason: reason,
+              previousPlan: plan,
+            });
+            execRecord = await executeAnalysisPlan(plan, activeDomain);
+            validation = validateAnalysisResults(plan, execRecord);
+            console.log(`[AnalysisPlan] 2차 실행: baseRows=${execRecord.baseRowCount}, err=${execRecord.baseError || '-'}, validation.ok=${validation.ok}`);
+          } catch (retryErr) {
+            console.warn(`[AnalysisPlan] 재시도 실패 (원본 plan으로 답변 시도): ${retryErr.message}`);
           }
         }
 
-        // ★ 후처리: 년월 굵게 (LLM이 빠뜨려도 보장)
-        analysis = boldYearMonth(analysis);
+        // ── 실행이 근본적으로 실패한 경우: 임의 결과 만들지 말고 정직하게 안내
+        if (execRecord.baseError && execRecord.baseRowCount === 0) {
+          setRequestStage('analysis_execution_failed');
+          const cmLabel2 = (plan.period && plan.period.from)
+            ? `${plan.period.from.substring(0,4)}년 ${parseInt(plan.period.from.substring(4,6))}월`
+            : dc.latestLabel;
+          const failMsg = `**${cmLabel2}** 기간·도메인(${(plan.domain && plan.domain.value) || activeDomain}) 조건으로 분석에 필요한 데이터를 조회할 수 없었습니다.\n\n` +
+            `- 실행 오류: ${execRecord.baseError}\n` +
+            `- 확인 사항: 기간·도메인·필터·컬럼명이 올바른지, 학습관리 산식이 최신인지 재검토가 필요합니다.\n\n` +
+            `실제 계산되지 않은 수치를 임의로 만들어 인용하지 않도록, **현재 데이터만으로는 결과 확정이 어렵다**고 안내드립니다.`;
+          const nlqUserIdFail = req.session?.user?.id || null;
+          saveHistory(
+            nlqUserIdFail, query, execRecord.baseSql,
+            failMsg, 'analysis', {}, [],
+            0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain
+          ).catch(e => console.error('[History] 저장 실패:', e.message));
+          return res.json({
+            success: true,
+            isAnalysisAnswer: true,
+            answerType: 'execution_failed',
+            answer: failMsg,
+            analysis: failMsg,
+            rows: [], rowCount: 0,
+            sql: null, explanation: null,
+            chartType: 'analysis', chartConfig: {},
+            analysisPlan: plan,
+            executionDiagnostics: execRecord.diagnostics,
+          });
+        }
 
-        // 이력 저장 (분석형은 표·차트 없이; 분석 본문은 explanation 필드에 저장)
+        // ── [5] 최종 답변 생성 (실제 결과만)
+        setRequestStage('analysis_answer_generate');
+        const { answer: analysis, summary } = await generateFinalAnalysisAnswer(query, plan, execRecord);
+
         const nlqUserIdAnalysis = req.session?.user?.id || null;
         saveHistory(
-          nlqUserIdAnalysis, query, finalSql,
-          analysis,        // ★ explanation 필드에 분석 본문 저장 (history 복원 시 사용)
-          'analysis',      // chartType
-          {},               // chartConfig
-          [],               // result_data: 분석형은 표 표시 안 하므로 비움
-          rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain
+          nlqUserIdAnalysis, query, execRecord.baseSql,
+          analysis, 'analysis', {}, [],
+          execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
-        // 응답: 표·차트·SQL 모두 노출하지 않고 텍스트 분석만 노출
         return res.json({
           success: true,
-          isAnalysisAnswer: true,        // ★ 프론트에서 표/SQL 탭을 숨길 수 있도록 표식
-          answerType: intent,             // ★ 의도 유형 표기 (data_analysis | interpretation)
+          isAnalysisAnswer: true,
+          answerType: 'result_based',           // RESULT_BASED 경로
           answer: analysis,
-          analysis: analysis,             // 호환성 위해 양쪽으로 제공
-          rows: [],                       // 표 데이터 비움
-          rowCount: 0,
-          sql: null,                      // SQL 노출 안 함
+          analysis: analysis,
+          rows: [], rowCount: 0,
+          sql: execRecord.baseSql,               // ← 실제 실행 SQL 노출 (진단·투명성)
           explanation: null,
-          chartType: 'analysis',
-          chartConfig: {},
+          chartType: 'analysis', chartConfig: {},
+          analysisPlan: plan,                    // 진단용 (프론트에서는 무시 가능)
+          executionSummary: summary,             // 진단용
+          validation: validation,                // 진단용
+          executionDiagnostics: execRecord.diagnostics,  // 진단용 (variance=0 원인 등)
         });
       } catch (analysisErr) {
         // ★ 분석 경로 실패 시: 친절한 안내 + 진단용 상세 에러 정보 함께 반환
