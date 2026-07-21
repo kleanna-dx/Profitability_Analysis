@@ -14,6 +14,28 @@ import session from 'express-session';
 import expressMySQLSession from 'express-mysql-session';
 import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
+import { Agent as UndiciAgent, setGlobalDispatcher as setUndiciGlobalDispatcher } from 'undici';
+
+// ════════════════════════════════════════════════════════════════════
+// [2026-07-21 hotfix] undici 글로벌 dispatcher 헤더/바디 타임아웃 확장
+// --------------------------------------------------------------------
+// Node 20 의 글로벌 fetch(undici) 기본값은 headersTimeout=300s(5분),
+// bodyTimeout=300s. 분석질문 파이프라인(LLM 다단계 호출)이 5분 이상 걸릴 수
+// 있어, self-fetch(runNlqJobInBackground → POST /api/nlq) 가 5분 넘어가면
+// 'fetch failed' 로 abort 되고 이 실패가 클라이언트 UI 에 시스템 오류로
+// 노출되던 문제를 해결. Express requestTimeout(600s) 과 정렬.
+// ════════════════════════════════════════════════════════════════════
+try {
+  const UNDICI_TIMEOUT_MS = parseInt(process.env.UNDICI_TIMEOUT_MS || '600000', 10); // 10분
+  setUndiciGlobalDispatcher(new UndiciAgent({
+    headersTimeout: UNDICI_TIMEOUT_MS,
+    bodyTimeout: UNDICI_TIMEOUT_MS,
+    connectTimeout: 30000,
+  }));
+  console.log(`[Boot] undici global dispatcher: headersTimeout=${UNDICI_TIMEOUT_MS}ms, bodyTimeout=${UNDICI_TIMEOUT_MS}ms`);
+} catch (e) {
+  console.warn('[Boot] undici dispatcher 설정 실패 (기본값 유지):', e.message);
+}
 import {
   buildRagIndex,
   searchRelevantMeta,
@@ -3770,6 +3792,7 @@ ${convCtx}${retryHint}
 반드시 위 JSON 스키마만 하나 반환. 다른 설명·마크다운·코드블록 금지.`;
 
   let raw;
+  let firstFinishReason = null;
   try {
     const completion = await openai.chat.completions.create({
       model: GPT_MODEL,
@@ -3779,38 +3802,66 @@ ${convCtx}${retryHint}
       ],
       temperature: 0.1,  // 계획 생성은 결정적으로
       response_format: { type: 'json_object' },
-      max_tokens: 4000,   // 산식이 긴 경우(예: 매출원가 27개 컬럼 합) truncation 방지
+      max_tokens: 8000,   // [2026-07-21] 4000→8000: 상반기/범위 케이스는 metrics·operations 가
+                          //   많아 4000 토큰에서 잘리며 JSON 파싱 실패 → 전체 파이프라인 실패로 이어짐
     });
     raw = completion.choices[0].message.content;
+    firstFinishReason = completion.choices[0].finish_reason;
+    if (firstFinishReason === 'length') {
+      console.warn('[AnalysisPlan] 1차 응답 finish_reason=length (max_tokens 로 잘림 가능) — 재요청 예정');
+    }
   } catch (e) {
     console.error('[AnalysisPlan] LLM 호출 실패:', e.message);
     throw new Error(`AnalysisPlan 생성 실패: ${e.message}`);
   }
 
   let plan;
-  try {
-    plan = JSON.parse(raw);
-  } catch (e) {
-    // JSON 파싱 실패 시 한 번만 짧은 재시도 (LLM 확률적 오류 또는 truncation 대응)
-    console.warn('[AnalysisPlan] JSON 파싱 실패 → 1회 재요청:', String(raw || '').slice(0, 200));
+  const needsRetry = (r) => {
+    if (r === 'length') return true;   // 잘린 경우 무조건 재시도
+    return false;
+  };
+
+  const tryParse = () => {
+    try { return { ok: true, value: JSON.parse(raw) }; }
+    catch (e) { return { ok: false, error: e }; }
+  };
+
+  let parsed = tryParse();
+  if (!parsed.ok || needsRetry(firstFinishReason)) {
+    // 파싱 실패 또는 truncation 감지 시 재요청 (최대 12000 토큰까지 확장)
+    console.warn('[AnalysisPlan] JSON 파싱 실패/truncation → 1회 재요청:',
+      `finish_reason=${firstFinishReason}, preview=`, String(raw || '').slice(0, 200));
     try {
       const retry = await openai.chat.completions.create({
         model: GPT_MODEL,
         messages: [
-          { role: 'system', content: systemPrompt + '\n\n[재요청] 앞서 반환한 JSON 이 파싱되지 않았습니다. 반드시 완결된 유효한 JSON 하나만 반환하세요.' },
+          { role: 'system', content: systemPrompt + '\n\n[재요청] 앞서 반환한 JSON 이 파싱되지 않았거나 잘렸습니다. 반드시 완결된 유효한 JSON 하나만 반환하세요. metrics/operations 배열을 필요한 만큼만 간결하게 작성해 응답 크기를 줄이세요.' },
           { role: 'user', content: query },
         ],
         temperature: 0.05,
         response_format: { type: 'json_object' },
-        max_tokens: 4000,
+        max_tokens: 12000,  // [2026-07-21] 재시도는 더 크게
       });
       raw = retry.choices[0].message.content;
-      plan = JSON.parse(raw);
+      const retryFinish = retry.choices[0].finish_reason;
+      if (retryFinish === 'length') {
+        console.error('[AnalysisPlan] 재요청도 finish_reason=length — JSON 잘림 재발');
+      }
+      parsed = tryParse();
+      if (!parsed.ok) {
+        console.error('[AnalysisPlan] JSON 파싱 재시도도 실패:', String(raw || '').slice(0, 300));
+        throw new Error('AnalysisPlan JSON 파싱 실패');
+      }
     } catch (e2) {
-      console.error('[AnalysisPlan] JSON 파싱 재시도도 실패:', String(raw || '').slice(0, 300));
-      throw new Error('AnalysisPlan JSON 파싱 실패');
+      if (parsed.ok) {
+        // 재요청 자체는 실패했지만 1차 응답이 완결 JSON 이었다면 그것을 사용
+        console.warn('[AnalysisPlan] 재요청 LLM 실패했지만 1차 응답 JSON 사용:', e2.message);
+      } else {
+        throw new Error('AnalysisPlan JSON 파싱 실패');
+      }
     }
   }
+  plan = parsed.value;
 
   // metric formula 를 실제 SQL 표현식으로 재확인 (LLM이 학습관리 산식을 잘 옮겼는지)
   // — 사용자 산식이 명시된 경우는 존중, 이름만 참조한 경우는 metricSqlMap 으로 교체
@@ -13314,19 +13365,21 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
 
 // ════════════════════════════════════════════════════════════════════
 // [2026-06-29 PR #196] HTTP 서버 timeout 명시적 설정 (4-layer 일관성)
+// [2026-07-21 hotfix] 110s → 600s: 분석질문(다단계 LLM 호출) 이 110s 벽에
+//   먼저 걸려 self-fetch 가 'fetch failed' 로 abort 되던 문제 해결.
+//   /api/builder/query 는 여전히 LLM 90s + 여유이면 충분하므로 상위 한계만 확장.
 // --------------------------------------------------------------------
-// Node.js 기본값(headersTimeout=60s) 이 Nginx 60s 와 겹쳐, /api/builder/query
-// 가 LLM 90s 까지 기다리도록 늘리려면 HTTP 서버 자체 timeout 도 같이 늘려야 함.
-//
 // timeout 위계 (안쪽이 항상 더 짧음):
-//   LLM(GPT)        90s   ← server.mjs (BUILDER_GPT_TIMEOUT_MS)
-//   Express server 110s   ← 여기 (BUILDER_SERVER_TIMEOUT_MS)
-//   Nginx proxy_read 120s ← 운영 nginx.conf (PR 본문의 배포 가이드 참고)
-//   Frontend fetch  130s  ← public/builder.html
+//   LLM(GPT) 개별 호출        60~90s   ← 각 openai.chat.completions.create
+//   AnalysisPlan 파이프라인   ~5~8분   ← 계획+실행+재계획+최종답변 (다단계)
+//   self-fetch AbortController 10분    ← runNlqJobInBackground (L6374)
+//   Express requestTimeout    10분    ← 여기 (SERVER_TIMEOUT_MS)
+//   프론트 폴링 max-wait      6분     ← public/index.html NLQ_ASYNC_MAX_WAIT_MS
+//   Nginx proxy_read          운영 nginx.conf 참고 (>= 10분 권장)
 //
 // 각 값은 환경변수로 운영 중 조정 가능.
 // ════════════════════════════════════════════════════════════════════
-const SERVER_TIMEOUT_MS = parseInt(process.env.BUILDER_SERVER_TIMEOUT_MS || '110000', 10);
+const SERVER_TIMEOUT_MS = parseInt(process.env.BUILDER_SERVER_TIMEOUT_MS || '600000', 10); // 10분
 // requestTimeout: 단일 요청 전체 (헤더+바디+처리) 의 최대 시간
 httpServer.requestTimeout = SERVER_TIMEOUT_MS;
 // headersTimeout: 헤더 수신까지의 최대 시간. requestTimeout 보다 약간 더 크게 둬야
