@@ -571,21 +571,15 @@
         }
         .send-btn:hover{box-shadow:0 4px 12px rgba(79,70,229,0.3);transform:translateY(-1px);}
         .send-btn:disabled{opacity:0.4;cursor:not-allowed;transform:none;box-shadow:none;}
-        /* [2026-07-21] 답변 생성 중 '중지' 상태 — 빨간색 정사각형 아이콘 */
+        /* [2026-07-21] 답변 생성 중 '중지' 상태 — 흐린 회색 정사각형 아이콘 */
         .send-btn.stop-mode{
-            background:linear-gradient(135deg,#ef4444,#dc2626);
+            background:linear-gradient(135deg,#9ca3af,#6b7280);
         }
-        .send-btn.stop-mode:hover{box-shadow:0 4px 12px rgba(220,38,38,0.35);}
+        .send-btn.stop-mode:hover{box-shadow:0 4px 12px rgba(107,114,128,0.28);}
         .send-btn.stop-mode:disabled{opacity:0.6;}
-        /* '요청이 중단되었습니다' 안내 박스 */
-        .cancel-notice{
-            display:flex;align-items:flex-start;gap:10px;padding:10px 14px;
-            background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;
-            color:#9f1239;font-size:13px;line-height:1.55;
-        }
-        .cancel-notice .cancel-notice-icon{
-            width:22px;height:22px;flex-shrink:0;border-radius:50%;
-            background:#fecdd3;color:#9f1239;display:flex;align-items:center;justify-content:center;font-size:11px;
+        /* '요청이 중단되었습니다' 안내 — 담백한 회색 텍스트 (아이콘/배경 없음) */
+        .cancel-notice-plain{
+            color:#9ca3af;font-size:13.5px;line-height:1.55;padding:6px 4px;
         }
         .mode-toggle{
             font-size:12px;color:#94a3b8;cursor:pointer;padding:4px 10px;
@@ -1331,23 +1325,12 @@ async function handleCancel() {
     // 버튼/입력창 즉시 활성화
     setSendButtonState('idle');
 
-    // typing indicator 제거 및 안내 표시
+    // typing indicator 제거 및 안내 표시 — 담백한 회색 텍스트 한 줄
     if (typingElToRemove) {
         try {
-            const chatArea = document.getElementById('chatArea');
             const notice = document.createElement('div');
             notice.className = 'msg-bot fade-in';
-            notice.innerHTML = `
-                <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;">
-                    <div class="bot-avatar" style="background:linear-gradient(135deg,#f87171,#dc2626);">
-                        <i class="fas fa-ban" style="font-size:13px;"></i>
-                    </div>
-                    <div class="cancel-notice" style="flex:1;">
-                        <div class="cancel-notice-icon"><i class="fas fa-stop"></i></div>
-                        <div>요청이 중단되었습니다.</div>
-                    </div>
-                </div>`;
-            // typingElToRemove 자리에 안내를 삽입 후 typing 제거
+            notice.innerHTML = `<div class="cancel-notice-plain">요청이 중단되었습니다.</div>`;
             typingElToRemove.parentNode?.insertBefore(notice, typingElToRemove);
             typingElToRemove.remove();
             scrollToBottom();
