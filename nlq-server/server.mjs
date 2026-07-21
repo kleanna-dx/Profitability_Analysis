@@ -1764,6 +1764,21 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 - 전체 기간 합산이 아님! 기준월 1개월 데이터만 조회!
 - 단, "월별 추이", "기간별", "전체", "모든 월" 등 복수 기간을 암시하는 질문은 예외
 
+[★★★ 한국어 회계기간 표현 해석 규칙 — 매우 중요! ★★★]
+사용자가 아래와 같은 한국식 기간 표현을 쓰면 반드시 아래 매핑대로 CALMONTH BETWEEN 조건을 생성하세요.
+YYYY 는 문맥의 연도(사용자가 "2026년 상반기"라 하면 2026, 연도가 없으면 현재 년도).
+- "YYYY년 상반기"                → WHERE CALMONTH BETWEEN 'YYYY01' AND 'YYYY06'
+- "YYYY년 하반기"                → WHERE CALMONTH BETWEEN 'YYYY07' AND 'YYYY12'
+- "YYYY년 1분기" / "YYYY년 Q1"   → WHERE CALMONTH BETWEEN 'YYYY01' AND 'YYYY03'
+- "YYYY년 2분기" / "YYYY년 Q2"   → WHERE CALMONTH BETWEEN 'YYYY04' AND 'YYYY06'
+- "YYYY년 3분기" / "YYYY년 Q3"   → WHERE CALMONTH BETWEEN 'YYYY07' AND 'YYYY09'
+- "YYYY년 4분기" / "YYYY년 Q4"   → WHERE CALMONTH BETWEEN 'YYYY10' AND 'YYYY12'
+- "YYYY년 전체" / "YYYY년"       → WHERE CALMONTH BETWEEN 'YYYY01' AND 'YYYY12'  (또는 CALMONTH LIKE 'YYYY%')
+- "최근 N개월" / "지난 N개월"     → CALMONTH BETWEEN <N-1개월 전> AND '__LATEST_MONTH__'
+- "YYYY년 M월 ~ YYYY년 N월"      → WHERE CALMONTH BETWEEN 'YYYYMM' AND 'YYYYMM'
+★ 이런 표현은 "기간을 명시하지 않은 질문"이 아닙니다. 절대 당월(__LATEST_MONTH__)로 축소하지 마세요.
+★ 답변/컬럼 alias에도 실제 기간 범위를 명시: 예) "2026년 상반기(2026년 1월~6월) 총매출 합계(원)".
+
 [컬럼 최소화 원칙 - 매우 중요!]
 - **질문에서 요청한 항목만 SELECT 하세요. 관련 있어 보이더라도 질문에 없는 항목은 절대 추가하지 마세요.**
 - 예: "판매수량 합계"라고 하면 → BOX 수량(BIC_ZQTY_BOX) 하나만 사용. BAG수량, EA수량은 질문에 없으므로 포함 금지.
@@ -3715,6 +3730,21 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 5. period 는 사용자가 명시한 기간 → USER_QUERY.
    명시하지 않으면 UI 기간(당월: ${cmLabel} / CALMONTH='${cm}') 사용 → UI_FILTER.
 
+5-1. **★★★ 한국어 회계기간 표현 해석 규칙 — 매우 중요! ★★★**
+   사용자가 아래와 같은 한국식 기간 표현을 쓰면 반드시 아래 매핑대로 from/to 를 채우세요 (source='USER_QUERY').
+   YYYY 는 문맥의 연도(사용자가 "2026년 상반기"라 하면 2026, 연도가 없으면 현재 년도).
+   - "YYYY년 상반기"           → from='YYYY01', to='YYYY06'   (1~6월)
+   - "YYYY년 하반기"           → from='YYYY07', to='YYYY12'   (7~12월)
+   - "YYYY년 1분기" / "YYYY년 Q1" → from='YYYY01', to='YYYY03'
+   - "YYYY년 2분기" / "YYYY년 Q2" → from='YYYY04', to='YYYY06'
+   - "YYYY년 3분기" / "YYYY년 Q3" → from='YYYY07', to='YYYY09'
+   - "YYYY년 4분기" / "YYYY년 Q4" → from='YYYY10', to='YYYY12'
+   - "YYYY년 전체" / "YYYY년"    → from='YYYY01', to='YYYY12'
+   - "최근 N개월" / "지난 N개월"  → to=당월(${cm}), from=당월에서 N-1개월 전
+   - "YYYY년 M월 ~ YYYY년 N월"   → from='YYYYMM'(시작), to='YYYYMM'(끝)
+   ★ 이런 범위 표현은 "기간을 명시하지 않은 질문"이 아닙니다. 절대 UI_FILTER 폴백하지 말고 위 매핑대로 채우세요.
+   ★ 범위 기간(from ≠ to)에서 답변 문장의 "분석 대상 기간" 문구에는 반드시 "YYYY년 M월 ~ YYYY년 N월 (X개월)" 형태로 표기하세요.
+
 6. expectedResults 는 답변에 반드시 담아야 할 결과 항목만. 상관분석이면 상관계수·유효/제외 건수 필수.
 
 7. answerMode:
@@ -3806,7 +3836,7 @@ ${convCtx}${retryHint}
 // [2-a] buildAggregationSqlFromPlan — plan의 dimensions/metrics/filters
 //        로 GROUP BY SELECT 자동 생성 (LLM이 SQL 문법을 직접 작성하지 않도록)
 // ────────────────────────────────────────────────────────────
-function buildAggregationSqlFromPlan(plan, calmonth) {
+function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   const dims = Array.isArray(plan.dimensions) ? plan.dimensions : [];
   const mets = Array.isArray(plan.metrics) ? plan.metrics : [];
   const filters = Array.isArray(plan.filters) ? plan.filters : [];
@@ -3835,7 +3865,18 @@ function buildAggregationSqlFromPlan(plan, calmonth) {
     metricAliasByName[alias] = m.formula;
   }
 
-  const whereParts = [`CALMONTH='${calmonth}'`];
+  // CALMONTH 필터: 범위(calmonthTo 지정 & from!=to) → BETWEEN, 아니면 등호
+  const cmFrom = String(calmonth || '').replace(/[^0-9]/g, '');
+  const cmTo = String(calmonthTo || '').replace(/[^0-9]/g, '');
+  let calmonthWhere;
+  if (cmFrom && cmTo && cmFrom !== cmTo) {
+    // BETWEEN은 순서 무관하도록 오름차순 정렬
+    const [lo, hi] = cmFrom <= cmTo ? [cmFrom, cmTo] : [cmTo, cmFrom];
+    calmonthWhere = `CALMONTH BETWEEN '${lo}' AND '${hi}'`;
+  } else {
+    calmonthWhere = `CALMONTH='${cmFrom || cmTo}'`;
+  }
+  const whereParts = [calmonthWhere];
   for (const f of filters) {
     if (!f.column || !f.op) continue;
     const col = String(f.column).replace(/[^A-Za-z0-9_]/g, '');
@@ -4043,6 +4084,7 @@ function runPostOperations(plan, baseRows) {
 async function executeAnalysisPlan(plan, activeDomain) {
   const domain = (plan.domain && plan.domain.value) || activeDomain || 'PS';
   const calmonth = (plan.period && plan.period.from) || '';
+  const calmonthTo = (plan.period && plan.period.to) || calmonth;
 
   const execRecord = {
     baseSql: null,
@@ -4057,7 +4099,7 @@ async function executeAnalysisPlan(plan, activeDomain) {
   };
 
   // ── base SQL 생성 및 실행
-  const built = buildAggregationSqlFromPlan(plan, calmonth);
+  const built = buildAggregationSqlFromPlan(plan, calmonth, calmonthTo);
   let baseSql = applyDomainFilter(built.sql, domain);
   execRecord.baseSql = baseSql;
 
@@ -4260,7 +4302,17 @@ function inferAnalysisUnit(plan) {
 // ────────────────────────────────────────────────────────────
 async function generateFinalAnalysisAnswer(query, plan, execRecord) {
   const cm = (plan.period && plan.period.from) || '';
-  const cmLabel = cm ? `${cm.substring(0,4)}년 ${parseInt(cm.substring(4,6))}월` : '';
+  const cmTo = (plan.period && plan.period.to) || cm;
+  const fmtYm = (v) => v ? `${v.substring(0,4)}년 ${parseInt(v.substring(4,6))}월` : '';
+  // 범위형 기간(from ≠ to)이면 "YYYY년 M월 ~ YYYY년 N월 (X개월)" 형태로 표기.
+  // 단일월이면 "YYYY년 M월" 그대로.
+  let cmLabel = fmtYm(cm);
+  if (cm && cmTo && cm !== cmTo) {
+    const fy = parseInt(cm.substring(0,4)), fm = parseInt(cm.substring(4,6));
+    const ty = parseInt(cmTo.substring(0,4)), tm = parseInt(cmTo.substring(4,6));
+    const monthSpan = (ty - fy) * 12 + (tm - fm) + 1;
+    cmLabel = `${fmtYm(cm)} ~ ${fmtYm(cmTo)} (${monthSpan}개월)`;
+  }
   const domainVal = (plan.domain && plan.domain.value) || '';
 
   // ── 분석 단위·수량사 자동 추론 (예: 거래처/개, 품목/개, 기간/개월)
@@ -5495,9 +5547,15 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         // ── 실행이 근본적으로 실패한 경우: 임의 결과 만들지 말고 정직하게 안내
         if (execRecord.baseError && execRecord.baseRowCount === 0) {
           setRequestStage('analysis_execution_failed');
-          const cmLabel2 = (plan.period && plan.period.from)
-            ? `${plan.period.from.substring(0,4)}년 ${parseInt(plan.period.from.substring(4,6))}월`
-            : dc.latestLabel;
+          const _fmtYm2 = (v) => v ? `${v.substring(0,4)}년 ${parseInt(v.substring(4,6))}월` : '';
+          const _pfrom = plan.period && plan.period.from;
+          const _pto = plan.period && plan.period.to;
+          let cmLabel2 = dc.latestLabel;
+          if (_pfrom && _pto && _pfrom !== _pto) {
+            cmLabel2 = `${_fmtYm2(_pfrom)} ~ ${_fmtYm2(_pto)}`;
+          } else if (_pfrom) {
+            cmLabel2 = _fmtYm2(_pfrom);
+          }
           const failMsg = `**${cmLabel2}** 기간·도메인(${(plan.domain && plan.domain.value) || activeDomain}) 조건으로 분석에 필요한 데이터를 조회할 수 없었습니다.\n\n` +
             `- 실행 오류: ${execRecord.baseError}\n` +
             `- 확인 사항: 기간·도메인·필터·컬럼명이 올바른지, 학습관리 산식이 최신인지 재검토가 필요합니다.\n\n` +
