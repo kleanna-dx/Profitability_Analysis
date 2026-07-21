@@ -6288,11 +6288,27 @@ function generateNlqJobId() {
 }
 
 // 백그라운드: 자기 자신의 /api/nlq 를 fetch (세션 쿠키 forward)
+// [2026-07-21] AbortController 도입 — 사용자가 중지 요청 시 self-fetch 를 abort
 async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) {
   const job = nlqJobs.get(jobId);
   if (!job) return;
+  if (job.cancelled) {
+    // 시작 전 이미 취소된 경우
+    job.status = 'cancelled';
+    job.finishedAt = Date.now();
+    return;
+  }
   job.status = 'running';
   job.runningAt = Date.now();
+
+  // [2026-07-21] 취소용 AbortController — /api/nlq/cancel 에서 job.abortController.abort() 호출
+  const abortController = new AbortController();
+  job.abortController = abortController;
+  // 10분 timeout 도 함께 붙임 (Node undici headersTimeout 회피)
+  const timeoutId = setTimeout(() => {
+    try { abortController.abort(new Error('self-fetch timeout (10min)')); } catch(_) {}
+  }, 10 * 60 * 1000);
+
   try {
     const body = JSON.stringify({
       query: job.query,
@@ -6316,7 +6332,7 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
       method: 'POST',
       headers,
       body,
-      signal: AbortSignal.timeout(10 * 60 * 1000), // 10분
+      signal: abortController.signal,
     });
     const contentType = r.headers.get('content-type') || '';
     let data = null;
@@ -6325,6 +6341,14 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
       data = await r.json().catch(() => null);
     } else {
       rawText = await r.text().catch(() => null);
+    }
+    // [2026-07-21] 응답 도착 시점에 이미 취소된 경우 → 결과 폐기 (stale response guard)
+    if (job.cancelled) {
+      job.status = 'cancelled';
+      job.result = null;
+      job.finishedAt = Date.now();
+      console.log(`[nlq-async] 🛑 job ${jobId} response discarded (already cancelled)`);
+      return;
     }
     job.statusCode = r.status;
     job.innerRequestId = r.headers.get('x-request-id') || null;
@@ -6343,10 +6367,24 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
     }
     job.finishedAt = Date.now();
   } catch (e) {
-    job.status = 'failed';
-    job.error = { message: e?.message || String(e), code: e?.code || null };
-    job.finishedAt = Date.now();
-    console.error(`[nlq-async] job ${jobId} failed:`, e);
+    // [2026-07-21] 사용자가 이미 취소를 요청한 상태(job.cancelled)면 어떤 에러든 cancelled 로 처리
+    //   - abortController.abort(new Error('user cancel')) 을 호출하면
+    //     Node undici 는 그 reason 을 그대로 throw 하므로 e.name === 'AbortError' 가 아닐 수 있음
+    //   - self-fetch timeout 도 마찬가지
+    if (job.cancelled) {
+      job.status = 'cancelled';
+      job.error = null;
+      job.finishedAt = Date.now();
+      console.log(`[nlq-async] 🛑 job ${jobId} aborted by user cancel (err=${e?.message || e})`);
+    } else {
+      job.status = 'failed';
+      job.error = { message: e?.message || String(e), code: e?.code || null };
+      job.finishedAt = Date.now();
+      console.error(`[nlq-async] job ${jobId} failed:`, e);
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    job.abortController = null;
   }
 }
 
@@ -6424,7 +6462,8 @@ app.get('/api/nlq/job/:jobId', async (req, res) => {
   const payload = {
     success: true,
     jobId: job.jobId,
-    status: job.status,        // pending | running | done | failed
+    status: job.status,        // pending | running | done | failed | cancelled
+    cancelled: !!job.cancelled,
     requestId: job.requestId,
     innerRequestId: job.innerRequestId,
     statusCode: job.statusCode,
@@ -6437,6 +6476,50 @@ app.get('/api/nlq/job/:jobId', async (req, res) => {
     error: job.error,
   };
   return res.json(payload);
+});
+
+// [2026-07-21] 답변 생성 중지 — 사용자가 UI 에서 중지 버튼 클릭 시 호출
+//   - job.cancelled = true 로 마크하고 self-fetch AbortController 를 abort
+//   - 이미 완료(done/failed)된 job 은 취소 대상이 아님 → 200 with alreadyFinished:true
+//   - 결과가 늦게 도착해도 runNlqJobInBackground 에서 폐기
+app.post('/api/nlq/cancel/:jobId', async (req, res) => {
+  if (!req.session?.user) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
+  }
+  const jobId = String(req.params.jobId || '').trim();
+  const job = nlqJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'job 을 찾을 수 없거나 만료되었습니다.', jobId });
+  }
+  const isAdmin = req.session.user.role === 'admin';
+  const isOwner = job.userId === req.session.user.id;
+  if (!isAdmin && !isOwner) {
+    return res.status(403).json({ error: '다른 사용자의 작업은 취소할 수 없습니다.' });
+  }
+  // 이미 완료됐거나 이미 취소된 경우
+  if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
+    return res.json({
+      success: true,
+      jobId,
+      status: job.status,
+      alreadyFinished: true,
+      message: `이미 ${job.status} 상태의 작업입니다.`,
+    });
+  }
+  // 중복 취소 방어
+  if (job.cancelled) {
+    return res.json({ success: true, jobId, status: job.status, alreadyCancelling: true });
+  }
+  job.cancelled = true;
+  job.cancelledAt = Date.now();
+  // self-fetch 중이라면 abort
+  try {
+    if (job.abortController) {
+      job.abortController.abort(new Error('user cancel'));
+    }
+  } catch (_) {}
+  console.log(`[nlq-async] 🛑 cancel requested jobId=${jobId} user=${req.session.user.id}`);
+  return res.json({ success: true, jobId, status: 'cancelling', cancelled: true });
 });
 
 // TTL cleanup: 완료된 job 은 1시간 후, 미완료 좀비는 시작 후 10분에 정리
