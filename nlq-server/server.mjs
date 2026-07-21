@@ -5571,9 +5571,15 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         }
 
         const nlqUserIdAnalysis = req.session?.user?.id || null;
+        // [2026-07-21] chart_config 에 columnOrder / columnLabels 저장 →
+        //   질의 이력에서 재열람할 때도 실행 직후와 동일한 상세표(한글 헤더 + 지정 순서) 복원 가능
+        const analysisChartConfig = {
+          columnOrder: detailColumnOrder,
+          columnLabels: detailColumnLabels,
+        };
         saveHistory(
           nlqUserIdAnalysis, query, execRecord.baseSql,
-          analysis, 'analysis', {}, detailRows,
+          analysis, 'analysis', analysisChartConfig, detailRows,
           execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
