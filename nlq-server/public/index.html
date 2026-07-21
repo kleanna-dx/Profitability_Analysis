@@ -1501,7 +1501,7 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
         appendIntentMessage(data);
         pushConversationContext({ query, data });
     } else if (data.isAnalysisAnswer) {
-        appendAnalysisOnlyMessage(data.answer || data.analysis || data.explanation || '분석 답변을 생성하지 못했습니다.');
+        appendAnalysisOnlyMessage(data);
         pushConversationContext({ query, data, overrideSql: null });
     } else {
         appendBotMessage(data);
@@ -1761,8 +1761,8 @@ async function sendQuery(query) {
             // 대화 컨텍스트 — Phase 2 확장 필드 포함 (직전 질의의 맥락 유지)
             pushConversationContext({ query, data });
         } else if (data.isAnalysisAnswer) {
-            // ★ 분석형 답변: 표/SQL/차트 없이 텍스트 분석만 표시
-            appendAnalysisOnlyMessage(data.answer || data.analysis || data.explanation || '분석 답변을 생성하지 못했습니다.');
+            // ★ 분석형 답변: 텍스트 분석 + (rows 있으면) 페이지네이션·정렬·검색 지원 표
+            appendAnalysisOnlyMessage(data);
             // 대화 컨텍스트에 추가 (SQL은 null)
             pushConversationContext({ query, data, overrideSql: null });
         } else {
@@ -2418,30 +2418,342 @@ function appendUnknownTermMessage(msg) {
 // ============================================================
 // 분석형 답변 전용 메시지 (표/SQL/차트 없이 텍스트 분석만 노출)
 // ============================================================
-function appendAnalysisOnlyMessage(analysis) {
+// ============================================================
+// [2026-07-21] 분석 답변 렌더 — 텍스트 요약 + (rows 있으면) 상세표
+// ------------------------------------------------------------
+// 파라미터 형식:
+//   - 문자열: 과거 히스토리에서 텍스트만 있는 경우 (표 없이 텍스트만 렌더)
+//   - 객체:   백엔드 /api/nlq result_based 응답 그대로.
+//             { answer, analysis, rows, rowCount, columnLabels, columnOrder, sql }
+//
+// rows 가 있으면 상세 계산 결과표 (거래처당 1행, 품목당 1행 등) 를 함께 렌더.
+// 표는 페이지네이션 (기본 20행/페이지) · 컬럼 정렬 · 자유 텍스트 검색 지원.
+// ============================================================
+function appendAnalysisOnlyMessage(dataOrText) {
     const chatArea = document.getElementById('chatArea');
     const el = document.createElement('div');
     el.className = 'msg-bot fade-in';
 
-    // 마크다운을 간단히 HTML로 렌더 (제목/볼드/리스트)
-    const rendered = renderSimpleMarkdown(analysis || '');
+    // 파라미터 정규화
+    let analysisText, rows, columnLabels, columnOrder, sql, rowCount;
+    if (typeof dataOrText === 'string') {
+        analysisText = dataOrText;
+        rows = null;
+    } else {
+        const d = dataOrText || {};
+        analysisText = d.answer || d.analysis || d.explanation || '분석 답변을 생성하지 못했습니다.';
+        rows = Array.isArray(d.rows) ? d.rows
+             : Array.isArray(d.data) ? d.data
+             : null;
+        columnLabels = d.columnLabels || {};
+        columnOrder = Array.isArray(d.columnOrder) && d.columnOrder.length > 0
+            ? d.columnOrder
+            : (rows && rows.length > 0 ? Object.keys(rows[0]) : []);
+        sql = d.sql || '';
+        rowCount = typeof d.rowCount === 'number' ? d.rowCount : (rows ? rows.length : 0);
+    }
+
+    const rendered = renderSimpleMarkdown(analysisText || '');
+    const hasTable = Array.isArray(rows) && rows.length > 0;
+    const tableId = 'aatbl_' + (++msgCounter);
+
+    const tableSection = hasTable
+        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql)
+        : '';
 
     el.innerHTML = `
         <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
             <div class="bot-avatar" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);">
                 <i class="fas fa-brain" style="font-size:13px;"></i>
             </div>
-            <div style="background:linear-gradient(135deg,#faf5ff,#f0f4ff);border:1px solid #ddd6fe;padding:16px 20px;border-radius:12px;flex:1;">
+            <div style="background:linear-gradient(135deg,#faf5ff,#f0f4ff);border:1px solid #ddd6fe;padding:16px 20px;border-radius:12px;flex:1;min-width:0;">
                 <p style="color:#5b21b6;font-size:12px;font-weight:700;margin-bottom:10px;letter-spacing:0.3px;">
                     <i class="fas fa-lightbulb" style="margin-right:5px;"></i>AI 분석
                 </p>
                 <div style="color:#1f2937;font-size:13px;line-height:1.75;" class="analysis-body">
                     ${rendered}
                 </div>
+                ${tableSection}
             </div>
         </div>`;
     chatArea.appendChild(el);
+
+    // 표 인터랙션 바인딩 (검색·정렬·페이지네이션)
+    if (hasTable) {
+        initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels);
+    }
+
     scrollToBottom();
+}
+
+// ============================================================
+// 분석 결과 상세표 — HTML 구조 생성
+//   - 검색 입력 / 페이지 사이즈 선택 / 페이지 이동 툴바
+//   - <thead> 헤더 클릭 시 정렬
+//   - 실제 데이터 채움과 이벤트 바인딩은 initAnalysisDetailTable 에서.
+// ============================================================
+function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql) {
+    // 컬럼 헤더 라벨
+    const headers = columnOrder.map(c => (columnLabels && columnLabels[c]) || c);
+    // SQL 다운로드/펼침 토글 옵션
+    const sqlToggleId = tableId + '_sqltoggle';
+    const sqlPanelId = tableId + '_sqlpanel';
+    return `
+    <div class="analysis-detail-wrap" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+        <div class="analysis-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:linear-gradient(135deg,#eef2ff,#f5f3ff);border-bottom:1px solid #e5e7eb;flex-wrap:wrap;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;color:#4c1d95;font-size:12px;font-weight:700;">
+                <i class="fas fa-table"></i>
+                <span>분석 대상 상세 결과 <span id="${tableId}_count" style="color:#6b7280;font-weight:500;">(${rowCount.toLocaleString('ko-KR')}행)</span></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <div style="position:relative;">
+                    <i class="fas fa-search" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#9ca3af;font-size:11px;pointer-events:none;"></i>
+                    <input type="text" id="${tableId}_search" placeholder="검색" style="padding:5px 8px 5px 26px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;width:140px;" />
+                </div>
+                <select id="${tableId}_pagesize" style="padding:5px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;">
+                    <option value="10">10행/페이지</option>
+                    <option value="20" selected>20행/페이지</option>
+                    <option value="50">50행/페이지</option>
+                    <option value="100">100행/페이지</option>
+                    <option value="0">전체 보기</option>
+                </select>
+                ${sql ? `<button type="button" id="${sqlToggleId}" onclick="toggleAnalysisSql('${sqlPanelId}', this)" style="padding:5px 10px;background:#fff;border:1px solid #d1d5db;border-radius:6px;font-size:12px;cursor:pointer;color:#374151;"><i class="fas fa-code mr-1"></i>SQL 보기</button>` : ''}
+            </div>
+        </div>
+        ${sql ? `<div id="${sqlPanelId}" style="display:none;padding:10px 12px;background:#0f172a;color:#e2e8f0;font-family:'Consolas','Monaco',monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;overflow-x:auto;">${esc(sql)}</div>` : ''}
+        <div style="max-height:440px;overflow:auto;">
+            <table id="${tableId}" class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead style="position:sticky;top:0;background:#f9fafb;z-index:1;">
+                    <tr>
+                        <th style="padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:right;color:#6b7280;font-weight:600;width:44px;">#</th>
+                        ${headers.map((h, i) => `
+                            <th data-col-idx="${i}" style="padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left;color:#374151;font-weight:600;cursor:pointer;user-select:none;white-space:nowrap;" onclick="sortAnalysisTable('${tableId}', ${i})">
+                                <span>${esc(h)}</span>
+                                <i class="fas fa-sort" style="margin-left:4px;color:#9ca3af;font-size:10px;" data-sort-icon></i>
+                            </th>`).join('')}
+                    </tr>
+                </thead>
+                <tbody id="${tableId}_tbody"></tbody>
+            </table>
+        </div>
+        <div id="${tableId}_pager" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:12px;color:#4b5563;flex-wrap:wrap;gap:8px;">
+            <div id="${tableId}_pageinfo"></div>
+            <div id="${tableId}_pagectrl" style="display:flex;align-items:center;gap:4px;"></div>
+        </div>
+    </div>`;
+}
+
+// SQL 패널 토글
+function toggleAnalysisSql(panelId, btn) {
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    const show = panel.style.display === 'none';
+    panel.style.display = show ? 'block' : 'none';
+    if (btn) btn.innerHTML = show
+        ? '<i class="fas fa-code mr-1"></i>SQL 숨기기'
+        : '<i class="fas fa-code mr-1"></i>SQL 보기';
+}
+
+// 분석 결과 상세표 상태 저장소 (검색·정렬·페이지 유지)
+const analysisTableState = {};
+
+// ============================================================
+// initAnalysisDetailTable — 표 인터랙션 초기화
+//   - 초기 렌더
+//   - 검색어 변경 / 페이지 크기 변경 시 재렌더
+// ============================================================
+function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels) {
+    analysisTableState[tableId] = {
+        rows: rows,
+        columnOrder: columnOrder,
+        columnLabels: columnLabels || {},
+        page: 1,
+        pageSize: 20,
+        search: '',
+        sortCol: -1,
+        sortDir: 0,   // 0=none, 1=asc, -1=desc
+    };
+    const st = analysisTableState[tableId];
+    const searchEl = document.getElementById(tableId + '_search');
+    const pageSizeEl = document.getElementById(tableId + '_pagesize');
+    if (searchEl) {
+        searchEl.addEventListener('input', () => {
+            st.search = searchEl.value.trim().toLowerCase();
+            st.page = 1;
+            renderAnalysisTable(tableId);
+        });
+    }
+    if (pageSizeEl) {
+        pageSizeEl.addEventListener('change', () => {
+            st.pageSize = parseInt(pageSizeEl.value, 10) || 20;
+            st.page = 1;
+            renderAnalysisTable(tableId);
+        });
+    }
+    renderAnalysisTable(tableId);
+}
+
+// 정렬 토글
+function sortAnalysisTable(tableId, colIdx) {
+    const st = analysisTableState[tableId];
+    if (!st) return;
+    if (st.sortCol === colIdx) {
+        // 같은 컬럼 → asc → desc → none 순환
+        st.sortDir = (st.sortDir === 0) ? 1 : (st.sortDir === 1 ? -1 : 0);
+        if (st.sortDir === 0) st.sortCol = -1;
+    } else {
+        st.sortCol = colIdx;
+        st.sortDir = 1;
+    }
+    st.page = 1;
+    renderAnalysisTable(tableId);
+}
+
+// 값이 숫자로 해석되는지 (문자열 "1,250" 도 숫자로 인식)
+function _parseNumericLoose(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    const s = String(v).replace(/,/g, '').trim();
+    if (s === '') return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+}
+
+// 페이지 컨트롤 렌더
+function _buildPagerControls(tableId, totalPages, currentPage) {
+    if (totalPages <= 1) return '';
+    const btnStyle = 'padding:3px 9px;border:1px solid #d1d5db;background:#fff;border-radius:5px;cursor:pointer;font-size:11px;color:#374151;min-width:28px;';
+    const activeStyle = btnStyle + 'background:#6366f1;color:#fff;border-color:#6366f1;font-weight:600;';
+    const disabledStyle = btnStyle + 'opacity:0.4;cursor:not-allowed;';
+    const parts = [];
+    // Prev
+    parts.push(`<button type="button" style="${currentPage <= 1 ? disabledStyle : btnStyle}" ${currentPage <= 1 ? 'disabled' : ''} onclick="gotoAnalysisPage('${tableId}', ${currentPage - 1})"><i class="fas fa-chevron-left" style="font-size:9px;"></i></button>`);
+    // 페이지 번호 (현재 ±3 범위 + 처음/끝)
+    const pageNums = new Set([1, totalPages, currentPage]);
+    for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) pageNums.add(i);
+    const sortedPages = [...pageNums].sort((a,b) => a - b);
+    let prev = 0;
+    for (const p of sortedPages) {
+        if (p - prev > 1) parts.push(`<span style="padding:0 4px;color:#9ca3af;">…</span>`);
+        parts.push(`<button type="button" style="${p === currentPage ? activeStyle : btnStyle}" onclick="gotoAnalysisPage('${tableId}', ${p})">${p}</button>`);
+        prev = p;
+    }
+    // Next
+    parts.push(`<button type="button" style="${currentPage >= totalPages ? disabledStyle : btnStyle}" ${currentPage >= totalPages ? 'disabled' : ''} onclick="gotoAnalysisPage('${tableId}', ${currentPage + 1})"><i class="fas fa-chevron-right" style="font-size:9px;"></i></button>`);
+    return parts.join('');
+}
+
+function gotoAnalysisPage(tableId, page) {
+    const st = analysisTableState[tableId];
+    if (!st) return;
+    st.page = page;
+    renderAnalysisTable(tableId);
+}
+
+// 실제 tbody + 페이지 컨트롤 갱신
+function renderAnalysisTable(tableId) {
+    const st = analysisTableState[tableId];
+    if (!st) return;
+    const tbody = document.getElementById(tableId + '_tbody');
+    const pageInfo = document.getElementById(tableId + '_pageinfo');
+    const pageCtrl = document.getElementById(tableId + '_pagectrl');
+    const countEl = document.getElementById(tableId + '_count');
+    if (!tbody) return;
+
+    // 필터링
+    let filtered = st.rows;
+    if (st.search) {
+        const q = st.search;
+        filtered = st.rows.filter(row => {
+            for (const c of st.columnOrder) {
+                const v = row[c];
+                if (v === null || v === undefined) continue;
+                if (String(v).toLowerCase().includes(q)) return true;
+            }
+            return false;
+        });
+    }
+    // 정렬
+    if (st.sortCol >= 0 && st.sortDir !== 0) {
+        const col = st.columnOrder[st.sortCol];
+        const dir = st.sortDir;
+        filtered = [...filtered].sort((a, b) => {
+            const va = a[col], vb = b[col];
+            const na = _parseNumericLoose(va), nb = _parseNumericLoose(vb);
+            if (na !== null && nb !== null) return (na - nb) * dir;
+            const sa = va === null || va === undefined ? '' : String(va);
+            const sb = vb === null || vb === undefined ? '' : String(vb);
+            return sa.localeCompare(sb, 'ko') * dir;
+        });
+    }
+    // 정렬 아이콘 갱신
+    const ths = document.querySelectorAll(`#${tableId} thead th[data-col-idx]`);
+    ths.forEach((th, i) => {
+        const icon = th.querySelector('[data-sort-icon]');
+        if (!icon) return;
+        if (i === st.sortCol && st.sortDir !== 0) {
+            icon.className = st.sortDir === 1 ? 'fas fa-sort-up' : 'fas fa-sort-down';
+            icon.style.color = '#6366f1';
+        } else {
+            icon.className = 'fas fa-sort';
+            icon.style.color = '#9ca3af';
+        }
+    });
+    // 페이지네이션
+    const total = filtered.length;
+    const pageSize = st.pageSize > 0 ? st.pageSize : Math.max(1, total);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (st.page > totalPages) st.page = totalPages;
+    const startIdx = (st.page - 1) * pageSize;
+    const endIdx = st.pageSize > 0 ? Math.min(startIdx + pageSize, total) : total;
+    const pageRows = filtered.slice(startIdx, endIdx);
+
+    // 카운트 표시
+    if (countEl) {
+        if (st.search) {
+            countEl.textContent = `(${total.toLocaleString('ko-KR')}행 / 전체 ${st.rows.length.toLocaleString('ko-KR')}행)`;
+        } else {
+            countEl.textContent = `(${total.toLocaleString('ko-KR')}행)`;
+        }
+    }
+
+    // tbody 갱신
+    const cellStyle = 'padding:6px 10px;border-bottom:1px solid #f3f4f6;white-space:nowrap;';
+    const numStyle = cellStyle + 'text-align:right;font-family:\'JetBrains Mono\',\'Consolas\',monospace;';
+    if (pageRows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${st.columnOrder.length + 1}" style="padding:20px;text-align:center;color:#9ca3af;">검색 결과가 없습니다.</td></tr>`;
+    } else {
+        tbody.innerHTML = pageRows.map((row, i) => {
+            const rowIdx = startIdx + i + 1;
+            const cells = st.columnOrder.map(c => {
+                let v = row[c];
+                const num = _parseNumericLoose(v);
+                if (v === null || v === undefined) return `<td style="${cellStyle}color:#9ca3af;">-</td>`;
+                if (num !== null && typeof v !== 'boolean') {
+                    // 숫자 포맷: 정수는 콤마, 소수는 소수 4자리까지
+                    const isInt = Number.isInteger(num);
+                    const shown = isInt
+                        ? num.toLocaleString('ko-KR')
+                        : num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 4 });
+                    return `<td style="${numStyle}">${shown}</td>`;
+                }
+                return `<td style="${cellStyle}color:#111827;">${esc(String(v))}</td>`;
+            }).join('');
+            return `<tr><td style="${cellStyle}color:#9ca3af;text-align:right;">${rowIdx}</td>${cells}</tr>`;
+        }).join('');
+    }
+    // 페이지 정보
+    if (pageInfo) {
+        if (total === 0) {
+            pageInfo.textContent = '';
+        } else {
+            pageInfo.textContent = `${(startIdx + 1).toLocaleString('ko-KR')}-${endIdx.toLocaleString('ko-KR')} / ${total.toLocaleString('ko-KR')}`;
+        }
+    }
+    // 페이지 컨트롤
+    if (pageCtrl) {
+        pageCtrl.innerHTML = _buildPagerControls(tableId, totalPages, st.page);
+    }
 }
 
 // ============================================================
