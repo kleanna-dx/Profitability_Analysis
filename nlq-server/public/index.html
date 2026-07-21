@@ -2247,12 +2247,17 @@ function appendBotMessage(data) {
         data.data.forEach((row, i) => {
             t += `<tr><td class="text-gray-400" data-col-idx="0">${i+1}</td>`;
             cols.forEach((c, ci) => {
-                let v = row[c];
-                const isNum = typeof v === 'number' || (typeof v === 'string' && isNumericValue(v));
-                if (v === null || v === undefined) v = '-';
-                else if (typeof v === 'number') v = v.toLocaleString('ko-KR');
+                const v = row[c];
+                // [2026-07-21] 컬럼 타입 기반 포맷:
+                //   시간축(CALMONTH 등)은 콤마 없이, 금액·수량은 콤마, 소수는 4자리
+                // 정렬용 데이터 유무만 기준으로 우측정렬 결정 (시간축도 숫자값이면 우측정렬 유지)
+                const num = _parseNumericLoose(v);
+                const isNum = num !== null && typeof v !== 'boolean';
+                const shown = (v === null || v === undefined)
+                    ? '-'
+                    : formatCellValue(v, c, colLabels[c] || c);
                 const align = isNum ? 'text-right font-mono' : '';
-                t += `<td class="${align}" data-col-idx="${ci+1}">${esc(String(v))}</td>`;
+                t += `<td class="${align}" data-col-idx="${ci+1}">${shown}</td>`;
             });
             t += '</tr>';
         });
@@ -2853,6 +2858,58 @@ function _parseNumericLoose(v) {
     return Number.isFinite(n) ? n : null;
 }
 
+// ============================================================
+// [2026-07-21] 컬럼 이름/라벨 기반 "달력·연월 컬럼" 판별
+// ------------------------------------------------------------
+// 목적: CALMONTH(202601) 같은 연월 코드 값이 202,601 처럼 콤마로 표시되는 문제 방지.
+//   금액·수량·비율 등 진짜 숫자는 그대로 콤마 포맷을 유지하되,
+//   "달력연도/월", "달력일", "연도", "월" 같은 시간축 컬럼만 콤마를 뗀 raw 문자열로 표시.
+//
+// 판별 근거 (우선순위 순):
+//   1) 컬럼 영문 원본명 (col)  ← DB 컬럼명. CALMONTH/CALDAY/CALYEAR/CALQUARTER 등
+//   2) 컬럼 한국어 라벨 (label) ← 사용자에게 보이는 헤더. "달력연도/월", "연월", "월" 등
+// 시간축 컬럼은 값 크기가 6~8자리 정수여서 자동 콤마 붙이면 의미 왜곡됨.
+// ============================================================
+function isCalendarColumn(col, label) {
+    // 1) 영문 컬럼명 화이트리스트 (SAP BW / 자주 쓰는 시간축)
+    const upperCol = String(col || '').toUpperCase();
+    if (/^CAL(MONTH|DAY|YEAR|QUARTER|WEEK)$/.test(upperCol)) return true;
+    if (/^(YEAR|MONTH|DAY|QUARTER|WEEK|YEARMONTH|YYYYMM|YYYYMMDD)$/.test(upperCol)) return true;
+
+    // 2) 한국어 라벨 기반 판별
+    const labelStr = String(label || '');
+    if (/달력\s*(연도|년도|연월|년월|월|일)/.test(labelStr)) return true;
+    if (/^(연월|년월|연도|년도|월|분기|주차|일자)$/.test(labelStr.trim())) return true;
+    if (/^\d{4}년/.test(labelStr.trim())) return true;
+
+    return false;
+}
+
+// ============================================================
+// [2026-07-21] 컬럼 타입 기반 값 포맷팅 (공용 헬퍼)
+// ------------------------------------------------------------
+// 규칙:
+//   1) 시간축 컬럼(isCalendarColumn=true) → 콤마 없이 raw 문자열 (예: 202601)
+//   2) 정수 → 천 단위 콤마 (예: -2,063,050,449)
+//   3) 소수 → 소수 4자리까지 (비율/이율은 이대로)
+//   4) 그 외 → esc(String(v))
+// 반환: 이미 이스케이프된 안전한 HTML 문자열
+// ============================================================
+function formatCellValue(v, col, label) {
+    if (v === null || v === undefined || v === '') return '-';
+    // 시간축 컬럼은 항상 raw 문자열
+    if (isCalendarColumn(col, label)) {
+        return esc(String(v));
+    }
+    const num = _parseNumericLoose(v);
+    if (num !== null && typeof v !== 'boolean') {
+        if (Number.isInteger(num)) return esc(num.toLocaleString('ko-KR'));
+        return esc(num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 4 }));
+    }
+    return esc(String(v));
+}
+
+
 // 페이지 컨트롤 렌더
 function _buildPagerControls(tableId, totalPages, currentPage) {
     if (totalPages <= 1) return '';
@@ -2960,18 +3017,24 @@ function renderAnalysisTable(tableId) {
         tbody.innerHTML = pageRows.map((row, i) => {
             const rowIdx = startIdx + i + 1;
             const cells = st.columnOrder.map(c => {
-                let v = row[c];
-                const num = _parseNumericLoose(v);
+                const v = row[c];
                 if (v === null || v === undefined) return `<td style="${cellStyle}color:#9ca3af;">-</td>`;
+                // [2026-07-21] 컬럼 타입 기반 포맷 (formatCellValue)
+                //   - CALMONTH 같은 시간축 컬럼은 콤마 없이 raw 문자열 (202601)
+                //   - 금액·수량은 천 단위 콤마 (-2,063,050,449)
+                //   - 소수(비율/이율)는 소수 4자리 (0.0824)
+                const label = (st.columnLabels && st.columnLabels[c]) || c;
+                const isCal = isCalendarColumn(c, label);
+                const num = _parseNumericLoose(v);
+                const shown = formatCellValue(v, c, label);
+                // 시간축 컬럼은 값이 숫자여도 좌측정렬(코드성) — 금액과 시각적으로 구분
+                if (isCal) {
+                    return `<td style="${cellStyle}color:#111827;font-family:'JetBrains Mono','Consolas',monospace;text-align:right;">${shown}</td>`;
+                }
                 if (num !== null && typeof v !== 'boolean') {
-                    // 숫자 포맷: 정수는 콤마, 소수는 소수 4자리까지
-                    const isInt = Number.isInteger(num);
-                    const shown = isInt
-                        ? num.toLocaleString('ko-KR')
-                        : num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 4 });
                     return `<td style="${numStyle}">${shown}</td>`;
                 }
-                return `<td style="${cellStyle}color:#111827;">${esc(String(v))}</td>`;
+                return `<td style="${cellStyle}color:#111827;">${shown}</td>`;
             }).join('');
             return `<tr><td style="${cellStyle}color:#9ca3af;text-align:right;">${rowIdx}</td>${cells}</tr>`;
         }).join('');
