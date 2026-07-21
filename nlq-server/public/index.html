@@ -571,6 +571,22 @@
         }
         .send-btn:hover{box-shadow:0 4px 12px rgba(79,70,229,0.3);transform:translateY(-1px);}
         .send-btn:disabled{opacity:0.4;cursor:not-allowed;transform:none;box-shadow:none;}
+        /* [2026-07-21] 답변 생성 중 '중지' 상태 — 빨간색 정사각형 아이콘 */
+        .send-btn.stop-mode{
+            background:linear-gradient(135deg,#ef4444,#dc2626);
+        }
+        .send-btn.stop-mode:hover{box-shadow:0 4px 12px rgba(220,38,38,0.35);}
+        .send-btn.stop-mode:disabled{opacity:0.6;}
+        /* '요청이 중단되었습니다' 안내 박스 */
+        .cancel-notice{
+            display:flex;align-items:flex-start;gap:10px;padding:10px 14px;
+            background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;
+            color:#9f1239;font-size:13px;line-height:1.55;
+        }
+        .cancel-notice .cancel-notice-icon{
+            width:22px;height:22px;flex-shrink:0;border-radius:50%;
+            background:#fecdd3;color:#9f1239;display:flex;align-items:center;justify-content:center;font-size:11px;
+        }
         .mode-toggle{
             font-size:12px;color:#94a3b8;cursor:pointer;padding:4px 10px;
             border-radius:6px;border:1px solid #e5e7eb;background:#fff;
@@ -898,6 +914,20 @@ let inputMode = 'nlq'; // 'nlq' or 'sql'
 let queryMode = 'aggregate'; // 'aggregate'(현황집계: 표+SQL) | 'analysis'(분석질문: 텍스트만) — 기본값: 현황집계
 let isLoading = false;
 let msgCounter = 0;
+
+// ============================================================
+// [2026-07-21] 답변 생성 중지 기능
+//   - currentRequestSeq: 요청 시퀀스 (매 요청 ++, 응답 처리 전 일치 확인 → stale 응답 폐기)
+//   - currentAbortController: 현재 진행 중 요청의 AbortController (fetch/폴링 취소용)
+//   - currentJobId: 현재 진행 중 async 잡의 jobId (서버 cancel API 호출용)
+//   - currentTypingEl: 현재 진행 중 요청의 typing indicator DOM 참조
+//   - cancelInFlight: 중지 요청이 진행 중인지 (중복 클릭 방어)
+// ============================================================
+let currentRequestSeq = 0;
+let currentAbortController = null;
+let currentJobId = null;
+let currentTypingEl = null;
+let cancelInFlight = false;
 // 대화 컨텍스트: 이전 질문+SQL 쌍을 GPT에 전달하여 후속 질문 이해력 향상
 // 최근 5턴만 유지 (토큰 절약)
 let conversationContext = [];
@@ -1255,7 +1285,11 @@ function onQueryModeChange(mode) {
 // Send
 // ============================================================
 function handleSend() {
-    if (isLoading) return;
+    // [2026-07-21] 답변 생성 중이면 전송 버튼이 '중지' 역할로 전환됨 → 중지 처리
+    if (isLoading) {
+        handleCancel();
+        return;
+    }
     if (inputMode === 'nlq') {
         const q = document.getElementById('queryInput').value.trim();
         if (!q) return;
@@ -1264,6 +1298,101 @@ function handleSend() {
         const s = document.getElementById('sqlInput').value.trim();
         if (!s) return;
         sendQuery('직접 SQL 실행: ' + s);
+    }
+}
+
+// ============================================================
+// [2026-07-21] 답변 생성 중지 처리
+//   - AbortController.abort() → 진행 중 fetch 즉시 중단
+//   - async 잡(jobId 있음)일 경우 서버 /api/nlq/cancel/:jobId 도 호출하여 self-fetch 취소
+//   - currentRequestSeq 를 증가시켜 늦게 도착하는 응답은 stale 로 폐기
+//   - typing indicator 제거 → "요청이 중단되었습니다." 안내 표시
+//   - 입력창/전송 버튼 즉시 활성화
+//   - 중복 클릭 방어: cancelInFlight 플래그
+// ============================================================
+async function handleCancel() {
+    if (!isLoading) return;
+    if (cancelInFlight) return;
+    cancelInFlight = true;
+
+    // 현재 요청의 시퀀스/컨트롤러/잡ID/타이핑엘 스냅샷
+    const cancelledSeq = currentRequestSeq;
+    const controllerToAbort = currentAbortController;
+    const jobIdToCancel = currentJobId;
+    const typingElToRemove = currentTypingEl;
+
+    // 새 요청 즉시 허용 상태로
+    currentRequestSeq++; // 이후 도착하는 이 요청의 응답은 seq 불일치로 폐기
+    currentAbortController = null;
+    currentJobId = null;
+    currentTypingEl = null;
+    isLoading = false;
+
+    // 버튼/입력창 즉시 활성화
+    setSendButtonState('idle');
+
+    // typing indicator 제거 및 안내 표시
+    if (typingElToRemove) {
+        try {
+            const chatArea = document.getElementById('chatArea');
+            const notice = document.createElement('div');
+            notice.className = 'msg-bot fade-in';
+            notice.innerHTML = `
+                <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;">
+                    <div class="bot-avatar" style="background:linear-gradient(135deg,#f87171,#dc2626);">
+                        <i class="fas fa-ban" style="font-size:13px;"></i>
+                    </div>
+                    <div class="cancel-notice" style="flex:1;">
+                        <div class="cancel-notice-icon"><i class="fas fa-stop"></i></div>
+                        <div>요청이 중단되었습니다.</div>
+                    </div>
+                </div>`;
+            // typingElToRemove 자리에 안내를 삽입 후 typing 제거
+            typingElToRemove.parentNode?.insertBefore(notice, typingElToRemove);
+            typingElToRemove.remove();
+            scrollToBottom();
+        } catch (e) {
+            console.warn('[cancel] typing el 정리 중 오류:', e);
+        }
+    }
+
+    // 진행 중 fetch/폴링 중단
+    if (controllerToAbort) {
+        try { controllerToAbort.abort(); } catch (_) {}
+    }
+
+    // 서버 측 async 잡도 취소 (있는 경우)
+    if (jobIdToCancel) {
+        try {
+            await fetch('/api/nlq/cancel/' + encodeURIComponent(jobIdToCancel), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            }).catch(() => {});
+            console.log('[NLQ cancel] 🛑 서버 잡 취소 요청 완료 jobId=' + jobIdToCancel + ' seq=' + cancelledSeq);
+        } catch (_) {
+            // 취소 요청 자체 실패는 무시 (UI 는 이미 정리됨)
+        }
+    } else {
+        console.log('[NLQ cancel] 🛑 클라이언트 취소 (jobId 없음) seq=' + cancelledSeq);
+    }
+
+    cancelInFlight = false;
+}
+
+// 전송 버튼 상태 토글 — 'idle' (전송) | 'busy' (중지)
+function setSendButtonState(state) {
+    const btn = document.getElementById('sendBtn');
+    if (!btn) return;
+    if (state === 'busy') {
+        btn.classList.add('stop-mode');
+        btn.innerHTML = '<i class="fas fa-stop"></i>';
+        btn.title = '답변 생성 중지';
+        btn.disabled = false; // 중지는 눌러야 하므로 활성 유지
+    } else {
+        btn.classList.remove('stop-mode');
+        btn.innerHTML = '<i class="fas fa-paper-plane"></i>';
+        btn.title = '전송';
+        btn.disabled = false;
     }
 }
 
@@ -1298,7 +1427,11 @@ function buildAnalysisProgressHtml(elapsedSec, statusLabel) {
         </div>`;
 }
 
-async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
+async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq, abortSignal }) {
+    // [2026-07-21] mySeq — 이 요청의 시퀀스. 응답 처리 전 currentRequestSeq 와 일치 확인
+    //   abortSignal — 사용자 중지 시 fetch 즉시 중단용
+    const isStale = () => (mySeq !== currentRequestSeq) || (abortSignal && abortSignal.aborted);
+
     // typingEl 을 '분석 중' UI 로 교체 (계속 갱신)
     typingEl.innerHTML = buildAnalysisProgressHtml(0, '요청 접수 중');
 
@@ -1309,6 +1442,7 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, conversationContext, session_id: chatSessionId, queryMode: 'analysis' }),
+            signal: abortSignal,
         });
         const ct = r.headers.get('content-type') || '';
         if (!ct.includes('application/json')) {
@@ -1350,8 +1484,23 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
         }
         jobId = ack.jobId;
         asyncRequestId = ack.requestId || null;
-        console.log('[NLQ async] 📥 jobId=' + jobId + ' requestId=' + asyncRequestId);
+        // [2026-07-21] 서버 측 취소를 위해 현재 jobId 를 전역에 저장
+        //   중지 요청 시 handleCancel 이 이 jobId 로 /api/nlq/cancel 호출
+        //   단, 이미 stale (다른 요청으로 넘어감) 이면 저장하지 않고 즉시 취소 시도
+        if (isStale()) {
+            // 취소 후 늦게 도착한 발급 응답 → 서버 잡을 곧바로 취소 (자원 낭비 방지)
+            fetch('/api/nlq/cancel/' + encodeURIComponent(jobId), { method: 'POST' }).catch(() => {});
+            console.log('[NLQ async] 🗑️ stale jobId 발급 응답 폐기 & 서버 취소 요청 jobId=' + jobId);
+            return;
+        }
+        currentJobId = jobId;
+        console.log('[NLQ async] 📥 jobId=' + jobId + ' requestId=' + asyncRequestId + ' seq=' + mySeq);
     } catch (e) {
+        // 사용자 취소로 abort 된 경우는 조용히 종료 (handleCancel 이 UI 정리 담당)
+        if (e && (e.name === 'AbortError' || isStale())) {
+            console.log('[NLQ async] 요청 접수 단계에서 사용자 취소 seq=' + mySeq);
+            return;
+        }
         typingEl.remove();
         appendErrorMessage('분석 요청 접수 실패: ' + (e.message || String(e)), {
             requestId: null,
@@ -1371,16 +1520,35 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
     const pollStart = Date.now();
     let pollData = null;
     while (Date.now() - pollStart < NLQ_ASYNC_MAX_WAIT_MS) {
+        // [2026-07-21] 매 루프 시작마다 취소 여부 확인
+        if (isStale()) {
+            console.log('[NLQ async poll] 🛑 사용자 취소 감지 → 폴링 중단 seq=' + mySeq + ' jobId=' + jobId);
+            return; // typingEl 및 UI 정리는 handleCancel 에서 이미 수행됨
+        }
+
         // 진행 UI 갱신
         const elapsedSec = Math.floor((Date.now() - reqStartMs) / 1000);
         const statusLabel = pollData ? (pollData.status === 'running' ? '분석 진행 중' : pollData.status) : '대기 중';
         typingEl.innerHTML = buildAnalysisProgressHtml(elapsedSec, statusLabel);
 
-        await new Promise(r => setTimeout(r, NLQ_ASYNC_POLL_INTERVAL_MS));
+        // [2026-07-21] setTimeout 도 취소 가능하도록 — abort 시 즉시 깨움
+        await new Promise((resolve) => {
+            const t = setTimeout(resolve, NLQ_ASYNC_POLL_INTERVAL_MS);
+            if (abortSignal) {
+                const onAbort = () => { clearTimeout(t); resolve(); };
+                if (abortSignal.aborted) { clearTimeout(t); resolve(); }
+                else abortSignal.addEventListener('abort', onAbort, { once: true });
+            }
+        });
+        if (isStale()) {
+            console.log('[NLQ async poll] 🛑 sleep 후 취소 감지 → 폴링 중단 seq=' + mySeq);
+            return;
+        }
         try {
             const r = await fetch('/api/nlq/job/' + encodeURIComponent(jobId), {
                 method: 'GET',
                 headers: { 'Accept': 'application/json' },
+                signal: abortSignal,
             });
             const ct = r.headers.get('content-type') || '';
             if (!ct.includes('application/json')) {
@@ -1389,6 +1557,11 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
                 continue;
             }
             pollData = await r.json();
+            // stale 재확인
+            if (isStale()) {
+                console.log('[NLQ async poll] 🛑 응답 도착 후 취소 감지 → 결과 폐기 seq=' + mySeq);
+                return;
+            }
             if (!r.ok) {
                 typingEl.remove();
                 appendErrorMessage(pollData.error || '작업 상태 조회 실패', {
@@ -1404,17 +1577,32 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs }) {
                 });
                 return;
             }
+            // 서버에서 cancelled 상태로 응답한 경우 (다른 탭 등에서 취소)
+            if (pollData.status === 'cancelled') {
+                console.log('[NLQ async poll] 서버에서 cancelled 상태 확인 — 조용히 종료 seq=' + mySeq);
+                return;
+            }
             if (pollData.status === 'done' || pollData.status === 'failed') {
                 break;
             }
             // 아직 pending/running — 계속
         } catch (e) {
+            // 사용자 취소로 abort 된 경우
+            if (e && (e.name === 'AbortError' || isStale())) {
+                console.log('[NLQ async poll] fetch abort (사용자 취소) seq=' + mySeq);
+                return;
+            }
             console.warn('[NLQ async poll] 일시 오류, 재시도:', e.message);
             // 일시적인 네트워크 오류는 무시하고 다음 폴링
         }
     }
 
     // Step 3. 결과 처리
+    // [2026-07-21] 최종 stale 가드 — 결과 렌더 직전에도 확인
+    if (isStale()) {
+        console.log('[NLQ async] 🛑 결과 처리 직전 stale — 렌더 건너뜀 seq=' + mySeq);
+        return;
+    }
     if (!pollData || (pollData.status !== 'done' && pollData.status !== 'failed')) {
         typingEl.remove();
         appendErrorMessage('분석 작업이 시간 내 완료되지 않았습니다. 잠시 후 [최근 이력] 에서 결과를 확인해 주세요.', {
@@ -1519,8 +1707,15 @@ async function sendQuery(query) {
         renderDomainSelectorBar();
     }
 
-    const btn = document.getElementById('sendBtn');
-    btn.disabled = true;
+    // [2026-07-21] 이 요청 전용 시퀀스/컨트롤러 세팅
+    //   - mySeq: 응답 처리 전 currentRequestSeq 와 일치 확인 (일치하지 않으면 stale)
+    //   - abortController: 이 요청 전용. handleCancel() 에서 abort() 호출
+    const mySeq = ++currentRequestSeq;
+    const abortController = new AbortController();
+    currentAbortController = abortController;
+    currentJobId = null; // analysis 모드에서 jobId 발급 후 세팅됨
+    // stale 가드 헬퍼 — 응답 렌더 직전마다 호출
+    const isStale = () => (mySeq !== currentRequestSeq) || abortController.signal.aborted;
 
     // Hide welcome
     const welcome = document.getElementById('welcomeSection');
@@ -1548,7 +1743,11 @@ async function sendQuery(query) {
             </div>
         </div>`;
     chatArea.appendChild(typingEl);
+    currentTypingEl = typingEl;
     scrollToBottom();
+
+    // [2026-07-21] 전송 버튼 → 중지 버튼으로 토글
+    setSendButtonState('busy');
 
     // ★ 진단용 메타데이터 수집 (오류 상세보기에서 사용)
     const reqStartMs = Date.now();
@@ -1564,10 +1763,20 @@ async function sendQuery(query) {
     // ============================================================
     if (queryMode === 'analysis') {
         try {
-            await runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs });
+            await runAnalysisAsync({
+                query, typingEl, reqStartMs, timeoutMs,
+                mySeq, abortSignal: abortController.signal,
+            });
         } finally {
-            isLoading = false;
-            btn.disabled = false;
+            // [2026-07-21] 이 요청이 여전히 '최신' 요청일 때만 loading 해제
+            //   중간에 취소되어 새 요청이 시작된 경우엔 현재 요청의 finally 가 상태를 되돌리면 안 됨
+            if (mySeq === currentRequestSeq) {
+                isLoading = false;
+                currentAbortController = null;
+                currentJobId = null;
+                currentTypingEl = null;
+                setSendButtonState('idle');
+            }
             // [2026-06-15] 질문 실행 후엔 항상 [최근] 탭으로 정규화 (탭/목록 동기화 보장)
             refreshSidebarAfterSend().catch(() => {});
         }
@@ -1575,19 +1784,30 @@ async function sendQuery(query) {
     }
 
     try {
-        // AbortController로 타임아웃 설정
+        // [2026-07-21] 타임아웃도 AbortController 로 통합 — 사용자 취소와 동일한 signal 사용
+        //   기존: 별도 controller + setTimeout(abort)
+        //   변경: 위에서 만든 abortController 재사용. 타임아웃 시 abort 호출 (사용자 취소와 구분은 timedOut 플래그로)
         // - 현황집계(aggregate): 120초
         // - 분석질문(analysis): 300초 (보조 SQL 다중 생성·실행 + LLM 답변 생성에 시간 필요)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        let timedOut = false;
+        const timeoutId = setTimeout(() => {
+            timedOut = true;
+            try { abortController.abort(new Error('client timeout')); } catch (_) {}
+        }, timeoutMs);
 
         const res = await fetch('/api/nlq', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, conversationContext, session_id: chatSessionId, queryMode }),
-            signal: controller.signal,
+            signal: abortController.signal,
         });
         clearTimeout(timeoutId);
+
+        // [2026-07-21] 응답 헤더 도착 시점의 stale 가드
+        if (isStale()) {
+            console.log('[NLQ] 🛑 응답 헤더 도착 후 stale — 폐기 seq=' + mySeq);
+            return;
+        }
 
         // ★ 응답 헤더에서 X-Request-Id 추출 (모든 오류 진단의 핵심 키)
         const xRequestId = res.headers.get('x-request-id') || null;
@@ -1661,6 +1881,11 @@ async function sendQuery(query) {
         try {
             // ★ 진단을 위해 본문을 텍스트로 받아두고 다시 파싱
             rawBodyText = await res.text();
+            // [2026-07-21] 본문 도착 후 stale 가드
+            if (isStale()) {
+                console.log('[NLQ] 🛑 응답 본문 도착 후 stale — 폐기 seq=' + mySeq);
+                return;
+            }
             data = JSON.parse(rawBodyText);
         } catch (parseErr) {
             console.error('[NLQ] JSON 파싱 실패:', parseErr.message);
@@ -1689,6 +1914,12 @@ async function sendQuery(query) {
 
         // Remove typing
         typingEl.remove();
+
+        // [2026-07-21] 렌더 직전 최종 stale 가드
+        if (isStale()) {
+            console.log('[NLQ] 🛑 렌더 직전 stale — 결과 폐기 seq=' + mySeq);
+            return;
+        }
 
         // ★ 응답 body 에 requestId 가 있으면 헤더보다 우선 (서버가 발급한 정식 id)
         const finalRequestId = data.requestId || data.error_detail?.requestId || xRequestId || null;
@@ -1774,6 +2005,20 @@ async function sendQuery(query) {
         //   (자주질문 탭에서 질문 실행 시 탭/목록 불일치 방지)
         refreshSidebarAfterSend().catch(() => {});
     } catch(err) {
+        // [2026-07-21] 사용자 취소로 인한 AbortError → 조용히 종료 (handleCancel 이 UI 정리 담당)
+        //   timedOut 이 false 이면서 abort 된 경우는 사용자 취소
+        //   stale 인 경우도 마찬가지 (새 요청이 이미 시작된 후 이전 abort 가 뒤늦게 잡힌 경우)
+        if (err && err.name === 'AbortError') {
+            if (!timedOut || isStale()) {
+                console.log('[NLQ] 사용자 취소 감지 → 조용히 종료 seq=' + mySeq + ' timedOut=' + timedOut);
+                return;
+            }
+        }
+        // stale 인 경우도 (다른 종류의 오류라도) 무시
+        if (isStale()) {
+            console.log('[NLQ] stale 상태의 catch — 무시 seq=' + mySeq + ' err=' + err?.message);
+            return;
+        }
         typingEl.remove();
         const elapsedMs = Date.now() - reqStartMs;
         if (err.name === 'AbortError') {
@@ -1809,8 +2054,14 @@ async function sendQuery(query) {
         // [2026-06-15] 사이드바 동기화 — 실패 시에도 [최근] 탭으로 정규화
         refreshSidebarAfterSend().catch(() => {});
     } finally {
-        isLoading = false;
-        btn.disabled = false;
+        // [2026-07-21] 최신 요청일 때만 상태 정리 — 취소되어 다음 요청이 시작된 경우엔 건드리지 않음
+        if (mySeq === currentRequestSeq) {
+            isLoading = false;
+            currentAbortController = null;
+            currentJobId = null;
+            currentTypingEl = null;
+            setSendButtonState('idle');
+        }
     }
 }
 
