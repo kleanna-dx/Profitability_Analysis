@@ -38,3 +38,4 @@ uploads/
 # data files
 *.xlsx
 *.csv
+backups/
