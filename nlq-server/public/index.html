@@ -2674,10 +2674,11 @@ function appendAnalysisOnlyMessage(dataOrText) {
     el.className = 'msg-bot fade-in';
 
     // 파라미터 정규화
-    let analysisText, rows, columnLabels, columnOrder, sql, rowCount;
+    let analysisText, rows, columnLabels, columnOrder, sql, rowCount, fromHistory;
     if (typeof dataOrText === 'string') {
         analysisText = dataOrText;
         rows = null;
+        fromHistory = false;
     } else {
         const d = dataOrText || {};
         analysisText = d.answer || d.analysis || d.explanation || '분석 답변을 생성하지 못했습니다.';
@@ -2690,6 +2691,9 @@ function appendAnalysisOnlyMessage(dataOrText) {
             : (rows && rows.length > 0 ? Object.keys(rows[0]) : []);
         sql = d.sql || '';
         rowCount = typeof d.rowCount === 'number' ? d.rowCount : (rows ? rows.length : 0);
+        // [2026-07-21] 이력 재열람 여부 — restoreSession 에서 true 로 세팅.
+        //   최초 실행(POST /api/nlq) 응답에는 없어서 undefined → falsy.
+        fromHistory = !!d.fromHistory;
     }
 
     const rendered = renderSimpleMarkdown(analysisText || '');
@@ -2697,7 +2701,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
     const tableId = 'aatbl_' + (++msgCounter);
 
     const tableSection = hasTable
-        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql)
+        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory)
         : '';
 
     el.innerHTML = `
@@ -2719,7 +2723,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
 
     // 표 인터랙션 바인딩 (검색·정렬·페이지네이션)
     if (hasTable) {
-        initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels);
+        initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory);
     }
 
     scrollToBottom();
@@ -2731,9 +2735,17 @@ function appendAnalysisOnlyMessage(dataOrText) {
 //   - <thead> 헤더 클릭 시 정렬
 //   - 실제 데이터 채움과 이벤트 바인딩은 initAnalysisDetailTable 에서.
 // ============================================================
-function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql) {
+function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory) {
     // 컬럼 헤더 라벨
     const headers = columnOrder.map(c => (columnLabels && columnLabels[c]) || c);
+    // [2026-07-21] 이력 재열람 시 하단 안내 문구
+    //   - nl_query_history.result_data 는 DB 용량 절약을 위해 최대 100행만 저장됨
+    //     (server.mjs saveHistory L6886-6888 slice(0,100))
+    //   - 그래서 이력에서 재열람하면 페이지가 최대 5(=100/20)까지만 나옴
+    //   - 사용자 혼동을 없애기 위해 하단 페이지 정보 옆에 안내 문구 표시
+    const historyNoticeHtml = fromHistory
+        ? `<span id="${tableId}_hnotice" style="color:#4b5563;font-size:11px;font-weight:500;margin-left:12px;"><i class="fas fa-info-circle" style="margin-right:4px;color:#6b7280;"></i>질의 이력에는 상세 결과가 최대 100행까지만 저장됩니다. 전체 결과는 동일 질의를 다시 실행해 주세요.</span>`
+        : '';
     // SQL 다운로드/펼침 토글 옵션
     const sqlToggleId = tableId + '_sqltoggle';
     const sqlPanelId = tableId + '_sqlpanel';
@@ -2776,7 +2788,10 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
             </table>
         </div>
         <div id="${tableId}_pager" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:12px;color:#4b5563;flex-wrap:wrap;gap:8px;">
-            <div id="${tableId}_pageinfo"></div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;min-width:0;">
+                <div id="${tableId}_pageinfo"></div>
+                ${historyNoticeHtml}
+            </div>
             <div id="${tableId}_pagectrl" style="display:flex;align-items:center;gap:4px;"></div>
         </div>
     </div>`;
@@ -2801,7 +2816,7 @@ const analysisTableState = {};
 //   - 초기 렌더
 //   - 검색어 변경 / 페이지 크기 변경 시 재렌더
 // ============================================================
-function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels) {
+function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory) {
     analysisTableState[tableId] = {
         rows: rows,
         columnOrder: columnOrder,
@@ -2811,6 +2826,7 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels) {
         search: '',
         sortCol: -1,
         sortDir: 0,   // 0=none, 1=asc, -1=desc
+        fromHistory: !!fromHistory,   // [2026-07-21] 이력 재열람 여부 (안내 문구 유지용)
     };
     const st = analysisTableState[tableId];
     const searchEl = document.getElementById(tableId + '_search');
@@ -4224,6 +4240,10 @@ async function restoreSession(sessionKey, hintDomain) {
                             sql: item.generated_sql || '',
                             rowCount: typeof item.row_count === 'number' ? item.row_count : rows.length,
                             isAnalysisAnswer: true,
+                            // [2026-07-21] 이력 재열람 플래그: 상세표 하단에
+                            //   "이력에는 최대 100행까지만 저장됩니다" 안내 문구 표시용.
+                            //   최초 실행 시(직접 API 호출 경로)에는 false → 안내 미표시.
+                            fromHistory: true,
                         });
                     } else {
                         appendAnalysisOnlyMessage(analysisBody);
