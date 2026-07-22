@@ -1734,7 +1734,12 @@ async function sendQuery(query) {
 
     // ★ 진단용 메타데이터 수집 (오류 상세보기에서 사용)
     const reqStartMs = Date.now();
-    const timeoutMs = (queryMode === 'analysis') ? 300000 : 120000;
+    // [2026-07-22 PR #247] aggregate 120s → 180s 로 상향
+    //   - 배경: 실측 78s 걸리는 SQL 이 nginx 60s idle timeout 에 걸려 HTTP 504.
+    //   - 새 계층 위계 (안쪽이 항상 더 짧음):
+    //       DB statement timeout 90s < 프론트 fetch 180s < Nginx proxy_read 240s
+    //   - 사용자 중지 버튼은 이 timeout 과 무관하게 abortController.abort() 로 즉시 취소됨.
+    const timeoutMs = (queryMode === 'analysis') ? 300000 : 180000;
 
     // ============================================================
     // [2026-06-15] 분석형(analysis) 질의는 자동으로 비동기 모드(/api/nlq/async + 폴링)로 전환.

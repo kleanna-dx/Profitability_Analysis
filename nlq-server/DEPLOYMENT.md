@@ -8,6 +8,7 @@
 5. [의존성 설치 및 실행](#5-의존성-설치-및-실행)
 6. [PM2 프로세스 관리](#6-pm2-프로세스-관리)
 7. [트러블슈팅](#7-트러블슈팅)
+8. [Nginx / 리버스 프록시 타임아웃 설정 (필수)](#8-nginx--리버스-프록시-타임아웃-설정-필수)
 
 ---
 
@@ -235,6 +236,106 @@ module.exports = {
 
 ---
 
+## 8. Nginx / 리버스 프록시 타임아웃 설정 (필수)
+
+### 배경
+
+NLQ 서비스는 프론트엔드 → **Nginx(리버스 프록시)** → Node.js(PM2) → MariaDB 로 흐릅니다.
+현황집계(aggregate) 질의는 실측 **60~90초** 걸리는 SQL 이 존재하는데, Nginx 기본
+`proxy_read_timeout` 은 **60초** 이므로 그대로 두면:
+
+```
+[증상] 사용자 화면에 "HTTP 504 Gateway Time-out" HTML 이 노출됨
+[로그] nlq-server.log 에 event="request_aborted" 로 남고, X-Request-Id 헤더가
+       없어 사용자가 로그를 추적하기 어려움
+```
+
+### PR #247 이후의 전 계층 타임아웃 위계
+
+애플리케이션 코드(server.mjs / index.html) 는 이미 아래 값으로 정렬되어 있습니다.
+운영자는 **Nginx 만** 이 값들과 정합되도록 조정하면 됩니다.
+
+| 계층 | 값 | 위치 |
+|------|-----|------|
+| MariaDB `max_statement_time` (서버단 강제 종료) | **90초** | `server.mjs` 환경변수 `NLQ_DB_QUERY_TIMEOUT_MS` |
+| 프론트 fetch AbortController (aggregate) | **180초** | `public/index.html` L1737 |
+| 프론트 fetch AbortController (analysis) | **300초** | `public/index.html` L1737 |
+| **Nginx `proxy_read_timeout`** | **240초 이상 권장** | ⬅ 아래 참고 |
+| Express `requestTimeout` / undici | 600초 | `server.mjs` 환경변수 `BUILDER_SERVER_TIMEOUT_MS` |
+
+### Nginx 설정 예시
+
+`/etc/nginx/conf.d/nlq.conf` (또는 `sites-available/*`) 의 NLQ 서비스 `server` /
+`location` 블록에 아래 지시어를 추가합니다.
+
+```nginx
+server {
+    listen 80;
+    server_name your-nlq-server.example.com;
+
+    # [PR #247] NLQ /api/nlq 는 최대 90초 DB + 90초 LLM = 최대 180초 소요 가능.
+    # 안전마진 60초를 더해 240초로 설정. 이보다 짧으면 HTTP 504 재발 위험.
+    proxy_read_timeout   240s;
+    proxy_send_timeout   240s;
+    proxy_connect_timeout 60s;   # 연결 단계는 그대로 유지
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+
+        # 응답 헤더 X-Request-Id 를 그대로 클라이언트에 전달 (로그 추적용)
+        proxy_pass_header X-Request-Id;
+    }
+}
+```
+
+**location 별로 다르게 하고 싶다면**:
+
+```nginx
+# NLQ 만 넉넉하게, 다른 API 는 기본값(60s) 유지
+location = /api/nlq {
+    proxy_read_timeout   240s;
+    proxy_send_timeout   240s;
+    proxy_pass http://127.0.0.1:3000;
+}
+
+# analysis async 폴링은 응답이 항상 짧으므로 별도 설정 불필요
+location /api/nlq/ {
+    proxy_pass http://127.0.0.1:3000;
+}
+```
+
+### 반영 및 검증
+
+```bash
+# 1. 문법 검사
+sudo nginx -t
+
+# 2. 무중단 리로드
+sudo systemctl reload nginx
+
+# 3. 실제 헤더 확인 (240s 반영 여부는 응답 시간이 아니라 아래로 판정)
+curl -I http://your-nlq-server.example.com/api/status
+
+# 4. NLQ 회귀 테스트 — 아래 질의가 90초 안에 완료되어야 함
+#    "2026년 3월부터 6월까지 월별 SKU 매출"
+```
+
+### 자주 하는 실수
+
+- ❌ `proxy_read_timeout 60s;` 그대로 → HTTP 504 재발
+- ❌ `keepalive_timeout` 만 조정 → NLQ 응답 시간과 무관 (연결 재사용용)
+- ❌ Nginx 240s 인데 프론트 180s 보다 크게 유지하지 않음 → **문제 없음**
+  (프론트가 먼저 abort 하는 것은 안전한 방향. 반대가 문제.)
+- ⚠️ Cloudflare / AWS ALB / 기타 상위 게이트웨이가 있다면 그쪽도 함께 확인 필요
+
+---
+
 ## 빠른 체크리스트
 
 자체 서버 배포 시 아래 항목을 순서대로 확인하세요:
@@ -248,3 +349,4 @@ module.exports = {
 - [ ] `pm2 start ecosystem.config.cjs` → 정상 시작
 - [ ] `curl http://localhost:3000/api/status` → 정상 응답
 - [ ] NLQ 테스트 질의 → GPT 응답 정상 수신
+- [ ] **Nginx `proxy_read_timeout` ≥ 240s 설정 (섹션 8 참고)** — HTTP 504 방지
