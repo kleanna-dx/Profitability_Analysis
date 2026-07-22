@@ -1789,7 +1789,17 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
 1. SELECT 문만 생성 (INSERT/UPDATE/DELETE/DROP 절대 금지)
 2. 테이블은 bw_profitability_data 하나만 사용
 3. 계산 지표는 반드시 아래 제공된 메트릭/컬럼 정보만 사용 (새로운 수식 창작 금지)
-4. 결과 행은 최대 1000행 (LIMIT 1000)
+4. **LIMIT 사용 규칙 — 매우 중요! (2026-07-22 개정)**
+   - **원칙: LIMIT 을 붙이지 마세요.** 조건에 해당하는 전체 결과를 그대로 반환해야 합니다.
+     (화면에서는 프론트가 페이징 처리하므로 SQL 단에서 임의로 자르면 안 됩니다.)
+   - **예외 — 사용자가 아래처럼 건수를 명시적으로 요청한 경우에만 LIMIT 사용:**
+     · "TOP 10", "상위 5", "매출 상위 3개", "제일 큰 20개" → LIMIT 10 / 5 / 3 / 20
+     · "10개만", "5건만", "20행만 보여줘" → LIMIT 10 / 5 / 20
+     · "미리보기", "샘플" (건수 명시 없으면 LIMIT 20 정도 허용)
+     · 월별 TOP N (partition 별 순위) 은 백엔드가 CTE + ROW_NUMBER 로 재작성하므로 SQL에는 LIMIT 붙이지 마세요.
+   - **일반 조회에는 절대 LIMIT 을 붙이지 마세요.** "2026년 3월부터 6월까지 월별 SKU 매출"
+     처럼 기간·차원만 명시된 질의는 조건을 만족하는 모든 행을 반환해야 합니다.
+     그런 질의에 LIMIT 1000 / LIMIT 5000 등을 임의로 붙이면 사용자가 잘못된 부분 결과를 보게 됩니다.
 5. **금액 표시**: FORMAT(SUM(ZAMT***), 0) AS 별칭. **ORDER BY에는 FORMAT 별칭 사용 금지!** → ORDER BY SUM(ZAMT***) DESC 사용
 6. **비율/율(%) 표시**: FORMAT(ROUND(<비율식>, 1), 1) AS 별칭 — 소수 1자리 + 천 단위 콤마 필수.
    예) FORMAT(ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1), 1) AS '영업이익률(%)'
@@ -6395,6 +6405,24 @@ ${sqlValidation.reason}
 
     console.log(`[NLQ] SQL 실행: ${execTime}ms, ${rows.length}행`);
 
+    // ────────────────────────────────────────────────────────
+    // [2026-07-22] 브라우저 보호용 서버측 하드 상한 (기본 200,000행)
+    //   - 사용자 요구: "일반 조회는 임의 LIMIT 을 붙이지 말 것"
+    //     → LLM 프롬프트에서 LIMIT 자동 지시 제거함.
+    //   - 하지만 극단적으로 큰 결과 (수백만 행) 를 브라우저로 그대로 보내면
+    //     탭이 죽거나 네트워크가 막힘 → 마지막 안전망만 남김.
+    //   - 이 상한을 실제로 초과하면 사용자에게 truncated=true 로 명시하여
+    //     "결과가 잘렸다"는 사실을 화면에 표시. (임의로 숨기지 않음)
+    // ────────────────────────────────────────────────────────
+    const AGGREGATE_ROW_HARD_CAP = parseInt(process.env.NLQ_AGGREGATE_ROW_HARD_CAP || '200000', 10);
+    const totalRowsFromDb = rows.length;
+    let truncated = false;
+    if (totalRowsFromDb > AGGREGATE_ROW_HARD_CAP) {
+      truncated = true;
+      rows = rows.slice(0, AGGREGATE_ROW_HARD_CAP);
+      console.warn(`[NLQ] 결과 행 하드 상한 초과: ${totalRowsFromDb.toLocaleString('ko-KR')}행 → ${AGGREGATE_ROW_HARD_CAP.toLocaleString('ko-KR')}행으로 절단 (브라우저 보호)`);
+    }
+
     // 4-A. SQL 결과 기반 사용자 친화적 answer 생성 (항상 결과 데이터를 보고 생성)
     try {
       const sampleData = rows.slice(0, 20);
@@ -6551,7 +6579,10 @@ ${formatRule}
       chartConfig: chartConfig || {},
       data: rows,
       columnLabels,                                    // ← 신규: 컬럼명 한국어 매핑
-      rowCount: rows.length,
+      rowCount: rows.length,                           // 실제 클라이언트로 전송된 행 수 (하드 상한 적용 후)
+      totalRowCount: totalRowsFromDb,                  // [2026-07-22] DB 에서 반환된 원본 전체 행 수
+      truncated: truncated,                            // [2026-07-22] 하드 상한으로 잘렸는지 여부
+      truncatedLimit: truncated ? AGGREGATE_ROW_HARD_CAP : null,
       executionTimeMs: execTime,
       ragEnabled: ragReady,
       ragInfo: ragInfo,

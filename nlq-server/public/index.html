@@ -1999,41 +1999,43 @@ function appendBotMessage(data) {
             </div>
         </div>`;
 
-    // Table HTML
+    // ────────────────────────────────────────────────────────
+    // [2026-07-22] 현황집계(aggregate) 결과 표 렌더링을 분석질문과 동일한
+    //   페이징/검색/정렬 컴포넌트(buildAnalysisDetailTable + initAnalysisDetailTable)로
+    //   통일. 배경: 사용자 요구 — "일부 데이터만 보여주지 말고 전체를 유지하되
+    //   화면에서 페이징하여 조회할 수 있도록 (분석질문처럼)".
+    //   - SQL 은 별도 res-tabs 의 'SQL' 탭에서 이미 보여주므로 여기서는 빈 문자열 전달
+    //     (buildAnalysisDetailTable 의 'SQL 보기' 버튼 숨김)
+    //   - 서버가 하드 상한(200,000행)에 걸려 truncated=true 를 반환하면
+    //     표 상단에 경고 문구를 추가로 표시.
+    //   - 표 초기화(initAnalysisDetailTable)는 chatArea.appendChild 후에 실행해야
+    //     DOM 이 살아있으므로, 여기서는 detailTableId 만 계산하고 실제 init 은
+    //     아래 appendChild 뒤에서 호출.
+    // ────────────────────────────────────────────────────────
+    const detailTableId = 'atbl_' + id;   // e.g. 'atbl_msg42'
     let tableHtml = '<div class="p-4 text-center text-sm text-gray-400">결과가 없습니다.</div>';
+    let _aggDetailInitCtx = null;         // appendChild 이후 initAnalysisDetailTable 호출용
     if (data.data && data.data.length > 0) {
         const cols = Object.keys(data.data[0]);
-        // 컬럼 한국어 라벨 매핑 (서버에서 1순위 AS별칭 > 2순위 DB COMMENT > 3순위 ontology 적용된 결과)
         const colLabels = data.columnLabels || {};
-        // data-col-idx: 0 = '#' 행번호 컬럼, 1..N = 데이터 컬럼
-        // 핀 아이콘은 데이터 컬럼(idx >= 1)에만 부여; '#' 컬럼은 1열 이상 핀 시 자동으로 함께 고정
-        let t = '<div class="table-scroll" data-pin-host="1" style="max-height:400px;overflow:auto;"><table class="data-table"><thead><tr><th data-col-idx="0">#</th>';
-        cols.forEach((c, ci) => {
-            const idx = ci + 1;
-            t += `<th data-col-idx="${idx}"><span class="th-label">${esc(colLabels[c] || c)}</span>` +
-                 `<button type="button" class="pin-btn" title="이 컬럼까지 왼쪽 고정" ` +
-                 `onclick="togglePinColumn(this, ${idx})"><i class="fas fa-thumbtack"></i></button></th>`;
-        });
-        t += '</tr></thead><tbody>';
-        data.data.forEach((row, i) => {
-            t += `<tr><td class="text-gray-400" data-col-idx="0">${i+1}</td>`;
-            cols.forEach((c, ci) => {
-                const v = row[c];
-                // [2026-07-21] 컬럼 타입 기반 포맷:
-                //   시간축(CALMONTH 등)은 콤마 없이, 금액·수량은 콤마, 소수는 4자리
-                // 정렬용 데이터 유무만 기준으로 우측정렬 결정 (시간축도 숫자값이면 우측정렬 유지)
-                const num = _parseNumericLoose(v);
-                const isNum = num !== null && typeof v !== 'boolean';
-                const shown = (v === null || v === undefined)
-                    ? '-'
-                    : formatCellValue(v, c, colLabels[c] || c);
-                const align = isNum ? 'text-right font-mono' : '';
-                t += `<td class="${align}" data-col-idx="${ci+1}">${shown}</td>`;
-            });
-            t += '</tr>';
-        });
-        t += '</tbody></table></div>';
-        tableHtml = t;
+        // truncated 경고 배너 (하드 상한 초과 시)
+        const truncNotice = data.truncated
+            ? `<div style="padding:8px 12px;background:#fef3c7;border-bottom:1px solid #fcd34d;color:#92400e;font-size:12px;">
+                 <i class="fas fa-exclamation-triangle" style="margin-right:6px;color:#d97706;"></i>
+                 결과가 매우 커서 상위 ${(data.truncatedLimit || 0).toLocaleString('ko-KR')}행만 화면에 표시됩니다.
+                 (DB 조회 결과 총 ${(data.totalRowCount || 0).toLocaleString('ko-KR')}행)
+                 전체를 보시려면 조건을 좁혀 다시 조회하거나 SQL 을 직접 실행해 주세요.
+               </div>`
+            : '';
+        // 전체 행 수: DB 원본 기준 (truncated 여부와 무관하게 정확히 표시)
+        const totalRowsForDisplay = (typeof data.totalRowCount === 'number' && data.totalRowCount > 0)
+            ? data.totalRowCount
+            : (typeof data.rowCount === 'number' ? data.rowCount : data.data.length);
+        // buildAnalysisDetailTable 재사용 (sql='' 로 SQL 버튼 숨김 — SQL 은 res-tabs 의 SQL 탭에서 표시)
+        // fromHistory=true 이면 이력 재열람 → 페이징 표 하단에 100행 저장 안내 문구 표시
+        const fromHistory = !!data.fromHistory;
+        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory);
+        _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory };
     }
 
     // Analysis HTML (분석 답변 패널)
@@ -2058,7 +2060,7 @@ function appendBotMessage(data) {
                 <div style="flex:1;">
                     <div class="msg-bot-explanation">${esc(data.answer || data.explanation || '')}</div>
                     <div class="msg-bot-meta">
-                        <span class="meta-badge rows"><i class="fas fa-table mr-1"></i>${data.rowCount || 0}행</span>
+                        <span class="meta-badge rows"><i class="fas fa-table mr-1"></i>${((typeof data.totalRowCount === 'number' && data.totalRowCount > 0) ? data.totalRowCount : (data.rowCount || 0)).toLocaleString('ko-KR')}행${data.truncated ? ' (일부 표시)' : ''}</span>
                         <span class="meta-badge time"><i class="fas fa-clock mr-1"></i>${data.executionTimeMs || 0}ms</span>
                         ${buildRagBadge(data)}
                     </div>
@@ -2121,6 +2123,20 @@ function appendBotMessage(data) {
 
     // Store data on the element for feedback
     botMsg._nlqData = data;
+
+    // [2026-07-22] 페이징/검색/정렬 표 인터랙션 초기화
+    //   - 위 tableHtml 이 buildAnalysisDetailTable 로 만들어졌으므로
+    //     동일한 initAnalysisDetailTable 로 이벤트 바인딩 및 초기 렌더 수행.
+    //   - DOM 이 chatArea 에 붙은 뒤에 호출해야 document.getElementById 가 유효.
+    if (_aggDetailInitCtx) {
+        initAnalysisDetailTable(
+            detailTableId,
+            _aggDetailInitCtx.rows,
+            _aggDetailInitCtx.cols,
+            _aggDetailInitCtx.colLabels,
+            _aggDetailInitCtx.fromHistory
+        );
+    }
 
     scrollToBottom();
 
@@ -4029,7 +4045,12 @@ async function restoreSession(sessionKey, hintDomain) {
                         chartConfig: item.chart_config || {},
                         data: item.result_data || [],
                         rowCount: item.row_count,
+                        // [2026-07-22] 이력 재열람 시 원본 전체 행 수도 표시
+                        totalRowCount: item.row_count,
                         executionTimeMs: item.execution_time_ms,
+                        // [2026-07-22] 이력 재열람 플래그: 페이징 표 하단에
+                        //   "이력에는 최대 100행까지만 저장됩니다" 안내 문구 표시용.
+                        fromHistory: true,
                     });
                     conversationContext.push({ query: item.query_text, sql: item.generated_sql });
                 }
