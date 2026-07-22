@@ -5793,6 +5793,12 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     }
 
     let sql, answer = '', explanation, chartType, chartConfig, analysisRequired = false;
+    // [PR #252] GPT 가 '이 질문은 심층 분석이 필요하다'고 판단한 원본 값 보존.
+    //   - aggregate 라디오 선택 시 analysisRequired 는 강제 false 로 뒤집히지만,
+    //     사용자에게 "분석질문을 이용하면 더 좋은 답변을 얻을 수 있습니다" 안내를 노출하기 위해
+    //     GPT 원본 판단 결과는 별도로 응답에 실어 보냄.
+    //   - 하드코딩/키워드 기반이 아닌, 질문 전체 의미에 대한 GPT 판단을 그대로 사용.
+    let suggestAnalysis = false;
     let ragInfo = null;  // RAG 검색 상세 정보
     let dateContext = null;  // 당월/전월 날짜 컨텍스트
 
@@ -6243,10 +6249,13 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       chartType = parsed.chartType;
       chartConfig = parsed.chartConfig;
       analysisRequired = parsed.analysisRequired === true;
+      // [PR #252] GPT 원본 판단 → suggestAnalysis (강제 false 로 뒤집기 전에 확보)
+      //   현황집계 모드에서 GPT 가 심층 분석이 필요하다고 본 경우, 프론트에 안내 문구를 표시하기 위함.
+      suggestAnalysis = analysisRequired;
       // ★ 사용자가 '현황집계' 라디오 선택 시 GPT가 analysisRequired:true로 응답해도 강제 false
       //   → 표+SQL만 노출, 분석 답변 생성 단계(4-B) 우회
       if (userQueryMode === 'aggregate' && analysisRequired) {
-        console.log(`[NLQ] 사용자 '현황집계' 선택 — GPT의 analysisRequired:true 무시 (강제 false)`);
+        console.log(`[NLQ] 사용자 '현황집계' 선택 — GPT의 analysisRequired:true 무시 (강제 false, suggestAnalysis=true 로 안내 문구 표시 예정)`);
         analysisRequired = false;
       }
     }
@@ -6522,7 +6531,8 @@ ${sqlValidation.reason}
           {
             role: 'user',
             content: `아래 데이터 조회 결과를 보고, 질문에 대한 답변을 1~2문장의 자연스러운 한국어로 작성해주세요.
-SQL/컬럼명/기술용어는 쓰지 마세요. 금액은 억/만 단위로 표현하세요.
+SQL/컬럼명/기술용어는 쓰지 마세요.
+[PR #252] 금액·수량은 반드시 천 단위 콤마를 붙인 원본 그대로 표기하세요. "억/만 단위 축약" 금지 — 반드시 "21,421,856,292원" 처럼 완전한 숫자를 출력하세요.
 ${dateHint}
 ${formatRule}
 
@@ -6658,6 +6668,10 @@ ${formatRule}
       ragEnabled: ragReady,
       ragInfo: ragInfo,
       analysis: analysis,  // 분석형 질문이면 텍스트 답변 포함
+      // [PR #252] 현황집계 모드에서 GPT 가 "심층 분석이 필요한 질문" 이라고 판단했으면 true.
+      //   분석질문 모드(analysisRequired=true)는 이미 분석 답변을 제공하므로 안내 불필요.
+      //   실제로 안내 문구를 붙일지는 프론트 렌더링 단계에서 결정 (queryMode==='aggregate' && suggestAnalysis).
+      suggestAnalysis: (userQueryMode === 'aggregate' && suggestAnalysis === true),
     };
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)

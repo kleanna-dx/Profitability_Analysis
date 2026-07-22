@@ -2048,17 +2048,33 @@ function appendBotMessage(data) {
                         <i class="fas fa-brain"></i>
                         <span>AI 분석 답변</span>
                     </div>
-                    <div class="analysis-content">${mdToHtml(data.analysis)}</div>
+                    <div class="analysis-content">${mdToHtml(applyCurrencyFormatToText(data.analysis))}</div>
                 </div>
             </div>`;
     }
+
+    // [PR #252] 답변 문장의 금액을 천 단위 콤마로 자동 포맷
+    //   서버 LLM 프롬프트에도 콤마 규칙이 있지만, 누락되는 경우가 있어 프론트에서 최종 보정.
+    const answerText = data.answer || data.explanation || '';
+    const answerFormatted = applyCurrencyFormatToText(answerText);
+    // [PR #252] 서버가 GPT 판단으로 suggestAnalysis=true 를 내려주면,
+    //   답변 하단에 "분석질문을 이용하면 더 좋은 답변을 얻을 수 있습니다." 안내 표시.
+    //   단순 금액·목록·순위 조회에는 서버가 false 를 내려주므로 안내 없음.
+    const suggestAnalysisHint = data.suggestAnalysis === true
+        ? `<div class="msg-bot-analysis-hint" style="margin-top:8px;padding:8px 12px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:4px;color:#1e40af;font-size:12.5px;line-height:1.5;">
+                <i class="fas fa-lightbulb" style="margin-right:6px;color:#3b82f6;"></i>
+                <strong>분석질문을 이용하면 더 좋은 답변을 얻을 수 있습니다.</strong>
+                <span style="color:#3b82f6;font-size:11.5px;margin-left:4px;">(원인·시사점·비교·추세 등 심층 분석 결과 제공)</span>
+           </div>`
+        : '';
 
     botMsg.innerHTML = `
         <div class="msg-bot-inner">
             <div class="msg-bot-header">
                 <div class="bot-avatar"><i class="fas fa-robot"></i></div>
                 <div style="flex:1;">
-                    <div class="msg-bot-explanation">${esc(data.answer || data.explanation || '')}</div>
+                    <div class="msg-bot-explanation">${esc(answerFormatted)}</div>
+                    ${suggestAnalysisHint}
                     <div class="msg-bot-meta">
                         <span class="meta-badge rows"><i class="fas fa-table mr-1"></i>${((typeof data.totalRowCount === 'number' && data.totalRowCount > 0) ? data.totalRowCount : (data.rowCount || 0)).toLocaleString('ko-KR')}행${data.truncated ? ' (일부 표시)' : ''}</span>
                         <span class="meta-badge time"><i class="fas fa-clock mr-1"></i>${data.executionTimeMs || 0}ms</span>
@@ -2486,7 +2502,8 @@ function appendAnalysisOnlyMessage(dataOrText) {
         fromHistory = !!d.fromHistory;
     }
 
-    const rendered = renderSimpleMarkdown(analysisText || '');
+    // [PR #252] 분석 답변 문장 내 금액을 천 단위 콤마로 자동 포맷
+    const rendered = renderSimpleMarkdown(applyCurrencyFormatToText(analysisText || ''));
     const hasTable = Array.isArray(rows) && rows.length > 0;
     const tableId = 'aatbl_' + (++msgCounter);
 
@@ -2692,26 +2709,118 @@ function isCalendarColumn(col, label) {
 }
 
 // ============================================================
-// [2026-07-21] 컬럼 타입 기반 값 포맷팅 (공용 헬퍼)
+// [PR #252 / 2026-07-22] "코드성" 컬럼 판별 — 콤마 금지 대상
 // ------------------------------------------------------------
-// 규칙:
-//   1) 시간축 컬럼(isCalendarColumn=true) → 콤마 없이 raw 문자열 (예: 202601)
-//   2) 정수 → 천 단위 콤마 (예: -2,063,050,449)
-//   3) 소수 → 소수 4자리까지 (비율/이율은 이대로)
-//   4) 그 외 → esc(String(v))
-// 반환: 이미 이스케이프된 안전한 HTML 문자열
+// 목적: 사업부 코드, 제품 코드, 사번, 계정 코드 등 "숫자로 보이지만 금액이 아닌" 컬럼에
+//       자동 콤마를 붙이지 않기 위함.
+// 사용자 요구: "코드, 비율 등에는 콤마를 적용하지 않기"
+// ============================================================
+function isCodeColumn(col, label) {
+    const upperCol = String(col || '').toUpperCase();
+    if (/(^|_)(CODE|CD|ID|NO|NUM|NBR|NUMBER|KEY)$/.test(upperCol)) return true;
+    if (/(^|_)(BUKRS|WERKS|MATNR|KUNNR|LIFNR|VKORG|VTWEG|SPART)$/.test(upperCol)) return true;
+    const labelStr = String(label || '').trim();
+    if (/코드|번호|사번|분류코드/.test(labelStr)) return true;
+    return false;
+}
+
+// ============================================================
+// [PR #252 / 2026-07-22] "비율" 컬럼 판별 — 콤마 금지 대상
+// ------------------------------------------------------------
+// 비율/이율/증감률/원가율 등은 값 자체가 작아 콤마가 무의미하고,
+// 정수/소수 어느 쪽이든 콤마 없이 표기가 자연스러움.
+// ============================================================
+function isRatioColumn(col, label) {
+    const upperCol = String(col || '').toUpperCase();
+    if (/(RATIO|RATE|PCT|PERCENT|PERC)$/.test(upperCol)) return true;
+    const labelStr = String(label || '');
+    if (/(율|률|비율|증감률|증가율|감소율|점유율|이익률|원가율|마진율|성장률|달성률|비중|%|퍼센트|퍼센티지)/.test(labelStr)) return true;
+    return false;
+}
+
+// ============================================================
+// [PR #252 / 2026-07-22] "금액(원화)" 컬럼 판별 — 콤마 적용 대상
+// ------------------------------------------------------------
+// 사용자 요구: "금액·원화 지표는 반드시 천 단위 콤마 적용"
+//             "연월, 코드, 비율 등에는 콤마를 적용하지 않기"
+// 판별 우선순위(호출부에서): 시간축 → 비율 → 코드 → 금액 → 기타 숫자
+// ------------------------------------------------------------
+// 주의: '수량(QTY/QUANTITY)' 은 원화가 아니므로 금액 시그널에서 제외 —
+//       기타 숫자 경로로 흘려 콤마는 붙되(가독성) 원 표기는 안 함.
+//       'MARGIN' 은 단독으로 판단 불가(마진율 vs 마진액) — 라벨 우선.
+// ============================================================
+function isMoneyColumn(col, label) {
+    // 비율/코드/시간축이 우선이므로, 이 함수는 그 뒤에 호출됨.
+    // "SALES_QTY" 처럼 SALES 는 있지만 QTY 로 끝나면 수량이므로 제외.
+    const upperCol = String(col || '').toUpperCase();
+    if (/(QTY|QUANTITY|COUNT|CNT|VOLUME|WEIGHT|LENGTH|SIZE)(_|$)/.test(upperCol) || /_QTY$|_COUNT$/.test(upperCol)) return false;
+    // 명확한 금액 키워드
+    if (/(AMT|AMOUNT|PRICE|COST|REVENUE|EXPENSE|PAY|PAYMENT|BALANCE|CHARGE|FEE|BUDGET|WON|KRW)/.test(upperCol)) return true;
+    // SALES/PROFIT 은 라벨과 함께 판단 (판매수량 vs 판매금액)
+    if (/(SALES|PROFIT)/.test(upperCol)) {
+        const l = String(label || '');
+        // '수량' 계열 라벨이 명시되어 있으면 금액 아님
+        if (/(수량|건수|개수|중량|용량|길이)/.test(l)) return false;
+        return true;
+    }
+    const labelStr = String(label || '');
+    // 수량 계열 라벨은 금액에서 제외
+    if (/(수량|건수|개수|중량|용량|길이)/.test(labelStr)) return false;
+    if (/(금액|원화|원가|매출|이익|비용|판매액|구매액|잔액|판가|단가|재료비|가공비|공헌이익|수익|손실|영업이익|매출액|판매금액|영업비용|매출원가|마진액|이익액|손실액)/.test(labelStr)) return true;
+    return false;
+}
+
+// ============================================================
+// [2026-07-21 / PR #252 개정] 컬럼 타입 기반 값 포맷팅 (공용 헬퍼)
+// ------------------------------------------------------------
+// 규칙 (판별 우선순위 순):
+//   1) 시간축 (isCalendarColumn) → 콤마 없이 raw (예: 202601)
+//   2) 코드성 (isCodeColumn)     → 콤마 없이 raw (예: 사업부코드 100, BUKRS)
+//   3) 비율   (isRatioColumn)    → 콤마 없이, 소수는 소수 4자리 (예: 0.0824, 15.23)
+//   4) 금액   (isMoneyColumn)    → 반드시 천 단위 콤마 (사용자 요구사항)
+//   5) 그 외 정수/소수            → 안전하게 콤마 (레거시 호환)
+//   6) 문자열                    → esc(String(v))
+//
+// 사용자 요구 (PR #252):
+//   "금액·원화 지표는 반드시 천 단위 콤마"
+//   "연월, 코드, 비율 등에는 콤마를 적용하지 않기"
+//   "모든 숫자에 일괄 적용하지 말고 컬럼의 의미와 데이터 유형을 기준으로 판단"
 // ============================================================
 function formatCellValue(v, col, label) {
     if (v === null || v === undefined || v === '') return '-';
-    // 시간축 컬럼은 항상 raw 문자열
+
+    // 1) 시간축 → 콤마 없이 raw
     if (isCalendarColumn(col, label)) {
         return esc(String(v));
     }
+    // 2) 코드성 → 콤마 없이 raw
+    if (isCodeColumn(col, label)) {
+        return esc(String(v));
+    }
     const num = _parseNumericLoose(v);
+    // 3) 비율 → 콤마 없음, 소수 4자리 (음수·정수도 콤마 없이)
+    if (isRatioColumn(col, label)) {
+        if (num !== null && typeof v !== 'boolean') {
+            // 큰 정수는 그대로, 작은 소수는 소수점 유지
+            if (Number.isInteger(num)) return esc(String(num));
+            return esc(num.toLocaleString('ko-KR', { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: 4 }));
+        }
+        return esc(String(v));
+    }
+    // 4) 금액 → 반드시 콤마
+    if (isMoneyColumn(col, label)) {
+        if (num !== null && typeof v !== 'boolean') {
+            if (Number.isInteger(num)) return esc(num.toLocaleString('ko-KR'));
+            return esc(num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 4 }));
+        }
+        return esc(String(v));
+    }
+    // 5) 기타 숫자 (컬럼 힌트 부족) — 안전하게 콤마 (레거시 호환)
     if (num !== null && typeof v !== 'boolean') {
         if (Number.isInteger(num)) return esc(num.toLocaleString('ko-KR'));
         return esc(num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 4 }));
     }
+    // 6) 문자열
     return esc(String(v));
 }
 
@@ -3200,6 +3309,33 @@ function scrollToBottom() {
     setTimeout(() => { ca.scrollTop = ca.scrollHeight; }, 50);
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ============================================================
+// [PR #252 / 2026-07-22] 답변 문장 내 금액에 천 단위 콤마 자동 적용
+// ------------------------------------------------------------
+// 대상: LLM 이 생성한 answer/explanation/analysis 문장 안의 "긴 정수 + 원" 표현.
+//   예) "21421856292원" → "21,421,856,292원"
+//       "매출은 21421856292원 이었습니다" → "매출은 21,421,856,292원 이었습니다"
+//       "-2063050449원" → "-2,063,050,449원"
+// 예외:
+//   - 이미 콤마가 붙어 있는 숫자 (예: 21,421,856,292) 는 건드리지 않음
+//   - 연월 코드(4~6자리 이상 붙어 있어도 뒤에 '년/월/일/원' 이 없으면 안 건드림) 는 대상 아님
+//   - "202601" 같은 CALMONTH 코드에는 '원' 이 붙지 않으므로 자연스럽게 제외
+//   - "20260101" 같은 8자리 날짜/코드에도 마찬가지
+// 판별 근거:
+//   "원" / "원(" / "원," / "원." / "원 " 앞의 5자리 이상 정수 (음수 포함) 만 콤마 처리.
+//   ※ 이미 콤마가 있으면 정규식이 매치하지 않도록 [-]?\d{5,} (콤마 없는 연속 자리) 만 잡음.
+// ============================================================
+function applyCurrencyFormatToText(text) {
+    if (typeof text !== 'string' || !text) return text;
+    // (^|[^\d,]) 로 앞에 다른 숫자·콤마가 없는 경우만 매치 → 이미 포맷된 숫자 재처리 방지
+    // 뒤에는 '원' 이 반드시 와야 매치 → 코드/연월값에는 안 붙음
+    return text.replace(/(^|[^\d,])(-?\d{5,})\s*원/g, (m, prefix, num) => {
+        const n = Number(num);
+        if (!Number.isFinite(n)) return m;
+        return `${prefix}${n.toLocaleString('ko-KR')}원`;
+    });
+}
 
 // 간단한 마크다운 → HTML 변환 (분석 답변용)
 function mdToHtml(md) {
