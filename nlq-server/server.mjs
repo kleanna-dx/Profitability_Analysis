@@ -1394,23 +1394,30 @@ const pool = mysql.createPool({
 });
 
 // ============================================================
-// [2026-07-22 PR #247] NLQ (자연어질의) DB 쿼리 실행 타임아웃
+// [2026-07-22 PR #247 / PR #250] NLQ (자연어질의) DB 쿼리 실행 타임아웃
 // ------------------------------------------------------------
-//   - 배경: aggregate(현황집계) 경로에서 실측 78s 걸리는 SQL 이 nginx 60s
-//     idle timeout 에 걸려 HTTP 504 로 잘리는 문제 (request_aborted).
-//   - 해결: MariaDB `SET STATEMENT max_statement_time=90` 로 서버단에서
-//     쿼리를 강제 종료하여, 클라이언트/게이트웨이 timeout 보다 먼저
-//     명시적 JSON 오류 응답(X-Request-Id 포함) 을 반환.
+//   - 배경 (PR #247): aggregate(현황집계) 경로에서 실측 78s 걸리는 SQL 이
+//     nginx 60s idle timeout 에 걸려 HTTP 504 로 잘리는 문제.
+//     → MariaDB `SET STATEMENT max_statement_time` 로 서버단에서 강제 종료.
+//   - 배경 (PR #250, 2026-07-22 재개정):
+//     "2026년 3월~6월 월별 SKU 매출" 질의가 mysql2 driver 의 client-side
+//     `Query inactivity timeout (90004ms)` 로 잘려서 HTTP 200 으로 반환됨.
+//     → (1) 기본 한도를 90s → 120s 로 상향,
+//       (2) mysql2 driver timeout 을 max_statement_time 보다 약간 크게
+//          잡아 서버단 ER_STATEMENT_TIMEOUT(1969) 이 먼저 발화되도록 함
+//          (에러 메시지가 더 명확 + errno 1969 로 안전하게 판정),
+//       (3) 실제 타임아웃 시 HTTP 504 + error_type=db_query_timeout 반환.
 //   - 계층 위계 (안쪽 → 바깥쪽, 안쪽이 항상 더 짧아야 함):
-//       ①  NLQ DB 쿼리         90s   ← 여기 (NLQ_DB_QUERY_TIMEOUT_MS)
-//       ②  프론트 fetch(aggr)  180s  ← index.html L1737
-//       ③  Nginx proxy_read    240s  ← 운영 nginx.conf (DEPLOYMENT.md 안내)
-//       ④  Express request     600s  ← L13571 (SERVER_TIMEOUT_MS)
-//       ⑤  Undici headers/body 600s  ← L29-33 (UNDICI_TIMEOUT_MS)
+//       ①  NLQ DB max_stmt_time 120s      ← 여기 (NLQ_DB_QUERY_TIMEOUT_MS)
+//       ①' mysql2 driver timeout ≈ 138s   ← (①) × 1.15 (드라이버가 나중에 발화)
+//       ②  프론트 fetch(aggregate) 300s   ← index.html runAnalysisAsync
+//       ③  Nginx proxy_read       240s+  ← 운영 nginx.conf (DEPLOYMENT.md)
+//       ④  Express request        600s   ← SERVER_TIMEOUT_MS
+//       ⑤  Undici headers/body    600s   ← UNDICI_TIMEOUT_MS
 //   - 환경변수 NLQ_DB_QUERY_TIMEOUT_MS 로 운영 중 재조정 가능.
 //   - 참고: 빌더용(BUILDER_DB_QUERY_TIMEOUT_MS=100000) 과는 별도.
 // ============================================================
-const NLQ_DB_QUERY_TIMEOUT_MS = parseInt(process.env.NLQ_DB_QUERY_TIMEOUT_MS || '90000', 10);
+const NLQ_DB_QUERY_TIMEOUT_MS = parseInt(process.env.NLQ_DB_QUERY_TIMEOUT_MS || '120000', 10);
 const NLQ_DB_QUERY_TIMEOUT_SEC = Math.max(1, Math.ceil(NLQ_DB_QUERY_TIMEOUT_MS / 1000));
 console.log(`[Boot] NLQ DB query timeout: ${NLQ_DB_QUERY_TIMEOUT_MS}ms (max_statement_time=${NLQ_DB_QUERY_TIMEOUT_SEC}s)`);
 
@@ -1421,16 +1428,24 @@ console.log(`[Boot] NLQ DB query timeout: ${NLQ_DB_QUERY_TIMEOUT_MS}ms (max_stat
 // - 타임아웃 발생 시 ER_STATEMENT_TIMEOUT(1969) 또는
 //   PROTOCOL_SEQUENCE_TIMEOUT 이 던져지므로 호출 측에서 감지 가능.
 // - 세미콜론 절단 방지: SQL 끝의 세미콜론/공백 제거 후 감싼다.
+//
+// [PR #250] mysql2 driver 의 `timeout` 옵션은 소켓 idle 기준 client-side 타이머라
+//   서버단 max_statement_time 과 동일값이면 드라이버가 먼저 발화하여
+//   "Query inactivity timeout" 이라는 애매한 메시지를 던지는 경우가 있음.
+//   → driverTimeoutMs = round(tMs * 1.15) + 5000 로 여유를 주어
+//     서버단 ER_STATEMENT_TIMEOUT(1969) 이 먼저 발화되게 한다.
 // ------------------------------------------------------------
 async function nlqPoolQueryWithTimeout(sql, params, timeoutMs) {
   const tMs = Math.max(1000, parseInt(timeoutMs || NLQ_DB_QUERY_TIMEOUT_MS, 10));
   const tSec = Math.max(1, Math.ceil(tMs / 1000));
+  // mysql2 driver 는 서버단 max_statement_time 보다 약간 느긋하게 → 서버단이 먼저 발화
+  const driverTimeoutMs = Math.ceil(tMs * 1.15) + 5000;
   const cleanSql = String(sql || '').replace(/;\s*$/g, '').trim();
   const wrappedSql = `SET STATEMENT max_statement_time=${tSec} FOR ${cleanSql}`;
   if (Array.isArray(params) && params.length > 0) {
-    return await pool.query({ sql: wrappedSql, timeout: tMs }, params);
+    return await pool.query({ sql: wrappedSql, timeout: driverTimeoutMs }, params);
   }
-  return await pool.query({ sql: wrappedSql, timeout: tMs });
+  return await pool.query({ sql: wrappedSql, timeout: driverTimeoutMs });
 }
 
 // Helper: mysql2/MariaDB 의 쿼리 timeout 에러 여부 판정
@@ -1800,19 +1815,43 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
    - **일반 조회에는 절대 LIMIT 을 붙이지 마세요.** "2026년 3월부터 6월까지 월별 SKU 매출"
      처럼 기간·차원만 명시된 질의는 조건을 만족하는 모든 행을 반환해야 합니다.
      그런 질의에 LIMIT 1000 / LIMIT 5000 등을 임의로 붙이면 사용자가 잘못된 부분 결과를 보게 됩니다.
-5. **금액 표시**: FORMAT(SUM(ZAMT***), 0) AS 별칭. **ORDER BY에는 FORMAT 별칭 사용 금지!** → ORDER BY SUM(ZAMT***) DESC 사용
-6. **비율/율(%) 표시**: FORMAT(ROUND(<비율식>, 1), 1) AS 별칭 — 소수 1자리 + 천 단위 콤마 필수.
-   예) FORMAT(ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1), 1) AS '영업이익률(%)'
-   ORDER BY 에는 FORMAT 별칭 사용 금지 → ORDER BY <비율식> DESC 사용
+5. **금액/수치 표시 (2026-07-22 개정, PR #250) — 매우 중요!**
+   - **SQL 에서는 FORMAT() 을 절대 사용하지 마세요.** 숫자를 그대로 SUM(...) AS 별칭 형태로 반환합니다.
+     · ✗ 금지: FORMAT(SUM(ZAMT003), 0) AS '매출 합계(원)'
+     · ✓ 권장: SUM(ZAMT003) AS '매출 합계(원)'
+   - **이유:** FORMAT() 은 (a) 집계 결과를 VARCHAR 로 변환하여 옵티마이저가 인덱스/파이프라인 최적화를 못 하게 하고,
+     (b) 결과 크기(row × column)에 비례해 CPU 를 소모하며, (c) 프론트가 다시 파싱해야 정렬/필터가 가능합니다.
+     → 천 단위 콤마·소수점 자릿수 포맷은 **프론트엔드가 화면 렌더링 단계에서 처리**합니다. SQL 은 raw number 만 반환.
+   - **ORDER BY 는 언제나 원식 그대로 사용:** ORDER BY SUM(ZAMT***) DESC (별칭이나 FORMAT 사용 금지)
+6. **비율/율(%) 표시 (2026-07-22 개정)**
+   - FORMAT/ROUND 없이 원식만: SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100 AS '영업이익률(%)'
+   - 소수 자릿수·콤마는 프론트가 처리. SQL 은 순수 계산식만 반환.
+   - ORDER BY 는 원식 사용 (별칭 사용 금지).
 7. GROUP BY 시 반드시 집계 함수 사용
 8. 컬럼 alias는 한글, 사용자가 이해하기 쉬운 의미 있는 이름 사용
 9. 정렬: 금액 DESC, 코드 ASC
 10. NULL 값 처리: 데이터가 없는 컬럼은 NULL 그대로 표시 (COALESCE/IFNULL로 '미상','Unknown' 등 문자열 치환 금지). 단, 금액/수량 집계에서 NULL→0 변환은 허용
 11. _NM 명칭 컬럼 활용: 코드 컬럼 옆에 대응하는 _NM 컬럼이 있으면 함께 SELECT (CASE WHEN 불필요)
-12. 코드매핑 컬럼은 GROUP BY 코드컬럼 + _NM 컬럼 함께 SELECT
+12. **코드매핑 컬럼 GROUP BY 규칙 (2026-07-22 개정, PR #250) — 매우 중요!**
+    - 코드컬럼과 _NM(명칭) 컬럼이 모두 있는 경우 **반드시 코드컬럼으로 GROUP BY** 하고 명칭은 MAX() 로 함께 노출:
+      · ✓ 권장: GROUP BY MATERIAL + SELECT 절에 MATERIAL, MAX(MATERIAL_NM) AS '자재명'
+      · ✗ 금지: GROUP BY MATERIAL_NM 단독 (VARCHAR 그룹핑은 코드보다 훨씬 느리고 인덱스 미사용)
+    - 특히 SKU/자재 관련 질문: **MATERIAL(코드) 기준 집계** 후 MAX(MATERIAL_NM) 로 자재명 표시.
+      MATERIAL_NM 은 사실상 MATERIAL 에 1:1 대응이므로 MAX()/MIN()/ANY_VALUE() 모두 동일 결과.
+    - 동일 원칙 적용 대상: CUSTOMER↔CUSTOMER_NM, PROFIT_CTR↔PROFIT_CTR_NM, DIVISION↔DIVISION_NM,
+      SALES_ORG↔SALES_ORG_NM, DISTR_CHAN↔DISTR_CHAN_NM 등.
+    - 예시 SQL (권장 패턴):
+      SELECT CALMONTH AS '연월',
+             MATERIAL AS 'SKU코드',
+             MAX(MATERIAL_NM) AS 'SKU명',
+             SUM(ZAMT003) AS '매출 합계(원)'
+      FROM bw_profitability_data
+      WHERE DIVISION='10' AND CALMONTH BETWEEN '202603' AND '202606'
+      GROUP BY CALMONTH, MATERIAL
+      ORDER BY CALMONTH ASC, SUM(ZAMT003) DESC
 13. 명칭으로 질문 시 코드값으로 WHERE
 14. PROFIT_CTR: 10자리 선행0 (예: '0000002000')
-15. 자재명: MATERIAL_NM (자재 명 컬럼)
+15. 자재명: MATERIAL_NM (자재 명 컬럼). GROUP BY 는 MATERIAL(코드) 기준 + MAX(MATERIAL_NM) 로 명칭 노출 (규칙 12 참조).
 16. 브랜드: BIC_ZBRAND (브랜드1), BIC_ZSBRAND (브랜드2)
 17. **학습 데이터 우선**: 아래 RAG 컨텍스트에 유사 질문의 검증된 SQL이 있으면 그 패턴을 최우선 참고
 18. **알 수 없는 용어 처리 (매우 중요!)**: 사용자의 질문에 포함된 핵심 용어(업무 명칭, 지표명, 분류명 등)가 아래 조건을 **모두** 만족하지 못하면, SQL을 생성하지 말고 반드시 안내 메시지만 응답하세요:
@@ -1893,7 +1932,7 @@ YYYY 는 문맥의 연도(사용자가 "2026년 상반기"라 하면 2026, 연�
   ② **조건부 합계가 필요한 경우(WHERE로 거를 수 없는 행 단위 분기)**: SUM(CASE WHEN <조건> THEN <산식> ELSE 0 END) 으로 감싸세요.
      - 예) 도메인별 매출총이익 분리 합계가 필요할 때:
        SUM(CASE WHEN DIVISION='20' THEN ZAMT001-ZAMT002+ZAMT004-(ZAMT006+...) ELSE 0 END)
-  ③ FORMAT(), ORDER BY, HAVING 등에서도 위와 동일한 SUM(산식) 표현을 그대로 복사해 사용하세요.
+  ③ ORDER BY, HAVING 등에서도 위와 동일한 SUM(산식) 표현을 그대로 복사해 사용하세요. (FORMAT() 은 사용 금지 — 규칙 5 참조)
   ④ 비율/평균을 계산할 때 (예: 매출총이익률 = 매출총이익 / 순매출 * 100):
      - 분자/분모가 각각 row-level 산식이면 각각을 SUM()으로 감싸세요:
        SUM(<매출총이익 산식>) / NULLIF(SUM(<순매출 산식>), 0) * 100
@@ -1925,13 +1964,15 @@ YYYY 는 문맥의 연도(사용자가 "2026년 상반기"라 하면 2026, 연�
 - 별칭에는 단위를 괄호로 명시: 예) '판매수량 합계(BOX)', '총매출(원)', '영업이익률(%)'
 - 집계 함수를 사용한 경우 "합계", "평균", "최대" 등을 별칭에 포함
 - 코드/명칭 컬럼도 의미 있는 한국어 별칭 필수:
-  ✗ 금지: SELECT MATERIAL, MATERIAL_NM, FORMAT(SUM(ZAMT001),0) AS '총매출 합계(원)'
-  ✓ 정답: SELECT MATERIAL AS '자재코드', MATERIAL_NM AS '자재명', FORMAT(SUM(ZAMT001),0) AS '총매출 합계(원)'
+  ✗ 금지: SELECT MATERIAL, MATERIAL_NM, SUM(ZAMT001) AS '총매출 합계(원)'
+  ✓ 정답: SELECT MATERIAL AS '자재코드', MAX(MATERIAL_NM) AS '자재명', SUM(ZAMT001) AS '총매출 합계(원)'
+         (GROUP BY MATERIAL — 코드 기준 그룹핑 + 명칭은 MAX() 로 노출: 규칙 12 참조)
 - 별칭에 적절한 단어가 떠오르지 않으면 DB COMMENT/학습관리 동의어 의미를 추론하여 한국어로 부여하세요 (예: PROFIT_CTR → '손익센터', CALMONTH → '연월', DISTR_CHAN_NM → '유통경로명').
 - 예시 (전형적인 형태):
-  SELECT MATERIAL AS '자재코드', MATERIAL_NM AS '자재명',
-         FORMAT(SUM(BIC_ZQTY_BOX), 0) AS '판매수량 합계(BOX)',
-         FORMAT(SUM(ZAMT001), 0) AS '총매출 합계(원)'
+  SELECT MATERIAL AS '자재코드', MAX(MATERIAL_NM) AS '자재명',
+         SUM(BIC_ZQTY_BOX) AS '판매수량 합계(BOX)',
+         SUM(ZAMT001) AS '총매출 합계(원)'
+  FROM bw_profitability_data ... GROUP BY MATERIAL   -- 코드 기준 GROUP BY (규칙 12)
 
 [★ 동일 키워드가 여러 컬럼에 매칭된 경우 — 매우 중요!]
 - 사용자가 입력한 단어가 여러 컬럼에 매핑되어 있는 경우가 있습니다:
@@ -1942,16 +1983,16 @@ YYYY 는 문맥의 연도(사용자가 "2026년 상반기"라 하면 2026, 연�
 - 각 컬럼의 AS 별칭은 **반드시 해당 컬럼의 description(학습관리 등록 설명)을 그대로 사용**하세요.
   사용자가 입력한 키워드("소모품비")를 별칭의 기준으로 쓰지 마세요. 각 컬럼의 등록 description이 기준입니다.
 
-  ✗ 금지: SELECT FORMAT(SUM(ZAMT049),0) AS '소모품비 합계(원)'  → ZAMT019 누락
-  ✗ 금지: SELECT FORMAT(SUM(ZAMT049)+SUM(ZAMT019),0) AS '소모품비 합계(원)'  → 통합 별칭 금지
+  ✗ 금지: SELECT SUM(ZAMT049) AS '소모품비 합계(원)'  → ZAMT019 누락
+  ✗ 금지: SELECT SUM(ZAMT049)+SUM(ZAMT019) AS '소모품비 합계(원)'  → 통합 별칭 금지
   ✓ 정답: SELECT
-            FORMAT(SUM(ZAMT049),0) AS '소모품비 합계(원)',          -- ZAMT049의 description "소모품비"
-            FORMAT(SUM(ZAMT019),0) AS '수선/소모품비 합계(원)'      -- ZAMT019의 description "수선/소모품비"
+            SUM(ZAMT049) AS '소모품비 합계(원)',          -- ZAMT049의 description "소모품비"
+            SUM(ZAMT019) AS '수선/소모품비 합계(원)'      -- ZAMT019의 description "수선/소모품비"
 
-  ✗ 금지: SELECT FORMAT(SUM(ZAMT040)+SUM(ZAMT044),0) AS '지급수수료 합계(원)'
+  ✗ 금지: SELECT SUM(ZAMT040)+SUM(ZAMT044) AS '지급수수료 합계(원)'
   ✓ 정답: SELECT
-            FORMAT(SUM(ZAMT040),0) AS '지급수수료(변동) 합계(원)',
-            FORMAT(SUM(ZAMT044),0) AS '지급수수료(고정) 합계(원)'
+            SUM(ZAMT040) AS '지급수수료(변동) 합계(원)',
+            SUM(ZAMT044) AS '지급수수료(고정) 합계(원)'
 
 - 동의어 매칭 컨텍스트의 "[중요] N개 컬럼에 매칭됨" 안내를 그대로 따르세요.
 
@@ -1985,21 +2026,22 @@ YYYY 는 문맥의 연도(사용자가 "2026년 상반기"라 하면 2026, 연�
    - 단일 행에 여러 KPI를 한 번에 집계 (GROUP BY 없음, 일반 컬럼도 없음)
    ✅ 권장 형태:
    SELECT
-     FORMAT(SUM(ZAMT001), 0) AS '총매출',
-     FORMAT(SUM(ZAMT003), 0) AS '순매출',
-     FORMAT(SUM(ZAMT005), 0) AS '매출원가',
+     SUM(ZAMT001) AS '총매출',
+     SUM(ZAMT003) AS '순매출',
+     SUM(ZAMT005) AS '매출원가',
      ...
    FROM bw_profitability_data
-   WHERE 기준연월='2026-04'   -- WHERE에는 일반 컬럼 조건만!
+   WHERE CALMONTH='202604'   -- WHERE에는 일반 컬럼 조건만!
    - 차원별로 보고 싶으면 GROUP BY 명시:
-   SELECT 제품군, FORMAT(SUM(ZAMT001), 0) AS '매출'
+   SELECT PRODUCT_GROUP AS '제품군', SUM(ZAMT001) AS '매출'
    FROM bw_profitability_data
-   WHERE 기준연월='2026-04'
-   GROUP BY 제품군
+   WHERE CALMONTH='202604'
+   GROUP BY PRODUCT_GROUP
 
-4. FORMAT() 함수는 반드시 2개 인자: FORMAT(숫자표현, 소수자리수)
-   ❌ 금지: FORMAT(SUM(ZAMT001))    → 인자 부족 에러
-   ✅ 올바름: FORMAT(SUM(ZAMT001), 0)  ← 마지막 0 필수
+4. **FORMAT() 사용 금지 (2026-07-22 PR #250 개정)**
+   ❌ 금지: FORMAT(SUM(ZAMT001), 0)   → SQL 성능 저하 + VARCHAR 반환
+   ✅ 올바름: SUM(ZAMT001) AS '별칭'   ← raw 숫자 반환, 프론트가 콤마 포맷
+   (규칙 5 참조 — 천 단위 콤마·소수 자릿수는 화면 렌더링에서 처리)
 
 응답 형식 (반드시 JSON):
 {
@@ -2629,7 +2671,7 @@ async function buildRAGSystemPrompt(query, domainCode) {
         if (isRowLevel) {
           synonymContext += `  ▶ 조건부 합계가 필요하면: SUM(CASE WHEN <조건> THEN ${innerFormula} ELSE 0 END)\n`;
         }
-        synonymContext += `  ▶ FORMAT()이나 ORDER BY 등에도 동일하게 위 SQL 표현식을 그대로 복사해 사용하세요.\n`;
+        synonymContext += `  ▶ ORDER BY, HAVING 등에도 동일하게 위 SQL 표현식을 그대로 복사해 사용하세요 (FORMAT() 금지 — 규칙 5).\n`;
       }
       if (allRefCodes.size > 0) {
         synonymContext += `\n⛔ 절대 사용 금지 컬럼 (위 산식의 구성 요소 또는 매칭된 metric_code):\n`;
@@ -2640,7 +2682,7 @@ async function buildRAGSystemPrompt(query, domainCode) {
       if (hasRowLevelMetric) {
         synonymContext += `\n[row-level 산식 사용 예시 — 매우 중요!]\n`;
         synonymContext += `  원본 산식이 "ZAMT001-ZAMT002+ZAMT004-(ZAMT006+ZAMT007+ZAMT008)" 로 제공되면:\n`;
-        synonymContext += `  ✓ 정답: SELECT FORMAT(SUM(ZAMT001-ZAMT002+ZAMT004-(ZAMT006+ZAMT007+ZAMT008)), 0) AS '매출총이익 합계(원)'\n`;
+        synonymContext += `  ✓ 정답: SELECT SUM(ZAMT001-ZAMT002+ZAMT004-(ZAMT006+ZAMT007+ZAMT008)) AS '매출총이익 합계(원)'   -- FORMAT() 없이 raw 숫자\n`;
         synonymContext += `         (산식 전체를 SUM() 한 번으로 감싸기)\n`;
         synonymContext += `  ✗ 금지: SUM(ZAMT001)-SUM(ZAMT002)+SUM(ZAMT004)-(SUM(ZAMT006)+SUM(ZAMT007)+SUM(ZAMT008))\n`;
         synonymContext += `         (컬럼마다 SUM()을 분배하면 안 됩니다! 산식 안에 새 컬럼이나 분기가 들어갈 수 있어 결과가 달라질 수 있습니다.)\n`;
@@ -2651,7 +2693,7 @@ async function buildRAGSystemPrompt(query, domainCode) {
       if (hasColumnLevelMetric) {
         synonymContext += `\n[column-level 산식 사용 예시]\n`;
         synonymContext += `  원본 산식이 이미 "SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100" 처럼 SUM()을 포함하면:\n`;
-        synonymContext += `  ✓ 정답: 그대로 복사 + FORMAT 감싸기 → SELECT FORMAT(ROUND(SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100, 1), 1) AS '영업이익률(%)'\n`;
+        synonymContext += `  ✓ 정답: 그대로 복사 → SELECT SUM(ZAMT055)/NULLIF(SUM(ZAMT003),0)*100 AS '영업이익률(%)'   -- FORMAT/ROUND 없이 raw 숫자, 프론트가 자릿수 처리\n`;
         synonymContext += `  ✗ 금지: 한 번 더 SUM() 감싸기 (중첩 집계 금지) — SUM(SUM(ZAMT055)/...) ✗\n`;
       }
     }
@@ -2700,7 +2742,7 @@ async function buildRAGSystemPrompt(query, domainCode) {
             synonymContext += `  ▶ SELECT 절 작성 규칙 (금액 컬럼):\n`;
             for (const m of group) {
               const safeAlias = (m.description || m.column_name).replace(/"/g, '');
-              synonymContext += `     FORMAT(SUM(${m.column_name}), 0) AS '${safeAlias} 합계(원)'\n`;
+              synonymContext += `     SUM(${m.column_name}) AS '${safeAlias} 합계(원)'\n`;
             }
             synonymContext += `  ⚠️ 하나만 선택하거나, 합산해서 하나의 컬럼으로 묶지 마세요!\n`;
             synonymContext += `  ⚠️ 각 컬럼을 **개별 컬럼**으로 SELECT 절에 나열하고, 각각 위 description을 AS 별칭으로 그대로 사용하세요!\n`;
@@ -5860,20 +5902,28 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           } else if (_pfrom) {
             cmLabel2 = _fmtYm2(_pfrom);
           }
-          const failMsg = `**${cmLabel2}** 기간·도메인(${(plan.domain && plan.domain.value) || activeDomain}) 조건으로 분석에 필요한 데이터를 조회할 수 없었습니다.\n\n` +
-            `- 실행 오류: ${execRecord.baseError}\n` +
-            `- 확인 사항: 기간·도메인·필터·컬럼명이 올바른지, 학습관리 산식이 최신인지 재검토가 필요합니다.\n\n` +
-            `실제 계산되지 않은 수치를 임의로 만들어 인용하지 않도록, **현재 데이터만으로는 결과 확정이 어렵다**고 안내드립니다.`;
+          // [PR #250] analysis 경로에서도 DB 타임아웃 판정 시 별도 안내 + 504 반환
+          const analysisTimedOut = !!execRecord.baseTimedOut;
+          const failMsg = analysisTimedOut
+            ? `**${cmLabel2}** 기간·도메인(${(plan.domain && plan.domain.value) || activeDomain}) 분석 SQL 이 ` +
+              `DB 조회 한도(${NLQ_DB_QUERY_TIMEOUT_SEC}초) 를 초과했습니다.\n\n` +
+              `- 원인: 대량 그룹핑/조인 또는 인덱스 미사용 가능성\n` +
+              `- 대응: 기간을 짧게, 그룹핑 컬럼을 줄여 다시 시도해 주세요.`
+            : `**${cmLabel2}** 기간·도메인(${(plan.domain && plan.domain.value) || activeDomain}) 조건으로 분석에 필요한 데이터를 조회할 수 없었습니다.\n\n` +
+              `- 실행 오류: ${execRecord.baseError}\n` +
+              `- 확인 사항: 기간·도메인·필터·컬럼명이 올바른지, 학습관리 산식이 최신인지 재검토가 필요합니다.\n\n` +
+              `실제 계산되지 않은 수치를 임의로 만들어 인용하지 않도록, **현재 데이터만으로는 결과 확정이 어렵다**고 안내드립니다.`;
           const nlqUserIdFail = req.session?.user?.id || null;
           saveHistory(
             nlqUserIdFail, query, execRecord.baseSql,
             failMsg, 'analysis', {}, [],
             0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain
           ).catch(e => console.error('[History] 저장 실패:', e.message));
-          return res.json({
-            success: true,
+          const analysisHttpStatus = analysisTimedOut ? 504 : 200;
+          return res.status(analysisHttpStatus).json({
+            success: analysisTimedOut ? false : true,
             isAnalysisAnswer: true,
-            answerType: 'execution_failed',
+            answerType: analysisTimedOut ? 'db_query_timeout' : 'execution_failed',
             answer: failMsg,
             analysis: failMsg,
             rows: [], rowCount: 0,
@@ -5881,6 +5931,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             chartType: 'analysis', chartConfig: {},
             analysisPlan: plan,
             executionDiagnostics: execRecord.diagnostics,
+            error_type: analysisTimedOut ? 'db_query_timeout' : 'execution_failed',
+            error_code: analysisTimedOut ? 'db_query_timeout' : 'execution_failed',
           });
         }
 
@@ -6385,7 +6437,13 @@ ${sqlValidation.reason}
           dbTimeoutLimitMs: NLQ_DB_QUERY_TIMEOUT_MS,
         },
       });
-      return res.json({
+      // [PR #250] DB 타임아웃은 HTTP 504 (Gateway Timeout) 로 명시 반환.
+      //   - 이전에는 HTTP 200 + success:false 로 반환하여, 프론트/모니터링/
+      //     외부 게이트웨이에서 "성공" 으로 분류되는 문제가 있었음.
+      //   - 일반 DB 실행 오류(문법/컬럼 등) 는 종전대로 200 유지 (클라이언트가
+      //     안내 문구를 그대로 렌더링해야 하는 재작성 가능 오류이기 때문).
+      const httpStatus = dbTimedOut ? 504 : 200;
+      return res.status(httpStatus).json({
         success: false,
         sql,
         rows: [],
@@ -6397,6 +6455,7 @@ ${sqlValidation.reason}
         requestId: errorDetail.requestId,
         error_user_friendly: true,
         error_type: dbTimedOut ? 'db_query_timeout' : 'db_execution',
+        error_code: dbTimedOut ? 'db_query_timeout' : 'db_execution',
         error_detail: errorDetail,
       });
     }
