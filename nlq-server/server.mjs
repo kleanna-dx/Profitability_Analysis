@@ -5914,10 +5914,15 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
               `- 확인 사항: 기간·도메인·필터·컬럼명이 올바른지, 학습관리 산식이 최신인지 재검토가 필요합니다.\n\n` +
               `실제 계산되지 않은 수치를 임의로 만들어 인용하지 않도록, **현재 데이터만으로는 결과 확정이 어렵다**고 안내드립니다.`;
           const nlqUserIdFail = req.session?.user?.id || null;
+          // [PR #251] 실패 이력에 requestId + errorType 동반 저장 →
+          //   이력 재열람 시 최초 오류 화면과 동일 requestId / 배지 복원
+          const analysisErrorType = analysisTimedOut ? 'db_query_timeout' : 'execution_failed';
+          const analysisRequestId = (typeof getCurrentRequestId === 'function' ? getCurrentRequestId() : null) || req.requestId || null;
           saveHistory(
             nlqUserIdFail, query, execRecord.baseSql,
             failMsg, 'analysis', {}, [],
-            0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain
+            0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain,
+            { requestId: analysisRequestId, errorType: analysisErrorType }
           ).catch(e => console.error('[History] 저장 실패:', e.message));
           const analysisHttpStatus = analysisTimedOut ? 504 : 200;
           return res.status(analysisHttpStatus).json({
@@ -5931,8 +5936,10 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             chartType: 'analysis', chartConfig: {},
             analysisPlan: plan,
             executionDiagnostics: execRecord.diagnostics,
-            error_type: analysisTimedOut ? 'db_query_timeout' : 'execution_failed',
-            error_code: analysisTimedOut ? 'db_query_timeout' : 'execution_failed',
+            error_type: analysisErrorType,
+            error_code: analysisErrorType,
+            // [PR #251] 최초 실행 화면과 이력 재열람 화면 requestId 일치용
+            requestId: analysisRequestId,
           });
         }
 
@@ -6417,11 +6424,6 @@ ${sqlValidation.reason}
         friendly = '죄송합니다. 쿼리 문법 오류가 발생했습니다. 질문을 다시 표현해 주세요.';
       }
 
-      // 실패 이력 저장
-      const failUserId = req.session?.user?.id || null;
-      saveHistory(failUserId, query, sql, null, null, null, null, 0, 0, 'FAILED', errMsg, session_id || null, activeDomain)
-        .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
-
       // ★ 상세 진단 정보 포함 (DB 실행 단계 오류)
       const errorDetail = buildErrorDetail({
         req,
@@ -6437,6 +6439,16 @@ ${sqlValidation.reason}
           dbTimeoutLimitMs: NLQ_DB_QUERY_TIMEOUT_MS,
         },
       });
+      // [PR #251] 실패 이력 저장 — requestId + errorType 함께 저장하여
+      //   이력 재열람 시에도 최초 오류 화면과 동일한 requestId / 배지 복원
+      const failUserId = req.session?.user?.id || null;
+      const failErrorType = dbTimedOut ? 'db_query_timeout' : 'db_execution';
+      saveHistory(
+        failUserId, query, sql, null, null, null, null, 0, 0,
+        'FAILED', errMsg, session_id || null, activeDomain,
+        { requestId: errorDetail.requestId || null, errorType: failErrorType }
+      ).catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
+
       // [PR #250] DB 타임아웃은 HTTP 504 (Gateway Timeout) 로 명시 반환.
       //   - 이전에는 HTTP 200 + success:false 로 반환하여, 프론트/모니터링/
       //     외부 게이트웨이에서 "성공" 으로 분류되는 문제가 있었음.
@@ -6658,11 +6670,6 @@ ${formatRule}
     console.error('[NLQ] Error:', err);
     const msg = err.sqlMessage || err.message || String(err);
 
-    // 실패 이력도 저장
-    const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, null, null, null, null, null, 0, 0, 'FAILED', msg, session_id || null, activeDomain)
-      .catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
-
     // ★ 상세 진단 정보 함께 반환 (클라이언트 "오류 상세보기"에서 표시)
     const errorDetail = buildErrorDetail({
       req,
@@ -6675,10 +6682,21 @@ ${formatRule}
         domain: activeDomain,
       },
     });
+
+    // [PR #251] 실패 이력에 requestId + errorType(system) 동반 저장
+    const nlqUserId = req.session?.user?.id || null;
+    saveHistory(
+      nlqUserId, query, null, null, null, null, null, 0, 0,
+      'FAILED', msg, session_id || null, activeDomain,
+      { requestId: errorDetail.requestId || null, errorType: 'system' }
+    ).catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
+
     return res.status(500).json({
       error: msg,
       query,
       requestId: errorDetail.requestId,
+      error_type: 'system',
+      error_code: 'system',
       error_detail: errorDetail,
     });
   }
@@ -7060,15 +7078,21 @@ app.get('/api/history/retention', (req, res) => {
 
 // ============================================================
 // 이력 저장 헬퍼 함수
+// ------------------------------------------------------------
+// [PR #251 / 2026-07-22] 마지막 인자로 옵션 객체 { requestId, errorType } 지원 추가.
+//   - 하위호환: 기존 13개 위치 인자 호출부는 그대로 동작 (options 미지정 시 NULL 저장)
+//   - 목적: 이력 재열람 시에도 최초 오류 화면과 동일한 requestId / 오류 유형 배지 복원
 // ============================================================
-async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId, domainCode) {
+async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId, domainCode, options) {
   // result_data는 최대 100행만 저장 (DB 용량 절약)
   const trimmedData = resultData ? JSON.stringify(resultData.slice(0, 100)) : null;
   const configJson = chartConfig ? JSON.stringify(chartConfig) : null;
+  const requestId = (options && options.requestId) ? String(options.requestId).slice(0, 64) : null;
+  const errorType = (options && options.errorType) ? String(options.errorType).slice(0, 50) : null;
   await pool.query(
-    `INSERT INTO nl_query_history (user_id, session_id, domain_code, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [userId || null, sessionId || null, domainCode || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg]
+    `INSERT INTO nl_query_history (user_id, session_id, domain_code, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message, request_id, error_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId || null, sessionId || null, domainCode || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg, requestId, errorType]
   );
 
   // 시간 기준 보관 정책: NLQ_HISTORY_RETENTION_DAYS(기본 31일) 경과 행 자동 삭제

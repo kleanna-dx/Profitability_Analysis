@@ -2264,14 +2264,17 @@ function appendErrorMessage(msg, details) {
     const badgeHtml = getErrorTypeBadgeHtml(errorType);
 
     // ★ requestId — 사용자가 운영팀에 문의할 때 인용할 수 있도록 헤더에 노출
+    // [PR #251] requestId 가 없어도 '' 반환하지 않고 'Request ID 없음' 을 렌더 —
+    //   질의 이력 재열람 시 최초 오류 화면과 동일한 배지를 유지하기 위함.
+    //   (요구사항: "requestId가 없는 경우 임의로 새로 생성하지 말고 'Request ID 없음'으로 표시")
     const requestId = details && details.requestId;
-    const requestIdHtml = requestId
-        ? `<div style="font-size:11px;color:#7f1d1d;margin-top:4px;">
-                <i class="fas fa-fingerprint" style="margin-right:4px;"></i>요청 ID:
-                <code style="background:#fee2e2;padding:1px 6px;border-radius:3px;font-size:10.5px;cursor:pointer;" onclick="navigator.clipboard.writeText('${esc(requestId)}').then(()=>{this.style.background='#bbf7d0';setTimeout(()=>{this.style.background='#fee2e2';},800);}).catch(()=>{});" title="클릭하면 복사됩니다">${esc(requestId)}</code>
-                <span style="color:#9f1239;font-size:10.5px;margin-left:4px;">(서버 로그 매칭용)</span>
-           </div>`
-        : '';
+    const requestIdInner = requestId
+        ? `<code style="background:#fee2e2;padding:1px 6px;border-radius:3px;font-size:10.5px;cursor:pointer;" onclick="navigator.clipboard.writeText('${esc(requestId)}').then(()=>{this.style.background='#bbf7d0';setTimeout(()=>{this.style.background='#fee2e2';},800);}).catch(()=>{});" title="클릭하면 복사됩니다">${esc(requestId)}</code>
+             <span style="color:#9f1239;font-size:10.5px;margin-left:4px;">(서버 로그 매칭용)</span>`
+        : `<span style="background:#fef2f2;padding:1px 6px;border-radius:3px;font-size:10.5px;color:#9f1239;font-style:italic;border:1px dashed #fecaca;">Request ID 없음</span>`;
+    const requestIdHtml = `<div style="font-size:11px;color:#7f1d1d;margin-top:4px;">
+                <i class="fas fa-fingerprint" style="margin-right:4px;"></i>요청 ID: ${requestIdInner}
+           </div>`;
 
     // 상세 진단 패널 (있을 때만)
     let detailsHtml = '';
@@ -4055,7 +4058,16 @@ async function restoreSession(sessionKey, hintDomain) {
                     conversationContext.push({ query: item.query_text, sql: item.generated_sql });
                 }
             } else {
-                appendErrorMessage(item.error_message || '실행 실패');
+                // [PR #251] 이력 재열람 시 최초 오류 화면과 동일한 requestId / 오류 유형 배지 복원
+                //   - 서버는 이제 실패 이력에 request_id + error_type 을 함께 저장하므로
+                //     여기서 그대로 꺼내 appendErrorMessage 에 details 로 넘긴다.
+                //   - 과거 이력(NULL) 은 프론트에서 'Request ID 없음' 으로 표시.
+                //   - errorType 미기록 이력은 'system' 배지로 fallback (기존 동작과 동일).
+                appendErrorMessage(item.error_message || '실행 실패', {
+                    requestId: item.request_id || null,
+                    errorType: item.error_type || 'system',
+                    fromHistory: true,
+                });
             }
         });
 
