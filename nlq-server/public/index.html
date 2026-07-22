@@ -1389,6 +1389,36 @@ function setSendButtonState(state) {
 const NLQ_ASYNC_POLL_INTERVAL_MS = 1500;
 const NLQ_ASYNC_MAX_WAIT_MS = 6 * 60 * 1000;   // 최대 6분 — 백엔드 5분 timeout + 안전 마진
 
+// ============================================================
+// [2026-07-22 PR #248] 클라이언트에서 requestId 를 미리 생성하여
+// X-Request-Id 요청 헤더로 전송한다.
+//   배경: nginx 가 게이트웨이 504 HTML 을 자체 반환하는 경우, 백엔드에서
+//     설정하는 res.setHeader('X-Request-Id', ...) 헤더가 응답에 없어
+//     프론트가 requestId 를 표시하지 못하는 문제가 있었다.
+//   해결: 클라이언트가 먼저 requestId 를 만들어 요청 헤더에 실어 보내면,
+//     - nginx 가 요청 헤더를 백엔드에 그대로 전달 (대부분의 기본 설정)
+//     - captureLogsMiddleware(L256) 가 이 값을 우선 사용 → 서버 로그에도 동일 ID
+//     - 오류가 나서 백엔드 응답을 못 받아도, 프론트는 자기가 만든 ID 를 알고 있음
+//       → 오류 화면에 requestId 를 항상 표시 가능 (사용자가 로그 찾기 쉬움)
+//   서버 코드 변경 없이 동작 (요청 헤더 우선순위는 이미 존재).
+// 포맷: 서버 generateRequestId() 와 동일하게 `req-YYYYMMDD-HHMMSS-<6hex>`
+// ============================================================
+function generateClientRequestId() {
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    // 6 hex chars — 서버측 crypto.randomBytes(3).toString('hex') 와 동일 길이
+    let rand = '';
+    if (window.crypto && window.crypto.getRandomValues) {
+        const arr = new Uint8Array(3);
+        window.crypto.getRandomValues(arr);
+        rand = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+    } else {
+        rand = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
+    }
+    return `req-${ts}-${rand}`;
+}
+
 function buildAnalysisProgressHtml(elapsedSec, statusLabel) {
     return `
         <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;">
@@ -1410,9 +1440,13 @@ function buildAnalysisProgressHtml(elapsedSec, statusLabel) {
         </div>`;
 }
 
-async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq, abortSignal }) {
+async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq, abortSignal, queryMode, clientRequestId }) {
     // [2026-07-21] mySeq — 이 요청의 시퀀스. 응답 처리 전 currentRequestSeq 와 일치 확인
     //   abortSignal — 사용자 중지 시 fetch 즉시 중단용
+    // [2026-07-22 PR #248] queryMode 파라미터화 (기본 'analysis', aggregate 도 재사용)
+    //   clientRequestId — 프론트가 미리 만든 requestId. X-Request-Id 요청 헤더로 전송하여
+    //   nginx 504 등 백엔드 응답 실패 시에도 화면에 표시 가능.
+    const effectiveQueryMode = (queryMode === 'aggregate') ? 'aggregate' : 'analysis';
     const isStale = () => (mySeq !== currentRequestSeq) || (abortSignal && abortSignal.aborted);
 
     // typingEl 을 '분석 중' UI 로 교체 (계속 갱신)
@@ -1421,10 +1455,12 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     // Step 1. jobId 발급
     let jobId, asyncRequestId;
     try {
+        const acceptHeaders = { 'Content-Type': 'application/json' };
+        if (clientRequestId) acceptHeaders['X-Request-Id'] = clientRequestId;
         const r = await fetch('/api/nlq/async', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, conversationContext, session_id: chatSessionId, queryMode: 'analysis' }),
+            headers: acceptHeaders,
+            body: JSON.stringify({ query, conversationContext, session_id: chatSessionId, queryMode: effectiveQueryMode }),
             signal: abortSignal,
         });
         const ct = r.headers.get('content-type') || '';
@@ -1433,15 +1469,16 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             typingEl.remove();
             const isHtml = ct.includes('text/html') || /<html[\s>]/i.test(text);
             const inferredType = (r.status === 504 || r.status === 408) && isHtml ? 'gateway_timeout' : 'system';
-            appendErrorMessage('분석 요청 접수 단계에서 게이트웨이 오류가 발생했습니다. (HTTP ' + r.status + ')', {
-                requestId: r.headers.get('x-request-id') || null,
+            appendErrorMessage('요청 접수 단계에서 게이트웨이 오류가 발생했습니다. (HTTP ' + r.status + ')', {
+                // [2026-07-22 PR #248] 응답 헤더가 없어도 clientRequestId 는 항상 존재
+                requestId: r.headers.get('x-request-id') || clientRequestId || null,
                 stage: 'async_accept_failed',
                 errorType: inferredType,
                 httpStatus: r.status,
                 statusText: r.statusText,
                 contentType: ct,
                 responseSnippet: text.substring(0, 1500),
-                queryMode: 'analysis',
+                queryMode: effectiveQueryMode,
                 timeoutMs,
                 elapsedMs: Date.now() - reqStartMs,
                 query,
@@ -1452,12 +1489,12 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         const ack = await r.json();
         if (!r.ok || !ack.success || !ack.jobId) {
             typingEl.remove();
-            appendErrorMessage(ack.error || '분석 요청을 접수하지 못했습니다.', {
-                requestId: ack.requestId || null,
+            appendErrorMessage(ack.error || '요청을 접수하지 못했습니다.', {
+                requestId: ack.requestId || clientRequestId || null,
                 stage: 'async_accept_failed',
                 errorType: 'system',
                 httpStatus: r.status,
-                queryMode: 'analysis',
+                queryMode: effectiveQueryMode,
                 timeoutMs,
                 elapsedMs: Date.now() - reqStartMs,
                 query,
@@ -1466,7 +1503,7 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             return;
         }
         jobId = ack.jobId;
-        asyncRequestId = ack.requestId || null;
+        asyncRequestId = ack.requestId || clientRequestId || null;
         // [2026-07-21] 서버 측 취소를 위해 현재 jobId 를 전역에 저장
         //   중지 요청 시 handleCancel 이 이 jobId 로 /api/nlq/cancel 호출
         //   단, 이미 stale (다른 요청으로 넘어감) 이면 저장하지 않고 즉시 취소 시도
@@ -1485,12 +1522,13 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             return;
         }
         typingEl.remove();
-        appendErrorMessage('분석 요청 접수 실패: ' + (e.message || String(e)), {
-            requestId: null,
+        appendErrorMessage('요청 접수 실패: ' + (e.message || String(e)), {
+            // [2026-07-22 PR #248] 네트워크 실패여도 clientRequestId 는 항상 존재
+            requestId: clientRequestId || null,
             stage: 'async_accept_network_failed',
             errorType: 'system',
             errorName: e.name,
-            queryMode: 'analysis',
+            queryMode: effectiveQueryMode,
             timeoutMs,
             elapsedMs: Date.now() - reqStartMs,
             query,
@@ -1548,11 +1586,11 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             if (!r.ok) {
                 typingEl.remove();
                 appendErrorMessage(pollData.error || '작업 상태 조회 실패', {
-                    requestId: asyncRequestId,
+                    requestId: asyncRequestId || clientRequestId || null,
                     stage: 'async_poll_failed',
                     errorType: 'system',
                     httpStatus: r.status,
-                    queryMode: 'analysis',
+                    queryMode: effectiveQueryMode,
                     timeoutMs,
                     elapsedMs: Date.now() - reqStartMs,
                     query,
@@ -1588,11 +1626,11 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     }
     if (!pollData || (pollData.status !== 'done' && pollData.status !== 'failed')) {
         typingEl.remove();
-        appendErrorMessage('분석 작업이 시간 내 완료되지 않았습니다. 잠시 후 [최근 이력] 에서 결과를 확인해 주세요.', {
-            requestId: asyncRequestId,
+        appendErrorMessage('작업이 시간 내 완료되지 않았습니다. 잠시 후 [최근 이력] 에서 결과를 확인해 주세요.', {
+            requestId: asyncRequestId || clientRequestId || null,
             stage: 'async_poll_timeout',
             errorType: 'timeout',
-            queryMode: 'analysis',
+            queryMode: effectiveQueryMode,
             timeoutMs: NLQ_ASYNC_MAX_WAIT_MS,
             elapsedMs: Date.now() - reqStartMs,
             query,
@@ -1612,7 +1650,7 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         // 실패 경로 — 동기 호출의 !res.ok 분기와 동일
         const serverDetail = data.error_detail || {};
         appendErrorMessage(data.error || pollData.error?.message || '서버 오류가 발생했습니다.', {
-            requestId: finalRequestId,
+            requestId: finalRequestId || clientRequestId || null,
             stage: serverDetail.stage || pollData.error?.stage || 'async_job_failed',
             errorType: serverDetail.errorType || 'system',
             httpStatus: innerStatus,
@@ -1628,7 +1666,7 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             logLineCount: serverDetail.logLineCount || null,
             logHint: serverDetail.logHint || null,
             isAdmin: serverDetail.isAdmin || false,
-            queryMode: 'analysis',
+            queryMode: effectiveQueryMode,
             timeoutMs,
             elapsedMs: pollData.elapsedMs || (Date.now() - reqStartMs),
             query,
@@ -1734,315 +1772,40 @@ async function sendQuery(query) {
 
     // ★ 진단용 메타데이터 수집 (오류 상세보기에서 사용)
     const reqStartMs = Date.now();
-    // [2026-07-22 PR #247] aggregate 120s → 180s 로 상향
-    //   - 배경: 실측 78s 걸리는 SQL 이 nginx 60s idle timeout 에 걸려 HTTP 504.
-    //   - 새 계층 위계 (안쪽이 항상 더 짧음):
-    //       DB statement timeout 90s < 프론트 fetch 180s < Nginx proxy_read 240s
-    //   - 사용자 중지 버튼은 이 timeout 과 무관하게 abortController.abort() 로 즉시 취소됨.
-    const timeoutMs = (queryMode === 'analysis') ? 300000 : 180000;
+    // [2026-07-22 PR #248] aggregate 도 async pipeline 을 쓰므로, 이 timeoutMs 는
+    //   초기 접수 fetch(/api/nlq/async) 및 개별 폴링(1.5초 간격) 에만 적용됨.
+    //   실제 전체 소요시간 상한은 NLQ_ASYNC_MAX_WAIT_MS(6분) 이 담당.
+    //   analysis, aggregate 모두 초기 접수는 수십 ms 안에 끝나므로 여유있게 300s 로 통일.
+    const timeoutMs = 300000;
+
+    // [2026-07-22 PR #248] 프론트에서 requestId 를 미리 생성해 X-Request-Id 요청 헤더로 전송.
+    //   - nginx 504 HTML 처럼 백엔드까지 못 간 경우에도 프론트는 자기가 만든 ID 를 알고 있어
+    //     화면에 requestId 를 항상 노출 가능 (사용자가 서버 로그 찾기 쉬움).
+    //   - 서버 captureLogsMiddleware(L256) 는 요청 헤더의 x-request-id 를 우선 사용하므로
+    //     서버 로그와 프론트 표시 requestId 가 동일해짐.
+    const clientRequestId = generateClientRequestId();
+    console.log('[NLQ] 🆔 clientRequestId=' + clientRequestId + ' mode=' + queryMode + ' seq=' + mySeq);
 
     // ============================================================
-    // [2026-06-15] 분석형(analysis) 질의는 자동으로 비동기 모드(/api/nlq/async + 폴링)로 전환.
-    //   - 분석형은 300초까지 걸릴 수 있는데, 운영 nginx/게이트웨이 idle timeout 이 60s/180s 면
-    //     백엔드는 정상 처리 중인데 사용자 화면에는 504 가 떠서 실패로 보이는 문제 발생.
-    //   - 비동기 모드는 즉시 jobId 만 받고 1.5초 간격으로 폴링하므로,
-    //     게이트웨이 timeout 영향을 받지 않음 (각 요청이 모두 짧음).
-    //   - 현황집계(aggregate) 는 보통 1~2초 안에 끝나므로 기존 동기 방식 유지.
+    // [2026-07-22 PR #248] 전 모드 async pipeline 통일
+    //   - aggregate(현황집계) 도 analysis 와 동일하게 /api/nlq/async + 폴링 을 사용.
+    //   - 배경: aggregate 는 실측 78s 걸리는 SQL 이 nginx 60s idle timeout 에 걸려
+    //     HTTP 504 (게이트웨이 타임아웃) 로 잘리는 문제 발생. 프론트/백엔드/DB timeout
+    //     을 아무리 넉넉하게 잡아도 nginx 벽(운영자 설정) 을 뚫을 수 없었음.
+    //   - async pipeline 은 즉시 jobId 만 반환하고(수십 ms) 이후 폴링만 하므로
+    //     각 HTTP 요청이 모두 짧아 nginx idle timeout 영향을 원천적으로 안 받음.
+    //   - analysis 파이프라인은 이미 이 방식으로 잘 동작 중이었으므로 그대로 재사용.
     // ============================================================
-    if (queryMode === 'analysis') {
-        try {
-            await runAnalysisAsync({
-                query, typingEl, reqStartMs, timeoutMs,
-                mySeq, abortSignal: abortController.signal,
-            });
-        } finally {
-            // [2026-07-21] 이 요청이 여전히 '최신' 요청일 때만 loading 해제
-            //   중간에 취소되어 새 요청이 시작된 경우엔 현재 요청의 finally 가 상태를 되돌리면 안 됨
-            if (mySeq === currentRequestSeq) {
-                isLoading = false;
-                currentAbortController = null;
-                currentJobId = null;
-                currentTypingEl = null;
-                setSendButtonState('idle');
-            }
-            // [2026-06-15] 질문 실행 후엔 항상 [최근] 탭으로 정규화 (탭/목록 동기화 보장)
-            refreshSidebarAfterSend().catch(() => {});
-        }
-        return;
-    }
-
     try {
-        // [2026-07-21] 타임아웃도 AbortController 로 통합 — 사용자 취소와 동일한 signal 사용
-        //   기존: 별도 controller + setTimeout(abort)
-        //   변경: 위에서 만든 abortController 재사용. 타임아웃 시 abort 호출 (사용자 취소와 구분은 timedOut 플래그로)
-        // - 현황집계(aggregate): 120초
-        // - 분석질문(analysis): 300초 (보조 SQL 다중 생성·실행 + LLM 답변 생성에 시간 필요)
-        let timedOut = false;
-        const timeoutId = setTimeout(() => {
-            timedOut = true;
-            try { abortController.abort(new Error('client timeout')); } catch (_) {}
-        }, timeoutMs);
-
-        const res = await fetch('/api/nlq', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, conversationContext, session_id: chatSessionId, queryMode }),
-            signal: abortController.signal,
+        await runAnalysisAsync({
+            query, typingEl, reqStartMs, timeoutMs,
+            mySeq, abortSignal: abortController.signal,
+            queryMode,
+            clientRequestId,
         });
-        clearTimeout(timeoutId);
-
-        // [2026-07-21] 응답 헤더 도착 시점의 stale 가드
-        if (isStale()) {
-            console.log('[NLQ] 🛑 응답 헤더 도착 후 stale — 폐기 seq=' + mySeq);
-            return;
-        }
-
-        // ★ 응답 헤더에서 X-Request-Id 추출 (모든 오류 진단의 핵심 키)
-        const xRequestId = res.headers.get('x-request-id') || null;
-
-        // 응답이 JSON인지 확인 (서버 오류 시 HTML이 반환될 수 있음 — nginx 504 등)
-        const contentType = res.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
-            const text = await res.text();
-            console.error('[NLQ] 비정상 응답 (JSON 아님):', text.substring(0, 200));
-            typingEl.remove();
-            // ★ [2026-06-15] 504/502/503 + text/html 응답을 'gateway_timeout' 으로 별도 분류
-            //   - 백엔드(Node.js)는 정상 동작 중인데 nginx/게이트웨이/LB 의 idle timeout 에서 끊긴 경우
-            //   - 'timeout'(앱 자체 timeout) 과 메시지를 다르게 노출하여 사용자가 원인을 이해하기 쉽게
-            //   - 단계명도 'response_not_json'(파싱 실패) → 'gateway_or_proxy_timeout' 으로 변경
-            const isHtml = contentType.includes('text/html') || /<html[\s>]/i.test(text);
-            let inferredType, inferredStage, userMessage;
-            // [2026-07-03] 사용자용 메시지 정리
-            //   - nginx HTML 원문은 화면 상단에 노출하지 않고, 정리된 안내 문구만 표시
-            //   - 상세 요청 ID 는 아래 requestIdHtml 로 별도 노출
-            //   - 관리자용 원문은 "오류 상세보기" 토글 안에서만 (아래 renderResponseSnippet 참고)
-            if ((res.status === 504 || res.status === 408) && isHtml) {
-                inferredType = 'gateway_timeout';
-                inferredStage = 'gateway_or_proxy_timeout';
-                userMessage = '분석 시간이 오래 걸려 요청이 시간 초과되었습니다. (HTTP ' + res.status + ')\n' +
-                              '백엔드에서는 처리가 계속 진행 중일 수 있으니 [최근 이력] 에서 결과를 확인해 주세요.';
-            } else if (res.status === 504 || res.status === 408) {
-                inferredType = 'timeout';
-                inferredStage = 'response_not_json';
-                userMessage = '분석 시간이 오래 걸려 요청이 시간 초과되었습니다. (HTTP ' + res.status + ')\n' +
-                              '잠시 후 [최근 이력] 에서 결과를 확인하거나 다시 시도해 주세요.';
-            } else if (res.status === 502 || res.status === 503) {
-                inferredType = 'system';
-                inferredStage = 'upstream_unavailable';
-                userMessage = '서버를 일시적으로 사용할 수 없습니다. (HTTP ' + res.status + ')\n' +
-                              '잠시 후 다시 시도해 주세요.';
-            } else {
-                inferredType = 'system';
-                inferredStage = 'response_not_json';
-                userMessage = '서버 응답 형식이 올바르지 않습니다. (HTTP ' + res.status + ')\n' +
-                              '잠시 후 다시 시도해 주세요. (서버가 재시작 중일 수 있습니다)';
-            }
-            const details = {
-                requestId: xRequestId,
-                stage: inferredStage,
-                errorType: inferredType,
-                httpStatus: res.status,
-                statusText: res.statusText,
-                contentType,
-                // [2026-06-15] 응답 본문을 raw 그대로 보존. JSON.stringify 절대 적용 X (이중 escape 방지).
-                //   - render 시 sanitizeResponseBodyForDisplay() 로 literal "\n" 시퀀스를 실제 줄바꿈으로 정규화
-                //   - <pre> + white-space:pre-wrap 로 안전하게 표시
-                responseSnippet: text.substring(0, 1500),
-                queryMode,
-                timeoutMs,
-                elapsedMs: Date.now() - reqStartMs,
-                query,
-                timestamp: new Date().toISOString(),
-            };
-            appendErrorMessage(userMessage, details);
-            // ★ requestId 가 있으면 비동기로 서버 로그 조회 시도 (Node.js 까지 도달은 했던 경우만 성공)
-            if (xRequestId) {
-                fetchErrorLogAndAppend(xRequestId, details);
-            }
-            // [2026-06-15] 실패해도 사이드바를 [최근] 탭으로 정규화 (에러 이력도 최근에 기록됨)
-            refreshSidebarAfterSend().catch(() => {});
-            return;
-        }
-
-        let data;
-        let rawBodyText = '';
-        try {
-            // ★ 진단을 위해 본문을 텍스트로 받아두고 다시 파싱
-            rawBodyText = await res.text();
-            // [2026-07-21] 본문 도착 후 stale 가드
-            if (isStale()) {
-                console.log('[NLQ] 🛑 응답 본문 도착 후 stale — 폐기 seq=' + mySeq);
-                return;
-            }
-            data = JSON.parse(rawBodyText);
-        } catch (parseErr) {
-            console.error('[NLQ] JSON 파싱 실패:', parseErr.message);
-            typingEl.remove();
-            const details = {
-                requestId: xRequestId,
-                stage: 'json_parse_failed',
-                errorType: 'system',
-                httpStatus: res.status,
-                statusText: res.statusText,
-                contentType,
-                message: parseErr.message,
-                responseSnippet: rawBodyText.substring(0, 1500),
-                queryMode,
-                timeoutMs,
-                elapsedMs: Date.now() - reqStartMs,
-                query,
-                timestamp: new Date().toISOString(),
-            };
-            appendErrorMessage('서버 응답을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.', details);
-            if (xRequestId) fetchErrorLogAndAppend(xRequestId, details);
-            // [2026-06-15] 실패해도 사이드바를 [최근] 탭으로 정규화
-            refreshSidebarAfterSend().catch(() => {});
-            return;
-        }
-
-        // Remove typing
-        typingEl.remove();
-
-        // [2026-07-21] 렌더 직전 최종 stale 가드
-        if (isStale()) {
-            console.log('[NLQ] 🛑 렌더 직전 stale — 결과 폐기 seq=' + mySeq);
-            return;
-        }
-
-        // ★ 응답 body 에 requestId 가 있으면 헤더보다 우선 (서버가 발급한 정식 id)
-        const finalRequestId = data.requestId || data.error_detail?.requestId || xRequestId || null;
-
-        if (!res.ok || data.error) {
-            // 서버 측에서 보낸 진단 정보(error_detail)가 있으면 우선 사용, 없으면 기본 진단 만들기
-            const serverDetail = data.error_detail || {};
-            appendErrorMessage(data.error || '서버 오류가 발생했습니다.', {
-                requestId: finalRequestId,
-                stage: serverDetail.stage || 'server_error',
-                errorType: serverDetail.errorType || 'system',
-                httpStatus: res.status,
-                statusText: res.statusText,
-                contentType,
-                message: serverDetail.message || data.error || data.explanation || '',
-                code: serverDetail.code || null,
-                stack: serverDetail.stack || null,
-                intent: serverDetail.intent || null,
-                domain: serverDetail.domain || null,
-                calmonth: serverDetail.calmonth || null,
-                failedSql: serverDetail.failedSql || null,
-                logLines: serverDetail.logLines || null,
-                logLineCount: serverDetail.logLineCount || null,
-                logHint: serverDetail.logHint || null,
-                isAdmin: serverDetail.isAdmin || false,
-                queryMode,
-                timeoutMs,
-                elapsedMs: Date.now() - reqStartMs,
-                query,
-                timestamp: serverDetail.timestamp || new Date().toISOString(),
-                responseSnippet: rawBodyText.substring(0, 1500),
-            });
-        } else if (data.error_user_friendly && data.error_detail) {
-            // ★ 분석 경로 / DB 실행 오류 등에서 success:false + error_user_friendly:true + error_detail 로 온 경우
-            //   HTTP 200 이지만 실제로는 실패이므로, 친절 메시지와 함께 진단 정보를 표시
-            const sd = data.error_detail;
-            appendErrorMessage(data.answer || data.explanation || '답변을 생성하지 못했습니다.', {
-                requestId: finalRequestId,
-                stage: sd.stage || 'analysis_path',
-                errorType: sd.errorType || 'system',
-                httpStatus: res.status,
-                statusText: res.statusText,
-                contentType,
-                message: sd.message || data.answer || '',
-                code: sd.code || null,
-                stack: sd.stack || null,
-                intent: sd.intent || null,
-                domain: sd.domain || null,
-                calmonth: sd.calmonth || null,
-                failedSql: sd.failedSql || null,
-                logLines: sd.logLines || null,
-                logLineCount: sd.logLineCount || null,
-                logHint: sd.logHint || null,
-                isAdmin: sd.isAdmin || false,
-                queryMode,
-                timeoutMs,
-                elapsedMs: Date.now() - reqStartMs,
-                query,
-                timestamp: sd.timestamp || new Date().toISOString(),
-            });
-        } else if (data.isUnknownTerm) {
-            appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
-        } else if (isNewIntent(data)) {
-            // ★ [2026-06-30] Phase 2: 후속 질문 6개 신규 intent 응답 처리
-            //   metric_lookup / ontology_lookup / troubleshooting /
-            //   sql_explain / domain_explain / general_chat
-            //   - 처리 유형 배지 + 마크다운 본문 + (있으면) suggestedMode 배너
-            //   - 표/SQL/차트 영역은 띄우지 않음 (백엔드 isAnalysisAnswer:true)
-            appendIntentMessage(data);
-            // 대화 컨텍스트 — Phase 2 확장 필드 포함 (직전 질의의 맥락 유지)
-            pushConversationContext({ query, data });
-        } else if (data.isAnalysisAnswer) {
-            // ★ 분석형 답변: 텍스트 분석 + (rows 있으면) 페이지네이션·정렬·검색 지원 표
-            appendAnalysisOnlyMessage(data);
-            // 대화 컨텍스트에 추가 (SQL은 null)
-            pushConversationContext({ query, data, overrideSql: null });
-        } else {
-            appendBotMessage(data);
-            // 대화 컨텍스트에 추가 (후속 질문 시 GPT가 이전 SQL을 참조할 수 있도록)
-            pushConversationContext({ query, data });
-        }
-        // [2026-06-15] 사이드바 동기화 — 질문 실행 후엔 항상 [최근] 탭으로 정규화
-        //   (자주질문 탭에서 질문 실행 시 탭/목록 불일치 방지)
-        refreshSidebarAfterSend().catch(() => {});
-    } catch(err) {
-        // [2026-07-21] 사용자 취소로 인한 AbortError → 조용히 종료 (handleCancel 이 UI 정리 담당)
-        //   timedOut 이 false 이면서 abort 된 경우는 사용자 취소
-        //   stale 인 경우도 마찬가지 (새 요청이 이미 시작된 후 이전 abort 가 뒤늦게 잡힌 경우)
-        if (err && err.name === 'AbortError') {
-            if (!timedOut || isStale()) {
-                console.log('[NLQ] 사용자 취소 감지 → 조용히 종료 seq=' + mySeq + ' timedOut=' + timedOut);
-                return;
-            }
-        }
-        // stale 인 경우도 (다른 종류의 오류라도) 무시
-        if (isStale()) {
-            console.log('[NLQ] stale 상태의 catch — 무시 seq=' + mySeq + ' err=' + err?.message);
-            return;
-        }
-        typingEl.remove();
-        const elapsedMs = Date.now() - reqStartMs;
-        if (err.name === 'AbortError') {
-            const limitMin = (queryMode === 'analysis') ? 5 : 2;
-            appendErrorMessage(`요청 시간이 초과되었습니다 (${limitMin}분). AI 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요.`, {
-                requestId: null,  // 응답이 도착하지 않았으므로 헤더에서 받지 못함
-                stage: 'client_timeout_abort',
-                errorType: 'timeout',
-                message: '클라이언트 fetch가 AbortController로 중단됨 (응답 도착 전 timeout 초과)',
-                errorName: err.name,
-                queryMode,
-                timeoutMs,
-                elapsedMs,
-                query,
-                timestamp: new Date().toISOString(),
-                stack: err.stack ? String(err.stack).split('\n').slice(0,5).join('\n') : null,
-            });
-        } else {
-            appendErrorMessage('서버 연결 오류: ' + err.message + '\n잠시 후 다시 시도해주세요.', {
-                requestId: null,
-                stage: 'network_or_fetch_failed',
-                errorType: 'system',
-                message: err.message,
-                errorName: err.name,
-                queryMode,
-                timeoutMs,
-                elapsedMs,
-                query,
-                timestamp: new Date().toISOString(),
-                stack: err.stack ? String(err.stack).split('\n').slice(0,5).join('\n') : null,
-            });
-        }
-        // [2026-06-15] 사이드바 동기화 — 실패 시에도 [최근] 탭으로 정규화
-        refreshSidebarAfterSend().catch(() => {});
     } finally {
-        // [2026-07-21] 최신 요청일 때만 상태 정리 — 취소되어 다음 요청이 시작된 경우엔 건드리지 않음
+        // [2026-07-21] 이 요청이 여전히 '최신' 요청일 때만 loading 해제
+        //   중간에 취소되어 새 요청이 시작된 경우엔 현재 요청의 finally 가 상태를 되돌리면 안 됨
         if (mySeq === currentRequestSeq) {
             isLoading = false;
             currentAbortController = null;
@@ -2050,7 +1813,10 @@ async function sendQuery(query) {
             currentTypingEl = null;
             setSendButtonState('idle');
         }
+        // [2026-06-15] 질문 실행 후엔 항상 [최근] 탭으로 정규화 (탭/목록 동기화 보장)
+        refreshSidebarAfterSend().catch(() => {});
     }
+    return;
 }
 
 // ============================================================
