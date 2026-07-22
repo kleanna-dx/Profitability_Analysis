@@ -1377,6 +1377,9 @@ console.log(`[NLQ] AI 설정: model=${GPT_MODEL}, baseURL=${process.env.OPENAI_B
 // ============================================================
 // MariaDB 커넥션 풀
 // ============================================================
+// [2026-07-22 PR #247] connectTimeout 을 명시적으로 설정.
+//   - mysql2 기본값은 10s. 네트워크가 잠깐 불안정할 때 즉시 실패하므로 20s 로 상향.
+//   - 이는 "커넥션 획득" 타임아웃일 뿐, 실제 쿼리 실행시간과는 무관.
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '3306'),
@@ -1387,7 +1390,62 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: parseInt(process.env.DB_POOL_SIZE || '5'),
   queueLimit: 0,
+  connectTimeout: parseInt(process.env.DB_CONNECT_TIMEOUT_MS || '20000', 10),
 });
+
+// ============================================================
+// [2026-07-22 PR #247] NLQ (자연어질의) DB 쿼리 실행 타임아웃
+// ------------------------------------------------------------
+//   - 배경: aggregate(현황집계) 경로에서 실측 78s 걸리는 SQL 이 nginx 60s
+//     idle timeout 에 걸려 HTTP 504 로 잘리는 문제 (request_aborted).
+//   - 해결: MariaDB `SET STATEMENT max_statement_time=90` 로 서버단에서
+//     쿼리를 강제 종료하여, 클라이언트/게이트웨이 timeout 보다 먼저
+//     명시적 JSON 오류 응답(X-Request-Id 포함) 을 반환.
+//   - 계층 위계 (안쪽 → 바깥쪽, 안쪽이 항상 더 짧아야 함):
+//       ①  NLQ DB 쿼리         90s   ← 여기 (NLQ_DB_QUERY_TIMEOUT_MS)
+//       ②  프론트 fetch(aggr)  180s  ← index.html L1737
+//       ③  Nginx proxy_read    240s  ← 운영 nginx.conf (DEPLOYMENT.md 안내)
+//       ④  Express request     600s  ← L13571 (SERVER_TIMEOUT_MS)
+//       ⑤  Undici headers/body 600s  ← L29-33 (UNDICI_TIMEOUT_MS)
+//   - 환경변수 NLQ_DB_QUERY_TIMEOUT_MS 로 운영 중 재조정 가능.
+//   - 참고: 빌더용(BUILDER_DB_QUERY_TIMEOUT_MS=100000) 과는 별도.
+// ============================================================
+const NLQ_DB_QUERY_TIMEOUT_MS = parseInt(process.env.NLQ_DB_QUERY_TIMEOUT_MS || '90000', 10);
+const NLQ_DB_QUERY_TIMEOUT_SEC = Math.max(1, Math.ceil(NLQ_DB_QUERY_TIMEOUT_MS / 1000));
+console.log(`[Boot] NLQ DB query timeout: ${NLQ_DB_QUERY_TIMEOUT_MS}ms (max_statement_time=${NLQ_DB_QUERY_TIMEOUT_SEC}s)`);
+
+// ------------------------------------------------------------
+// Helper: NLQ 경로에서 사용자 SQL 을 실행할 때 서버단 statement timeout 을
+// 강제로 씌워서 실행. 반환값은 mysql2 의 [rows, fields] 그대로.
+// - MariaDB 10.1+ / MySQL 5.7+ 문법: `SET STATEMENT max_statement_time=<sec> FOR <sql>`
+// - 타임아웃 발생 시 ER_STATEMENT_TIMEOUT(1969) 또는
+//   PROTOCOL_SEQUENCE_TIMEOUT 이 던져지므로 호출 측에서 감지 가능.
+// - 세미콜론 절단 방지: SQL 끝의 세미콜론/공백 제거 후 감싼다.
+// ------------------------------------------------------------
+async function nlqPoolQueryWithTimeout(sql, params, timeoutMs) {
+  const tMs = Math.max(1000, parseInt(timeoutMs || NLQ_DB_QUERY_TIMEOUT_MS, 10));
+  const tSec = Math.max(1, Math.ceil(tMs / 1000));
+  const cleanSql = String(sql || '').replace(/;\s*$/g, '').trim();
+  const wrappedSql = `SET STATEMENT max_statement_time=${tSec} FOR ${cleanSql}`;
+  if (Array.isArray(params) && params.length > 0) {
+    return await pool.query({ sql: wrappedSql, timeout: tMs }, params);
+  }
+  return await pool.query({ sql: wrappedSql, timeout: tMs });
+}
+
+// Helper: mysql2/MariaDB 의 쿼리 timeout 에러 여부 판정
+function isDbQueryTimeoutError(err) {
+  if (!err) return false;
+  const code = String(err.code || '').toUpperCase();
+  const errno = Number(err.errno || 0);
+  const msg = String(err.sqlMessage || err.message || '');
+  return (
+    code === 'PROTOCOL_SEQUENCE_TIMEOUT' ||
+    code === 'ER_STATEMENT_TIMEOUT' ||
+    errno === 1969 ||
+    /max_statement_time|query\s+execution\s+was\s+interrupted|statement\s+timeout|query\s+timeout/i.test(msg)
+  );
+}
 
 // ============================================================
 // DB 메타데이터 (테이블 구조, Ontology, Metric, Join)
@@ -4302,15 +4360,26 @@ async function executeAnalysisPlan(plan, activeDomain) {
     return execRecord;
   }
 
+  // [2026-07-22 PR #247] analysis 파이프라인의 base SQL 실행에도 서버단
+  //   statement timeout(NLQ_DB_QUERY_TIMEOUT_MS, 기본 90s) 을 강제로 부여.
+  //   - aggregate 경로와 동일 정책: nginx proxy_read_timeout 보다 먼저 끊고
+  //     명시적 오류 정보(execRecord.baseError, timeout 여부)를 위로 전파.
+  //   - 실패 시 execRecord.baseTimedOut 플래그로 상위 호출자가 구분 가능.
   const t0 = Date.now();
   let baseRows = [];
   try {
-    const [r] = await pool.query(baseSql);
+    const [r] = await nlqPoolQueryWithTimeout(baseSql, null, NLQ_DB_QUERY_TIMEOUT_MS);
     baseRows = filterDummyRows(r);
     execRecord.baseRowCount = baseRows.length;
   } catch (e) {
     execRecord.baseError = e.message;
-    execRecord.diagnostics.push(`base SQL 실행 실패: ${e.message}`);
+    execRecord.baseTimedOut = isDbQueryTimeoutError(e);
+    execRecord.baseExecMs = Date.now() - t0;
+    execRecord.diagnostics.push(
+      execRecord.baseTimedOut
+        ? `base SQL 타임아웃 (${Math.round(execRecord.baseExecMs / 1000)}초, 한도 ${NLQ_DB_QUERY_TIMEOUT_SEC}초): ${e.message}`
+        : `base SQL 실행 실패: ${e.message}`
+    );
     return execRecord;
   }
   execRecord.baseExecMs = Date.now() - t0;
@@ -4323,10 +4392,12 @@ async function executeAnalysisPlan(plan, activeDomain) {
     const priorSql = applyDomainFilter(priorBuilt.sql, domain);
     execRecord.priorSql = priorSql;
     try {
-      const [pr] = await pool.query(priorSql);
+      // [2026-07-22 PR #247] prior 기간 SQL 도 동일 statement timeout 적용
+      const [pr] = await nlqPoolQueryWithTimeout(priorSql, null, NLQ_DB_QUERY_TIMEOUT_MS);
       execRecord.priorRows = filterDummyRows(pr);
     } catch (e) {
       execRecord.priorError = e.message;
+      execRecord.priorTimedOut = isDbQueryTimeoutError(e);
       execRecord.diagnostics.push(`prior SQL 실행 실패: ${e.message}`);
     }
   }
@@ -6247,22 +6318,34 @@ ${sqlValidation.reason}
     }
 
     // 3. DB 실행
+    // [2026-07-22 PR #247] aggregate(현황집계) 경로의 pool.query 에도 서버단
+    //   statement timeout(NLQ_DB_QUERY_TIMEOUT_MS, 기본 90s) 을 강제로 부여.
+    //   - 배경: nginx proxy_read_timeout(기본 60s) 에 걸려 백엔드는 계속 실행 중인데
+    //     클라이언트는 HTTP 504 (X-Request-Id 없는 nginx HTML) 를 받는 문제 (request_aborted).
+    //   - 해결: 서버단에서 먼저 명시적으로 끊고, X-Request-Id 헤더가 실린
+    //     정상 JSON 응답으로 db_query_timeout 을 반환 → 사용자가 로그 추적 가능.
     setRequestStage('db_execution');
     const startTime = Date.now();
     let rows;
     try {
-      [rows] = await pool.query(sql);
+      [rows] = await nlqPoolQueryWithTimeout(sql, null, NLQ_DB_QUERY_TIMEOUT_MS);
       // ★ Dummy 행 후필터 (SQL 자동주입이 안 닿은 케이스 안전망)
       rows = filterDummyRows(rows);
     } catch (dbErr) {
       // DB 실행 실패 시에도 친절한 메시지로 변환
       const errMsg = dbErr.sqlMessage || dbErr.message || '';
-      console.error(`[NLQ] DB 실행 실패: ${errMsg}`);
+      const dbTimedOut = isDbQueryTimeoutError(dbErr);
+      const dbElapsedMs = Date.now() - startTime;
+      console.error(`[NLQ] DB 실행 실패${dbTimedOut ? ' (timeout)' : ''}: ${errMsg} (${dbElapsedMs}ms)`);
       console.error(`[NLQ] 실패 SQL: ${sql}`);
 
       // 사용자 친화적 에러 메시지로 변환
       let friendly = '죄송합니다. 질문을 처리하는 중 오류가 발생했습니다. 좀 더 구체적으로 다시 말씀해 주세요.';
-      if (/Invalid use of group function/i.test(errMsg)) {
+      if (dbTimedOut) {
+        // ★ [2026-07-22 PR #247] DB 쿼리 timeout 은 별도의 명확한 메시지 + requestId 로 반환
+        friendly = `죄송합니다. DB 조회 시간이 초과되었습니다 (${Math.round(dbElapsedMs / 1000)}초, 한도 ${NLQ_DB_QUERY_TIMEOUT_SEC}초).\n` +
+                   '질문 범위를 좁혀 다시 시도해 주세요. 예) 기간을 짧게, 그룹핑 컬럼을 줄이기.';
+      } else if (/Invalid use of group function/i.test(errMsg)) {
         friendly = '죄송합니다. 분석형 질문을 처리하는 중 쿼리 생성에 문제가 있었습니다. 질문을 좀 더 구체적으로 다시 말씀해 주세요. 예: "2026년 4월 제품군별 매출과 영업이익 분석"';
       } else if (/Unknown column/i.test(errMsg)) {
         friendly = '죄송합니다. 질문에 등록되지 않은 용어가 포함된 것 같습니다. 학습관리에서 해당 용어를 확인해 주세요.';
@@ -6280,14 +6363,16 @@ ${sqlValidation.reason}
       // ★ 상세 진단 정보 포함 (DB 실행 단계 오류)
       const errorDetail = buildErrorDetail({
         req,
-        stage: 'db_execution',
-        errorType: 'db_execution',
+        stage: dbTimedOut ? 'db_query_timeout' : 'db_execution',
+        errorType: dbTimedOut ? 'db_query_timeout' : 'db_execution',
         err: dbErr,
         extra: {
           query,
           queryMode: userQueryMode,
           domain: activeDomain,
           failedSql: sql,
+          dbElapsedMs,
+          dbTimeoutLimitMs: NLQ_DB_QUERY_TIMEOUT_MS,
         },
       });
       return res.json({
@@ -6296,9 +6381,12 @@ ${sqlValidation.reason}
         rows: [],
         rowCount: 0,
         answer: friendly,
-        explanation: `DB 실행 오류: ${errMsg}`,
+        explanation: dbTimedOut
+          ? `DB 쿼리 타임아웃: ${Math.round(dbElapsedMs / 1000)}초 경과 (한도 ${NLQ_DB_QUERY_TIMEOUT_SEC}초). ${errMsg}`
+          : `DB 실행 오류: ${errMsg}`,
         requestId: errorDetail.requestId,
         error_user_friendly: true,
+        error_type: dbTimedOut ? 'db_query_timeout' : 'db_execution',
         error_detail: errorDetail,
       });
     }
@@ -13551,20 +13639,33 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
 });
 
 // ════════════════════════════════════════════════════════════════════
-// [2026-06-29 PR #196] HTTP 서버 timeout 명시적 설정 (4-layer 일관성)
+// [2026-06-29 PR #196] HTTP 서버 timeout 명시적 설정
 // [2026-07-21 hotfix] 110s → 600s: 분석질문(다단계 LLM 호출) 이 110s 벽에
 //   먼저 걸려 self-fetch 가 'fetch failed' 로 abort 되던 문제 해결.
-//   /api/builder/query 는 여전히 LLM 90s + 여유이면 충분하므로 상위 한계만 확장.
+// [2026-07-22 PR #247] aggregate(현황집계) 경로의 nginx 60s 504 해결을 위해
+//   전 계층 타임아웃을 재정렬. 각 값은 환경변수로 운영 중 조정 가능.
 // --------------------------------------------------------------------
 // timeout 위계 (안쪽이 항상 더 짧음):
-//   LLM(GPT) 개별 호출        60~90s   ← 각 openai.chat.completions.create
-//   AnalysisPlan 파이프라인   ~5~8분   ← 계획+실행+재계획+최종답변 (다단계)
-//   self-fetch AbortController 10분    ← runNlqJobInBackground (L6374)
-//   Express requestTimeout    10분    ← 여기 (SERVER_TIMEOUT_MS)
-//   프론트 폴링 max-wait      6분     ← public/index.html NLQ_ASYNC_MAX_WAIT_MS
-//   Nginx proxy_read          운영 nginx.conf 참고 (>= 10분 권장)
 //
-// 각 값은 환경변수로 운영 중 조정 가능.
+//  [NLQ aggregate(현황집계) 경로]
+//   ① NLQ DB 쿼리 statement timeout  90s   ← NLQ_DB_QUERY_TIMEOUT_MS (L~1400)
+//   ② LLM(GPT) 개별 호출               60~90s ← 각 openai.chat.completions.create
+//   ③ 프론트 fetch(aggregate)          180s   ← index.html L1737
+//   ④ Nginx proxy_read_timeout         240s   ← 운영 nginx.conf (DEPLOYMENT.md 안내)
+//   ⑤ Express requestTimeout           600s   ← 여기 (SERVER_TIMEOUT_MS)
+//   ⑥ Undici headersTimeout/bodyTimeout 600s  ← L29-33 (UNDICI_TIMEOUT_MS)
+//
+//  [NLQ analysis(분석질문) 경로 — async job + 폴링]
+//   ① NLQ DB 쿼리 statement timeout  90s   ← 동일 (base/prior SQL 별)
+//   ② AnalysisPlan 파이프라인          ~5~8분 ← 계획+실행+재계획+최종답변 다단계
+//   ③ self-fetch AbortController      10분  ← runNlqJobInBackground
+//   ④ 프론트 폴링 max-wait             6분   ← NLQ_ASYNC_MAX_WAIT_MS
+//   ⑤ Express requestTimeout           10분  ← 여기 (개별 폴링 request 는 짧음)
+//
+//  [사용자 취소(Stop 버튼) — 타임아웃과 완전히 분리]
+//   프론트 handleCancel() → currentAbortController.abort() 즉시 실행.
+//   fetch signal 이 발화 → AbortError 로 UI 즉시 반응. 서버단 DB 쿼리는
+//   서버측 max_statement_time 90s 안에 자연스럽게 종료됨.
 // ════════════════════════════════════════════════════════════════════
 const SERVER_TIMEOUT_MS = parseInt(process.env.BUILDER_SERVER_TIMEOUT_MS || '600000', 10); // 10분
 // requestTimeout: 단일 요청 전체 (헤더+바디+처리) 의 최대 시간
