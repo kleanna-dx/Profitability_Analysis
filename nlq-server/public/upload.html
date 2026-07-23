@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="/static/global-sidebar.css" rel="stylesheet">
     <style>
         :root {
             --primary: #4f46e5; --primary-dark: #4338ca;
@@ -144,7 +145,9 @@
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>
     <div class="sidebar-divider"></div>
-    <nav class="py-2">
+    <div id="globalSidebarNav"></div>
+    <!-- (Legacy) 하드코딩 메뉴 - 공통 사이드바로 대체되어 감춤 -->
+    <nav id="sidebarMenu" class="py-2" style="display:none;">
         <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
             <i class="fas fa-comments"></i><span>자연어 질의</span>
         </a>
@@ -826,5 +829,6 @@ function escHtml(str) {
 loadSidebarStatus();
 </script>
 <script>async function doLogout(){if(!confirm("로그아웃 하시겠습니까?"))return;try{await fetch("/api/logout",{method:"POST"})}catch(e){}window.location.href="/login"}</script>
+<script src="/static/global-sidebar.js"></script>
 </body>
 </html>
