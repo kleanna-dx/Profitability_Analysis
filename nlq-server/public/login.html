@@ -291,9 +291,9 @@
         const idInput = document.getElementById('username');
         const pwInput = document.getElementById('password');
 
-        // 이미 로그인 상태이면 메인으로 이동
+        // 이미 로그인 상태이면 통합 홈으로 이동
         fetch('/api/me').then(r => r.json()).then(d => {
-            if (d.loggedIn) window.location.href = '/';
+            if (d.loggedIn) window.location.href = '/home.html';
         }).catch(() => {});
 
         function showError(msg) {
@@ -335,8 +335,8 @@
                 const data = await res.json();
 
                 if (data.success) {
-                    // 로그인 성공 — 메인 페이지로 이동
-                    window.location.href = '/';
+                    // 로그인 성공 — 통합 플랫폼 홈으로 이동
+                    window.location.href = '/home.html';
                 } else {
                     showError(data.message || '로그인에 실패했습니다.');
                 }

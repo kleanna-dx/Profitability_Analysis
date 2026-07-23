@@ -6,6 +6,7 @@
     <title>학습 관리 - 데이터 사전</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/global-sidebar.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         *{font-family:'Noto Sans KR',sans-serif;box-sizing:border-box;margin:0;padding:0;}
@@ -332,8 +333,9 @@
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>
     <div class="sidebar-divider"></div>
-    <nav id="sidebarMenu" class="py-2">
-        <!-- RBAC 동적 렌더링 -->
+    <div id="globalSidebarNav"></div>
+    <nav id="sidebarMenu" class="py-2" style="display:none;">
+        <!-- RBAC 동적 렌더링 - 공통 사이드바로 대체되어 감춤 -->
     </nav>
     <div class="sidebar-divider"></div>
     <div class="px-5 py-3">
@@ -2137,5 +2139,6 @@ window.addEventListener('beforeunload', function(e) {
 });
 </script>
 <script>async function doLogout(){if(!confirm("로그아웃 하시겠습니까?"))return;try{await fetch("/api/logout",{method:"POST"})}catch(e){}window.location.href="/login"}</script>
+<script src="/static/global-sidebar.js"></script>
 </body>
 </html>
