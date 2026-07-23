@@ -100,18 +100,19 @@ for (const q of signalNegatives) {
 }
 
 // ============================================================
-// B. Tier 1 heuristic — metric_lookup exclusion
+// B. Tier 1 heuristic — PR #256: metric_lookup 정규식이 매치되면 그대로 반환
+//    (분석 신호가 있더라도 실행 경로는 metric_lookup 유지)
 // ============================================================
-console.log('\n[B] classifyConversationalIntentHeuristic — Tier 1 라우팅\n');
+console.log('\n[B] classifyConversationalIntentHeuristic — Tier 1 라우팅 (PR #256)\n');
 
-// 사용자 원본 (산식 + 상관관계) → Tier 2 위임
+// 사용자 원본 (산식 + 상관관계) → metric_lookup 유지 (aggregate 경로 안정성)
 assertEq(
-  '사용자 원본 (산식 + 상관관계): null 반환 (Tier 2 위임)',
+  '사용자 원본 (산식 + 상관관계): metric_lookup 유지 (실행 경로 안정)',
   classifyConversationalIntentHeuristic(
     'PS사업부 거래처별 영업이익율과 지급수수료의 상관관계를 분석해 줘. 영업이익율은 "영업이익/순매출"로 계산함',
     []
   ),
-  null
+  'metric_lookup'
 );
 
 // 순수 산식 조회 → metric_lookup
@@ -147,11 +148,11 @@ assertEq(
   null
 );
 
-// metric 정규식이 매치되지만 분석 신호가 함께 있는 케이스 여러 개
+// metric 정규식 + 분석 신호가 함께 있어도 metric_lookup 유지
 assertEq(
-  '"영업이익 산식" + "분석해줘": null (Tier 2 위임)',
+  '"영업이익 산식" + "분석해줘": metric_lookup 유지',
   classifyConversationalIntentHeuristic('영업이익 산식으로 상관관계를 분석해줘', []),
-  null
+  'metric_lookup'
 );
 
 assertEq(
