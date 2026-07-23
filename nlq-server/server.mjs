@@ -65,6 +65,17 @@ import {
   handleDomainExplain,
   handleGeneralChat,
 } from './conversational-intent.mjs';
+// [PR #257] 학습 SQL CALMONTH 시간 리터럴 재바인딩 / 저장 시 자리표시자 파라미터화
+//   - 배경: sql_feedback 에 저장된 학습 SQL 은 검증 당시의 CALMONTH 리터럴이 박제됨.
+//     "당월" 같은 상대 표현 질의를 다음 달에 재사용하면 과거 월 데이터가 반환되는 회귀.
+//   - 축 A) rebaseCalmonthForLearnedSql: 학습 SQL 재사용 직전 CALMONTH 값을 현재
+//     latestMonth / prevMonth 로 동적 재바인딩 (질의 명시 년월은 존중).
+//   - 축 B) parameterizeCalmonthForSave: 피드백 저장 시 CALMONTH 리터럴을
+//     :LATEST_MONTH / :PREV_MONTH 자리표시자로 치환 (미래 지향적 저장).
+import {
+  rebaseCalmonthForLearnedSql,
+  parameterizeCalmonthForSave,
+} from './lib/calmonth-rebase.mjs';
 
 const app = express();
 app.use(cors());
@@ -6066,6 +6077,22 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     if (matchedSql) {
       setRequestStage('learned_sql');
       // 학습 데이터 매칭 → AI 호출 없이 직접 사용
+      // ★ [PR #257] CALMONTH 시간 리터럴 재바인딩 (축 A):
+      //   - 저장 시점의 CALMONTH 값(예: '202605') 또는 자리표시자(:LATEST_MONTH)를
+      //     현재 latestMonth / prevMonth 로 동적 치환.
+      //   - 사용자 질의에 명시적 년월(2026년 5월 등)이 있으면 원본 유지.
+      //   - 자리표시자는 명시적 질의 여부와 무관하게 항상 치환.
+      try {
+        if (!dateContext) dateContext = await getDataDateContext();
+        const beforeRebase = matchedSql;
+        matchedSql = rebaseCalmonthForLearnedSql(matchedSql, query, dateContext);
+        if (matchedSql !== beforeRebase) {
+          console.log(`[NLQ] 학습 SQL CALMONTH rebase 적용 → latestMonth=${dateContext.latestMonth}`);
+        }
+      } catch (rebaseErr) {
+        // rebase 실패 시 안전하게 원본 사용 (회귀 위험보다 서비스 중단 방지 우선)
+        console.error('[NLQ] CALMONTH rebase 실패, 원본 SQL 사용:', rebaseErr.message);
+      }
       // ★ Metric 산식 자동 치환 (헬퍼 함수 사용)
       matchedSql = await applyMetricFormulaReplacement(matchedSql, activeDomain);
       sql = matchedSql;
@@ -8318,7 +8345,23 @@ app.post('/api/feedback', async (req, res) => {
   if (!['correct', 'corrected'].includes(feedback_type))
     return res.status(400).json({ error: "feedback_type은 'correct' 또는 'corrected'" });
   try {
-    const finalSql = feedback_type === 'correct' ? original_sql : (corrected_sql || original_sql);
+    let finalSql = feedback_type === 'correct' ? original_sql : (corrected_sql || original_sql);
+    // ★ [PR #257] 축 B — CALMONTH 자리표시자 파라미터화
+    //   - 질의에 명시적 년월이 없다면(당월/이번달/시간 표현 없음 등),
+    //     저장 시점의 CALMONTH 리터럴을 :LATEST_MONTH / :PREV_MONTH 자리표시자로 치환.
+    //   - 다음에 이 SQL이 학습 매칭될 때 rebaseCalmonthForLearnedSql 에서 정확히 재바인딩됨.
+    //   - 질의에 "2026년 5월" 같은 명시적 년월이 있으면 원본 그대로 저장 (사용자 명시 존중).
+    try {
+      const dcCtx = await getDataDateContext();
+      const beforeParam = finalSql;
+      finalSql = parameterizeCalmonthForSave(finalSql, query_text || '', dcCtx);
+      if (finalSql !== beforeParam) {
+        console.log(`[Feedback] CALMONTH 자리표시자 파라미터화 적용 (latest=${dcCtx.latestMonth}, prev=${dcCtx.prevMonth})`);
+      }
+    } catch (paramErr) {
+      // 파라미터화 실패해도 원본 저장은 진행 (기존 동작 보존)
+      console.error('[Feedback] CALMONTH 파라미터화 실패, 원본 저장으로 진행:', paramErr.message);
+    }
     const [r] = await pool.query(
       'INSERT INTO sql_feedback (query_text, original_sql, corrected_sql, feedback_type, domain_code) VALUES (?,?,?,?,?)',
       [query_text, original_sql, finalSql, feedback_type, dc]
