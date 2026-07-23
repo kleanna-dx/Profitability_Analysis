@@ -7,7 +7,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="/static/global-sidebar.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         :root {
@@ -396,11 +395,8 @@
     </div>
     <div class="sidebar-divider"></div>
 
-    <!-- 통합 플랫폼 공통 사이드바 -->
-    <div id="globalSidebarNav"></div>
-
-    <!-- Menu Items (RBAC 동적 렌더링) - 공통 사이드바로 대체되어 감춤 -->
-    <nav id="sidebarMenu" class="py-2" style="display:none;">
+    <!-- Menu Items (RBAC 동적 렌더링) -->
+    <nav id="sidebarMenu" class="py-2">
         <!-- /api/me에서 menus 로드 후 동적 렌더링 -->
     </nav>
 
@@ -1073,6 +1069,5 @@
     }
 </script>
 <script>async function doLogout(){if(!confirm("로그아웃 하시겠습니까?"))return;try{await fetch("/api/logout",{method:"POST"})}catch(e){}window.location.href="/login"}</script>
-<script src="/static/global-sidebar.js"></script>
 </body>
 </html>

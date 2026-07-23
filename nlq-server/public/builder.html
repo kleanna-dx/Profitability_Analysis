@@ -9,7 +9,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-    <link href="/static/global-sidebar.css" rel="stylesheet">
     <style>
         :root {
             --primary: #2563eb; --primary-dark: #1d4ed8;
@@ -1067,9 +1066,8 @@
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>
     <div class="sidebar-divider"></div>
-    <div id="globalSidebarNav"></div>
-    <nav id="sidebarMenu" class="py-2" style="display:none;">
-        <!-- RBAC 동적 렌더링 - 공통 사이드바로 대체되어 감춤 -->
+    <nav id="sidebarMenu" class="py-2">
+        <!-- RBAC 동적 렌더링 -->
     </nav>
     <div class="sidebar-divider"></div>
     <div class="px-5 py-3">
@@ -4679,6 +4677,5 @@ async function clearAllBuilderHistory() {
     <div id="filterComboList" class="combo-list"></div>
     <div id="filterComboFooter" class="combo-footer" style="display:none;"></div>
 </div>
-<script src="/static/global-sidebar.js"></script>
 </body>
 </html>

@@ -6,7 +6,6 @@
     <title>인터페이스 관리 - 수익성분석 AI</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="/static/global-sidebar.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
@@ -299,8 +298,7 @@
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
     </div>
     <div class="sidebar-divider"></div>
-    <div id="globalSidebarNav"></div>
-    <nav id="sidebarMenu" class="py-2" style="display:none;"><!-- RBAC dynamic - 공통 사이드바로 대체되어 감춤 --></nav>
+    <nav id="sidebarMenu" class="py-2"><!-- RBAC dynamic --></nav>
     <div class="sidebar-divider"></div>
 </aside>
 
@@ -1554,6 +1552,5 @@ function copyJobLog(){
 // ============================================================
 init();
 </script>
-<script src="/static/global-sidebar.js"></script>
 </body>
 </html>

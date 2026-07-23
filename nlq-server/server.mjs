@@ -467,9 +467,8 @@ function verifyApiKey(req, res, next) {
 // ============================================================
 
 // 로그인 페이지 서빙
-// [2026-07-23] 통합 플랫폼 셸 도입: 로그인 상태에서 /login 접근 시 통합 홈으로 리다이렉트
 app.get('/login', (req, res) => {
-  if (req.session && req.session.user) return res.redirect('/home.html');
+  if (req.session && req.session.user) return res.redirect('/');
   res.sendFile(path.join(import.meta.dirname, 'public', 'login.html'));
 });
 
@@ -920,15 +919,15 @@ app.use(async (req, res, next) => {
       try {
         const allowed = await isMenuAllowed(req.session.user.id, checkPath);
         if (!allowed) {
-          // [2026-07-23] 통합 플랫폼 셸: 권한 없는 페이지 접근 시 통합 홈으로 리다이렉트
-          return res.redirect('/home.html?denied=1');
+          // HTML 요청이면 접근 차단 페이지 또는 메인으로 리다이렉트
+          return res.redirect('/?denied=1');
         }
       } catch (e) {
         console.error('[RBAC] 접근 권한 체크 실패:', e.message);
         // 체크 실패 시 기존 admin 방식으로 폴백
         const adminOnlyPages = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
         if (adminOnlyPages.includes(req.path) && req.session.user.role !== 'admin') {
-          return res.redirect('/home.html');
+          return res.redirect('/');
         }
       }
     }
