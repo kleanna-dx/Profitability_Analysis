@@ -4093,7 +4093,19 @@ function renderHistoryList(items) {
         const qCount = item.query_count || 1;
         const title = item.title_query || item.first_query || '(제목 없음)';
         const time = formatHistoryTime(item.last_time);
-        const isAllSuccess = item.success_count == qCount;
+        // [2026-07-23] 사이드바 이력 아이콘 판정 규칙 개편
+        //   - 기존: success_count < query_count → 무조건 실패(빨간 느낌표) 아이콘.
+        //   - 변경: DB 조회 시간 초과(error_type='db_query_timeout')는 사용자 시각에서
+        //     시스템 오류가 아니라 "질문 범위 조정 안내" 이므로 실패로 취급하지 않음.
+        //   - 판정 근거: 서버가 리스트 API 에 추가한 hard_fail_count 집계 컬럼
+        //     (= 세션 내 status<>'SUCCESS' AND error_type<>'db_query_timeout' 카운트).
+        //   - hard_fail_count === 0 이면 성공 아이콘(초록 말풍선),
+        //     그 외에는 기존 실패 아이콘(빨간 느낌표) 유지.
+        //   - hard_fail_count 필드가 없는 구버전 응답 호환: fallback 으로 기존 로직 사용.
+        const hasHardFailField = (item.hard_fail_count !== undefined && item.hard_fail_count !== null);
+        const isAllSuccess = hasHardFailField
+            ? (Number(item.hard_fail_count) === 0)
+            : (item.success_count == qCount);
         const icon = isAllSuccess ? 'fa-comments' : 'fa-exclamation-circle';
         const iconCls = isAllSuccess ? 'success' : 'failed';
         const isCurrentSession = item.session_id === chatSessionId;
