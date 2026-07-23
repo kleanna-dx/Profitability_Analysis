@@ -38,6 +38,52 @@ const DOMAIN_DIVISION = {
 };
 
 // ============================================================
+// [PR #255] 분석 신호 감지 헬퍼
+// ------------------------------------------------------------
+// 배경: 사용자 리포트(현황집계 상관관계 질문 오분류) — 산식 언급이 있어도
+//   최종 목적이 분석/상관관계/시사점이면 metric_lookup 이 아닌 analysis 로
+//   흘러야 하고, metric_lookup 이 최종 fallback 이 되더라도 답변 하단에
+//   "분석질문을 이용하면 더 좋은 답변" 안내가 떠야 함.
+//
+// 정책(사용자 승인):
+//   - 고정 키워드 목록으로 완전히 결정하지 말고, 이 헬퍼는 Tier 1 정규식이
+//     오분류하는 경우의 "취소 신호" 및 metric_lookup 최종 처리 시의
+//     "suggestAnalysis=true 힌트" 판단에만 사용.
+//   - 최종 intent 판단(analysis vs metric_lookup)은 Tier 2 LLM 이 담당.
+// ============================================================
+
+/**
+ * 질문에 "실제 데이터 분석" 신호가 포함되어 있는지 판정.
+ * 산식 조회처럼 보여도 최종 목적이 분석일 수 있음을 알린다.
+ *
+ * 시그널(사용자 승인 목록):
+ *   - 상관관계 / 상관계수 / 분석해 / 분석해줘 / 추세 / 추이
+ *   - 원인 / 시사점 / 비교해 / 해석
+ *   - "왜 ... 줄" / "왜 ... 늘" (증감 원인)
+ *   - "결과 ... 알려" / "결과 ... 보여" / "결과 ... 같이"
+ *
+ * @param {string} query
+ * @returns {boolean}
+ */
+export function hasAnalysisSignal(query) {
+  if (!query || typeof query !== 'string') return false;
+  const q = query.trim();
+  if (q.length === 0) return false;
+
+  return (
+    /(상관\s*관계|상관\s*계수|correlation)/i.test(q) ||
+    /분석\s*(해|해줘|해 주)/.test(q) ||
+    /(추세|추이|trend)/i.test(q) ||
+    /(원인|왜\s*그런|이유)/.test(q) ||
+    /(시사점|인사이트|insight)/i.test(q) ||
+    /비교\s*(해|해줘|해 주)/.test(q) ||
+    /(해석\s*(해|해줘|해 주)|어떻게\s*해석)/.test(q) ||
+    /왜.{0,15}(줄|늘|감소|증가|떨어|올라)/.test(q) ||
+    /결과.{0,10}(알려|보여|같이|함께)/.test(q)
+  );
+}
+
+// ============================================================
 // 1. 분류기 (3-tier: 휴리스틱 → LLM → 폴백)
 // ============================================================
 
@@ -123,6 +169,13 @@ export function classifyConversationalIntentHeuristic(query, conversationContext
   // 4) metric_lookup — 지표/산식 정의 조회
   //    "산식이 뭐", "공식 어떻게", "어떻게 계산", "정의가 뭐", "metric이 뭐"
   //    "영업이익 산식", "ROIC 정의" 등
+  //
+  // [PR #255] 정규식이 매치되어도 질문 안에 "분석 신호"가 있으면
+  //   metric_lookup 으로 확정하지 말고 null 을 반환하여 Tier 2 LLM 에 위임.
+  //   배경: 사용자 리포트 케이스 —
+  //     『… 영업이익율은 "영업이익/순매출"로 계산함. 상관관계를 분석해 줘 …』
+  //   이런 문장에서 4-f 정규식이 부분 문자열 『"영업이익/순매출"로 계산』에
+  //   매치해 잘못 metric_lookup 으로 라우팅되는 문제를 차단.
   if (
     /(산식|공식|formula).{0,10}(뭐|무엇|어떻게|어떤|보여|알려)/i.test(q) ||
     /어떻게.{0,5}(계산|구해|산출)/.test(q) ||
@@ -131,6 +184,10 @@ export function classifyConversationalIntentHeuristic(query, conversationContext
     /\b(metric|지표|kpi).{0,10}(뭐|무엇|정의|설명)/i.test(q) ||
     /(영업이익|매출|roic|roe|roa|ebitda|margin).{0,8}(산식|공식|어떻게|계산|뭐|정의)/i.test(q)
   ) {
+    // 분석 신호가 함께 있으면 metric_lookup 취소 → Tier 2 LLM 판단으로 위임
+    if (hasAnalysisSignal(q)) {
+      return null;
+    }
     return 'metric_lookup';
   }
 
@@ -176,13 +233,36 @@ export async function classifyConversationalIntentLLM(query, conversationContext
 사용자 질문을 아래 8개 중 하나로 분류하세요.
 
 - data_query      : 데이터 조회 요청 (예: "이번 달 매출", "PS 영업이익 상위 5개")
-- analysis        : 데이터 분석/해석 요청 (예: "왜 매출이 줄었는지 분석", "추세 보여줘")
+- analysis        : 데이터 분석/해석 요청 (예: "왜 매출이 줄었는지 분석", "추세 보여줘", "상관관계 분석해줘")
 - metric_lookup   : 지표 정의/산식 조회 (예: "영업이익 산식이 뭐", "ROIC 어떻게 계산")
 - ontology_lookup : 컬럼/용어 의미 조회 (예: "DIVISION 컬럼이 뭐", "CALMONTH 뜻")
 - troubleshooting : 조회 실패/이상 원인 진단 (예: "왜 데이터 있는데 조회 안돼", "왜 0건이야")
 - sql_explain     : 생성된 SQL 설명 (예: "방금 SQL 설명해줘", "이 쿼리 풀어줘")
 - domain_explain  : 현재 도메인/필터 설명 (예: "지금 어느 도메인이야", "PS와 HL 차이")
 - general_chat    : 시스템 사용법/FAQ (예: "어떻게 사용해", "뭐 할 수 있어")
+
+[★ 매우 중요 — 산식 언급 vs 분석 요청 구분 규칙]
+질문 안에 산식·공식·"어떻게 계산" 같은 표현이 등장하더라도,
+최종 목적이 아래 중 하나이면 반드시 **analysis** 로 분류하세요.
+metric_lookup 은 오직 "지표 정의/산식 자체가 궁금할 때"만 사용합니다.
+
+  ✓ 상관관계 / 상관계수 계산 요청
+  ✓ 원인·이유·시사점 도출
+  ✓ 추세·추이 분석
+  ✓ 여러 지표·기간·거래처 비교
+  ✓ 증감 해석 ("왜 줄었는지", "왜 늘었는지")
+  ✓ 결과 데이터를 "같이 알려줘 / 함께 보여줘"
+
+예시:
+  질문: "영업이익율 산식이 뭐야?"
+    → metric_lookup  (산식 자체가 목적)
+  질문: "PS 거래처별 영업이익율과 지급수수료 원단위의 상관관계를 분석해 줘.
+        영업이익율은 '영업이익/순매출'로 계산함."
+    → analysis      (산식은 참고 정보, 최종 목적은 상관관계 분석)
+  질문: "매출이 왜 줄었는지 분석해 줘"
+    → analysis
+  질문: "ROIC 어떻게 계산해?"
+    → metric_lookup
 
 반드시 다음 JSON 형식으로만 응답:
 {"intent":"<라벨>","confidence":<0.0~1.0>}`;
@@ -269,6 +349,12 @@ export function determineSuggestedMode(intent, userQueryMode) {
  * 표준 응답 빌더 — 6개 신규 핸들러의 공통 출력 포맷.
  * 기존 /api/nlq 응답 스키마(sql, results, explanation, chartType ...) 와 호환되도록
  * 빈 값들도 채워준다.
+ *
+ * [PR #255] suggestAnalysis 필드 지원 추가.
+ *   - 현황집계 경로(intent handler 포함)에서 사용자가 원한 분석 결과를
+ *     충분히 제공하지 못했지만 분석질문 모드에서는 가능한 경우 true 로 세팅.
+ *   - 프런트(appendIntentMessage) 는 이 값이 true 일 때 파란 안내 카드를
+ *     본문 하단에 렌더링. (aggregate 응답의 suggestAnalysisHint 와 동일 스타일)
  */
 export function buildConversationalResponse({
   intent,
@@ -276,6 +362,7 @@ export function buildConversationalResponse({
   referenced = null,
   suggestedMode = null,
   requestId = null,
+  suggestAnalysis = false,          // [PR #255] 신규 — 분석질문 안내 표시 여부
 }) {
   return {
     intent,
@@ -288,6 +375,7 @@ export function buildConversationalResponse({
     analysisText: answer,
     referenced,                       // { sourceTable, rows, lastSql ... } 디버깅용
     suggestedMode,                    // null | 'aggregate' | 'analysis'
+    suggestAnalysis: suggestAnalysis === true,  // [PR #255] 항상 boolean 으로 정규화
     requestId,
   };
 }
@@ -440,8 +528,20 @@ export function postProcessIntentAnswer(choice, intentTag) {
  * handleMetricLookup — 지표 정의/산식 조회
  * metric 테이블에서 description/aggregation/formula 조회.
  * metric_synonym으로 동의어 매칭, 컬럼 설명은 ontology_column 참조.
+ *
+ * [PR #255] Tier 2 LLM 이 metric_lookup 으로 확정했더라도 질문 안에 분석 신호가
+ *   남아 있으면(예: 사용자가 산식 + 상관관계 요청 두 가지를 한 문장에 넣음)
+ *   응답 하단에 "분석질문을 이용하면 더 좋은 답변" 안내 카드를 띄우기 위해
+ *   suggestAnalysis=true 를 세팅한다. 어투도 "결과값 확정할 수 없습니다" 대신
+ *   "현황집계에서는 실제 데이터 분석을 수행하지 않았습니다" 방향으로 안내한다.
  */
 export async function handleMetricLookup({ query, activeDomain, conversationContext, pool, openai, model }) {
+  // [PR #255] 분석 신호 감지 — 응답에 suggestAnalysis 힌트 필요 여부 판단
+  const analysisHint = hasAnalysisSignal(query);
+  if (analysisHint) {
+    console.log(`[Intent:metric_lookup] 분석 신호 감지 — suggestAnalysis=true, 어투 조정`);
+  }
+
   // 1) metric_synonym → metric 매칭
   let metrics = [];
   try {
@@ -480,13 +580,22 @@ export async function handleMetricLookup({ query, activeDomain, conversationCont
 
   if (metrics.length === 0) {
     // metric을 못 찾았지만 단순 에러 금지 — LLM에게 "어떤 지표를 찾으시나요?" 안내
-    return buildConversationalResponse({
-      intent: 'metric_lookup',
-      answer: `요청하신 지표(산식)를 \`${activeDomain}\` 도메인 metric 사전에서 찾지 못했습니다.\n\n` +
+    // [PR #255] 어투 조정 — 분석 신호가 있으면 "현황집계에서는 실제 데이터 분석 미수행" 안내 추가
+    const noMetricAnswer = analysisHint
+      ? `현재 **현황집계** 처리에서는 실제 데이터 분석(상관관계·추세·원인 분석 등)을 수행하지 않았습니다.\n\n` +
+        `또한 질문에 포함된 산식을 \`${activeDomain}\` 도메인 metric 사전에서 찾지 못했습니다. 아래처럼 다시 시도해 주세요:\n` +
+        `- **분석질문** 모드로 전환하여 동일 질문 재입력 (실제 데이터 기반 상관계수·추이 계산 가능)\n` +
+        `- 산식이 궁금하다면 정확한 지표명/코드 사용 (예: \`영업이익 산식이 뭐야?\`)`
+      : `요청하신 지표(산식)를 \`${activeDomain}\` 도메인 metric 사전에서 찾지 못했습니다.\n\n` +
         `다음과 같이 다시 질문해 주세요:\n` +
         `- 정확한 지표명/코드 사용 (예: \`영업이익 산식이 뭐야?\`, \`ROIC 어떻게 계산해?\`)\n` +
-        `- 현재 도메인(\`${activeDomain}\`)에 등록된 지표를 확인하려면 **현황집계** 모드에서 "${activeDomain} 지표 목록 보여줘"로 조회 가능합니다.`,
+        `- 현재 도메인(\`${activeDomain}\`)에 등록된 지표를 확인하려면 **현황집계** 모드에서 "${activeDomain} 지표 목록 보여줘"로 조회 가능합니다.`;
+
+    return buildConversationalResponse({
+      intent: 'metric_lookup',
+      answer: noMetricAnswer,
       referenced: { sourceTable: 'metric', domainCode: activeDomain, rows: 0 },
+      suggestAnalysis: analysisHint,
     });
   }
 
@@ -519,17 +628,34 @@ export async function handleMetricLookup({ query, activeDomain, conversationCont
     ? '\n\n관련 컬럼 설명:\n' + colDescriptions.map(c => `- \`${c.column_name}\`: ${c.description}`).join('\n')
     : '';
 
+  // [PR #255] 사용자 질문에 분석 신호(상관관계·추세·원인 등)가 함께 있으면
+  //   답변 서두에 "현황집계에서는 실제 데이터 분석을 수행하지 않았음" 안내를 추가하도록 지시.
+  const analysisHintRule = analysisHint
+    ? `
+
+[★ 분석 요청 안내 — 매우 중요 (PR #255)]
+사용자 질문에는 지표 산식뿐 아니라 **상관관계·추세·원인 분석 등 실제 데이터 분석 요청**이 함께 들어 있습니다.
+현재 응답 경로(현황집계)는 산식을 조회할 뿐 실제 데이터 계산·상관계수·추세 도출을 하지 않으므로
+답변 **첫 문장에** 다음 취지를 자연스러운 어조로 안내하세요:
+
+  『현재 현황집계 처리에서는 실제 데이터 분석을 수행하지 않았습니다.
+    분석질문 모드에서는 요청하신 상관관계/추이 등의 계산이 가능합니다.』
+
+그 다음에 조회된 산식 정보를 요약하세요. 절대 "결과값을 확정할 수 없습니다" 같은
+부정적·차단적 표현은 사용하지 마세요.`
+    : '';
+
   const systemPrompt = `당신은 한국 기업의 BI 시스템에서 지표 정의를 설명하는 어시스턴트입니다.
 사용자가 묻는 지표의 산식과 의미를 DB에서 조회한 정확한 정보 기반으로 자연스럽게 설명하세요.
 - 산식은 코드 블록(\`)으로 표시
 - 마크다운 표/리스트 활용 가능
 - 절대 거짓말하지 말고, 제공된 정보만 사용
-- "조회 실패", "처리할 수 없습니다" 같은 표현 금지
+- "조회 실패", "처리할 수 없습니다", "결과값을 확정할 수 없습니다" 같은 표현 금지
 
 [응답 길이/형식 규칙 — 매우 중요]
 - 응답이 중간에 잘리지 않도록 핵심 결론부터 먼저 답하고, 산식 본문은 마지막에 코드 블록으로 배치
 - 산식의 컬럼이 **15개 이상**이면 "총 N개 컬럼 합산"이라고 요약 + 처음 3개·마지막 2개만 표기 + 전체 산식은 \`\`\`sql 블록\`\`\`에 한 번만
-- 동일 metric이 여러 도메인에 있으면 사용자의 활성 도메인 우선, 다른 도메인은 "타 도메인: HL, MGMT에도 존재" 한 줄로만 언급`;
+- 동일 metric이 여러 도메인에 있으면 사용자의 활성 도메인 우선, 다른 도메인은 "타 도메인: HL, MGMT에도 존재" 한 줄로만 언급${analysisHintRule}`;
 
   const userPrompt = `사용자 질문: "${query}"
 도메인: ${activeDomain}
@@ -568,6 +694,7 @@ ${metricList}${colHint}
       rows: metrics.length,
       metrics: metrics.map(m => m.metric_code),
     },
+    suggestAnalysis: analysisHint,   // [PR #255] 분석 신호 있으면 파란 안내 카드 표시
   });
 }
 

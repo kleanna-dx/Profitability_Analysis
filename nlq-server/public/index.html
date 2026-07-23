@@ -3038,6 +3038,21 @@ function appendIntentMessage(data) {
     const style = intentBadgeStyle[data.intent] || { bg:'#f1f5f9', fg:'#334155', border:'#cbd5e1', icon:'fas fa-comment' };
     const intentLabel = data.intentLabel || data.intent || '응답';
 
+    // [PR #255] intent 핸들러 응답에도 suggestAnalysis 힌트 카드 지원.
+    //   서버(conversational-intent.mjs)가 hasAnalysisSignal(query)=true 일 때
+    //   suggestAnalysis:true 를 내려주면 파란 안내 카드를 본문 하단에 렌더.
+    //   스타일/문구는 aggregate 응답(index.html L2069~L2075)과 동일해 일관성 유지.
+    if (typeof data.suggestAnalysis !== 'undefined') {
+        console.log('[NLQ:Intent] suggestAnalysis =', data.suggestAnalysis, '(intent handler 경로)');
+    }
+    const intentSuggestAnalysisHint = data.suggestAnalysis === true
+        ? `<div class="msg-bot-analysis-hint" style="margin-top:10px;padding:8px 12px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:4px;color:#1e40af;font-size:12.5px;line-height:1.5;">
+                <i class="fas fa-lightbulb" style="margin-right:6px;color:#3b82f6;"></i>
+                <strong>분석질문을 이용하면 더 좋은 답변을 얻을 수 있습니다.</strong>
+                <span style="color:#3b82f6;font-size:11.5px;margin-left:4px;">(원인·시사점·비교·추세 등 심층 분석 결과 제공)</span>
+           </div>`
+        : '';
+
     el.innerHTML = `
         <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
             <div class="bot-avatar" style="background:linear-gradient(135deg,${style.fg},${style.fg}cc);">
@@ -3053,6 +3068,7 @@ function appendIntentMessage(data) {
                 <div style="color:#1f2937;font-size:13px;line-height:1.75;" class="analysis-body intent-body">
                     ${rendered}
                 </div>
+                ${intentSuggestAnalysisHint}
             </div>
         </div>`;
     chatArea.appendChild(el);
