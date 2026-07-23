@@ -1,51 +1,51 @@
 /* =====================================================================
- * area-tabs.js  —  업무영역(수익성분석 / 제조원가) 탭 UI (프론트 프리뷰)
+ * area-tabs.js  —  업무영역(수익성분석 / 제조원가) 탭 UI + 테마 스와핑
  * ---------------------------------------------------------------------
- *  [2026-07-23] 도입 배경
- *   - 사용자 요청: 자연어 질의 / 비주얼 쿼리 빌더 / 학습 관리 3개 화면 상단에
- *     [수익성분석] [제조원가] 탭을 공통 배치해 화면 구성을 미리 확인.
- *   - 이번 단계는 "프론트 디자인 프리뷰" 만 담당.
- *     서버 API·DB 스키마·학습데이터 분리·대화 분리는 이 파일에서 다루지 않음.
+ *  [2026-07-23] 도입
+ *   - 자연어 질의 / 비주얼 쿼리 빌더 / 학습 관리 3개 화면 상단에
+ *     [수익성분석] [제조원가] 탭을 공통 배치하고,
+ *     제조원가 선택 시 본문 강조 색을 업무영역 테마로 스와핑.
  *
- *  이 파일이 하는 일
- *   1) 3개 페이지의 top-bar 직후에 area 탭 바를 삽입 (placeholder 있으면 그곳에).
- *   2) URL query ?area=profitability | manufacturing-cost 로 상태 유지.
- *      URL 값이 없으면 localStorage('selectedArea') → 'profitability' fallback.
- *   3) 사이드바 내 <a href="..."> 링크 클릭 시 현재 area 를 자동으로 URL 에 부착
- *      (프론트 하이재킹 — 서버 응답 변경 없이 이동 후에도 area 유지).
- *   4) 제조원가 탭 선택 시 본문 위에 "준비 중" 오버레이 표시.
- *      기존 수익성분석 UI 는 뒤에 그대로 살아있음 (파괴 없음).
- *   5) 반응형: 좁은 화면에서 top-bar 아래에 wrap 되어 자연스럽게 개행.
+ *  [2026-07-23] 리팩터링
+ *   - 제조원가 테마 컬러를 오렌지 → "딥 스카이 블루" 로 교체 (전문적 톤).
+ *   - 3개 화면 공통으로 사용되는 강조 요소 커버 확대:
+ *     * 사용자 말풍선 / 봇 아바타 (로고) / welcome 아이콘
+ *     * 예시 칩 / 전송 버튼 / SQL 모드 토글 / 라디오
+ *     * VQB 사이드바 [+ 새 쿼리] 버튼 / 상단 탭 (표/차트/SQL 등)
+ *     * 학습관리 도메인 탭 / 항목 탭 / btn-primary / 뱃지 등
+ *     * 도메인(PS/HL/MGMT) 버튼 활성색, 알림/힌트 배너
+ *   - 사이드바 자체(dark 인디고) 는 사용자 요구대로 유지.
  *
- *  건드리지 않는 것
- *   - 서버 API 호출, 데이터 페칭, 이력, 학습 데이터, 도메인(PS/HL/MGMT) 상태
- *   - 기존 top-bar / 사이드바 / 채팅 UI / 학습 관리 탭 등 어떤 기존 마크업도
- *     제거하거나 재배치하지 않음. 순수 "추가" 만 수행.
+ *  본 파일은 오직 프론트 CSS/DOM 만 다룸.
+ *  서버 API / DB / 응답 스키마 / 이력 저장 로직 등은 절대 미변경.
  * ===================================================================== */
 (function() {
     'use strict';
 
     // ------------------------------------------------------------------
-    // 0. 상수
+    // 0. 상수 & 팔레트
     // ------------------------------------------------------------------
+    //
+    // ⓐ 수익성분석: 기존 시스템 톤 (인디고/퍼플). CSS 는 원본 그대로 사용,
+    //    본 파일에서는 상단 탭바 색상만 정의.
+    // ⓑ 제조원가: 전문적 파랑 (Tailwind sky 계열).
+    //    - 인디고와 명확히 톤이 분리되어 업무영역 구분감이 살아남.
+    //    - #2563eb (기존 VQB primary) 와도 계열이 달라 충돌 없음.
+    //
     const AREAS = {
         profitability: {
             key: 'profitability',
             label: '수익성분석',
             icon: 'fa-chart-line',
-            // 활성 시 색상 (기존 시스템의 인디고/보라 톤과 매치)
             activeBg: 'linear-gradient(135deg,#6366f1,#8b5cf6)',
             activeColor: '#fff',
-            badgeBg: '#6366f1',
         },
         'manufacturing-cost': {
             key: 'manufacturing-cost',
             label: '제조원가',
             icon: 'fa-industry',
-            // 활성 시 색상 (주황 포인트)
-            activeBg: 'linear-gradient(135deg,#f97316,#ea580c)',
+            activeBg: 'linear-gradient(135deg,#0284c7,#0369a1)',
             activeColor: '#fff',
-            badgeBg: '#f97316',
         },
     };
     const DEFAULT_AREA = 'profitability';
@@ -73,7 +73,6 @@
     }
     let currentArea = resolveInitialArea();
 
-    // URL 에 area 가 없거나 정규화 필요 시, replaceState 로 URL 정돈
     function normalizeUrl() {
         try {
             const p = new URLSearchParams(window.location.search);
@@ -91,6 +90,7 @@
     function injectStyle() {
         if (document.getElementById('area-tabs-style')) return;
         const css = `
+        /* -------------------- 상단 area 탭바 -------------------- */
         .area-tab-bar {
             display: flex;
             align-items: center;
@@ -143,7 +143,7 @@
             background: linear-gradient(135deg,#6366f1,#8b5cf6);
         }
         .area-tab-btn.active.area-manufacturing-cost {
-            background: linear-gradient(135deg,#f97316,#ea580c);
+            background: linear-gradient(135deg,#0284c7,#0369a1);
         }
         .area-tab-bar__hint {
             margin-left: auto;
@@ -152,41 +152,41 @@
             font-style: italic;
         }
 
-        /* 제조원가 준비중 오버레이 (본문 위에 살짝 얹음) */
+        /* -------------------- 제조원가 안내 오버레이 -------------------- */
         .area-mc-notice {
             position: fixed;
             left: 50%;
             top: 96px;
             transform: translateX(-50%);
             z-index: 45;
-            background: #fff7ed;
-            border: 1px solid #fdba74;
+            background: #f0f9ff;
+            border: 1px solid #7dd3fc;
             border-radius: 12px;
             padding: 14px 22px;
             display: flex;
             align-items: center;
             gap: 12px;
-            box-shadow: 0 8px 24px rgba(249,115,22,0.15);
+            box-shadow: 0 8px 24px rgba(2,132,199,0.15);
             max-width: 92vw;
         }
         .area-mc-notice__icon {
             width: 34px; height: 34px;
             border-radius: 8px;
-            background: linear-gradient(135deg,#f97316,#ea580c);
+            background: linear-gradient(135deg,#0284c7,#0369a1);
             color: #fff;
             display: flex; align-items: center; justify-content: center;
             font-size: 15px;
             flex-shrink: 0;
         }
-        .area-mc-notice__text { font-size: 13px; color: #7c2d12; line-height: 1.5; }
-        .area-mc-notice__text strong { color: #9a3412; }
+        .area-mc-notice__text { font-size: 13px; color: #075985; line-height: 1.5; }
+        .area-mc-notice__text strong { color: #0c4a6e; }
         .area-mc-notice__close {
             background: transparent; border: 0;
-            color: #9a3412; cursor: pointer;
+            color: #0c4a6e; cursor: pointer;
             font-size: 15px; padding: 2px 6px; border-radius: 6px;
             font-family: inherit;
         }
-        .area-mc-notice__close:hover { background: #fed7aa; }
+        .area-mc-notice__close:hover { background: #bae6fd; }
 
         @media (max-width: 640px) {
             .area-tab-bar { padding: 8px 12px; gap: 6px; }
@@ -197,79 +197,173 @@
             .area-mc-notice__text { font-size: 12px; }
         }
 
-        /* ============================================================
-         * 제조원가 테마 오버라이드 (본문 내부 강조 색상만 주황으로)
+        /* ================================================================
+         * 제조원가 테마 오버라이드
          *   활성 조건: <body data-area="manufacturing-cost">
-         *   범위:
-         *     - 사용자 질문 말풍선 (.msg-user)
-         *     - 하단 예시 칩 (.chip-sm)
-         *     - 질문 유형 라디오 (.query-mode-radio)
-         *     - SQL 모드 토글 (.mode-toggle)
-         *     - 입력 필드 포커스 (.input-field:focus)
-         *     - 전송 버튼 (.send-btn) — stop-mode 는 제외 (회색 유지)
-         *     - 사이드바 자체는 건드리지 않음 (탭바/오버레이/사이드바 껍데기 유지)
          *   원칙:
-         *     - 기존 CSS 는 그대로 두고 !important 로만 덮어씀
-         *     - 제조원가 탭 해제 시 즉시 원복 (별도 undo 로직 불필요)
-         *     - area-tab-bar 자체와 area-mc-notice 는 영향 받지 않도록
-         *       :not() 로 스코프 제한
-         * ============================================================ */
+         *     - 기존 CSS 미수정, !important 스코프 오버라이드만.
+         *     - 수익성분석 탭 복귀 시 selector 미매치 → 즉시 원복.
+         *     - 사이드바(dark 인디고 배경) 자체는 미수정 (사용자 요구).
+         *     - 상단 area-tab-bar 및 area-mc-notice 는 자체 스타일 유지.
+         *
+         *   팔레트:
+         *     주 그라디언트 : #0284c7 → #0369a1 (sky-600 → sky-700)
+         *     짙은 텍스트   : #075985 (sky-800), #0c4a6e (sky-900)
+         *     연한 배경     : #f0f9ff (sky-50), #e0f2fe (sky-100)
+         *     테두리        : #bae6fd (sky-200), #7dd3fc (sky-300)
+         *     라디오 채움   : #0284c7
+         * ================================================================ */
+
+        /* ---------- [공통] 사용자 말풍선 (자연어 질의) ---------- */
         body[data-area="manufacturing-cost"] .msg-user {
-            background: linear-gradient(135deg,#ea580c,#f97316) !important;
-            box-shadow: 0 2px 8px rgba(234,88,12,0.18) !important;
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.20) !important;
         }
-        /* 예시 칩 (기본 상태 + hover) */
-        body[data-area="manufacturing-cost"] .chip-sm {
-            border-color: #fed7aa !important;
-            color: #c2410c !important;
-            background: #fff7ed !important;
+        /* ---------- [공통] 봇 아바타 (로고) — inline style 을 덮어써야 하므로 !important ---------- */
+        /* 기본(인디고/퍼플) 아바타만 대상. 이미 다른 컬러(회색/오류/타임아웃/노랑)로 설정된 아바타는
+           inline style 로 배경이 명시되어 있어 attribute selector 로 회피할 수 없음.
+           대신 .msg-bot > .bot-avatar (헤더 로고 위치) 를 전형적 케이스로 잡음. */
+        body[data-area="manufacturing-cost"] .bot-avatar {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
         }
-        body[data-area="manufacturing-cost"] .chip-sm:hover {
-            background: #ea580c !important;
+        /* 상태성(오류/타임아웃/성공/노랑) 아바타는 원래 색상 복구 */
+        body[data-area="manufacturing-cost"] .bot-avatar[style*="ef4444"],
+        body[data-area="manufacturing-cost"] .bot-avatar[style*="dc2626"] {
+            background: linear-gradient(135deg,#ef4444,#dc2626) !important;
+        }
+        body[data-area="manufacturing-cost"] .bot-avatar[style*="94a3b8"],
+        body[data-area="manufacturing-cost"] .bot-avatar[style*="64748b"] {
+            background: linear-gradient(135deg,#94a3b8,#64748b) !important;
+        }
+        body[data-area="manufacturing-cost"] .bot-avatar[style*="fbbf24"],
+        body[data-area="manufacturing-cost"] .bot-avatar[style*="f59e0b"] {
+            background: linear-gradient(135deg,#fbbf24,#d97706) !important;
+        }
+
+        /* ---------- [자연어 질의] 웰컴 아이콘 ---------- */
+        body[data-area="manufacturing-cost"] .welcome-icon {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            box-shadow: 0 4px 16px rgba(2,132,199,0.28) !important;
+        }
+
+        /* ---------- [자연어 질의] 예시 칩 ---------- */
+        body[data-area="manufacturing-cost"] .chip-sm,
+        body[data-area="manufacturing-cost"] .chip {
+            border-color: #bae6fd !important;
+            color: #075985 !important;
+            background: #f0f9ff !important;
+        }
+        body[data-area="manufacturing-cost"] .chip-sm:hover,
+        body[data-area="manufacturing-cost"] .chip:hover {
+            background: #0284c7 !important;
             color: #fff !important;
-            border-color: #ea580c !important;
+            border-color: #0284c7 !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.25) !important;
         }
-        /* 전송 버튼 (평상시 그라디언트) — stop-mode 는 제외 */
+
+        /* ---------- [공통] 전송 버튼 (자연어 질의) — 중지 상태는 회색 유지 ---------- */
         body[data-area="manufacturing-cost"] .send-btn:not(.stop-mode) {
-            background: linear-gradient(135deg,#ea580c,#f97316) !important;
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
         }
         body[data-area="manufacturing-cost"] .send-btn:not(.stop-mode):hover {
-            box-shadow: 0 4px 12px rgba(234,88,12,0.32) !important;
+            box-shadow: 0 4px 12px rgba(2,132,199,0.35) !important;
         }
-        /* SQL 모드 토글 */
+
+        /* ---------- [자연어 질의] SQL 모드 토글 ---------- */
         body[data-area="manufacturing-cost"] .mode-toggle:hover {
-            color: #c2410c !important;
-            border-color: #fdba74 !important;
+            color: #075985 !important;
+            border-color: #7dd3fc !important;
         }
         body[data-area="manufacturing-cost"] .mode-toggle.active {
-            color: #c2410c !important;
-            background: #fff7ed !important;
-            border-color: #fdba74 !important;
+            color: #075985 !important;
+            background: #f0f9ff !important;
+            border-color: #7dd3fc !important;
         }
-        /* 질문 유형 라디오 (현황집계 / 분석질문) */
+
+        /* ---------- [자연어 질의] 질문 유형 라디오 ---------- */
         body[data-area="manufacturing-cost"] .query-mode-radio:hover {
-            border-color: #fdba74 !important;
-            color: #c2410c !important;
+            border-color: #7dd3fc !important;
+            color: #075985 !important;
         }
         body[data-area="manufacturing-cost"] .query-mode-radio input[type="radio"]:checked {
-            border-color: #ea580c !important;
-            background: #ea580c !important;
+            border-color: #0284c7 !important;
+            background: #0284c7 !important;
         }
         body[data-area="manufacturing-cost"] .query-mode-radio.checked {
-            background: #fff7ed !important;
-            border-color: #fdba74 !important;
-            color: #c2410c !important;
+            background: #f0f9ff !important;
+            border-color: #7dd3fc !important;
+            color: #075985 !important;
         }
-        /* 입력 필드 포커스 링 */
+
+        /* ---------- [공통] 입력 필드 포커스 링 ---------- */
         body[data-area="manufacturing-cost"] .input-field:focus,
         body[data-area="manufacturing-cost"] .sql-textarea:focus {
-            border-color: #fdba74 !important;
-            box-shadow: 0 0 0 3px rgba(249,115,22,0.14) !important;
+            border-color: #7dd3fc !important;
+            box-shadow: 0 0 0 3px rgba(2,132,199,0.18) !important;
         }
-        /* 채팅 영역 상단 첫 봇 아바타/헤더 그라디언트가 인디고인 경우
-           inline style 로 박혀 있어 CSS 로 덮기 어려움 → 무리하게 건드리지 않고
-           본문 인터랙션 위주(사용자 발화/입력·전송·칩)만 톤 변경. 답변 카드 자체는
-           일관성 위해 그대로 유지 (스크린샷에 표시된 1·2 영역이 핵심). */
+
+        /* ---------- [공통] 상단 도메인(PS/HL/MGMT) 활성 버튼 ---------- */
+        body[data-area="manufacturing-cost"] .domain-btn.active {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.3) !important;
+        }
+        /* 상단 도메인 안내 배너 톤도 시원한 파랑으로 */
+        body[data-area="manufacturing-cost"] .domain-info-banner {
+            background: linear-gradient(135deg,#f0f9ff,#e0f2fe) !important;
+            border-color: #bae6fd !important;
+            color: #075985 !important;
+        }
+
+        /* ---------- [비주얼 쿼리 빌더] 사이드 [+ 새 쿼리] 버튼 ---------- */
+        body[data-area="manufacturing-cost"] .new-builder-btn {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.28) !important;
+        }
+        body[data-area="manufacturing-cost"] .new-builder-btn:hover {
+            background: linear-gradient(135deg,#0369a1,#075985) !important;
+            box-shadow: 0 4px 12px rgba(2,132,199,0.4) !important;
+        }
+        /* [비주얼 쿼리 빌더] 지표 필드 아이콘 — 원래 퍼플, 제조원가 시 파랑 */
+        body[data-area="manufacturing-cost"] .field-item .icon.metric {
+            background: linear-gradient(135deg,#0284c7,#075985) !important;
+        }
+        body[data-area="manufacturing-cost"] .field-item.metric-field:hover {
+            background: #e0f2fe !important;
+            border-left-color: #0284c7 !important;
+        }
+
+        /* ---------- [학습 관리] 도메인 탭 ---------- */
+        body[data-area="manufacturing-cost"] .domain-tab:hover {
+            background: #f0f9ff !important;
+            color: #075985 !important;
+            border-color: #bae6fd !important;
+        }
+        body[data-area="manufacturing-cost"] .domain-tab.active {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            color: #fff !important;
+            border-color: transparent !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.28) !important;
+        }
+        body[data-area="manufacturing-cost"] .domain-tab.locked.active {
+            box-shadow: 0 2px 8px rgba(2,132,199,0.28) !important;
+        }
+        /* [학습 관리] 항목 탭 (Ontology/Metric/동의어/규칙/피드백 SQL) */
+        body[data-area="manufacturing-cost"] .tab-btn.active {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            color: #fff !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.28) !important;
+        }
+        /* [학습 관리] Primary 액션 버튼 */
+        body[data-area="manufacturing-cost"] .btn-primary {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            box-shadow: 0 2px 6px rgba(2,132,199,0.24) !important;
+        }
+        body[data-area="manufacturing-cost"] .btn-primary:hover {
+            filter: brightness(1.05);
+        }
+
+        /* ---------- [공통] "학습 SQL 정확 매칭" 등 하이라이트 톤 (필요 시) ----------
+           기존 노랑 톤은 상태 표시(warning) 성격이라 건드리지 않음. */
         `;
         const st = document.createElement('style');
         st.id = 'area-tabs-style';
@@ -300,7 +394,6 @@
             bar.appendChild(btn);
         });
 
-        // 우측 힌트 (프리뷰 안내)
         const hint = document.createElement('span');
         hint.className = 'area-tab-bar__hint';
         hint.innerHTML = '<i class="fas fa-eye" style="margin-right:4px;"></i>디자인 프리뷰';
@@ -310,32 +403,22 @@
     }
 
     function mountTabBar() {
-        // 이미 있으면 재사용
         if (document.getElementById('areaTabBar')) return;
-
         const bar = buildTabBar();
-
-        // 우선순위 1: 페이지에 명시적으로 마련한 placeholder
         const placeholder = document.getElementById('areaTabBarSlot');
-        if (placeholder) {
-            placeholder.appendChild(bar);
-            return;
-        }
-        // 우선순위 2: top-bar 바로 다음 형제로 삽입
+        if (placeholder) { placeholder.appendChild(bar); return; }
         const topBar = document.querySelector('.top-bar');
         if (topBar && topBar.parentNode) {
             topBar.parentNode.insertBefore(bar, topBar.nextSibling);
             return;
         }
-        // 우선순위 3: main-wrapper 첫 자식
         const wrap = document.querySelector('.main-wrapper');
         if (wrap) { wrap.insertBefore(bar, wrap.firstChild); return; }
-        // 최후: body 상단
         document.body.insertBefore(bar, document.body.firstChild);
     }
 
     // ------------------------------------------------------------------
-    // 4. 탭 상태 반영 (active 표시 + 준비중 오버레이)
+    // 4. 탭 상태 반영 (active 표시 + 준비중 오버레이 + body data-area)
     // ------------------------------------------------------------------
     function refreshActiveStyle() {
         document.querySelectorAll('.area-tab-btn').forEach(btn => {
@@ -367,9 +450,7 @@
 
     function applyAreaVisuals() {
         refreshActiveStyle();
-        // [2026-07-23] body 에 data-area 세팅 → CSS 오버라이드로 본문 강조 색 스와핑.
-        //   - manufacturing-cost 일 때만 오버라이드 규칙 발동.
-        //   - profitability 로 돌아오면 규칙이 자동 해제되어 원래 인디고/퍼플 톤 복귀.
+        // body 에 data-area 세팅 → CSS 스코프 오버라이드 발동/해제
         if (document.body) {
             document.body.setAttribute('data-area', currentArea);
         }
@@ -381,34 +462,25 @@
     }
 
     // ------------------------------------------------------------------
-    // 5. 사이드바 링크 하이재킹 — 페이지 이동 시에도 area 유지
-    //    - <a href="..."> 로 렌더된 모든 링크에 area 쿼리 자동 부착
-    //    - /api/**, 절대 URL(http://...), mailto/tel 은 건드리지 않음
-    //    - 사이드바가 동적 렌더이므로 MutationObserver 로도 감지
+    // 5. 사이드바 링크 하이재킹 — 페이지 이동 시 area 유지
     // ------------------------------------------------------------------
     function shouldAppendArea(href) {
         if (!href) return false;
         if (href.startsWith('#')) return false;
         if (href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) return false;
-        if (/^https?:\/\//i.test(href)) return false;      // 외부 URL
-        if (href.startsWith('/api/')) return false;         // API 다운로드 링크 등
-        // 상대 링크 또는 사이트 내부 링크
+        if (/^https?:\/\//i.test(href)) return false;
+        if (href.startsWith('/api/')) return false;
         return true;
     }
     function appendAreaToHref(href) {
         try {
-            // 상대 경로 처리를 위해 임시 URL 사용
             const base = window.location.origin;
             const u = new URL(href, base);
             u.searchParams.set(AREA_QUERY, currentArea);
-            // 경로 + 쿼리 + 해시만 반환 (사이트 내부 링크)
             return u.pathname + (u.search || '') + (u.hash || '');
-        } catch (e) {
-            return href;
-        }
+        } catch (e) { return href; }
     }
     function hijackSidebarLinks() {
-        // 사이드바 스코프를 최대한 넓게 잡되, area-tab-bar 는 제외
         const scopes = document.querySelectorAll(
             '.sidebar, .sidebar-menu, #sidebarMenu, aside, nav'
         );
@@ -424,13 +496,11 @@
         });
     }
     function watchSidebarMutations() {
-        // 사이드바 메뉴가 /api/me 응답 이후 innerHTML 로 새로 그려지는 케이스 대응
         const targets = document.querySelectorAll(
             '#sidebarMenu, .sidebar, .sidebar-menu, aside, nav'
         );
         if (!targets.length) return;
         const mo = new MutationObserver(() => {
-            // 짧은 debounce
             clearTimeout(watchSidebarMutations._t);
             watchSidebarMutations._t = setTimeout(hijackSidebarLinks, 40);
         });
@@ -448,9 +518,7 @@
         try { localStorage.setItem(STORAGE_KEY, currentArea); } catch (e) {}
         normalizeUrl();
         applyAreaVisuals();
-        // 다음 tick 에 사이드바 링크 재하이재킹 (area 값 갱신 반영)
         setTimeout(hijackSidebarLinks, 0);
-        // 외부 리스너용 이벤트
         try {
             window.dispatchEvent(new CustomEvent('areachange', {
                 detail: { area: currentArea }
