@@ -323,13 +323,169 @@
             background: linear-gradient(135deg,#0369a1,#075985) !important;
             box-shadow: 0 4px 12px rgba(2,132,199,0.4) !important;
         }
-        /* [비주얼 쿼리 빌더] 지표 필드 아이콘 — 원래 퍼플, 제조원가 시 파랑 */
+
+        /* ---------- [비주얼 쿼리 빌더] 좌측 [필드 목록] 패널 ---------- */
+        /* 패널 헤더 (짙은 인디고 그라디언트 → 딥 스카이 블루) */
+        body[data-area="manufacturing-cost"] .field-panel-header {
+            background: linear-gradient(135deg,#0284c7,#0c4a6e) !important;
+        }
+        /* 필드 검색 입력 focus */
+        body[data-area="manufacturing-cost"] .field-search input:focus {
+            border-color: #0284c7 !important;
+        }
+        /* 필드 앞 아이콘 뱃지 (T 마크): text/number/metric */
+        body[data-area="manufacturing-cost"] .field-item .icon.text {
+            background: #0284c7 !important;
+        }
+        body[data-area="manufacturing-cost"] .field-item .icon.number {
+            background: #0369a1 !important;
+        }
         body[data-area="manufacturing-cost"] .field-item .icon.metric {
             background: linear-gradient(135deg,#0284c7,#075985) !important;
+        }
+        /* 필드 항목 hover (기본 eff6ff는 유지해도 조화, 스카이 톤으로 통일) */
+        body[data-area="manufacturing-cost"] .field-item:hover {
+            background: #f0f9ff !important;
+        }
+        /* Metric 필드 (연보라 배경/보더 → 스카이 톤) */
+        body[data-area="manufacturing-cost"] .field-item.metric-field {
+            background: #f0f9ff !important;
+            border-left-color: #7dd3fc !important;
         }
         body[data-area="manufacturing-cost"] .field-item.metric-field:hover {
             background: #e0f2fe !important;
             border-left-color: #0284c7 !important;
+        }
+        body[data-area="manufacturing-cost"] .field-item.metric-field .metric-line1 .fcode {
+            color: #38bdf8 !important;
+        }
+        body[data-area="manufacturing-cost"] .metric-formula-badge {
+            background: #e0f2fe !important;
+            color: #0369a1 !important;
+        }
+        body[data-area="manufacturing-cost"] .selected-metric {
+            border-left-color: #0284c7 !important;
+        }
+
+        /* ---------- [비주얼 쿼리 빌더] 날짜 조건 카드 ---------- */
+        body[data-area="manufacturing-cost"] .date-section {
+            background: linear-gradient(135deg,#f0f9ff 0%,#e0f2fe 100%) !important;
+            border-color: #bae6fd !important;
+        }
+        body[data-area="manufacturing-cost"] .date-section-header {
+            color: #075985 !important;
+        }
+        body[data-area="manufacturing-cost"] .date-section-header .badge {
+            background: #bae6fd !important;
+            color: #0c4a6e !important;
+        }
+        body[data-area="manufacturing-cost"] .date-input-group select {
+            border-color: #bae6fd !important;
+        }
+        body[data-area="manufacturing-cost"] .date-input-group select:focus {
+            border-color: #0284c7 !important;
+            box-shadow: 0 0 0 3px rgba(2,132,199,0.12) !important;
+        }
+        body[data-area="manufacturing-cost"] .date-tilde {
+            color: #7dd3fc !important;
+        }
+
+        /* ---------- [비주얼 쿼리 빌더] 섹션 헤더 아이콘/뱃지 ---------- */
+        /* 조회 필드: <span style="color:var(--indigo);">□</span> — 인라인 style 오버라이드 */
+        body[data-area="manufacturing-cost"] .section-header span[style*="--indigo"],
+        body[data-area="manufacturing-cost"] .section-header span[style*="indigo"] {
+            color: #0284c7 !important;
+        }
+        /* 추가 프롬프트: <span style="color:var(--purple);">✎</span> — 인라인 style 오버라이드 */
+        body[data-area="manufacturing-cost"] .section-header span[style*="--purple"],
+        body[data-area="manufacturing-cost"] .section-header span[style*="purple"] {
+            color: #0369a1 !important;
+        }
+        /* 조회 필드 카운트 뱃지 (인라인 style로 eef2ff/indigo) */
+        body[data-area="manufacturing-cost"] .section-header .badge[style*="eef2ff"],
+        body[data-area="manufacturing-cost"] #fieldCountBadge {
+            background: #e0f2fe !important;
+            color: #0369a1 !important;
+        }
+
+        /* ---------- [비주얼 쿼리 빌더] Drop zone / Selected field ---------- */
+        body[data-area="manufacturing-cost"] .drop-zone.dragover {
+            border-color: #0284c7 !important;
+            background: rgba(2,132,199,0.06) !important;
+        }
+        body[data-area="manufacturing-cost"] .selected-field {
+            background: #e0f2fe !important;
+            border-color: #7dd3fc !important;
+        }
+        body[data-area="manufacturing-cost"] .selected-field:hover {
+            background: #bae6fd !important;
+        }
+        body[data-area="manufacturing-cost"] .selected-field.sf-insert-left {
+            border-left-color: #0284c7 !important;
+        }
+        body[data-area="manufacturing-cost"] .selected-field.sf-insert-right {
+            border-right-color: #0284c7 !important;
+        }
+        body[data-area="manufacturing-cost"] .selected-field .drag-handle {
+            color: #7dd3fc !important;
+        }
+        body[data-area="manufacturing-cost"] .selected-field:hover .drag-handle {
+            color: #0284c7 !important;
+        }
+        body[data-area="manufacturing-cost"] .selected-field .agg-select {
+            border-color: #7dd3fc !important;
+        }
+        body[data-area="manufacturing-cost"] .sf-ghost {
+            background: #e0f2fe !important;
+            border-color: #0284c7 !important;
+            box-shadow: 0 8px 24px rgba(2,132,199,0.25) !important;
+        }
+
+        /* ---------- [비주얼 쿼리 빌더] + 조건 추가 버튼 ---------- */
+        body[data-area="manufacturing-cost"] .add-condition-btn {
+            background: #f0f9ff !important;
+            color: #0369a1 !important;
+            border-color: #7dd3fc !important;
+        }
+        body[data-area="manufacturing-cost"] .add-condition-btn:hover {
+            background: #e0f2fe !important;
+            border-color: #0284c7 !important;
+        }
+
+        /* ---------- [비주얼 쿼리 빌더] 필터 조건 combo popup ---------- */
+        body[data-area="manufacturing-cost"] .combo-popup .combo-group-label {
+            color: #0369a1 !important;
+            background: #f0f9ff !important;
+        }
+        body[data-area="manufacturing-cost"] .combo-popup .combo-item:hover,
+        body[data-area="manufacturing-cost"] .combo-popup .combo-item.active {
+            background: #e0f2fe !important;
+        }
+        body[data-area="manufacturing-cost"] .condition-row .field-combo-trigger:hover,
+        body[data-area="manufacturing-cost"] .condition-row .field-combo-trigger.open {
+            border-color: #0284c7 !important;
+        }
+        body[data-area="manufacturing-cost"] .condition-row select:focus,
+        body[data-area="manufacturing-cost"] .condition-row input:focus {
+            border-color: #0284c7 !important;
+        }
+
+        /* ---------- [비주얼 쿼리 빌더] 추가 프롬프트 textarea focus ---------- */
+        body[data-area="manufacturing-cost"] .prompt-area textarea:focus {
+            border-color: #0284c7 !important;
+        }
+
+        /* ---------- [비주얼 쿼리 빌더] 피벗 생성 버튼 (핵심 실행 버튼) ---------- */
+        body[data-area="manufacturing-cost"] .exec-btn {
+            background: linear-gradient(135deg,#0284c7,#0c4a6e) !important;
+            box-shadow: 0 4px 12px rgba(2,132,199,0.3) !important;
+        }
+        body[data-area="manufacturing-cost"] .exec-btn:hover {
+            box-shadow: 0 6px 20px rgba(2,132,199,0.4) !important;
+        }
+        body[data-area="manufacturing-cost"] .exec-btn:disabled {
+            background: #94a3b8 !important;
+            box-shadow: none !important;
         }
 
         /* ---------- [학습 관리] 도메인 탭 ---------- */
