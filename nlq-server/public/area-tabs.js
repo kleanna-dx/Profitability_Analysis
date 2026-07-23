@@ -196,6 +196,80 @@
             .area-mc-notice { top: auto; bottom: 90px; padding: 10px 14px; }
             .area-mc-notice__text { font-size: 12px; }
         }
+
+        /* ============================================================
+         * 제조원가 테마 오버라이드 (본문 내부 강조 색상만 주황으로)
+         *   활성 조건: <body data-area="manufacturing-cost">
+         *   범위:
+         *     - 사용자 질문 말풍선 (.msg-user)
+         *     - 하단 예시 칩 (.chip-sm)
+         *     - 질문 유형 라디오 (.query-mode-radio)
+         *     - SQL 모드 토글 (.mode-toggle)
+         *     - 입력 필드 포커스 (.input-field:focus)
+         *     - 전송 버튼 (.send-btn) — stop-mode 는 제외 (회색 유지)
+         *     - 사이드바 자체는 건드리지 않음 (탭바/오버레이/사이드바 껍데기 유지)
+         *   원칙:
+         *     - 기존 CSS 는 그대로 두고 !important 로만 덮어씀
+         *     - 제조원가 탭 해제 시 즉시 원복 (별도 undo 로직 불필요)
+         *     - area-tab-bar 자체와 area-mc-notice 는 영향 받지 않도록
+         *       :not() 로 스코프 제한
+         * ============================================================ */
+        body[data-area="manufacturing-cost"] .msg-user {
+            background: linear-gradient(135deg,#ea580c,#f97316) !important;
+            box-shadow: 0 2px 8px rgba(234,88,12,0.18) !important;
+        }
+        /* 예시 칩 (기본 상태 + hover) */
+        body[data-area="manufacturing-cost"] .chip-sm {
+            border-color: #fed7aa !important;
+            color: #c2410c !important;
+            background: #fff7ed !important;
+        }
+        body[data-area="manufacturing-cost"] .chip-sm:hover {
+            background: #ea580c !important;
+            color: #fff !important;
+            border-color: #ea580c !important;
+        }
+        /* 전송 버튼 (평상시 그라디언트) — stop-mode 는 제외 */
+        body[data-area="manufacturing-cost"] .send-btn:not(.stop-mode) {
+            background: linear-gradient(135deg,#ea580c,#f97316) !important;
+        }
+        body[data-area="manufacturing-cost"] .send-btn:not(.stop-mode):hover {
+            box-shadow: 0 4px 12px rgba(234,88,12,0.32) !important;
+        }
+        /* SQL 모드 토글 */
+        body[data-area="manufacturing-cost"] .mode-toggle:hover {
+            color: #c2410c !important;
+            border-color: #fdba74 !important;
+        }
+        body[data-area="manufacturing-cost"] .mode-toggle.active {
+            color: #c2410c !important;
+            background: #fff7ed !important;
+            border-color: #fdba74 !important;
+        }
+        /* 질문 유형 라디오 (현황집계 / 분석질문) */
+        body[data-area="manufacturing-cost"] .query-mode-radio:hover {
+            border-color: #fdba74 !important;
+            color: #c2410c !important;
+        }
+        body[data-area="manufacturing-cost"] .query-mode-radio input[type="radio"]:checked {
+            border-color: #ea580c !important;
+            background: #ea580c !important;
+        }
+        body[data-area="manufacturing-cost"] .query-mode-radio.checked {
+            background: #fff7ed !important;
+            border-color: #fdba74 !important;
+            color: #c2410c !important;
+        }
+        /* 입력 필드 포커스 링 */
+        body[data-area="manufacturing-cost"] .input-field:focus,
+        body[data-area="manufacturing-cost"] .sql-textarea:focus {
+            border-color: #fdba74 !important;
+            box-shadow: 0 0 0 3px rgba(249,115,22,0.14) !important;
+        }
+        /* 채팅 영역 상단 첫 봇 아바타/헤더 그라디언트가 인디고인 경우
+           inline style 로 박혀 있어 CSS 로 덮기 어려움 → 무리하게 건드리지 않고
+           본문 인터랙션 위주(사용자 발화/입력·전송·칩)만 톤 변경. 답변 카드 자체는
+           일관성 위해 그대로 유지 (스크린샷에 표시된 1·2 영역이 핵심). */
         `;
         const st = document.createElement('style');
         st.id = 'area-tabs-style';
@@ -293,6 +367,12 @@
 
     function applyAreaVisuals() {
         refreshActiveStyle();
+        // [2026-07-23] body 에 data-area 세팅 → CSS 오버라이드로 본문 강조 색 스와핑.
+        //   - manufacturing-cost 일 때만 오버라이드 규칙 발동.
+        //   - profitability 로 돌아오면 규칙이 자동 해제되어 원래 인디고/퍼플 톤 복귀.
+        if (document.body) {
+            document.body.setAttribute('data-area', currentArea);
+        }
         if (currentArea === 'manufacturing-cost') {
             showManufacturingNotice();
         } else {
