@@ -1,0 +1,67 @@
+-- ============================================================
+-- Migration: 038_pr255_to_pr257_no_schema_change.sql
+-- Date    : 2026-07-23
+-- Author  : AI Developer
+-- Related : PR #255, PR #256, PR #257
+-- ============================================================
+--
+-- ▶ 결론: 이번 3개 PR(#255 ~ #257) 배포에는 DB 스키마 변경 사항이 없습니다.
+--          이 파일은 운영팀이 "038 번호에 해당하는 DDL 이 없다" 는 사실을
+--          명시적으로 확인할 수 있도록 남기는 NO-OP(아무 동작 없음) 마이그레이션입니다.
+--
+-- ▶ 이번 배포에 포함된 변경 사항 요약
+--   - PR #255 : 현황집계 모드에서 상관관계/분석 질문이 metric_lookup 으로
+--               잘못 분류되던 문제 수정 + suggestAnalysis 안내 카드 추가.
+--               (JS 코드만 수정 — conversational-intent.mjs / index.html)
+--
+--   - PR #256 : PR #255 의 규제(HTTP 400 회귀) 원인 원복.
+--               Tier 1/Tier 2 라우팅 로직을 원래대로 되돌리고,
+--               분석 안내(suggestAnalysis) 는 handleMetricLookup 안에서만 처리.
+--               (JS 코드만 수정)
+--
+--   - PR #257 : 학습 SQL 재사용 시 CALMONTH 리터럴이 박제되어
+--               다음 달에 과거 월 데이터가 반환되는 회귀 수정.
+--               (a) 축 A — 학습 SQL 재사용 직전 CALMONTH 값을 현재
+--                        latestMonth/prevMonth 로 동적 재바인딩.
+--               (b) 축 B — sql_feedback 에 저장할 때 latestMonth/prevMonth
+--                        값을 자리표시자(:LATEST_MONTH / :PREV_MONTH) 로 치환.
+--               (JS 코드만 수정 — lib/calmonth-rebase.mjs / server.mjs)
+--
+-- ▶ 사용된 테이블/컬럼은 모두 운영에 이미 존재하는 기존 자원입니다.
+--      - 테이블 : sql_feedback                      (이미 존재)
+--      - 컬럼   : sql_feedback.query_text           (이미 존재, 타입 변경 없음)
+--                sql_feedback.original_sql          (이미 존재, 타입 변경 없음)
+--                sql_feedback.corrected_sql         (이미 존재, 타입 변경 없음)
+--                sql_feedback.feedback_type         (이미 존재)
+--                sql_feedback.domain_code           (이미 존재)
+--                sql_feedback.is_active             (이미 존재)
+--                sql_feedback.created_at            (이미 존재)
+--
+-- ▶ 데이터 형태 변경 (스키마 변경 아님) — PR #257 참고 사항:
+--      PR #257 배포 이후, 새로 저장되는 sql_feedback.corrected_sql 값 중
+--      CALMONTH 조건 부분이 다음과 같이 자리표시자 형태로 저장될 수 있습니다.
+--
+--        Before) ... WHERE CALMONTH = '202605' ...
+--        After ) ... WHERE CALMONTH = ':LATEST_MONTH' ...
+--
+--      이 자리표시자는 애플리케이션 재사용 시점(rebaseCalmonthForLearnedSql)
+--      에서 현재 latestMonth 로 치환된 뒤 DB 로 전송되므로, DB 엔진 입장에서
+--      직접 실행되는 SQL 은 여전히 유효한 리터럴 값입니다.
+--      → DB 스키마/타입/제약 어느 것도 변경되지 않습니다.
+--
+--      기존에 이미 저장되어 있는 학습 SQL(리터럴 6자리 값 포함) 도
+--      축 A rebase 로직이 자동으로 처리하므로, 기존 데이터를 UPDATE 할
+--      필요도 없습니다.
+--
+-- ▶ 따라서 운영 DB 에 적용해야 할 DDL/DML 이 없습니다.
+--      이 파일을 실행하셔도 무방하며, 실행해도 아무런 변경이 발생하지 않습니다.
+--
+-- ============================================================
+-- (no-op section)
+-- 멱등 실행 확인용 SELECT — 운영에서 실행 시 결과만 출력됩니다.
+-- ============================================================
+SELECT
+    'PR #255~#257 : 스키마 변경 없음 (JS 코드/애플리케이션 로직만 변경)' AS migration_note,
+    'sql_feedback 테이블 및 컬럼은 기존 자원 그대로 사용'                  AS table_note,
+    'CALMONTH 자리표시자는 애플리케이션 레벨에서 처리 (DB 스키마 무관)'    AS placeholder_note,
+    NOW()                                                                    AS checked_at;
