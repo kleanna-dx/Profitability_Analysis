@@ -2137,5 +2137,7 @@ window.addEventListener('beforeunload', function(e) {
 });
 </script>
 <script>async function doLogout(){if(!confirm("로그아웃 하시겠습니까?"))return;try{await fetch("/api/logout",{method:"POST"})}catch(e){}window.location.href="/login"}</script>
+<!-- [2026-07-23] 업무영역(수익성분석/제조원가) 탭 UI — 프론트 프리뷰. 서버 API/데이터 미변경. -->
+<script src="/area-tabs.js"></script>
 </body>
 </html>
