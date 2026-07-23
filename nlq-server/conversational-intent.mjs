@@ -293,6 +293,146 @@ export function buildConversationalResponse({
 }
 
 // ============================================================
+// [PR #254] 답변 길이·완결성 공통 유틸
+// ------------------------------------------------------------
+// 배경: 사용자 리포트에 따르면 metric_lookup 등 대화형 답변이
+//   max_tokens 한도에 걸려 조사도 없이 잘려서 노출되는 케이스가 있었음.
+//   (예: "…판매관리비 및 지급"에서 끊김)
+//
+// 정책: "잘라내지 말고 처음부터 짧게" — 프롬프트로 400자·5문장 이내
+//   완결 답변을 유도하고, 그럼에도 finish_reason='length' 로 잘렸을 때는
+//   마지막 완결 문장까지만 살려서 미완결 문장을 사용자 눈에 노출하지 않음.
+//
+// 적용 대상: 6개 신규 intent handler
+//   metric_lookup / ontology_lookup / troubleshooting /
+//   sql_explain / domain_explain / general_chat
+// ============================================================
+
+/**
+ * 모든 대화형 intent handler system prompt 뒤에 이어붙일 공통 규칙.
+ * - 최대 5문장 / 400자 이내
+ * - 결론 → 주요 수치 → 조회 기준 순서
+ * - 본문에 마크다운 표 삽입 금지 (세부 결과는 하단 표 참조 유도)
+ * - 산식 등 짧은 코드 블록은 허용
+ * - 모든 문장 완결 종료 필수
+ */
+export const LENGTH_RULES_KO = `
+
+[★ 응답 길이·완결성 규칙 — 반드시 준수 (PR #254)]
+- 답변은 **최대 5문장, 400자 이내**로 핵심만 작성하세요. 초과 예상 시 앞부분에서 요약만 하고 종료.
+- 우선순위: **결론 → 주요 수치 → 조회 기준** 순서로 배치.
+- **본문에 마크다운 표(| ... |)를 절대 삽입하지 마세요.** 세부 데이터·긴 나열은 하단 상세 결과표에 있으니 본문에서 반복하지 마세요.
+  (산식 등 짧은 코드 블록 \`...\` 은 허용됩니다.)
+- **모든 문장은 반드시 완결된 형태로 종료**하세요. 미완결 위험이 있는 긴 문장은 시작하지 마세요.
+- 분량이 부족할 때는 마무리 문구로 "세부 결과는 아래 표를 참고해 주세요." 를 사용하세요.
+- 출력 한도에 근접하면 부가 설명을 생략하고 마지막 문장을 반드시 온전히 마무리하세요.`;
+
+/**
+ * 미완결 문장 안전 절단.
+ * finish_reason='length' 로 잘린 텍스트에서 한국어 종결 어미 이후로 뒤쪽을 잘라냄.
+ *
+ * 사용자 정책(PR #254): 미완결로 보이는 마지막 문장은 아예 노출하지 않는다.
+ *
+ * @param {string} text - LLM 이 반환한 원본 답변
+ * @returns {string} 마지막 완결 문장까지만 남긴 답변
+ *
+ * 동작:
+ *   1) 마지막 문말 어미(습니다./입니다./세요./다./요./?/!/. 등) 위치를 찾음.
+ *   2) 그 위치가 원문 끝에서 얼마나 떨어져 있는지("꼬리 길이") 계산.
+ *      꼬리 길이가 0~2 문자면 이미 완결 문장 → 원문 유지 (trim만).
+ *      꼬리 길이가 있다면 그건 미완결이므로 완결 지점까지 절단.
+ *   3) 완결 문장을 아예 못 찾으면 원문 유지 (완전 삭제 방지).
+ *   4) 코드블록(```) 이 열려있는 상태로 끝나면 닫아줌 (마크다운 파괴 방지).
+ *   5) 표 마지막 줄이 미완결(| 로 시작하지만 | 로 안 끝남)이면 그 줄도 제거.
+ *
+ * 이전 버전의 "완결이 40% 미만이면 원문 유지" 룰은 실제 잘림 케이스
+ *   (앞부분 요약 + 큰 표 + 미완결 꼬리) 에서 완결 지점이 원문 앞쪽 20~30%
+ *   에 위치하는 경우를 놓쳤기 때문에 제거함. 대신 "너무 많이 잘라내지
+ *   않는지"는 명시적으로 20자 이상 남는지로 판단.
+ */
+export function trimToLastCompleteSentence(text) {
+  if (!text || typeof text !== 'string') return text || '';
+  const src = text.trim();
+  if (src.length === 0) return src;
+
+  // 문말 어미 후보. 긴 것부터 우선 매칭.
+  //   한국어 종결 어미 + 서양식 . ! ? 모두 포함.
+  const endings = [
+    '습니다.', '입니다.', '됩니다.', '합니다.', '있습니다.', '없습니다.',
+    '습니다!', '입니다!', '습니다?', '입니다?',
+    '세요.', '까요.', '시오.',
+    '요.', '다.', '요!', '다!', '요?', '다?',
+    '.', '!', '?',
+  ];
+
+  let cutPos = -1;
+  for (const e of endings) {
+    const idx = src.lastIndexOf(e);
+    if (idx === -1) continue;
+    const endOf = idx + e.length;
+    if (endOf > cutPos) cutPos = endOf;
+  }
+
+  // 완결 문장을 못 찾음 → 원문 유지 (완전 삭제 방지)
+  if (cutPos <= 0) return src;
+
+  // 꼬리 길이 검사: 완결 지점 뒤에 남은 문자
+  const tail = src.substring(cutPos).trim();
+
+  // 꼬리가 없으면 이미 완결 상태 → 원문 유지
+  if (tail.length === 0) return src;
+
+  // 꼬리가 지나치게 짧으면 (마침표 뒤 1~2자 공백/기호) 완결로 간주
+  if (tail.length <= 2 && !/[가-힣A-Za-z0-9]/.test(tail)) return src;
+
+  // 완결 지점 앞이 너무 짧으면 (20자 미만) 원문 유지 — 통째 삭제 방지
+  if (cutPos < 20) return src;
+
+  let trimmed = src.substring(0, cutPos).trim();
+
+  // 마지막 줄이 미완결 표 행(| 로 시작하지만 | 로 안 끝남)이면 그 줄 제거
+  const lines = trimmed.split('\n');
+  const lastLine = lines[lines.length - 1] || '';
+  if (lastLine.startsWith('|') && !lastLine.trim().endsWith('|')) {
+    lines.pop();
+    trimmed = lines.join('\n').trim();
+  }
+
+  // 코드블록(```) 이 홀수개 남아있으면 닫아줌 (마크다운 파괴 방지)
+  const fenceCount = (trimmed.match(/```/g) || []).length;
+  if (fenceCount % 2 === 1) {
+    trimmed = trimmed + '\n```';
+  }
+
+  return trimmed;
+}
+
+/**
+ * LLM 응답 choice 를 받아 답변 텍스트를 안전하게 후처리.
+ * - finish_reason === 'length' 인 경우에만 trimToLastCompleteSentence 적용
+ * - 그 외에는 trim 만
+ *
+ * @param {object} choice - OpenAI chat completion choice
+ * @param {string} intentTag - 로깅용 태그 (예: 'metric_lookup')
+ * @returns {string} 후처리된 답변
+ */
+export function postProcessIntentAnswer(choice, intentTag) {
+  const raw = choice?.message?.content?.trim() || '';
+  const finishReason = choice?.finish_reason;
+  if (finishReason === 'length' && raw.length > 0) {
+    const trimmed = trimToLastCompleteSentence(raw);
+    if (trimmed !== raw) {
+      console.log(
+        `[Intent:${intentTag}] finish_reason=length — 미완결 마지막 문장 절단 ` +
+        `(원본 ${raw.length}자 → 정리 ${trimmed.length}자)`
+      );
+    }
+    return trimmed;
+  }
+  return raw;
+}
+
+// ============================================================
 // 3. 의도별 핸들러
 // ============================================================
 
@@ -404,13 +544,15 @@ ${metricList}${colHint}
     const resp = await openai.chat.completions.create({
       model,
       messages: [
-        { role: 'system', content: systemPrompt },
+        // [PR #254] system prompt 에 공통 길이·완결성 규칙 이어붙임
+        { role: 'system', content: systemPrompt + LENGTH_RULES_KO },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: 1200, // [Fix-D] 산식 노출 시 잘림 방지: 600 → 1200
+      max_tokens: 1200, // [Fix-D] 산식 노출 시 잘림 방지: 600 → 1200 (안전마진 유지)
       temperature: 0.2,
     });
-    answer = resp.choices?.[0]?.message?.content?.trim() || metricList;
+    // [PR #254] finish_reason='length' 이면 마지막 완결 문장까지만 사용
+    answer = postProcessIntentAnswer(resp.choices?.[0], 'metric_lookup') || metricList;
   } catch (e) {
     console.error('[Intent:metric_lookup] LLM 응답 실패:', e.message);
     // LLM 실패시 fallback: 구조화된 metricList 그대로 반환 (단순 에러 메시지 금지)
@@ -504,13 +646,15 @@ ${colList}
     const resp = await openai.chat.completions.create({
       model,
       messages: [
-        { role: 'system', content: systemPrompt },
+        // [PR #254] system prompt 에 공통 길이·완결성 규칙 이어붙임
+        { role: 'system', content: systemPrompt + LENGTH_RULES_KO },
         { role: 'user', content: userPrompt },
       ],
       max_tokens: 500,
       temperature: 0.2,
     });
-    answer = resp.choices?.[0]?.message?.content?.trim() || colList;
+    // [PR #254] finish_reason='length' 이면 마지막 완결 문장까지만 사용
+    answer = postProcessIntentAnswer(resp.choices?.[0], 'ontology_lookup') || colList;
   } catch (e) {
     console.error('[Intent:ontology_lookup] LLM 실패:', e.message);
     answer = `**${activeDomain} 도메인에서 매칭된 컬럼/용어 ${cols.length}건**\n\n${colList}`;
@@ -595,13 +739,15 @@ ${diagnostics.length > 0 ? diagnostics.map(d => `- ${d}`).join('\n') : '- (특�
     const resp = await openai.chat.completions.create({
       model,
       messages: [
-        { role: 'system', content: systemPrompt },
+        // [PR #254] system prompt 에 공통 길이·완결성 규칙 이어붙임
+        { role: 'system', content: systemPrompt + LENGTH_RULES_KO },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: 1200, // [Fix-D] 진단 본문 잘림 방지: 600 → 1200
+      max_tokens: 1200, // [Fix-D] 진단 본문 잘림 방지: 600 → 1200 (안전마진 유지)
       temperature: 0.3,
     });
-    answer = resp.choices?.[0]?.message?.content?.trim();
+    // [PR #254] finish_reason='length' 이면 마지막 완결 문장까지만 사용
+    answer = postProcessIntentAnswer(resp.choices?.[0], 'troubleshooting');
   } catch (e) {
     console.error('[Intent:troubleshooting] LLM 실패:', e.message);
   }
@@ -863,13 +1009,15 @@ ${findingsForLLM}
     const resp = await openai.chat.completions.create({
       model,
       messages: [
-        { role: 'system', content: systemPrompt },
+        // [PR #254] system prompt 에 공통 길이·완결성 규칙 이어붙임
+        { role: 'system', content: systemPrompt + LENGTH_RULES_KO },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: 1400, // [Fix-D] 응답 잘림 방지: 700 → 1400 확장
+      max_tokens: 1400, // [Fix-D] 응답 잘림 방지: 700 → 1400 확장 (안전마진 유지)
       temperature: 0.2,
     });
-    answer = resp.choices?.[0]?.message?.content?.trim();
+    // [PR #254] finish_reason='length' 이면 마지막 완결 문장까지만 사용
+    answer = postProcessIntentAnswer(resp.choices?.[0], 'sql_explain');
   } catch (e) {
     console.error('[Intent:sql_explain] LLM 실패:', e.message);
   }
@@ -951,13 +1099,15 @@ ${fact}
     const resp = await openai.chat.completions.create({
       model,
       messages: [
-        { role: 'system', content: systemPrompt },
+        // [PR #254] system prompt 에 공통 길이·완결성 규칙 이어붙임
+        { role: 'system', content: systemPrompt + LENGTH_RULES_KO },
         { role: 'user', content: userPrompt },
       ],
       max_tokens: 500,
       temperature: 0.3,
     });
-    answer = resp.choices?.[0]?.message?.content?.trim();
+    // [PR #254] finish_reason='length' 이면 마지막 완결 문장까지만 사용
+    answer = postProcessIntentAnswer(resp.choices?.[0], 'domain_explain');
   } catch (e) {
     console.error('[Intent:domain_explain] LLM 실패:', e.message);
   }
@@ -1008,13 +1158,15 @@ export async function handleGeneralChat({ query, activeDomain, conversationConte
     const resp = await openai.chat.completions.create({
       model,
       messages: [
-        { role: 'system', content: systemPrompt },
+        // [PR #254] system prompt 에 공통 길이·완결성 규칙 이어붙임
+        { role: 'system', content: systemPrompt + LENGTH_RULES_KO },
         { role: 'user', content: userPrompt },
       ],
       max_tokens: 600,
       temperature: 0.4,
     });
-    answer = resp.choices?.[0]?.message?.content?.trim();
+    // [PR #254] finish_reason='length' 이면 마지막 완결 문장까지만 사용
+    answer = postProcessIntentAnswer(resp.choices?.[0], 'general_chat');
   } catch (e) {
     console.error('[Intent:general_chat] LLM 실패:', e.message);
   }
