@@ -7182,6 +7182,13 @@ app.get('/api/history', async (req, res) => {
          MAX(created_at) AS last_time,
          COUNT(*) AS query_count,
          SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS success_count,
+         /* [2026-07-23] 사이드바 아이콘 판정용:
+            - 세션 내 "실질적 오류(=db_query_timeout 이 아닌 실패)" 건수.
+            - 조회 시간 초과(db_query_timeout)는 사용자 시각에서 시스템 오류가 아니라
+              "질문 범위가 넓어 응답이 늦은 안내" 이므로 실패 카운트에서 제외.
+            - 프론트(renderHistoryList)에서 hard_fail_count === 0 이면 성공 아이콘 표시.
+            - 서버 저장/오류 로그/응답 스키마는 그대로, SELECT 집계 컬럼만 추가. */
+         SUM(CASE WHEN status<>'SUCCESS' AND COALESCE(error_type,'') <> 'db_query_timeout' THEN 1 ELSE 0 END) AS hard_fail_count,
          SUM(row_count) AS total_rows,
          session_id,
          MAX(domain_code) AS domain_code,
