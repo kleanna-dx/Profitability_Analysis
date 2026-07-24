@@ -518,6 +518,79 @@
             filter: brightness(1.05);
         }
 
+        /* ---------- [학습 관리] 최상단 학사모 로고 (Tailwind text-indigo-500) ---------- */
+        body[data-area="manufacturing-cost"] .top-bar h1 .fa-graduation-cap,
+        body[data-area="manufacturing-cost"] .top-bar .text-indigo-500 {
+            color: #0284c7 !important;
+        }
+
+        /* ---------- [학습 관리] 영역 선택 라벨 좌측 아이콘 (레이어) ---------- */
+        body[data-area="manufacturing-cost"] .domain-banner-label i {
+            color: #0284c7 !important;
+        }
+
+        /* ---------- [학습 관리] 통계 카드 첫 번째 - 등록 컬럼 (인디고 계열만) ----------
+           나머지 카드(초록/보라/노랑/빨강)는 통계 종류별 컬러 코드라 유지.
+           첫 카드만 인디고 → 스카이로 교체. */
+        body[data-area="manufacturing-cost"] .stat-icon[style*="eef2ff"] {
+            background: #e0f2fe !important;
+            color: #0369a1 !important;
+        }
+
+        /* ---------- [학습 관리] 데이터 테이블 컬럼명 (mono 스타일) ---------- */
+        body[data-area="manufacturing-cost"] .dtable .mono {
+            color: #0369a1 !important;
+        }
+
+        /* ---------- [학습 관리] 동의어 chip (인디고 톤) ---------- */
+        body[data-area="manufacturing-cost"] .syn-chip {
+            background: #e0f2fe !important;
+            color: #0369a1 !important;
+            border-color: #7dd3fc !important;
+        }
+        body[data-area="manufacturing-cost"] .syn-chip .syn-del {
+            color: #7dd3fc !important;
+        }
+
+        /* ---------- [학습 관리] 정렬 가능 컬럼 헤더 활성 상태 ---------- */
+        body[data-area="manufacturing-cost"] .dtable th.sort-th:hover {
+            background: linear-gradient(135deg,#f0f9ff,#e0f2fe) !important;
+            color: #075985 !important;
+        }
+        body[data-area="manufacturing-cost"] .dtable th.sort-th.sort-asc,
+        body[data-area="manufacturing-cost"] .dtable th.sort-th.sort-desc {
+            background: linear-gradient(135deg,#0369a1,#0284c7) !important;
+            border-bottom-color: #075985 !important;
+            box-shadow: inset 0 -3px 0 #0c4a6e !important;
+        }
+        body[data-area="manufacturing-cost"] .dtable th.sort-th.sort-asc .sort-ico .arr-up,
+        body[data-area="manufacturing-cost"] .dtable th.sort-th.sort-desc .sort-ico .arr-down {
+            color: #0284c7 !important;
+        }
+        body[data-area="manufacturing-cost"] .sort-active-badge {
+            background: linear-gradient(135deg,#0369a1,#0284c7) !important;
+            box-shadow: 0 2px 6px rgba(2,132,199,0.35) !important;
+        }
+
+        /* ---------- [학습 관리] btn-outline hover / 인라인 동의어 입력 ---------- */
+        body[data-area="manufacturing-cost"] .btn-outline:hover {
+            border-color: #7dd3fc !important;
+            color: #0369a1 !important;
+        }
+        body[data-area="manufacturing-cost"] .add-syn-input {
+            border-color: #7dd3fc !important;
+        }
+        body[data-area="manufacturing-cost"] .add-syn-input:focus {
+            border-color: #0284c7 !important;
+        }
+
+        /* ---------- [학습 관리] 모달 input focus ---------- */
+        body[data-area="manufacturing-cost"] .modal input:focus,
+        body[data-area="manufacturing-cost"] .modal select:focus {
+            border-color: #0284c7 !important;
+            box-shadow: 0 0 0 3px rgba(2,132,199,0.12) !important;
+        }
+
         /* ---------- [공통] "학습 SQL 정확 매칭" 등 하이라이트 톤 (필요 시) ----------
            기존 노랑 톤은 상태 표시(warning) 성격이라 건드리지 않음. */
         `;
