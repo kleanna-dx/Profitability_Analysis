@@ -323,6 +323,15 @@
             color: #0284c7 !important;
         }
 
+        /* ---------- [비주얼 쿼리 빌더] 상단 바 좌측 로고 아이콘 (fa-th-large) ---------- */
+        /* builder.html L1136: <i class="fas fa-th-large" style="color:var(--indigo);...">
+           인라인 style="color:var(--indigo)" (#4f46e5) 를 스카이 톤으로 오버라이드.
+           .top-bar 스코프 + fa-th-large 조합으로 specificity 확보. */
+        body[data-area="manufacturing-cost"] .top-bar .fa-th-large,
+        body[data-area="manufacturing-cost"] .top-bar i[class*="fa-th-large"] {
+            color: #0284c7 !important;
+        }
+
         /* ---------- [비주얼 쿼리 빌더] 사이드 [+ 새 쿼리] 버튼 ---------- */
         /* 어두운 사이드바 배경 위에서도 area-mc-notice 아이콘과 동일한 밝은 스카이 톤으로 인식되도록
            한 단계 더 밝은 그라디언트(#0ea5e9→#0284c7) 사용 */
