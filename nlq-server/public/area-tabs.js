@@ -325,6 +325,38 @@
             color: #0284c7 !important;
         }
 
+        /* ---------- [비주얼 쿼리 빌더] 상단 도메인 셀렉터 (PS / HL / MGMT) ---------- */
+        /* builder.html L80-88 원본은 전반적으로 인디고 팔레트 사용:
+           - .domain-selector-bar border #c7d2fe / shadow rgba(99,102,241,...)
+           - .domain-btn:hover color #4f46e5
+           - .domain-btn.active background gradient(#4f46e5,#6366f1) / shadow rgba(79,70,229,...)
+           - .glow 애니메이션 keyframe 도 인디고 톤
+           → 제조원가 모드에서 모두 스카이 톤으로 오버라이드. */
+        /* 컨테이너 pill: 테두리 + 그림자 스카이화 */
+        body[data-area="manufacturing-cost"] .domain-selector-bar {
+            border-color: #7dd3fc !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.10) !important;
+        }
+        /* 비활성 버튼 hover: 배경/글자 스카이 파스텔 톤 */
+        body[data-area="manufacturing-cost"] .domain-btn:hover {
+            background: #f0f9ff !important;
+            color: #165274 !important;
+        }
+        /* 활성 버튼: 딥 스카이 그라디언트 + 스카이 그림자 (area-mc-notice 아이콘과 통일) */
+        body[data-area="manufacturing-cost"] .domain-btn.active {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.30) !important;
+            color: #fff !important;
+        }
+        /* .glow 상태 (사이드바 도메인 변경 시 3회 반복 애니메이션):
+           border-color 는 정적 스카이 톤으로 고정, box-shadow 는 애니메이션이라
+           개별 keyframe 재정의 없이 border만 강제해도 인디고 flash 대부분 억제됨 */
+        body[data-area="manufacturing-cost"] .domain-selector-bar.glow {
+            border-color: #38bdf8 !important;
+            animation: none !important;
+            box-shadow: 0 0 16px rgba(2,132,199,0.35), 0 0 32px rgba(2,132,199,0.15) !important;
+        }
+
         /* ---------- [비주얼 쿼리 빌더] 사이드 [+ 새 쿼리] 버튼 ---------- */
         /* 자연스러운 파스텔 스카이 그라디언트 + 짙은 네이비 텍스트
            - 사용자 지정 배경 톤(#E7F5FF, RGB 231,245,255) 을 그라디언트 시작점으로 사용하고
