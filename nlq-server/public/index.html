@@ -847,10 +847,10 @@
             <div class="welcome-icon">
                 <i class="fas fa-robot"></i>
             </div>
-            <h2 class="text-xl font-bold text-gray-800 mb-2">무엇이든 물어보세요</h2>
-            <p class="text-sm text-gray-500 mb-1">AI가 자사 수익성 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
-            <p class="text-sm text-gray-400">질문을 입력하면 분석부터 SQL 생성, 시각화까지 자동으로 처리합니다.</p>
-            <div id="welcomeDateInfo" style="margin-top:16px;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:13px;color:#92400e;display:none;line-height:1.7;">
+            <h2 class="text-xl font-bold text-gray-800 mb-2" style="font-size:21px;">무엇이든 물어보세요</h2>
+            <p class="text-sm text-gray-500 mb-1" style="font-size:15px;">AI가 자사 수익성 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
+            <p class="text-sm text-gray-400" style="font-size:15px;">질문을 입력하면 분석부터 SQL 생성, 시각화까지 자동으로 처리합니다.</p>
+            <div id="welcomeDateInfo" style="margin-top:16px;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;display:none;line-height:1.7;">
                 <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
                 현재 데이터 기준월은 <strong id="welcomeLatestLabel"></strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
                 <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
@@ -4354,15 +4354,15 @@ function startNewChat() {
         chatArea.appendChild(welcome);
     } else {
         const dateInfoHtml = dataDateContext
-            ? `<div style="margin-top:16px;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:13px;color:#92400e;line-height:1.7;">
+            ? `<div style="margin-top:16px;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;">
                 <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
                 현재 데이터 기준월은 <strong>${dataDateContext.latestLabel}</strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
                 <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
                </div>` : '';
         chatArea.innerHTML = `<div id="welcomeSection" class="welcome-section">
             <div class="welcome-icon"><i class="fas fa-robot"></i></div>
-            <h2 style="margin:0 0 8px;">무엇이든 물어보세요</h2>
-            <p style="color:#94a3b8;font-size:13px;">자연어로 데이터를 조회하고 분석할 수 있습니다</p>
+            <h2 style="margin:0 0 8px;font-size:21px;">무엇이든 물어보세요</h2>
+            <p style="color:#94a3b8;font-size:14px;">자연어로 데이터를 조회하고 분석할 수 있습니다</p>
             ${dateInfoHtml}
         </div>`;
     }
