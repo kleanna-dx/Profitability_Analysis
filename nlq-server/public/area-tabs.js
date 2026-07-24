@@ -358,25 +358,9 @@
         }
 
         /* ---------- [비주얼 쿼리 빌더] 사이드 [+ 새 쿼리] 버튼 ---------- */
-        /* 자연스러운 파스텔 스카이 그라디언트 + 짙은 네이비 텍스트
-           - 사용자 지정 배경 톤(#E7F5FF, RGB 231,245,255) 을 그라디언트 시작점으로 사용하고
-             한 단계 진한 스카이 파스텔(#C5E4F7) 로 부드럽게 흐르는 대각선 그라디언트
-           - 텍스트: 사용자 지정 #165274 (RGB 22,82,116) 유지
-           - 원본 CSS 의 color:#fff / 짙은 그라디언트를 완전 대체하기 위해 !important 사용
-           - hover: 그라디언트를 한 단계 진하게(#D0EBFF → #A5D8F0) */
-        body[data-area="manufacturing-cost"] .new-builder-btn {
-            background: linear-gradient(135deg,#E7F5FF,#C5E4F7) !important;
-            color: #165274 !important;
-            box-shadow: 0 2px 6px rgba(22,82,116,0.10) !important;
-        }
-        body[data-area="manufacturing-cost"] .new-builder-btn:hover {
-            background: linear-gradient(135deg,#D0EBFF,#A5D8F0) !important;
-            color: #165274 !important;
-            box-shadow: 0 4px 10px rgba(22,82,116,0.16) !important;
-        }
-        body[data-area="manufacturing-cost"] .new-builder-btn i {
-            color: #165274 !important;
-        }
+        /* [2026-07-24] 사용자 요청으로 이 버튼은 영역 전환과 무관하게 항상
+           builder.html L101 원본 스타일(인디고 그라디언트 + 흰 텍스트)을 유지.
+           → 제조원가 모드 전용 오버라이드를 두지 않음. (수익성분석과 동일한 모양) */
 
         /* ---------- [비주얼 쿼리 빌더] 좌측 [필드 목록] 패널 ---------- */
         /* 패널 헤더 (짙은 인디고 그라디언트 → 딥 스카이 블루) */
