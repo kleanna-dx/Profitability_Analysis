@@ -333,15 +333,23 @@
         }
 
         /* ---------- [비주얼 쿼리 빌더] 사이드 [+ 새 쿼리] 버튼 ---------- */
-        /* 어두운 사이드바 배경 위에서도 area-mc-notice 아이콘과 동일한 밝은 스카이 톤으로 인식되도록
-           한 단계 더 밝은 그라디언트(#0ea5e9→#0284c7) 사용 */
+        /* 사용자 지정 팔레트: 밝은 파스텔 스카이 배경 + 짙은 네이비 텍스트
+           - 배경: RGB(231,245,255) = #E7F5FF (연한 스카이/거의 흰색 톤)
+           - 텍스트: RGB(22,82,116)  = #165274 (짙은 네이비 블루)
+           - 원본 CSS의 color:#fff / 그라디언트를 완전히 대체하기 위해 solid + !important 사용
+           - hover 는 배경만 한 단계 진하게(#D0EBFF), 텍스트/그림자는 부드럽게 유지 */
         body[data-area="manufacturing-cost"] .new-builder-btn {
-            background: linear-gradient(135deg,#0ea5e9,#0284c7) !important;
-            box-shadow: 0 2px 8px rgba(14,165,233,0.35) !important;
+            background: #E7F5FF !important;
+            color: #165274 !important;
+            box-shadow: 0 2px 6px rgba(22,82,116,0.10) !important;
         }
         body[data-area="manufacturing-cost"] .new-builder-btn:hover {
-            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
-            box-shadow: 0 4px 12px rgba(14,165,233,0.5) !important;
+            background: #D0EBFF !important;
+            color: #165274 !important;
+            box-shadow: 0 4px 10px rgba(22,82,116,0.16) !important;
+        }
+        body[data-area="manufacturing-cost"] .new-builder-btn i {
+            color: #165274 !important;
         }
 
         /* ---------- [비주얼 쿼리 빌더] 좌측 [필드 목록] 패널 ---------- */
