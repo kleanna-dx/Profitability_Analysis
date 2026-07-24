@@ -11777,8 +11777,8 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
     try {
       const [uba] = await pool.query(
         `SELECT uba.user_id, uba.area_code
-           FROM user_business_areas uba
-           JOIN business_areas ba ON ba.area_code = uba.area_code
+           FROM sys_aimd_user_areas uba
+           JOIN sys_aimd_areas ba ON ba.area_code = uba.area_code
           WHERE ba.is_active = 1`
       );
       uba.forEach(r => {
@@ -11787,7 +11787,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
       });
       // admin용 전체 활성 area (하드코딩 금지)
       const [allAreas] = await pool.query(
-        `SELECT area_code FROM business_areas WHERE is_active = 1 ORDER BY sort_order, id`
+        `SELECT area_code FROM sys_aimd_areas WHERE is_active = 1 ORDER BY sort_order, id`
       );
       activeAreas = allAreas.map(a => a.area_code);
     } catch(e) { console.error('[BA] users 목록 업무영역 조회 실패:', e.message); }
@@ -11817,7 +11817,7 @@ app.get('/api/admin/business-areas', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT id, area_code, area_name, description, sort_order, is_active
-         FROM business_areas
+         FROM sys_aimd_areas
         WHERE is_active = 1
         ORDER BY sort_order, id`
     );
@@ -11874,7 +11874,7 @@ app.put('/api/admin/users/:userId/business-areas', requireAdmin, async (req, res
 
     // 유효 area_code 화이트리스트 검증
     const [valid] = await pool.query(
-      'SELECT area_code FROM business_areas WHERE is_active = 1'
+      'SELECT area_code FROM sys_aimd_areas WHERE is_active = 1'
     );
     const validCodes = new Set(valid.map(v => v.area_code));
     const invalid = business_areas.filter(a => !validCodes.has(a));
@@ -11889,12 +11889,12 @@ app.put('/api/admin/users/:userId/business-areas', requireAdmin, async (req, res
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      await conn.query('DELETE FROM user_business_areas WHERE user_id = ?', [req.params.userId]);
+      await conn.query('DELETE FROM sys_aimd_user_areas WHERE user_id = ?', [req.params.userId]);
       if (uniqueAreas.length > 0) {
         const grantedBy = req.session?.user?.id || 'ADMIN';
         const rows = uniqueAreas.map(a => [req.params.userId, a, grantedBy]);
         await conn.query(
-          'INSERT INTO user_business_areas (user_id, area_code, granted_by) VALUES ?',
+          'INSERT INTO sys_aimd_user_areas (user_id, area_code, granted_by) VALUES ?',
           [rows]
         );
       }
@@ -12263,12 +12263,91 @@ async function ensureRbacTables() {
 //   - users.domain_code(PS/HL/MGMT: 학습관리 도메인)와는 완전히 별개의 축
 //   - 다중값 허용 (사용자별로 1개 이상의 업무영역 부여 가능)
 //   - 화면·URL·API·데이터 접근을 모두 제어하는 실제 접근 권한
+//
+// 테이블 명명 규칙: sys_aimd_ Prefix (AI 경영의사결정 시스템 공통)
+//   - sys_aimd_areas       : 업무영역 마스터
+//   - sys_aimd_user_areas  : 사용자-업무영역 매핑
+//
+// [2026-07-24] 리네이밍 마이그레이션 자동 처리
+//   기존 개발 환경에 옛 이름 테이블(business_areas / user_business_areas)이
+//   있는 경우 CREATE 전에 안전 RENAME하여 데이터/PK/FK/AUTO_INCREMENT 보존.
 // ============================================================
 async function ensureBusinessAreaTables() {
   try {
-    // 1) business_areas 마스터 테이블
+    // 0) 옛 이름 → 새 이름 마이그레이션 (있을 때만)
+    //    FK 제약이 두 테이블을 서로 묶고 있으므로 순서 주의:
+    //    (a) 자식(user_business_areas) 의 FK 를 임시 DROP → 부모 rename → 자식 rename → FK 재생성
+    try {
+      const [oldChild]  = await pool.query(
+        `SELECT TABLE_NAME FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_business_areas'`);
+      const [oldParent] = await pool.query(
+        `SELECT TABLE_NAME FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'business_areas'`);
+      const [newChild]  = await pool.query(
+        `SELECT TABLE_NAME FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_aimd_user_areas'`);
+      const [newParent] = await pool.query(
+        `SELECT TABLE_NAME FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_aimd_areas'`);
+
+      if ((oldParent.length > 0 || oldChild.length > 0) &&
+          newParent.length === 0 && newChild.length === 0) {
+        console.log('[BA] 옛 테이블명 감지 → sys_aimd_ prefix 로 안전 RENAME 시작');
+
+        // 자식 테이블의 FK 이름을 실제로 조회 (환경별 자동생성 방지)
+        if (oldChild.length > 0) {
+          const [fks] = await pool.query(`
+            SELECT CONSTRAINT_NAME
+              FROM information_schema.TABLE_CONSTRAINTS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'user_business_areas'
+               AND CONSTRAINT_TYPE = 'FOREIGN KEY'`);
+          for (const fk of fks) {
+            await pool.query(
+              `ALTER TABLE \`user_business_areas\` DROP FOREIGN KEY \`${fk.CONSTRAINT_NAME}\``
+            );
+            console.log(`[BA] FK 임시 제거: ${fk.CONSTRAINT_NAME}`);
+          }
+        }
+
+        // 원자적 RENAME (RENAME TABLE 은 다중 대상을 한 문장에서 처리 가능)
+        if (oldParent.length > 0 && oldChild.length > 0) {
+          await pool.query(
+            `RENAME TABLE \`business_areas\` TO \`sys_aimd_areas\`,
+                          \`user_business_areas\` TO \`sys_aimd_user_areas\``
+          );
+        } else if (oldParent.length > 0) {
+          await pool.query(`RENAME TABLE \`business_areas\` TO \`sys_aimd_areas\``);
+        } else if (oldChild.length > 0) {
+          await pool.query(`RENAME TABLE \`user_business_areas\` TO \`sys_aimd_user_areas\``);
+        }
+        console.log('[BA] 테이블명 RENAME 완료');
+
+        // FK 재생성 (자식 테이블이 존재하는 경우)
+        const [afterChild] = await pool.query(
+          `SELECT TABLE_NAME FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_aimd_user_areas'`);
+        if (afterChild.length > 0) {
+          await pool.query(`
+            ALTER TABLE \`sys_aimd_user_areas\`
+              ADD CONSTRAINT \`fk_sys_aimd_ua_user\`
+                FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`user_id\`)
+                ON DELETE CASCADE,
+              ADD CONSTRAINT \`fk_sys_aimd_ua_area\`
+                FOREIGN KEY (\`area_code\`) REFERENCES \`sys_aimd_areas\`(\`area_code\`)
+                ON DELETE CASCADE ON UPDATE CASCADE
+          `);
+          console.log('[BA] FK 재생성 완료 (fk_sys_aimd_ua_user, fk_sys_aimd_ua_area)');
+        }
+      }
+    } catch (renameErr) {
+      console.error('[BA] 리네이밍 마이그레이션 실패 (계속 진행):', renameErr.message);
+    }
+
+    // 1) sys_aimd_areas 마스터 테이블
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS business_areas (
+      CREATE TABLE IF NOT EXISTS sys_aimd_areas (
         id INT AUTO_INCREMENT PRIMARY KEY,
         area_code VARCHAR(32) NOT NULL UNIQUE COMMENT '업무영역 코드 (예: PROFITABILITY, MANUFACTURING_COST)',
         area_name VARCHAR(64) NOT NULL COMMENT '업무영역 표시명',
@@ -12277,29 +12356,29 @@ async function ensureBusinessAreaTables() {
         is_active TINYINT DEFAULT 1 COMMENT '활성 여부 (0=비활성)',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_ba_code (area_code),
-        INDEX idx_ba_active (is_active)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='업무영역 마스터'
+        INDEX idx_sys_aimd_areas_code (area_code),
+        INDEX idx_sys_aimd_areas_active (is_active)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AIMD 업무영역 마스터'
     `);
 
-    // 2) user_business_areas 매핑 테이블 (사용자 ↔ 업무영역 N:N)
+    // 2) sys_aimd_user_areas 매핑 테이블 (사용자 ↔ 업무영역 N:N)
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS user_business_areas (
+      CREATE TABLE IF NOT EXISTS sys_aimd_user_areas (
         user_id VARCHAR(64) NOT NULL,
         area_code VARCHAR(32) NOT NULL,
         granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         granted_by VARCHAR(64) NULL COMMENT '부여한 관리자 user_id (감사용)',
         PRIMARY KEY (user_id, area_code),
-        INDEX idx_uba_user (user_id),
-        INDEX idx_uba_area (area_code),
-        CONSTRAINT fk_uba_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-        CONSTRAINT fk_uba_area FOREIGN KEY (area_code) REFERENCES business_areas(area_code) ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='사용자-업무영역 매핑'
+        INDEX idx_sys_aimd_ua_user (user_id),
+        INDEX idx_sys_aimd_ua_area (area_code),
+        CONSTRAINT fk_sys_aimd_ua_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+        CONSTRAINT fk_sys_aimd_ua_area FOREIGN KEY (area_code) REFERENCES sys_aimd_areas(area_code) ON DELETE CASCADE ON UPDATE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AIMD 사용자-업무영역 매핑'
     `);
 
     // 3) 시드 데이터 — 업무영역 마스터 (멱등)
     await pool.query(`
-      INSERT IGNORE INTO business_areas (area_code, area_name, description, sort_order) VALUES
+      INSERT IGNORE INTO sys_aimd_areas (area_code, area_name, description, sort_order) VALUES
         ('PROFITABILITY',      '수익성분석', '수익성 분석 관련 업무영역 (기본)', 10),
         ('MANUFACTURING_COST', '제조원가',   '제조원가 관련 업무영역',           20)
     `);
@@ -12307,10 +12386,10 @@ async function ensureBusinessAreaTables() {
     // 4) 마이그레이션 — 매핑이 하나도 없는 사용자에게 PROFITABILITY 자동 부여
     //    (신규 사용자 포함하여 기본 접근권을 보장. 멱등: INSERT IGNORE + LEFT JOIN 필터)
     const [migResult] = await pool.query(`
-      INSERT IGNORE INTO user_business_areas (user_id, area_code, granted_by)
+      INSERT IGNORE INTO sys_aimd_user_areas (user_id, area_code, granted_by)
       SELECT u.user_id, 'PROFITABILITY', 'SYSTEM_MIGRATION'
         FROM users u
-        LEFT JOIN user_business_areas uba ON uba.user_id = u.user_id
+        LEFT JOIN sys_aimd_user_areas uba ON uba.user_id = u.user_id
        WHERE uba.user_id IS NULL
     `);
     if (migResult.affectedRows > 0) {
@@ -12461,9 +12540,9 @@ async function isMenuAllowed(userId, urlPath) {
 // 업무영역 권한 헬퍼 & 미들웨어 (Business Area Access)
 // ------------------------------------------------------------
 //  - getUserBusinessAreas(userId, roleCode)
-//      → admin: business_areas 테이블의 활성 area 전체를 DB에서 동적 조회
+//      → admin: sys_aimd_areas 테이블의 활성 area 전체를 DB에서 동적 조회
 //         (하드코딩 배열 없음 → 향후 area 추가 시 자동 반영)
-//      → 일반 사용자: user_business_areas 매핑 조회, 매핑 없으면 PROFITABILITY 폴백
+//      → 일반 사용자: sys_aimd_user_areas 매핑 조회, 매핑 없으면 PROFITABILITY 폴백
 //  - requireBusinessArea(areaCode)
 //      → 서버측 미들웨어: 세션 role 기준으로 매 요청마다 DB 재조회
 //      → 프론트 값 신뢰 없음. 401(로그인 필요) / 403(권한 없음) 반환
@@ -12480,7 +12559,7 @@ async function getUserBusinessAreas(userId, roleCode) {
   if (roleCode === 'admin') {
     try {
       const [rows] = await pool.query(
-        `SELECT area_code FROM business_areas WHERE is_active = 1 ORDER BY sort_order, id`
+        `SELECT area_code FROM sys_aimd_areas WHERE is_active = 1 ORDER BY sort_order, id`
       );
       return rows.map(r => r.area_code);
     } catch (e) {
@@ -12489,12 +12568,12 @@ async function getUserBusinessAreas(userId, roleCode) {
     }
   }
 
-  // 일반 사용자: user_business_areas 매핑 조회
+  // 일반 사용자: sys_aimd_user_areas 매핑 조회
   try {
     const [rows] = await pool.query(
       `SELECT uba.area_code
-         FROM user_business_areas uba
-         JOIN business_areas ba ON ba.area_code = uba.area_code
+         FROM sys_aimd_user_areas uba
+         JOIN sys_aimd_areas ba ON ba.area_code = uba.area_code
         WHERE uba.user_id = ? AND ba.is_active = 1
         ORDER BY ba.sort_order, ba.id`,
       [userId]
@@ -14056,7 +14135,7 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
   await ensureRbacTables();
 
   // 업무영역 권한 테이블 자동 생성 + 시드 데이터 + 마이그레이션
-  //  - RBAC 뒤에 배치: user_business_areas 는 users.user_id FK를 참조하므로
+  //  - RBAC 뒤에 배치: sys_aimd_user_areas 는 users.user_id FK를 참조하므로
   //    RBAC의 users 컬럼 정리(레거시 role 컬럼 drop 등) 이후 안전하게 실행됨
   await ensureBusinessAreaTables();
 

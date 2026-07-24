@@ -37,12 +37,12 @@ function assertEq(name, actual, expected) {
 function makeMockPool(fixtures) {
   return {
     async query(sql, params) {
-      // business_areas 활성 목록 (admin 조회용)
-      if (/FROM business_areas.*is_active\s*=\s*1/i.test(sql) && !/user_business_areas/i.test(sql)) {
+      // sys_aimd_areas 활성 목록 (admin 조회용)
+      if (/FROM sys_aimd_areas.*is_active\s*=\s*1/i.test(sql) && !/sys_aimd_user_areas/i.test(sql)) {
         return [fixtures.activeAreas.map(c => ({ area_code: c, sort_order: 0, id: 1 }))];
       }
-      // 사용자 매핑 조회 (user_business_areas JOIN)
-      if (/FROM user_business_areas/i.test(sql)) {
+      // 사용자 매핑 조회 (sys_aimd_user_areas JOIN)
+      if (/FROM sys_aimd_user_areas/i.test(sql)) {
         const userId = params[0];
         const codes = fixtures.userAreas[userId] || [];
         return [codes.map(c => ({ area_code: c }))];
@@ -68,15 +68,15 @@ function makeSUT(pool) {
     if (roleCode === 'admin') {
       try {
         const [rows] = await pool.query(
-          `SELECT area_code FROM business_areas WHERE is_active = 1 ORDER BY sort_order, id`
+          `SELECT area_code FROM sys_aimd_areas WHERE is_active = 1 ORDER BY sort_order, id`
         );
         return rows.map(r => r.area_code);
       } catch (e) { return []; }
     }
     try {
       const [rows] = await pool.query(
-        `SELECT uba.area_code FROM user_business_areas uba
-           JOIN business_areas ba ON ba.area_code = uba.area_code
+        `SELECT uba.area_code FROM sys_aimd_user_areas uba
+           JOIN sys_aimd_areas ba ON ba.area_code = uba.area_code
           WHERE uba.user_id = ? AND ba.is_active = 1
           ORDER BY ba.sort_order, ba.id`,
         [userId]
