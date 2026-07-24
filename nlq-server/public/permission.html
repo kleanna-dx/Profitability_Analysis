@@ -114,6 +114,23 @@
         .toggle input:checked+.slider::before{transform:translateX(18px);}
         .toggle-label{font-size:11px;font-weight:600;min-width:36px;}
 
+        /* Business Area 권한 체크박스 */
+        .ba-cell{display:flex;flex-wrap:wrap;align-items:center;gap:6px;}
+        .ba-chk{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border:1px solid #e2e8f0;border-radius:16px;background:#fff;cursor:pointer;font-size:12px;font-weight:500;color:#475569;transition:all .15s;user-select:none;}
+        .ba-chk:hover{border-color:#94a3b8;background:#f8fafc;}
+        .ba-chk input{margin:0;cursor:pointer;accent-color:#4f46e5;}
+        .ba-chk input:checked ~ span{color:#1e293b;font-weight:600;}
+        .ba-chk:has(input:checked){border-color:#818cf8;background:#eef2ff;}
+        .ba-chk.ba-admin{background:#f1f5f9;color:#94a3b8;cursor:not-allowed;border-style:dashed;}
+        .ba-chk.ba-admin input{cursor:not-allowed;}
+        .ba-admin-hint{font-size:11px;color:#94a3b8;font-style:italic;margin-left:2px;}
+        .ba-save-btn{padding:4px 12px;border:1px solid #c7d2fe;background:#fff;color:#4f46e5;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s;font-family:inherit;}
+        .ba-save-btn:hover:not(:disabled){background:#eef2ff;border-color:#818cf8;}
+        .ba-save-btn:disabled{opacity:0.4;cursor:not-allowed;}
+        .ba-save-btn.ba-dirty{background:#4f46e5;color:#fff;border-color:#4f46e5;animation:baPulse 1.4s ease-in-out infinite;}
+        .ba-save-btn.ba-dirty:hover:not(:disabled){background:#4338ca;}
+        @keyframes baPulse{0%,100%{box-shadow:0 0 0 0 rgba(79,70,229,.4);}50%{box-shadow:0 0 0 4px rgba(79,70,229,0);}}
+
         /* Buttons */
         .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;border:none;font-family:inherit;}
         .btn-primary{background:#4f46e5;color:#fff;}
@@ -321,11 +338,12 @@
                                 <th style="min-width:100px;">소속</th>
                                 <th style="width:150px;">역할</th>
                                 <th style="width:130px;">학습관리 도메인</th>
+                                <th style="min-width:280px;">업무영역 권한</th>
                                 <th style="width:100px;">상태</th>
                             </tr>
                         </thead>
                         <tbody id="userRoleBody">
-                            <tr><td colspan="6" style="text-align:center;padding:40px;color:#94a3b8;"><i class="fas fa-spinner fa-spin mr-2"></i>로딩 중...</td></tr>
+                            <tr><td colspan="7" style="text-align:center;padding:40px;color:#94a3b8;"><i class="fas fa-spinner fa-spin mr-2"></i>로딩 중...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -398,7 +416,10 @@ let allRoles = [];
 let allMenus = [];
 let allUsers = [];
 let domainList = [];
+let businessAreaList = [];   // 활성 업무영역 마스터 (동적 로딩)
 let selectedRoleId = null;
+// 사용자별 미저장 업무영역 변경 상태: { userId: Set<area_code> } (없으면 서버 상태 그대로)
+const baDraft = new Map();
 
 async function init() {
     // 권한 체크
@@ -416,8 +437,18 @@ async function init() {
     } catch(e) { window.location.href = '/login'; return; }
 
     await renderDynamicSidebar();
-    await Promise.all([loadRoles(), loadMenus(), loadDomains()]);
+    await Promise.all([loadRoles(), loadMenus(), loadDomains(), loadBusinessAreas()]);
     updateStats();
+}
+
+async function loadBusinessAreas() {
+    try {
+        const res = await fetch('/api/admin/business-areas');
+        businessAreaList = await res.json();
+    } catch(e) {
+        console.error('업무영역 마스터 로딩 실패:', e);
+        businessAreaList = [];
+    }
 }
 
 async function loadRoles() {
@@ -460,7 +491,7 @@ async function loadUsers() {
         ).join('');
         renderUserTable(allUsers);
     } catch(e) {
-        document.getElementById('userRoleBody').innerHTML = `<tr><td colspan="6" style="text-align:center;padding:40px;color:#dc2626;">로딩 실패</td></tr>`;
+        document.getElementById('userRoleBody').innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:#dc2626;">로딩 실패</td></tr>`;
     }
 }
 
@@ -673,8 +704,27 @@ function renderUserTable(users) {
             return `<option value="${d.domain_code}" ${selected}>${d.domain_code}</option>`;
         }).join('');
 
+        // 업무영역 권한 체크박스
+        const isAdmin = u.role_code === 'admin';
+        const userAreas = new Set(u.business_areas || []);
+        const baCheckboxes = businessAreaList.map(ba => {
+            const checked = userAreas.has(ba.area_code) ? 'checked' : '';
+            const disabled = isAdmin ? 'disabled' : '';
+            const adminCls = isAdmin ? 'ba-admin' : '';
+            return `
+                <label class="ba-chk ${adminCls}" title="${ba.description || ba.area_name}">
+                    <input type="checkbox" data-area="${ba.area_code}" ${checked} ${disabled}
+                           onchange="markBaDirty('${u.user_id}')">
+                    <span>${ba.area_name}</span>
+                </label>`;
+        }).join('');
+
+        const baControl = isAdmin
+            ? `<span class="ba-admin-hint"><i class="fas fa-crown" style="color:#f59e0b;margin-right:3px;"></i>관리자 전체</span>`
+            : `<button class="ba-save-btn" id="ba-save-${u.user_id}" onclick="saveBusinessAreas('${u.user_id}')" disabled>저장</button>`;
+
         return `
-        <tr style="${!u.is_active ? 'opacity:0.5;' : ''}">
+        <tr style="${!u.is_active ? 'opacity:0.5;' : ''}" data-user-id="${u.user_id}">
             <td><span class="uid-code">${u.user_id}</span></td>
             <td class="nowrap" style="font-weight:600;color:#1e293b;">${u.name || '-'}</td>
             <td class="nowrap" style="font-size:12px;">${u.group_name || '-'}</td>
@@ -690,6 +740,12 @@ function renderUserTable(users) {
                 </select>
             </td>
             <td>
+                <div class="ba-cell" data-user-id="${u.user_id}">
+                    ${baCheckboxes}
+                    ${baControl}
+                </div>
+            </td>
+            <td>
                 <div class="toggle-wrap">
                     <label class="toggle" title="${u.is_active ? '클릭하면 비활성화' : '클릭하면 활성화'}">
                         <input type="checkbox" ${u.is_active ? 'checked' : ''} onchange="changeUserField('${u.user_id}', 'is_active', this.checked)">
@@ -700,6 +756,51 @@ function renderUserTable(users) {
             </td>
         </tr>`;
     }).join('');
+}
+
+// 업무영역 체크박스 변경 감지 → 저장 버튼 강조
+function markBaDirty(userId) {
+    const btn = document.getElementById('ba-save-' + userId);
+    if (btn) {
+        btn.disabled = false;
+        btn.classList.add('ba-dirty');
+    }
+}
+
+// 업무영역 권한 저장
+async function saveBusinessAreas(userId) {
+    const cell = document.querySelector(`.ba-cell[data-user-id="${userId}"]`);
+    if (!cell) return;
+    const checked = Array.from(cell.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(el => el.getAttribute('data-area'));
+    const btn = document.getElementById('ba-save-' + userId);
+
+    // 최소 1개 검증
+    if (checked.length === 0) {
+        showToast('최소 하나의 업무영역을 선택해야 합니다.', 'error');
+        return;
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = '저장 중...'; }
+    try {
+        const res = await fetch(`/api/admin/users/${userId}/business-areas`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ business_areas: checked }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '저장 실패');
+        showToast(`${userId}의 업무영역 권한이 저장되었습니다.`);
+        // 로컬 캐시 갱신
+        const u = allUsers.find(x => x.user_id === userId);
+        if (u) u.business_areas = data.business_areas || checked;
+        if (btn) { btn.classList.remove('ba-dirty'); btn.textContent = '저장'; btn.disabled = true; }
+    } catch(e) {
+        showToast('저장 실패: ' + e.message, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = '저장'; }
+        // 실패 시 서버 상태로 원복
+        await loadUsers();
+    }
 }
 
 async function changeUserRole(userId, roleId) {

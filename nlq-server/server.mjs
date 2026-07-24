@@ -805,6 +805,15 @@ app.get('/api/me', async (req, res) => {
       allowedMenus = getDefaultMenusByRole(roleCode);
     }
 
+    // 업무영역 권한 목록 조회 (admin은 활성 area 전체 자동)
+    let businessAreas = [];
+    try {
+      businessAreas = await getUserBusinessAreas(u.id, roleCode);
+    } catch (e) {
+      console.error('[BA] /api/me 업무영역 조회 실패:', e.message);
+      businessAreas = ['PROFITABILITY']; // 최소 접근권 보장
+    }
+
     return res.json({
       loggedIn: true,
       user: u.id,
@@ -813,6 +822,7 @@ app.get('/api/me', async (req, res) => {
       domain_code: latestDomainCode || null,
       active_domain: u.active_domain || latestDomainCode || null,
       menus: allowedMenus,
+      business_areas: businessAreas,
     });
   }
   return res.json({ loggedIn: false });
@@ -11750,7 +11760,7 @@ app.put('/api/admin/users/:userId/role', requireAdmin, async (req, res) => {
 // ============================================================
 // 관리자 전용 API: 사용자 권한 관리
 // ============================================================
-// 전체 사용자 목록 (조직도 경로 포함 + RBAC role_id)
+// 전체 사용자 목록 (조직도 경로 포함 + RBAC role_id + 업무영역 권한)
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
@@ -11760,17 +11770,147 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
        LEFT JOIN roles r ON r.id = u.role_id
        ORDER BY u.id`
     );
-    // 각 사용자의 조직도 경로 구성
+
+    // 업무영역 매핑 일괄 조회 (N+1 방지)
+    let baMap = new Map(); // user_id -> [area_code]
+    let activeAreas = [];
+    try {
+      const [uba] = await pool.query(
+        `SELECT uba.user_id, uba.area_code
+           FROM user_business_areas uba
+           JOIN business_areas ba ON ba.area_code = uba.area_code
+          WHERE ba.is_active = 1`
+      );
+      uba.forEach(r => {
+        if (!baMap.has(r.user_id)) baMap.set(r.user_id, []);
+        baMap.get(r.user_id).push(r.area_code);
+      });
+      // admin용 전체 활성 area (하드코딩 금지)
+      const [allAreas] = await pool.query(
+        `SELECT area_code FROM business_areas WHERE is_active = 1 ORDER BY sort_order, id`
+      );
+      activeAreas = allAreas.map(a => a.area_code);
+    } catch(e) { console.error('[BA] users 목록 업무영역 조회 실패:', e.message); }
+
+    // 각 사용자의 조직도 경로 구성 + 업무영역 병합
     const result = [];
     for (const row of rows) {
       let orgPath = '';
       if (row.group_id) {
         try { orgPath = await buildOrgPath(row.group_id); } catch(e) { /* 무시 */ }
       }
-      result.push({ ...row, org_path: orgPath });
+      // admin은 활성 전체, 일반은 매핑값 (없으면 PROFITABILITY 폴백)
+      let businessAreas;
+      if (row.role_code === 'admin') {
+        businessAreas = activeAreas;
+      } else {
+        businessAreas = baMap.get(row.user_id) || ['PROFITABILITY'];
+      }
+      result.push({ ...row, org_path: orgPath, business_areas: businessAreas });
     }
     res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── 업무영역 마스터 조회 (권한관리 UI에서 체크박스 렌더용) ──
+app.get('/api/admin/business-areas', requireAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, area_code, area_name, description, sort_order, is_active
+         FROM business_areas
+        WHERE is_active = 1
+        ORDER BY sort_order, id`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── 사용자 업무영역 조회 ──
+app.get('/api/admin/users/:userId/business-areas', requireAdmin, async (req, res) => {
+  try {
+    const [ur] = await pool.query(
+      `SELECT COALESCE(r.role_code, 'user') AS role_code
+         FROM users u LEFT JOIN roles r ON r.id = u.role_id
+        WHERE u.user_id = ?`, [req.params.userId]);
+    if (ur.length === 0) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
+    const areas = await getUserBusinessAreas(req.params.userId, ur[0].role_code);
+    res.json({
+      user_id: req.params.userId,
+      role_code: ur[0].role_code,
+      is_admin: ur[0].role_code === 'admin',
+      business_areas: areas,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── 사용자 업무영역 일괄 교체 (bulk set) ──
+// body: { business_areas: ['PROFITABILITY', 'MANUFACTURING_COST'] }
+// - admin 사용자에 대한 변경 시도는 무시 (admin은 항상 활성 전체)
+// - 유효 area_code 화이트리스트 검증
+// - 트랜잭션으로 DELETE + INSERT 원자성 보장
+app.put('/api/admin/users/:userId/business-areas', requireAdmin, async (req, res) => {
+  const { business_areas } = req.body || {};
+  if (!Array.isArray(business_areas)) {
+    return res.status(400).json({ error: 'business_areas 배열이 필요합니다.' });
+  }
+
+  try {
+    // 대상 사용자 존재 및 role 확인
+    const [ur] = await pool.query(
+      `SELECT COALESCE(r.role_code, 'user') AS role_code
+         FROM users u LEFT JOIN roles r ON r.id = u.role_id
+        WHERE u.user_id = ?`, [req.params.userId]);
+    if (ur.length === 0) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
+
+    // admin은 매핑 테이블에 저장하지 않음 (항상 활성 전체 자동)
+    if (ur[0].role_code === 'admin') {
+      const adminAreas = await getUserBusinessAreas(req.params.userId, 'admin');
+      return res.json({
+        success: true,
+        business_areas: adminAreas,
+        note: 'admin 사용자는 활성 업무영역 전체가 자동 부여됩니다.',
+      });
+    }
+
+    // 유효 area_code 화이트리스트 검증
+    const [valid] = await pool.query(
+      'SELECT area_code FROM business_areas WHERE is_active = 1'
+    );
+    const validCodes = new Set(valid.map(v => v.area_code));
+    const invalid = business_areas.filter(a => !validCodes.has(a));
+    if (invalid.length > 0) {
+      return res.status(400).json({ error: `유효하지 않은 업무영역: ${invalid.join(', ')}` });
+    }
+
+    // 중복 제거
+    const uniqueAreas = [...new Set(business_areas)];
+
+    // 트랜잭션: 기존 매핑 삭제 → 새 매핑 삽입
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query('DELETE FROM user_business_areas WHERE user_id = ?', [req.params.userId]);
+      if (uniqueAreas.length > 0) {
+        const grantedBy = req.session?.user?.id || 'ADMIN';
+        const rows = uniqueAreas.map(a => [req.params.userId, a, grantedBy]);
+        await conn.query(
+          'INSERT INTO user_business_areas (user_id, area_code, granted_by) VALUES ?',
+          [rows]
+        );
+      }
+      await conn.commit();
+      console.log(`[BA] ${req.params.userId} 업무영역 설정: [${uniqueAreas.join(', ')}] by ${req.session?.user?.id}`);
+      res.json({ success: true, business_areas: uniqueAreas });
+    } catch(e) {
+      await conn.rollback();
+      throw e;
+    } finally {
+      conn.release();
+    }
+  } catch (err) {
+    console.error('[BA] PUT /api/admin/users/:userId/business-areas 실패:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 사용자 권한/도메인/활성 수정 (role 변경 시 role_id도 동기화)
@@ -12115,6 +12255,74 @@ async function ensureRbacTables() {
   }
 }
 
+// ============================================================
+// 업무영역 권한 (Business Area Access Control)
+// ------------------------------------------------------------
+// [2026-07-24] 도입
+//   - 업무영역: PROFITABILITY(수익성분석) / MANUFACTURING_COST(제조원가)
+//   - users.domain_code(PS/HL/MGMT: 학습관리 도메인)와는 완전히 별개의 축
+//   - 다중값 허용 (사용자별로 1개 이상의 업무영역 부여 가능)
+//   - 화면·URL·API·데이터 접근을 모두 제어하는 실제 접근 권한
+// ============================================================
+async function ensureBusinessAreaTables() {
+  try {
+    // 1) business_areas 마스터 테이블
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS business_areas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        area_code VARCHAR(32) NOT NULL UNIQUE COMMENT '업무영역 코드 (예: PROFITABILITY, MANUFACTURING_COST)',
+        area_name VARCHAR(64) NOT NULL COMMENT '업무영역 표시명',
+        description VARCHAR(255) NULL COMMENT '업무영역 설명',
+        sort_order INT DEFAULT 0 COMMENT '정렬순서',
+        is_active TINYINT DEFAULT 1 COMMENT '활성 여부 (0=비활성)',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_ba_code (area_code),
+        INDEX idx_ba_active (is_active)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='업무영역 마스터'
+    `);
+
+    // 2) user_business_areas 매핑 테이블 (사용자 ↔ 업무영역 N:N)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_business_areas (
+        user_id VARCHAR(64) NOT NULL,
+        area_code VARCHAR(32) NOT NULL,
+        granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        granted_by VARCHAR(64) NULL COMMENT '부여한 관리자 user_id (감사용)',
+        PRIMARY KEY (user_id, area_code),
+        INDEX idx_uba_user (user_id),
+        INDEX idx_uba_area (area_code),
+        CONSTRAINT fk_uba_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+        CONSTRAINT fk_uba_area FOREIGN KEY (area_code) REFERENCES business_areas(area_code) ON DELETE CASCADE ON UPDATE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='사용자-업무영역 매핑'
+    `);
+
+    // 3) 시드 데이터 — 업무영역 마스터 (멱등)
+    await pool.query(`
+      INSERT IGNORE INTO business_areas (area_code, area_name, description, sort_order) VALUES
+        ('PROFITABILITY',      '수익성분석', '수익성 분석 관련 업무영역 (기본)', 10),
+        ('MANUFACTURING_COST', '제조원가',   '제조원가 관련 업무영역',           20)
+    `);
+
+    // 4) 마이그레이션 — 매핑이 하나도 없는 사용자에게 PROFITABILITY 자동 부여
+    //    (신규 사용자 포함하여 기본 접근권을 보장. 멱등: INSERT IGNORE + LEFT JOIN 필터)
+    const [migResult] = await pool.query(`
+      INSERT IGNORE INTO user_business_areas (user_id, area_code, granted_by)
+      SELECT u.user_id, 'PROFITABILITY', 'SYSTEM_MIGRATION'
+        FROM users u
+        LEFT JOIN user_business_areas uba ON uba.user_id = u.user_id
+       WHERE uba.user_id IS NULL
+    `);
+    if (migResult.affectedRows > 0) {
+      console.log(`[BA] ${migResult.affectedRows}명 사용자에게 PROFITABILITY 기본 권한 부여`);
+    }
+
+    console.log('[BA] 업무영역 권한 테이블 및 시드 데이터 준비 완료');
+  } catch (e) {
+    console.error('[BA] 테이블 생성/시드 실패:', e.message);
+  }
+}
+
 // ── RBAC 기본 메뉴 (폴백용) ──
 // RBAC 테이블이 아직 준비 안 됐거나, role_id가 NULL인 경우 role_code로 폴백
 const DEFAULT_MENUS_ALL = [
@@ -12247,6 +12455,93 @@ async function isMenuAllowed(userId, urlPath) {
       return true; // 최종 폴백: 접근 허용 (서비스 중단 방지)
     }
   }
+}
+
+// ============================================================
+// 업무영역 권한 헬퍼 & 미들웨어 (Business Area Access)
+// ------------------------------------------------------------
+//  - getUserBusinessAreas(userId, roleCode)
+//      → admin: business_areas 테이블의 활성 area 전체를 DB에서 동적 조회
+//         (하드코딩 배열 없음 → 향후 area 추가 시 자동 반영)
+//      → 일반 사용자: user_business_areas 매핑 조회, 매핑 없으면 PROFITABILITY 폴백
+//  - requireBusinessArea(areaCode)
+//      → 서버측 미들웨어: 세션 role 기준으로 매 요청마다 DB 재조회
+//      → 프론트 값 신뢰 없음. 401(로그인 필요) / 403(권한 없음) 반환
+// ============================================================
+
+/**
+ * 사용자의 접근 가능 업무영역 코드 리스트 조회
+ * @param {string} userId
+ * @param {string} roleCode  세션의 role (admin/user 등)
+ * @returns {Promise<string[]>}  area_code 배열 (예: ['PROFITABILITY', 'MANUFACTURING_COST'])
+ */
+async function getUserBusinessAreas(userId, roleCode) {
+  // admin은 활성 area 전체를 DB에서 동적 조회 (하드코딩 금지)
+  if (roleCode === 'admin') {
+    try {
+      const [rows] = await pool.query(
+        `SELECT area_code FROM business_areas WHERE is_active = 1 ORDER BY sort_order, id`
+      );
+      return rows.map(r => r.area_code);
+    } catch (e) {
+      console.error('[BA] admin area 조회 실패:', e.message);
+      return []; // 조회 실패 시 안전 실패 (empty)
+    }
+  }
+
+  // 일반 사용자: user_business_areas 매핑 조회
+  try {
+    const [rows] = await pool.query(
+      `SELECT uba.area_code
+         FROM user_business_areas uba
+         JOIN business_areas ba ON ba.area_code = uba.area_code
+        WHERE uba.user_id = ? AND ba.is_active = 1
+        ORDER BY ba.sort_order, ba.id`,
+      [userId]
+    );
+    const list = rows.map(r => r.area_code);
+    // 매핑이 아예 없는 경우(마이그레이션 미완/신규 사용자 등)에도 최소 PROFITABILITY 는 보장
+    return list.length > 0 ? list : ['PROFITABILITY'];
+  } catch (e) {
+    console.error('[BA] getUserBusinessAreas 실패:', e.message);
+    return ['PROFITABILITY'];
+  }
+}
+
+/**
+ * 특정 업무영역 접근 권한을 요구하는 Express 미들웨어
+ * @param {string} areaCode  예: 'MANUFACTURING_COST'
+ * @returns {Function} express middleware
+ */
+function requireBusinessArea(areaCode) {
+  return async (req, res, next) => {
+    if (!req.session?.user) {
+      return res.status(401).json({ error: '로그인이 필요합니다.' });
+    }
+    const u = req.session.user;
+    try {
+      // ★ 매 요청마다 DB에서 최신 role/권한 재조회 (프론트 값 신뢰 금지)
+      const [freshRow] = await pool.query(
+        `SELECT COALESCE(r.role_code, 'user') AS role_code
+           FROM users u LEFT JOIN roles r ON r.id = u.role_id
+          WHERE u.user_id = ?`, [u.id]
+      );
+      const roleCode = freshRow.length > 0 ? freshRow[0].role_code : (u.role || 'user');
+      const areas = await getUserBusinessAreas(u.id, roleCode);
+      if (!areas.includes(areaCode)) {
+        return res.status(403).json({
+          error: `업무영역 [${areaCode}] 접근 권한이 없습니다.`,
+          required_area: areaCode,
+        });
+      }
+      req.userBusinessAreas = areas;   // 후속 핸들러에서 재사용 가능
+      req.userRoleCode = roleCode;
+      next();
+    } catch (e) {
+      console.error('[BA] requireBusinessArea 실패:', e.message);
+      return res.status(500).json({ error: '권한 확인 중 오류가 발생했습니다.' });
+    }
+  };
 }
 
 /**
@@ -13759,6 +14054,11 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
 
   // RBAC 테이블 자동 생성 + 시드 데이터
   await ensureRbacTables();
+
+  // 업무영역 권한 테이블 자동 생성 + 시드 데이터 + 마이그레이션
+  //  - RBAC 뒤에 배치: user_business_areas 는 users.user_id FK를 참조하므로
+  //    RBAC의 users 컬럼 정리(레거시 role 컬럼 drop 등) 이후 안전하게 실행됨
+  await ensureBusinessAreaTables();
 
   // [2026-06-16] users.password 평문 → SHA-256 일괄 마이그레이션 (멱등성 보장)
   await migrateUserPasswordsToSha256();

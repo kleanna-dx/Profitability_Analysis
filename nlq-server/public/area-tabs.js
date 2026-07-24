@@ -52,6 +52,33 @@
     const STORAGE_KEY = 'selectedArea';
     const AREA_QUERY = 'area';
 
+    // 서버 area_code(대문자 스네이크) ↔ 프론트 탭 key(소문자 케밥) 매핑
+    // 서버가 새 area를 추가하면 여기에 매핑만 추가하면 자동 반영됨.
+    const AREA_CODE_TO_KEY = {
+        'PROFITABILITY':      'profitability',
+        'MANUFACTURING_COST': 'manufacturing-cost',
+    };
+
+    // 런타임 결정: 로그인 사용자가 접근 가능한 탭 key 집합
+    // 초기값은 안전한 profitability 만 (세션 로드 실패해도 최소 접근권 보장)
+    let allowedAreaKeys = new Set(['profitability']);
+
+    function isAreaAllowed(key) { return allowedAreaKeys.has(key); }
+
+    async function loadUserAreas() {
+        try {
+            const r = await fetch('/api/me', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            const me = await r.json();
+            if (!me || !me.loggedIn) return;
+            const codes = Array.isArray(me.business_areas) ? me.business_areas : [];
+            const keys = codes.map(c => AREA_CODE_TO_KEY[c]).filter(Boolean);
+            allowedAreaKeys = new Set(keys.length > 0 ? keys : ['profitability']);
+        } catch (e) {
+            console.warn('[AreaTabs] business_areas 로딩 실패, 기본값 사용:', e && e.message);
+        }
+    }
+
     // ------------------------------------------------------------------
     // 1. area 상태 결정 (URL > localStorage > default)
     // ------------------------------------------------------------------
@@ -694,6 +721,8 @@
         bar.appendChild(label);
 
         Object.values(AREAS).forEach(a => {
+            // ★ 권한 없는 area 는 DOM 자체를 만들지 않음 (완전 비노출)
+            if (!isAreaAllowed(a.key)) return;
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'area-tab-btn area-' + a.key;
@@ -817,6 +846,12 @@
     function setArea(next, opts) {
         opts = opts || {};
         if (!AREAS[next]) return;
+        // ★ 권한 없는 area 진입 시도 → 기본 area 로 강제 다운그레이드
+        if (!isAreaAllowed(next)) {
+            console.warn('[AreaTabs] 권한 없는 area 접근 차단:', next);
+            next = isAreaAllowed(DEFAULT_AREA) ? DEFAULT_AREA
+                 : (Array.from(allowedAreaKeys)[0] || DEFAULT_AREA);
+        }
         if (next === currentArea && !opts.force) return;
         currentArea = next;
         try { localStorage.setItem(STORAGE_KEY, currentArea); } catch (e) {}
@@ -839,18 +874,68 @@
         set: setArea,
         remount: mountTabBar,
         refreshLinks: hijackSidebarLinks,
+        // 권한 조회 헬퍼 (다른 페이지 스크립트에서 사용)
+        hasArea: (key) => isAreaAllowed(key),
+        allowedKeys: () => Array.from(allowedAreaKeys),
+        // 제조원가 전용 DOM 을 권한 없을 때 완전 제거하는 헬퍼
+        //  - display:none 이 아니라 remove() 로 DOM 자체를 제거
+        hideIfNoArea: (key, selector) => {
+            if (!isAreaAllowed(key)) {
+                try {
+                    document.querySelectorAll(selector).forEach(el => el.remove());
+                } catch (e) {}
+            }
+        },
     };
 
     // ------------------------------------------------------------------
     // 8. 부팅
     // ------------------------------------------------------------------
-    function boot() {
+    async function boot() {
+        // ★ 세션 기반 접근 권한 먼저 로드 (탭 렌더 전에 완료 필수)
+        await loadUserAreas();
+        // URL 로 강제 진입한 area 가 권한 없는 경우 → 감지 후 알림 & 다운그레이드
+        const urlArea = readAreaFromUrl();
+        const blockedByUrl = urlArea && !isAreaAllowed(urlArea);
+        // 초기 currentArea 가 허용되지 않으면 강제 다운그레이드
+        if (!isAreaAllowed(currentArea)) {
+            currentArea = isAreaAllowed(DEFAULT_AREA) ? DEFAULT_AREA
+                        : (Array.from(allowedAreaKeys)[0] || DEFAULT_AREA);
+            try { localStorage.setItem(STORAGE_KEY, currentArea); } catch (e) {}
+        }
+        if (blockedByUrl) {
+            // URL 로 직접 접근 시도가 차단되었음을 사용자에게 알림
+            try {
+                console.warn('[AreaTabs] URL 로 접근 시도된 area 가 권한 없음:', urlArea);
+                // 페이지 로드 후 1초 뒤에 조용히 안내 (필수 기능 방해 없음)
+                setTimeout(() => {
+                    const msg = document.createElement('div');
+                    msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#fef3c7;color:#92400e;border:1px solid #fbbf24;padding:12px 18px;border-radius:8px;font-size:13px;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,0.1);max-width:320px;';
+                    msg.innerHTML = '<i class="fas fa-exclamation-triangle" style="margin-right:6px;"></i>해당 업무영역에 접근 권한이 없습니다.';
+                    document.body.appendChild(msg);
+                    setTimeout(() => msg.remove(), 4000);
+                }, 800);
+            } catch (e) {}
+        }
         injectStyle();
         mountTabBar();
         normalizeUrl();
         applyAreaVisuals();
         hijackSidebarLinks();
         watchSidebarMutations();
+        // 페이지 내 [data-area-required="manufacturing-cost"] 요소들 자동 제거
+        try {
+            document.querySelectorAll('[data-area-required]').forEach(el => {
+                const req = el.getAttribute('data-area-required');
+                if (req && !isAreaAllowed(req)) el.remove();
+            });
+        } catch (e) {}
+        // 다른 스크립트가 AreaTabs 로딩 완료를 기다릴 수 있도록 이벤트 발행
+        try {
+            window.dispatchEvent(new CustomEvent('areatabs:ready', {
+                detail: { current: currentArea, allowed: Array.from(allowedAreaKeys) }
+            }));
+        } catch (e) {}
     }
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', boot);
