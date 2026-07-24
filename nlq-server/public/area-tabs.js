@@ -313,6 +313,15 @@
             border-color: #bae6fd !important;
             color: #075985 !important;
         }
+        /* 배너 내 info-circle 아이콘 (index.html / builder.html 인라인 style="color:#6366f1")
+           — ID + fa-info-circle 조합으로 인라인 스타일 오버라이드.
+           원형 배지처럼 보이지만 실제로는 fa-info-circle 아이콘 자체의 color 속성이라
+           원 안의 흰 i 는 자동으로 반전되어 잘 보임. */
+        body[data-area="manufacturing-cost"] .domain-info-banner .fa-info-circle,
+        body[data-area="manufacturing-cost"] #domainInfoBanner .fa-info-circle,
+        body[data-area="manufacturing-cost"] #domainInfoBanner i[class*="info-circle"] {
+            color: #0284c7 !important;
+        }
 
         /* ---------- [비주얼 쿼리 빌더] 사이드 [+ 새 쿼리] 버튼 ---------- */
         body[data-area="manufacturing-cost"] .new-builder-btn {
