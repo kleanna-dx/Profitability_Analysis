@@ -779,21 +779,6 @@
             <div class="history-empty"><i class="fas fa-inbox"></i><br>아직 질의 이력이 없습니다</div>
         </div>
     </div>
-
-    <div class="sidebar-divider"></div>
-
-    <!-- Schema toggle -->
-    <div class="px-5 py-3">
-        <div class="flex items-center gap-2 text-xs text-indigo-300 cursor-pointer hover:text-white" onclick="toggleSideSchema()">
-            <i id="sideSchemaArrow" class="fas fa-caret-right transition-transform duration-200"></i>
-            <span class="font-medium">테이블 스키마</span>
-            <span class="opacity-60">(120컬럼)</span>
-        </div>
-        <div id="sideSchemaContent" class="hidden mt-2 max-h-48 overflow-y-auto text-xs" style="font-size:11px;">
-            <table id="sideSchemaTable" class="w-full text-indigo-200" style="border-collapse:collapse;">
-            </table>
-        </div>
-    </div>
 </aside>
 
 <!-- ========== MAIN ========== -->
@@ -969,20 +954,6 @@ function renderSuggestionChips() {
         fc.appendChild(btn);
     });
 }
-
-const SCHEMA_COLUMNS = [
-    ['CALMONTH','VARCHAR(10)','달력연도/월'],['CALDAY','VARCHAR(10)','달력일'],
-    ['CO_AREA','VARCHAR(20)','관리회계 영역'],['PROFIT_CTR','VARCHAR(20)','손익 센터'],
-    ['DIVISION','VARCHAR(20)','제품군'],['PLANT','VARCHAR(10)','플랜트'],
-    ['DISTR_CHAN','VARCHAR(10)','유통 경로'],['SALES_OFF','VARCHAR(20)','사업장'],
-    ['MATL_TYPE','VARCHAR(10)','자재유형'],['PRODH1','VARCHAR(10)','제품계층1'],
-    ['PRODH2','VARCHAR(20)','제품계층2'],['PRODH3','VARCHAR(20)','제품계층3'],
-    ['BIC_ZBRAND','VARCHAR(20)','브랜드1'],['CUSTOMER','VARCHAR(20)','고객'],
-    ['MATERIAL','VARCHAR(40)','자재'],['BIC_ZQTY_BOX','DECIMAL','수량(BOX)'],
-    ['ZAMT001','DECIMAL','총매출'],['ZAMT003','DECIMAL','순매출'],
-    ['ZAMT035','DECIMAL','매출총이익'],['ZAMT055','DECIMAL','영업이익'],
-    ['ZAMT064','DECIMAL','경상이익'],
-];
 
 // ============================================================
 // Init
@@ -1174,14 +1145,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Suggestion chips - fixed bar (always visible above input)
     renderSuggestionChips();
 
-    // Schema table in sidebar
-    const st = document.getElementById('sideSchemaTable');
-    let sh = '';
-    SCHEMA_COLUMNS.forEach(c => {
-        sh += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05)"><td style="padding:3px 4px;color:#a5b4fc;font-family:monospace;">${c[0]}</td><td style="padding:3px 4px;opacity:0.6;">${c[2]}</td></tr>`;
-    });
-    st.innerHTML = sh;
-
     // Enter key
     document.getElementById('queryInput').addEventListener('keydown', e => {
         if (e.key === 'Enter' && !e.isComposing && !isLoading) handleSend();
@@ -1229,12 +1192,6 @@ function openSidebar() {
 function closeSidebar() {
     document.getElementById('sidebar').classList.remove('open');
     document.getElementById('sidebarOverlay').classList.remove('active');
-}
-function toggleSideSchema() {
-    const c = document.getElementById('sideSchemaContent');
-    const a = document.getElementById('sideSchemaArrow');
-    c.classList.toggle('hidden');
-    a.style.transform = c.classList.contains('hidden') ? '' : 'rotate(90deg)';
 }
 
 // ============================================================
