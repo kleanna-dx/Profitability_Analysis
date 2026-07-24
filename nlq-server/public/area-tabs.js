@@ -537,9 +537,34 @@
             color: #0369a1 !important;
         }
 
-        /* ---------- [학습 관리] 데이터 테이블 컬럼명 (mono 스타일) ---------- */
+        /* ---------- [학습 관리] 데이터 테이블 컬럼명 (mono 스타일) ----------
+           사용자 피드백: 흰 배경에 흐릿하게 보인다 → 딥 스카이(#0c4a6e)로 진하게 강화 + 폰트 웨이트 강화. */
         body[data-area="manufacturing-cost"] .dtable .mono {
-            color: #0369a1 !important;
+            color: #0c4a6e !important;
+            font-weight: 600 !important;
+        }
+
+        /* ---------- [학습 관리] 저장 버튼 (RAG Build 트리거) ----------
+           learning.html 은 인라인 style 로 짙은 퍼플 그라디언트(#7c3aed→#6d28d9) 지정.
+           ID 선택자 + !important 로 오버라이드해서 스카이 그라디언트로 교체.
+           Ontology / Metric 두 곳 모두 동일 처리. */
+        body[data-area="manufacturing-cost"] #ragBuildBtn,
+        body[data-area="manufacturing-cost"] #metricRagBuildBtn {
+            background: linear-gradient(135deg,#0284c7,#0369a1) !important;
+            box-shadow: 0 2px 8px rgba(2,132,199,0.22) !important;
+        }
+        body[data-area="manufacturing-cost"] #ragBuildBtn:hover,
+        body[data-area="manufacturing-cost"] #metricRagBuildBtn:hover {
+            box-shadow: 0 4px 14px rgba(2,132,199,0.38) !important;
+        }
+        /* save-btn-glow 애니메이션: 원본은 rgba(109,40,217) 퍼플 그림자.
+           제조원가 테마에서는 스카이 톤 그림자로 재정의. */
+        body[data-area="manufacturing-cost"] .save-btn-glow {
+            animation: saveGlowMc 1.5s infinite !important;
+        }
+        @keyframes saveGlowMc {
+            0%, 100% { box-shadow: 0 2px 8px rgba(2,132,199,0.22); }
+            50%      { box-shadow: 0 2px 16px rgba(2,132,199,0.5); }
         }
 
         /* ---------- [학습 관리] 동의어 chip (인디고 톤) ---------- */
