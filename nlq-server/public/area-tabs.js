@@ -145,12 +145,6 @@
         .area-tab-btn.active.area-manufacturing-cost {
             background: linear-gradient(135deg,#0284c7,#0369a1);
         }
-        .area-tab-bar__hint {
-            margin-left: auto;
-            font-size: 11px;
-            color: #94a3b8;
-            font-style: italic;
-        }
 
         /* -------------------- 제조원가 안내 오버레이 -------------------- */
         .area-mc-notice {
@@ -192,7 +186,6 @@
             .area-tab-bar { padding: 8px 12px; gap: 6px; }
             .area-tab-bar__label { display: none; }
             .area-tab-btn { padding: 6px 10px; font-size: 12px; }
-            .area-tab-bar__hint { display: none; }
             .area-mc-notice { top: auto; bottom: 90px; padding: 10px 14px; }
             .area-mc-notice__text { font-size: 12px; }
         }
@@ -333,18 +326,19 @@
         }
 
         /* ---------- [비주얼 쿼리 빌더] 사이드 [+ 새 쿼리] 버튼 ---------- */
-        /* 사용자 지정 팔레트: 밝은 파스텔 스카이 배경 + 짙은 네이비 텍스트
-           - 배경: RGB(231,245,255) = #E7F5FF (연한 스카이/거의 흰색 톤)
-           - 텍스트: RGB(22,82,116)  = #165274 (짙은 네이비 블루)
-           - 원본 CSS의 color:#fff / 그라디언트를 완전히 대체하기 위해 solid + !important 사용
-           - hover 는 배경만 한 단계 진하게(#D0EBFF), 텍스트/그림자는 부드럽게 유지 */
+        /* 자연스러운 파스텔 스카이 그라디언트 + 짙은 네이비 텍스트
+           - 사용자 지정 배경 톤(#E7F5FF, RGB 231,245,255) 을 그라디언트 시작점으로 사용하고
+             한 단계 진한 스카이 파스텔(#C5E4F7) 로 부드럽게 흐르는 대각선 그라디언트
+           - 텍스트: 사용자 지정 #165274 (RGB 22,82,116) 유지
+           - 원본 CSS 의 color:#fff / 짙은 그라디언트를 완전 대체하기 위해 !important 사용
+           - hover: 그라디언트를 한 단계 진하게(#D0EBFF → #A5D8F0) */
         body[data-area="manufacturing-cost"] .new-builder-btn {
-            background: #E7F5FF !important;
+            background: linear-gradient(135deg,#E7F5FF,#C5E4F7) !important;
             color: #165274 !important;
             box-shadow: 0 2px 6px rgba(22,82,116,0.10) !important;
         }
         body[data-area="manufacturing-cost"] .new-builder-btn:hover {
-            background: #D0EBFF !important;
+            background: linear-gradient(135deg,#D0EBFF,#A5D8F0) !important;
             color: #165274 !important;
             box-shadow: 0 4px 10px rgba(22,82,116,0.16) !important;
         }
@@ -692,11 +686,6 @@
             btn.addEventListener('click', () => setArea(a.key));
             bar.appendChild(btn);
         });
-
-        const hint = document.createElement('span');
-        hint.className = 'area-tab-bar__hint';
-        hint.innerHTML = '<i class="fas fa-eye" style="margin-right:4px;"></i>디자인 프리뷰';
-        bar.appendChild(hint);
 
         return bar;
     }
