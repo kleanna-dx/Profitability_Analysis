@@ -547,10 +547,27 @@
         }
 
         /* ---------- [학습 관리] 데이터 테이블 컬럼명 (mono 스타일) ----------
-           사용자 피드백: 흰 배경에 흐릿하게 보인다 → 딥 스카이(#0c4a6e)로 진하게 강화 + 폰트 웨이트 강화. */
+           사용자 지정: RGB(0,112,192) = #0070C0 (오피스 표준 진한 파랑).
+           font-weight 600 유지. */
         body[data-area="manufacturing-cost"] .dtable .mono {
-            color: #0c4a6e !important;
+            color: #0070C0 !important;
             font-weight: 600 !important;
+        }
+
+        /* ---------- [학습 관리] RAG 상태 텍스트 ("● RAG 활성 · N청크") ----------
+           learning.html 의 loadRagStatus() 가 JS 로 인라인 style.color 를
+           #7c3aed (퍼플) 로 직접 세팅함. CSS !important 로 인라인 스타일 이김.
+           앞의 <i class="fa-circle"> 아이콘도 인라인 style="color:#a78bfa" 라
+           #0070C0 로 통일. */
+        body[data-area="manufacturing-cost"] #ragStatusText,
+        body[data-area="manufacturing-cost"] #metricRagStatusText {
+            color: #0070C0 !important;
+        }
+        body[data-area="manufacturing-cost"] #ragStatusText .fa-circle,
+        body[data-area="manufacturing-cost"] #metricRagStatusText .fa-circle,
+        body[data-area="manufacturing-cost"] #ragStatusText i[class*="fa-circle"],
+        body[data-area="manufacturing-cost"] #metricRagStatusText i[class*="fa-circle"] {
+            color: #0070C0 !important;
         }
 
         /* ---------- [학습 관리] 저장 버튼 (RAG Build 트리거) ----------
