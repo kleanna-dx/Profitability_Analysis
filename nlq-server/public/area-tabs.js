@@ -674,7 +674,7 @@
 
         const label = document.createElement('span');
         label.className = 'area-tab-bar__label';
-        label.textContent = '업무영역';
+        label.textContent = '영역';
         bar.appendChild(label);
 
         Object.values(AREAS).forEach(a => {
