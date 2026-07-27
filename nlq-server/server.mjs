@@ -11773,7 +11773,6 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 
     // 업무영역 매핑 일괄 조회 (N+1 방지)
     let baMap = new Map(); // user_id -> [area_code]
-    let activeAreas = [];
     try {
       const [uba] = await pool.query(
         `SELECT uba.user_id, uba.area_code
@@ -11785,27 +11784,20 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
         if (!baMap.has(r.user_id)) baMap.set(r.user_id, []);
         baMap.get(r.user_id).push(r.area_code);
       });
-      // admin용 전체 활성 area (하드코딩 금지)
-      const [allAreas] = await pool.query(
-        `SELECT area_code FROM sys_aimd_areas WHERE is_active = 1 ORDER BY sort_order, id`
-      );
-      activeAreas = allAreas.map(a => a.area_code);
     } catch(e) { console.error('[BA] users 목록 업무영역 조회 실패:', e.message); }
 
     // 각 사용자의 조직도 경로 구성 + 업무영역 병합
+    //   ※ 2026-07 옵션 B 이후: admin/일반 구분 없이 sys_aimd_user_areas 매핑을 그대로 사용.
+    //     admin 도 부팅 시 백필 마이그레이션으로 활성 area 전체가 매핑되어 있음
+    //     (아래 initBusinessAreaTables() 참고). 매핑 자체가 비어 있는 극단적 케이스에만
+    //     최소 접근권 PROFITABILITY 폴백.
     const result = [];
     for (const row of rows) {
       let orgPath = '';
       if (row.group_id) {
         try { orgPath = await buildOrgPath(row.group_id); } catch(e) { /* 무시 */ }
       }
-      // admin은 활성 전체, 일반은 매핑값 (없으면 PROFITABILITY 폴백)
-      let businessAreas;
-      if (row.role_code === 'admin') {
-        businessAreas = activeAreas;
-      } else {
-        businessAreas = baMap.get(row.user_id) || ['PROFITABILITY'];
-      }
+      const businessAreas = baMap.get(row.user_id) || ['PROFITABILITY'];
       result.push({ ...row, org_path: orgPath, business_areas: businessAreas });
     }
     res.json(result);
@@ -11845,7 +11837,7 @@ app.get('/api/admin/users/:userId/business-areas', requireAdmin, async (req, res
 
 // ── 사용자 업무영역 일괄 교체 (bulk set) ──
 // body: { business_areas: ['PROFITABILITY', 'MANUFACTURING_COST'] }
-// - admin 사용자에 대한 변경 시도는 무시 (admin은 항상 활성 전체)
+// - 2026-07 옵션 B 이후: admin 도 예외 없이 동일하게 sys_aimd_user_areas 에 저장
 // - 유효 area_code 화이트리스트 검증
 // - 트랜잭션으로 DELETE + INSERT 원자성 보장
 app.put('/api/admin/users/:userId/business-areas', requireAdmin, async (req, res) => {
@@ -11855,22 +11847,15 @@ app.put('/api/admin/users/:userId/business-areas', requireAdmin, async (req, res
   }
 
   try {
-    // 대상 사용자 존재 및 role 확인
+    // 대상 사용자 존재 확인
+    //   ※ 2026-07 옵션 B 이후: admin 도 예외 없이 일반 사용자와 동일하게
+    //     sys_aimd_user_areas 에 실제 매핑을 저장한다. (이전에는 admin 이면
+    //     DELETE/INSERT 를 스킵하고 활성 전체를 그대로 반환했음 → UI/DB 불일치 원인)
     const [ur] = await pool.query(
-      `SELECT COALESCE(r.role_code, 'user') AS role_code
-         FROM users u LEFT JOIN roles r ON r.id = u.role_id
-        WHERE u.user_id = ?`, [req.params.userId]);
+      `SELECT u.user_id FROM users u WHERE u.user_id = ?`,
+      [req.params.userId]
+    );
     if (ur.length === 0) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
-
-    // admin은 매핑 테이블에 저장하지 않음 (항상 활성 전체 자동)
-    if (ur[0].role_code === 'admin') {
-      const adminAreas = await getUserBusinessAreas(req.params.userId, 'admin');
-      return res.json({
-        success: true,
-        business_areas: adminAreas,
-        note: 'admin 사용자는 활성 업무영역 전체가 자동 부여됩니다.',
-      });
-    }
 
     // 유효 area_code 화이트리스트 검증
     const [valid] = await pool.query(
@@ -12383,8 +12368,8 @@ async function ensureBusinessAreaTables() {
         ('MANUFACTURING_COST', '제조원가',   '제조원가 관련 업무영역',           20)
     `);
 
-    // 4) 마이그레이션 — 매핑이 하나도 없는 사용자에게 PROFITABILITY 자동 부여
-    //    (신규 사용자 포함하여 기본 접근권을 보장. 멱등: INSERT IGNORE + LEFT JOIN 필터)
+    // 4-a) 마이그레이션 — 매핑이 하나도 없는 사용자에게 PROFITABILITY 자동 부여
+    //      (신규 사용자 포함하여 기본 접근권을 보장. 멱등: INSERT IGNORE + LEFT JOIN 필터)
     const [migResult] = await pool.query(`
       INSERT IGNORE INTO sys_aimd_user_areas (user_id, area_code, granted_by)
       SELECT u.user_id, 'PROFITABILITY', 'SYSTEM_MIGRATION'
@@ -12394,6 +12379,22 @@ async function ensureBusinessAreaTables() {
     `);
     if (migResult.affectedRows > 0) {
       console.log(`[BA] ${migResult.affectedRows}명 사용자에게 PROFITABILITY 기본 권한 부여`);
+    }
+
+    // 4-b) [옵션 B — 2026-07] admin 계정 백필
+    //      admin 은 항상 활성 area 전체에 대한 매핑 Row 를 가지도록 보장.
+    //      → 서버 코드에서 admin 예외 분기가 제거되었으므로, 실제 접근권은 이 매핑이 결정.
+    //      → 새 area 를 마스터에 추가하면 다음 부팅 시 자동으로 admin 에게도 부여됨.
+    //      멱등: PK(user_id, area_code) + INSERT IGNORE.
+    const [adminBackfill] = await pool.query(`
+      INSERT IGNORE INTO sys_aimd_user_areas (user_id, area_code, granted_by)
+      SELECT u.user_id, ba.area_code, 'SYSTEM_ADMIN_BACKFILL'
+        FROM users u
+        JOIN roles r     ON r.id = u.role_id AND r.role_code = 'admin'
+        JOIN sys_aimd_areas ba ON ba.is_active = 1
+    `);
+    if (adminBackfill.affectedRows > 0) {
+      console.log(`[BA] admin 계정에 활성 area 전체 백필: ${adminBackfill.affectedRows} row`);
     }
 
     console.log('[BA] 업무영역 권한 테이블 및 시드 데이터 준비 완료');
@@ -12540,9 +12541,11 @@ async function isMenuAllowed(userId, urlPath) {
 // 업무영역 권한 헬퍼 & 미들웨어 (Business Area Access)
 // ------------------------------------------------------------
 //  - getUserBusinessAreas(userId, roleCode)
-//      → admin: sys_aimd_areas 테이블의 활성 area 전체를 DB에서 동적 조회
-//         (하드코딩 배열 없음 → 향후 area 추가 시 자동 반영)
-//      → 일반 사용자: sys_aimd_user_areas 매핑 조회, 매핑 없으면 PROFITABILITY 폴백
+//      → 2026-07 옵션 B 이후: role 구분 없이 sys_aimd_user_areas 매핑을 그대로 조회.
+//        admin 도 예외 없이 실제 매핑 Row 기반으로 판정.
+//        (부팅 시 admin 에게 활성 area 전체를 백필하는 마이그레이션이 있어
+//         "새 area 추가 시 admin 이 접근 못 하는" 사고는 별도로 예방됨.)
+//        매핑이 완전히 비어있는 극단적 케이스에만 최소 PROFITABILITY 폴백.
 //  - requireBusinessArea(areaCode)
 //      → 서버측 미들웨어: 세션 role 기준으로 매 요청마다 DB 재조회
 //      → 프론트 값 신뢰 없음. 401(로그인 필요) / 403(권한 없음) 반환
@@ -12551,24 +12554,11 @@ async function isMenuAllowed(userId, urlPath) {
 /**
  * 사용자의 접근 가능 업무영역 코드 리스트 조회
  * @param {string} userId
- * @param {string} roleCode  세션의 role (admin/user 등)
+ * @param {string} [_roleCode]  하위 호환용(현재는 미사용). 예전엔 admin 분기용.
  * @returns {Promise<string[]>}  area_code 배열 (예: ['PROFITABILITY', 'MANUFACTURING_COST'])
  */
-async function getUserBusinessAreas(userId, roleCode) {
-  // admin은 활성 area 전체를 DB에서 동적 조회 (하드코딩 금지)
-  if (roleCode === 'admin') {
-    try {
-      const [rows] = await pool.query(
-        `SELECT area_code FROM sys_aimd_areas WHERE is_active = 1 ORDER BY sort_order, id`
-      );
-      return rows.map(r => r.area_code);
-    } catch (e) {
-      console.error('[BA] admin area 조회 실패:', e.message);
-      return []; // 조회 실패 시 안전 실패 (empty)
-    }
-  }
-
-  // 일반 사용자: sys_aimd_user_areas 매핑 조회
+async function getUserBusinessAreas(userId, _roleCode) {
+  // role 구분 없이 매핑 그대로 조회
   try {
     const [rows] = await pool.query(
       `SELECT uba.area_code
