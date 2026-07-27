@@ -91,6 +91,9 @@
         .nowrap{white-space:nowrap;}
         select.inline-select{padding:4px 8px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;font-family:inherit;cursor:pointer;background:#fff;transition:all .15s;}
         select.inline-select:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
+        /* [2026-07] 관리자(admin) 역할 선택 시 시각적 강조 (연한 주황) */
+        select.inline-select.role-admin{background:#FFF4E5;border-color:#FDBA74;color:#C2410C;}
+        select.inline-select.role-admin:focus{border-color:#FDBA74;box-shadow:0 0 0 3px rgba(253,186,116,.25);}
         .search-box{padding:8px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;width:220px;font-family:inherit;transition:all .15s;}
         .search-box:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
         .filter-select{padding:7px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;font-family:inherit;cursor:pointer;background:#fff;transition:all .15s;}
@@ -752,7 +755,7 @@ function renderUserTable(users) {
             <td class="nowrap" style="font-weight:600;color:#1e293b;">${u.name || '-'}</td>
             <td class="nowrap" style="font-size:12px;">${u.group_name || '-'}</td>
             <td>
-                <select class="inline-select" onchange="changeUserRole('${u.user_id}', this.value)" style="font-weight:600;">
+                <select class="inline-select ${u.role_code === 'admin' ? 'role-admin' : ''}" onchange="changeUserRole('${u.user_id}', this.value)" style="font-weight:600;">
                     ${roleOptions}
                 </select>
             </td>
