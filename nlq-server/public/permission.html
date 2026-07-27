@@ -121,9 +121,7 @@
         .ba-chk input{margin:0;cursor:pointer;accent-color:#4f46e5;}
         .ba-chk input:checked ~ span{color:#1e293b;font-weight:600;}
         .ba-chk:has(input:checked){border-color:#818cf8;background:#eef2ff;}
-        .ba-chk.ba-admin{background:#f1f5f9;color:#94a3b8;cursor:not-allowed;border-style:dashed;}
-        .ba-chk.ba-admin input{cursor:not-allowed;}
-        .ba-admin-hint{font-size:11px;color:#94a3b8;font-style:italic;margin-left:2px;}
+        /* [2026-07] admin 도 매핑 기반 저장으로 정규화됨 → .ba-admin/.ba-admin-hint 사용처 제거 */
         .ba-save-btn{padding:4px 12px;border:1px solid #c7d2fe;background:#fff;color:#4f46e5;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s;font-family:inherit;}
         .ba-save-btn:hover:not(:disabled){background:#eef2ff;border-color:#818cf8;}
         .ba-save-btn:disabled{opacity:0.4;cursor:not-allowed;}
@@ -732,23 +730,21 @@ function renderUserTable(users) {
         }).join('');
 
         // 업무영역 권한 체크박스
-        const isAdmin = u.role_code === 'admin';
+        //   [2026-07] admin 도 sys_aimd_user_areas 매핑을 실제로 저장하도록
+        //   서버 로직이 정규화되었으므로(옵션 B) 프론트에서도 admin 예외 없이
+        //   일반 사용자와 동일하게 체크박스/저장 버튼을 렌더링한다.
         const userAreas = new Set(u.business_areas || []);
         const baCheckboxes = businessAreaList.map(ba => {
             const checked = userAreas.has(ba.area_code) ? 'checked' : '';
-            const disabled = isAdmin ? 'disabled' : '';
-            const adminCls = isAdmin ? 'ba-admin' : '';
             return `
-                <label class="ba-chk ${adminCls}" title="${ba.description || ba.area_name}">
-                    <input type="checkbox" data-area="${ba.area_code}" ${checked} ${disabled}
+                <label class="ba-chk" title="${ba.description || ba.area_name}">
+                    <input type="checkbox" data-area="${ba.area_code}" ${checked}
                            onchange="markBaDirty('${u.user_id}')">
                     <span>${ba.area_name}</span>
                 </label>`;
         }).join('');
 
-        const baControl = isAdmin
-            ? `<span class="ba-admin-hint"><i class="fas fa-crown" style="color:#f59e0b;margin-right:3px;"></i>관리자 전체</span>`
-            : `<button class="ba-save-btn" id="ba-save-${u.user_id}" onclick="saveBusinessAreas('${u.user_id}')" disabled>저장</button>`;
+        const baControl = `<button class="ba-save-btn" id="ba-save-${u.user_id}" onclick="saveBusinessAreas('${u.user_id}')" disabled>저장</button>`;
 
         return `
         <tr style="${!u.is_active ? 'opacity:0.5;' : ''}" data-user-id="${u.user_id}">
