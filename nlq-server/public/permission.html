@@ -418,8 +418,12 @@ let allUsers = [];
 let domainList = [];
 let businessAreaList = [];   // 활성 업무영역 마스터 (동적 로딩)
 let selectedRoleId = null;
-// 사용자별 미저장 업무영역 변경 상태: { userId: Set<area_code> } (없으면 서버 상태 그대로)
-const baDraft = new Map();
+// 사용자별 업무영역 권한의 "DB 원본 상태" 스냅샷 (Dirty Check 기준)
+//   Map<user_id, Set<area_code>>
+//   - loadUsers() 후 서버 응답의 business_areas 를 스냅샷
+//   - 저장 성공 후 새로운 원본으로 갱신
+//   - markBaDirty() 가 현재 체크 상태와 이 스냅샷을 비교하여 저장 버튼 활성/비활성 결정
+const baOriginalState = new Map();
 
 async function init() {
     // 권한 체크
@@ -489,10 +493,33 @@ async function loadUsers() {
         filterRole.innerHTML = '<option value="">전체 역할</option>' + allRoles.map(r =>
             `<option value="${r.role_code}">${r.role_name} (${r.role_code})</option>`
         ).join('');
+        // Dirty Check 원본 스냅샷: DB 로딩 결과를 originalState 로 저장
+        rebuildBaOriginalState(allUsers);
         renderUserTable(allUsers);
     } catch(e) {
         document.getElementById('userRoleBody').innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:#dc2626;">로딩 실패</td></tr>`;
     }
+}
+
+// ── Dirty Check 유틸: 사용자 목록의 business_areas 를 원본 스냅샷으로 재구축 ──
+function rebuildBaOriginalState(users) {
+    baOriginalState.clear();
+    (users || []).forEach(u => {
+        baOriginalState.set(u.user_id, new Set(u.business_areas || []));
+    });
+}
+
+// ── Dirty Check 유틸: 특정 사용자의 원본 스냅샷을 갱신 (저장 성공 후 사용) ──
+function setBaOriginalState(userId, areaCodes) {
+    baOriginalState.set(userId, new Set(areaCodes || []));
+}
+
+// ── Dirty Check 유틸: 두 Set 의 내용이 완전히 동일한지 비교 (순서 무관) ──
+function isSameStringSet(a, b) {
+    if (!a || !b) return false;
+    if (a.size !== b.size) return false;
+    for (const v of a) { if (!b.has(v)) return false; }
+    return true;
 }
 
 function updateStats() {
@@ -758,13 +785,31 @@ function renderUserTable(users) {
     }).join('');
 }
 
-// 업무영역 체크박스 변경 감지 → 저장 버튼 강조
+// ── 업무영역 체크박스 변경 감지 (Dirty Check) ──
+//   원본 상태(baOriginalState) 와 현재 체크박스 상태를 비교하여
+//   변경사항이 있을 때만 저장 버튼 활성화.
+//   최초 상태(예: PROFITABILITY만 체크)에서 다른 항목을 켰다가 다시 끄면
+//   원본과 동일해지므로 저장 버튼이 자동으로 비활성화됨.
 function markBaDirty(userId) {
     const btn = document.getElementById('ba-save-' + userId);
-    if (btn) {
-        btn.disabled = false;
-        btn.classList.add('ba-dirty');
-    }
+    if (!btn) return;
+    // 저장 진행 중(disabled + "저장 중..." 라벨)에는 상태 갱신 억제
+    if (btn.disabled && btn.textContent && btn.textContent.indexOf('중') !== -1) return;
+
+    const cell = document.querySelector(`.ba-cell[data-user-id="${userId}"]`);
+    if (!cell) return;
+
+    // 현재 체크된 area_code 집합
+    const currentSet = new Set(
+        Array.from(cell.querySelectorAll('input[type="checkbox"]:checked'))
+             .map(el => el.getAttribute('data-area'))
+    );
+    // 원본 스냅샷 (없으면 빈 Set — 신규 사용자 등의 경우 안전 기본값)
+    const originalSet = baOriginalState.get(userId) || new Set();
+
+    const isDirty = !isSameStringSet(currentSet, originalSet);
+    btn.disabled = !isDirty;
+    btn.classList.toggle('ba-dirty', isDirty);
 }
 
 // 업무영역 권한 저장
@@ -793,7 +838,11 @@ async function saveBusinessAreas(userId) {
         showToast(`${userId}의 업무영역 권한이 저장되었습니다.`);
         // 로컬 캐시 갱신
         const u = allUsers.find(x => x.user_id === userId);
-        if (u) u.business_areas = data.business_areas || checked;
+        const savedAreas = data.business_areas || checked;
+        if (u) u.business_areas = savedAreas;
+        // Dirty Check 원본 스냅샷을 저장된 결과로 갱신
+        // → 이후 사용자가 다시 체크박스를 조작해도 원본과 비교하여 dirty 판정
+        setBaOriginalState(userId, savedAreas);
         if (btn) { btn.classList.remove('ba-dirty'); btn.textContent = '저장'; btn.disabled = true; }
     } catch(e) {
         showToast('저장 실패: ' + e.message, 'error');
