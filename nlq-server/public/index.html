@@ -550,19 +550,25 @@
            ========================================================= */
         .coach-overlay{
             position:fixed;inset:0;z-index:9998;pointer-events:auto;
-            background:transparent;   /* 실제 어둠 처리는 spotlight 의 box-shadow */
+            /* [v2] 어둠 처리는 오버레이 자체가 담당. spot 은 clip-path 로 파낸다.
+                    (기존 box-shadow spread trick 은 hole 을 하나만 만들 수 있어
+                     여러 영역 강조를 지원하려면 clip-path evenodd 방식으로 전환) */
+            background:rgba(15,23,42,0.65);
             animation:coachFadeIn .22s ease;
+            /* clip-path 는 JS 에서 --coach-clip 값을 세팅 (없으면 전체 표시) */
+            clip-path: var(--coach-clip, none);
+            -webkit-clip-path: var(--coach-clip, none);
+            transition: clip-path .3s ease, -webkit-clip-path .3s ease;
         }
         @keyframes coachFadeIn{from{opacity:0;}to{opacity:1;}}
-        /* 스포트라이트 홀 — 대상 요소의 사각형 위치에 맞춰 top/left/width/height JS 계산 */
+        /* [v2] 스포트라이트 = 대상 사각형 위치에 딱 맞는 '테두리 링'.
+                밝기 처리는 오버레이 clip-path 로 이미 뚫려 있으므로 여기선 outline 만.
+                여러 개(spot / spotExtra) 지원. */
         .coach-spotlight{
             position:fixed;z-index:9998;border-radius:10px;
-            /* 밖을 어둡게 → 안쪽은 투명 (rgba 0.65) */
-            box-shadow:0 0 0 9999px rgba(15,23,42,0.65);
-            /* 대상 요소 강조 링 */
             outline:3px solid #a5b4fc;outline-offset:2px;
             transition:top .3s ease,left .3s ease,width .3s ease,height .3s ease;
-            pointer-events:none;   /* 클릭이 뒤 요소로 통과 (안전상 이번엔 튜토리얼 중 조작 유도 X) */
+            pointer-events:none;
         }
         /* 툴팁 카드 */
         .coach-tooltip{
@@ -5302,13 +5308,21 @@ function startCoachMark(trigger) {
     spot.className = 'coach-spotlight';
     spot.id = 'coachSpotlight';
     document.body.appendChild(spot);
+    // [v2] 두 번째(및 그 이상) 강조 링 — 한 스텝에서 여러 영역을 강조할 때 사용.
+    //   대부분 스텝은 spot 하나만 쓰지만, 1단계처럼 도메인 탭 + 업무영역 탭을
+    //   개별 링으로 각각 감싸려면 spotExtra 도 함께 사용한다.
+    const spotExtra = document.createElement('div');
+    spotExtra.className = 'coach-spotlight';
+    spotExtra.id = 'coachSpotlightExtra';
+    spotExtra.style.display = 'none';
+    document.body.appendChild(spotExtra);
     const tip = document.createElement('div');
     tip.className = 'coach-tooltip';
     tip.id = 'coachTooltip';
     tip.setAttribute('role', 'dialog');
     tip.setAttribute('aria-label', '자연어 질의 사용법 튜토리얼');
     document.body.appendChild(tip);
-    coachState.elems = { overlay, spot, tip };
+    coachState.elems = { overlay, spot, spotExtra, tip };
     // 리사이즈/스크롤 리스너 (스로틀 없이 CSS transition 만으로도 부드러움)
     coachState.onResize = () => renderCoachStep();
     window.addEventListener('resize', coachState.onResize);
@@ -5326,9 +5340,10 @@ function startCoachMark(trigger) {
 function endCoachMark() {
     if (!coachState.active) return;
     coachState.active = false;
-    const { overlay, spot, tip } = coachState.elems || {};
+    const { overlay, spot, spotExtra, tip } = coachState.elems || {};
     if (overlay) overlay.remove();
     if (spot) spot.remove();
+    if (spotExtra) spotExtra.remove();
     if (tip) tip.remove();
     // 완료 카드도 정리
     const fin = document.getElementById('coachFinalCard');
@@ -5383,17 +5398,53 @@ function coachFocusInputAndClose() {
     if (q) { try { q.focus(); } catch(_) {} }
 }
 
+// [v2] 화면 전체 오버레이에서 여러 사각형 구멍(hole)을 파내는 CSS clip-path 문자열 생성.
+//   CSS clip-path 는 fill-rule 옵션이 크로스브라우저 표준이 아니라 evenodd 를 직접 못 쓴다.
+//   대신 outer(화면 전체) 시계방향 다각형에 각 hole 을 '좌측 가장자리에서 진입 → hole 반시계방향 → 좌측으로 복귀' 하는
+//   'stitch' 방식으로 이어붙여 하나의 큰 폴리곤 안에 여러 사각형 구멍을 만드는 기법을 사용.
+//   결과적으로 각 hole 은 오버레이에서 '뚫린 것처럼' 보이게 됨.
+function buildCoachClipPath(rects, vw, vh) {
+    if (!rects || rects.length === 0) return 'none';
+    // hole 없으면 그냥 화면 전체
+    const pts = [];
+    // 시작: (0,0) → (vw,0) → (vw,vh) → (0,vh) 로 갔다가 각 hole 을 파고 다시 (0,vh) 복귀 → 닫기
+    // 각 hole 은 좌측(x=0) 에서 hole 의 top 높이로 들어갔다가 다시 나온다.
+    // 안정성을 위해 rects 를 top 오름차순 정렬 (여러 hole 이 있을 때 경로가 꼬이지 않도록)
+    const holes = [...rects].sort((a, b) => a.top - b.top);
+    pts.push('0px 0px');
+    pts.push(vw + 'px 0px');
+    pts.push(vw + 'px ' + vh + 'px');
+    pts.push('0px ' + vh + 'px');
+    // 각 hole 을 좌측 가장자리에서 파고 들어가 반시계방향으로 그린다.
+    // 좌측→hole.left(top) → hole.left(bottom) → hole.right(bottom) → hole.right(top) → hole.left(top) → 좌측 복귀
+    // (좌측 진출입 y 좌표는 hole 의 top 을 사용해 짧은 stitch)
+    for (const h of holes) {
+        pts.push('0px ' + h.top + 'px');
+        pts.push(h.left  + 'px ' + h.top    + 'px');
+        pts.push(h.left  + 'px ' + h.bottom + 'px');
+        pts.push(h.right + 'px ' + h.bottom + 'px');
+        pts.push(h.right + 'px ' + h.top    + 'px');
+        pts.push(h.left  + 'px ' + h.top    + 'px');
+        pts.push('0px ' + h.top + 'px');
+    }
+    // 시작점(0,0) 으로 자동 닫힘
+    return 'polygon(' + pts.join(', ') + ')';
+}
+
 // 대상 요소 사각형에 맞춰 스포트라이트/툴팁 위치 계산 후 렌더
 function renderCoachStep() {
     if (!coachState.active) return;
     const step = COACH_STEPS[coachState.stepIdx];
     if (!step) { endCoachMark(); return; }
-    const { overlay, spot, tip } = coachState.elems;
+    const { overlay, spot, spotExtra, tip } = coachState.elems;
 
     // 마지막(완료) 스텝 → 스포트라이트/툴팁 대신 중앙 완료 카드
     if (step.target === '__final__') {
         spot.style.display = 'none';
+        if (spotExtra) spotExtra.style.display = 'none';
         tip.style.display = 'none';
+        // 완료 스텝에서는 clip-path 를 제거하고 오버레이 전체를 어둡게
+        overlay.style.setProperty('--coach-clip', 'none');
         // 이미 카드가 있으면 재사용
         let fin = document.getElementById('coachFinalCard');
         if (!fin) {
@@ -5478,12 +5529,57 @@ function renderCoachStep() {
     spot.style.display = '';
     tip.style.display = '';
 
-    // 여러 요소를 하나의 강조로 묶기 위한 union bbox 계산.
-    // (요소 하나면 자연스럽게 그 요소 사각형이 됨)
+    // ---------------------------------------------------------------
+    // [v2] 링 & 스포트라이트 구멍 렌더 — 여러 요소 지원
+    //   대상이 하나면 → spot 하나로 그 요소만 감싸는 링 + 오버레이에 그 하나의 구멍
+    //   대상이 둘 이상이면 → spot / spotExtra 로 각 요소를 개별 링으로 감싸고
+    //                       오버레이 clip-path 로 각각 별도의 구멍을 뚫는다.
+    //   (기존 union bbox 방식은 대각선으로 어긋난 두 요소 사이의 넓은 공백까지
+    //    다 감싸버려 시각적으로 지저분해지므로 v2 에서는 개별 링 방식으로 전환)
+    // ---------------------------------------------------------------
+    const pad = 6;   // 스포트라이트/구멍 패딩
+    // 각 요소의 확장 사각형을 계산 (뷰포트 클램프)
+    const vpW = window.innerWidth, vpH = window.innerHeight;
+    const spotRects = elems.map(({ rect: r }) => {
+        const top    = Math.max(0,   r.top    - pad);
+        const left   = Math.max(0,   r.left   - pad);
+        const right  = Math.min(vpW, r.right  + pad);
+        const bottom = Math.min(vpH, r.bottom + pad);
+        return { top, left, right, bottom, width: right - left, height: bottom - top };
+    });
+
+    // (1) 링 배치 — 최대 2개(spot / spotExtra)까지 사용
+    const s0 = spotRects[0];
+    spot.style.top    = s0.top    + 'px';
+    spot.style.left   = s0.left   + 'px';
+    spot.style.width  = s0.width  + 'px';
+    spot.style.height = s0.height + 'px';
+    if (spotExtra) {
+        if (spotRects.length >= 2) {
+            const s1 = spotRects[1];
+            spotExtra.style.display = '';
+            spotExtra.style.top    = s1.top    + 'px';
+            spotExtra.style.left   = s1.left   + 'px';
+            spotExtra.style.width  = s1.width  + 'px';
+            spotExtra.style.height = s1.height + 'px';
+        } else {
+            spotExtra.style.display = 'none';
+        }
+    }
+
+    // (2) 오버레이 clip-path — 화면 전체 사각형에서 각 spotRect 를 evenodd 로 파낸다.
+    //   polygon 은 시계방향 outer(화면 전체) + 각 hole 은 반시계방향(evenodd 규칙으로 파냄).
+    //   evenodd 규칙이 CSS clip-path 에서 표준 지원이 되지 않아, 대신
+    //   'outer → hole1 진입/탈출 → hole2 진입/탈출 → ...' 를 하나의 다각형 경로로 이어붙이는
+    //   'stitched polygon' 방식을 쓴다. 각 hole 은 outer 좌측 가장자리를 통해 들어갔다 나온다.
+    //   이 방식은 여러 개의 사각형 구멍을 뚫는 가장 안전한 CSS-only 방법.
+    const clipPath = buildCoachClipPath(spotRects, vpW, vpH);
+    overlay.style.setProperty('--coach-clip', clipPath);
+
+    // 툴팁 배치를 위해 union rect (모든 spotRects 를 감싸는 최소 사각형) 계산
     const rect = (() => {
-        if (elems.length === 1) return elems[0].rect;
         let top = Infinity, left = Infinity, right = -Infinity, bottom = -Infinity;
-        for (const { rect: r } of elems) {
+        for (const r of spotRects) {
             if (r.top    < top)    top    = r.top;
             if (r.left   < left)   left   = r.left;
             if (r.right  > right)  right  = r.right;
@@ -5491,15 +5587,12 @@ function renderCoachStep() {
         }
         return { top, left, right, bottom, width: right - left, height: bottom - top };
     })();
-    const pad = 6;   // 스포트라이트 패딩
-    const spotTop = Math.max(0, rect.top - pad);
-    const spotLeft = Math.max(0, rect.left - pad);
-    const spotW = rect.width + pad * 2;
-    const spotH = rect.height + pad * 2;
-    spot.style.top    = spotTop  + 'px';
-    spot.style.left   = spotLeft + 'px';
-    spot.style.width  = spotW    + 'px';
-    spot.style.height = spotH    + 'px';
+    // 툴팁 위치 계산에서 쓰는 spotTop/spotLeft/spotW/spotH 는 union rect 기준
+    // (이하 기존 로직이 rect 값을 그대로 사용)
+    const spotTop = rect.top;
+    const spotLeft = rect.left;
+    const spotW = rect.width;
+    const spotH = rect.height;
 
     // 툴팁 콘텐츠 렌더
     const idx = coachState.stepIdx;
