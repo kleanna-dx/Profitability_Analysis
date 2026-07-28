@@ -50,6 +50,15 @@
         .sidebar-menu-item:hover{background:rgba(255,255,255,0.1);color:#fff;}
         .sidebar-menu-item.active{background:rgba(99,102,241,0.3);color:#fff;font-weight:600;}
         .sidebar-menu-item i{width:20px;text-align:center;font-size:15px;}
+        /* 자연어 질의 메뉴 옆의 사용법(?) 버튼 — 사이드메뉴 우측 정렬 */
+        .sidebar-help-btn{
+            margin-left:auto;padding:2px 6px;border:none;background:transparent;
+            color:#a5b4fc;font-size:14px;cursor:pointer;border-radius:6px;
+            transition:all .15s;line-height:1;display:inline-flex;align-items:center;
+        }
+        .sidebar-help-btn i{width:auto;font-size:14px;}
+        .sidebar-help-btn:hover{background:rgba(255,255,255,0.15);color:#fff;transform:scale(1.1);}
+        .sidebar-help-btn:focus-visible{outline:2px solid #818cf8;outline-offset:1px;}
         .sidebar-divider{height:1px;background:rgba(255,255,255,0.1);margin:12px 16px;}
 
         /* Main layout */
@@ -529,6 +538,140 @@
             color:inherit;font-weight:inherit;font-style:inherit;font-size:inherit;
             padding:0;margin:0;line-height:inherit;border-radius:2px;
             box-decoration-break:clone;-webkit-box-decoration-break:clone;
+        }
+
+        /* =========================================================
+           📚 튜토리얼 / 코치마크 (Coach mark)
+           - 화면 전체를 어둡게 처리하고 특정 요소만 스포트라이트로 강조
+           - 배경 어둡게: box-shadow 로 대상 영역 밖을 반투명 어둡게 (rgba)
+           - 스포트라이트 홀: pointer-events:none 유지 → 대상 요소 직접 클릭 가능
+             (단, 이번 구현은 튜토리얼 진행 안정성을 위해 대상 요소 클릭을 차단하지 않되,
+              오버레이 자체 클릭도 무시하지 않음 → z-index 로 툴팁만 상단, 스포트라이트는 아래)
+           ========================================================= */
+        .coach-overlay{
+            position:fixed;inset:0;z-index:9998;pointer-events:auto;
+            background:transparent;   /* 실제 어둠 처리는 spotlight 의 box-shadow */
+            animation:coachFadeIn .22s ease;
+        }
+        @keyframes coachFadeIn{from{opacity:0;}to{opacity:1;}}
+        /* 스포트라이트 홀 — 대상 요소의 사각형 위치에 맞춰 top/left/width/height JS 계산 */
+        .coach-spotlight{
+            position:fixed;z-index:9998;border-radius:10px;
+            /* 밖을 어둡게 → 안쪽은 투명 (rgba 0.65) */
+            box-shadow:0 0 0 9999px rgba(15,23,42,0.65);
+            /* 대상 요소 강조 링 */
+            outline:3px solid #a5b4fc;outline-offset:2px;
+            transition:top .3s ease,left .3s ease,width .3s ease,height .3s ease;
+            pointer-events:none;   /* 클릭이 뒤 요소로 통과 (안전상 이번엔 튜토리얼 중 조작 유도 X) */
+        }
+        /* 툴팁 카드 */
+        .coach-tooltip{
+            position:fixed;z-index:9999;
+            width:380px;max-width:calc(100vw - 32px);
+            background:#fff;border-radius:14px;
+            box-shadow:0 20px 48px rgba(15,23,42,0.35),0 4px 12px rgba(0,0,0,0.15);
+            font-family:inherit;color:#1e293b;
+            transition:top .3s ease,left .3s ease;
+        }
+        .coach-tooltip-arrow{
+            position:absolute;width:14px;height:14px;background:#fff;
+            transform:rotate(45deg);
+            box-shadow:-2px -2px 4px rgba(15,23,42,0.06);
+        }
+        .coach-tooltip-arrow.pos-top    {top:-7px;   box-shadow:-2px -2px 4px rgba(15,23,42,0.06);}
+        .coach-tooltip-arrow.pos-bottom {bottom:-7px;box-shadow: 2px  2px 4px rgba(15,23,42,0.06);}
+        .coach-tooltip-arrow.pos-left   {left:-7px;  box-shadow:-2px  2px 4px rgba(15,23,42,0.06);}
+        .coach-tooltip-arrow.pos-right  {right:-7px; box-shadow: 2px -2px 4px rgba(15,23,42,0.06);}
+        .coach-tooltip-header{
+            display:flex;align-items:center;justify-content:space-between;
+            padding:16px 18px 8px;
+        }
+        .coach-tooltip-step{
+            font-size:11px;font-weight:800;color:#6366f1;
+            background:#eef2ff;padding:3px 10px;border-radius:12px;
+            letter-spacing:0.4px;
+        }
+        .coach-tooltip-close{
+            border:none;background:transparent;color:#94a3b8;cursor:pointer;
+            font-size:16px;padding:2px 6px;border-radius:6px;line-height:1;
+            transition:all .15s;
+        }
+        .coach-tooltip-close:hover{background:#f1f5f9;color:#475569;}
+        .coach-tooltip-body{
+            padding:2px 18px 6px;
+        }
+        .coach-tooltip-title{
+            font-size:16px;font-weight:800;color:#1e293b;margin:0 0 8px;line-height:1.35;
+        }
+        .coach-tooltip-desc{
+            font-size:13px;color:#475569;line-height:1.6;margin:0;
+            white-space:pre-wrap;   /* 콘텐츠 내 개행 유지 */
+        }
+        .coach-tooltip-desc ul{margin:6px 0 0;padding-left:18px;}
+        .coach-tooltip-desc li{margin:2px 0;}
+        .coach-tooltip-desc .good{color:#059669;font-weight:600;}
+        .coach-tooltip-desc .bad{color:#dc2626;font-weight:600;}
+        .coach-tooltip-footer{
+            display:flex;align-items:center;justify-content:space-between;
+            gap:10px;padding:10px 18px 16px;flex-wrap:wrap;
+        }
+        .coach-tooltip-nohint{
+            font-size:11.5px;color:#94a3b8;
+            display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;
+        }
+        .coach-tooltip-nohint input{
+            margin:0;cursor:pointer;accent-color:#6366f1;
+        }
+        .coach-tooltip-nav{
+            display:flex;gap:6px;flex-shrink:0;
+        }
+        .coach-btn{
+            padding:7px 14px;border-radius:8px;font-size:12.5px;font-weight:700;
+            cursor:pointer;font-family:inherit;transition:all .15s;
+            border:1px solid transparent;line-height:1;
+        }
+        .coach-btn-ghost{
+            background:transparent;color:#64748b;border-color:#e2e8f0;
+        }
+        .coach-btn-ghost:hover{background:#f8fafc;color:#334155;border-color:#cbd5e1;}
+        .coach-btn-ghost:disabled{opacity:.4;cursor:not-allowed;}
+        .coach-btn-primary{
+            background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;
+        }
+        .coach-btn-primary:hover{
+            background:linear-gradient(135deg,#4f46e5,#7c3aed);
+            transform:translateY(-1px);box-shadow:0 4px 12px rgba(99,102,241,0.35);
+        }
+        /* 마무리(완료) 카드 — 스포트라이트 없이 화면 중앙 */
+        .coach-final-card{
+            position:fixed;z-index:9999;top:50%;left:50%;
+            transform:translate(-50%,-50%);
+            width:440px;max-width:calc(100vw - 32px);
+            background:#fff;border-radius:18px;padding:32px 28px 24px;
+            box-shadow:0 24px 64px rgba(15,23,42,0.4),0 8px 20px rgba(0,0,0,0.15);
+            text-align:center;
+            animation:coachScaleIn .28s ease;
+        }
+        @keyframes coachScaleIn{from{opacity:0;transform:translate(-50%,-50%) scale(.92);}to{opacity:1;transform:translate(-50%,-50%) scale(1);}}
+        .coach-final-icon{
+            width:56px;height:56px;border-radius:16px;margin:0 auto 14px;
+            background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;
+            display:flex;align-items:center;justify-content:center;font-size:26px;
+            box-shadow:0 8px 20px rgba(99,102,241,0.35);
+        }
+        .coach-final-title{font-size:19px;font-weight:800;color:#1e293b;margin:0 0 10px;}
+        .coach-final-desc{font-size:13.5px;color:#475569;line-height:1.7;margin:0 0 20px;}
+        .coach-final-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;}
+        .coach-final-btns .coach-btn{padding:10px 18px;font-size:13px;}
+        .coach-final-close{
+            position:absolute;top:12px;right:12px;
+            border:none;background:transparent;color:#94a3b8;cursor:pointer;
+            font-size:16px;padding:4px 8px;border-radius:6px;line-height:1;
+        }
+        .coach-final-close:hover{background:#f1f5f9;color:#475569;}
+        /* 화면이 아주 좁을 때 (모바일) 폴백 — 툴팁을 중앙 하단 배치, 스포트라이트는 유지 */
+        @media (max-width:640px){
+            .coach-tooltip{width:calc(100vw - 24px);}
         }
         .glossary-context-badge{
             display:inline-flex;align-items:center;gap:4px;
@@ -1250,8 +1393,14 @@ async function initDomainAndRole() {
             nav.innerHTML = me.menus.map(m => {
                 const isActive = (m.menu_url === '/') ? (currentPath === '/' || currentPath === '/index.html') : (currentPath === m.menu_url);
                 if (m.menu_url === '/') {
+                    // 자연어 질의 메뉴 → 옆에 [사용법(?)] 버튼 부착 (튜토리얼 재실행용)
+                    //   - 클릭 시 startCoachMark() 호출, 이벤트 버블링 방지 (메뉴 클릭 startNewChat 과 분리)
+                    //   - 사이드바는 열린 상태 유지 (사용자가 튜토리얼 종료 후 다시 메뉴 접근 가능)
                     return `<div class="sidebar-menu-item${isActive ? ' active' : ''}" onclick="startNewChat();closeSidebar()">
                         <i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span>
+                        <button class="sidebar-help-btn" onclick="event.stopPropagation();closeSidebar();startCoachMark('manual');" title="사용법 다시 보기" aria-label="사용법 다시 보기">
+                            <i class="fas fa-question-circle"></i>
+                        </button>
                     </div>`;
                 }
                 return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive ? ' active' : ''}" style="text-decoration:none;">
@@ -5033,6 +5182,385 @@ function startNewChat() {
     }
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
 }
+
+// ================================================================
+// 📚 튜토리얼 / 코치마크 (Coach mark)
+// ----------------------------------------------------------------
+// - 자연어 질의 화면 최초 진입 시 1회 자동 표시 (localStorage 로 추적)
+// - 사이드메뉴 [자연어 질의] 옆 (?) 버튼 클릭 시 언제든 재실행
+// - 5개 콘텐츠 스텝 + 1개 마무리 화면 = 총 6단계
+// - 각 스텝은 화면의 대상 요소를 스포트라이트로 강조하고, 툴팁 카드를
+//   대상 요소를 가리지 않는 위치(상/하/좌/우 중 자동 선택)에 표시
+// - 리사이즈/스크롤 시 스포트라이트/툴팁 위치 재계산
+// - 기존 자연어 질의·용어집·학습관리 기능은 건드리지 않음 (별도 오버레이)
+// ================================================================
+const COACH_LS_KEY = 'nlqCoachMarkSeen_v1';   // '1' 이면 자동 표시 스킵
+let coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null };
+
+// 스텝 정의: target 은 CSS selector, content 는 툴팁에 표시할 HTML
+//   preferred 는 툴팁을 대상 요소의 어느 방향에 두고 싶은지 힌트 (bottom/top/left/right/auto).
+//   실제 위치는 viewport 안에 들어가는지 검사한 뒤 자동 조정.
+const COACH_STEPS = [
+    {
+        target: '#domainSelectorBar',
+        preferred: 'bottom',
+        title: '1단계 · 업무영역과 도메인 선택',
+        html: `먼저 조회하려는 <b>업무영역과 도메인</b>을 선택해 주세요.<br>
+현재 선택한 <b>PS · HL · MGMT</b> 기준으로 사용 가능한 데이터와 용어가 달라집니다.`
+    },
+    {
+        target: '#glossaryToggleBtn',
+        preferred: 'bottom',
+        title: '2단계 · 용어집 확인',
+        html: `질문하기 전에 상단의 <b>[용어집]</b>을 확인해 주세요.<br>
+용어집에는 <b>현재 채팅에서 사용할 수 있는 데이터항목과 동의어</b>가 표시됩니다.`
+    },
+    {
+        target: '#chipsBar',
+        preferred: 'top',
+        title: '3단계 · 정확한 용어 사용',
+        html: `용어집에 등록된 <b>용어 또는 동의어</b>를 사용하여 질문해 주세요.<br>
+학습관리와 용어집에 등록된 용어를 정확하게 사용할수록 <b>답변 품질</b>이 높아집니다.
+<ul>
+  <li>그냥 <span class="bad">‘매출’</span> 보다 → <span class="good">‘총매출’ · ‘순매출’ · ‘기타매출’</span> 중 정확히 원하는 값</li>
+  <li>그냥 <span class="bad">‘이익’</span> 보다 → <span class="good">‘영업이익’</span></li>
+</ul>`
+    },
+    {
+        target: '#queryInput',
+        preferred: 'top',
+        title: '4단계 · 질문 조건 구체화',
+        html: `질문에는 <b>기간 · 대상 · 지표 · 집계 기준</b>을 함께 작성해 주세요.
+<ul>
+  <li><span class="good">✔ 2026년 6월 플랜트별 순매출을 알려줘</span></li>
+  <li><span class="good">✔ 2026년 5월 대비 6월 자재별 매출총이익 TOP 10을 보여줘</span></li>
+  <li><span class="good">✔ 2026년 상반기 거래처별 영업이익을 분석해줘</span></li>
+</ul>
+<ul>
+  <li><span class="bad">✘ 매출 알려줘</span></li>
+  <li><span class="bad">✘ 어디가 많이 올랐어?</span></li>
+  <li><span class="bad">✘ 원가 분석해줘</span></li>
+</ul>`
+    },
+    {
+        target: '#queryModeBar',
+        preferred: 'top',
+        title: '5단계 · 답변 유형 선택',
+        html: `단순 합계 · 목록 · 순위 조회는 <b>[현황집계]</b>를 이용해 주세요.<br>
+원인 · 추세 · 상관관계 · 시사점 등 상세한 해석이 필요하면 <b>[분석질문]</b>을 이용해 주세요.`
+    },
+    // 마지막 스텝은 대상 요소 없이 중앙 완료 카드로 렌더링 (target 이 특수값 '__final__')
+    {
+        target: '__final__',
+        title: '준비 완료!',
+        html: `정확한 답변을 위해 <b>용어집에 등록된 용어</b>를 확인하고,<br>
+<b>기간 · 대상 · 지표 · 집계 기준</b>을 포함하여 질문해 주세요.`
+    }
+];
+
+// (?) 버튼 / 최초 진입 트리거에서 호출
+//   trigger: 'auto' (최초 자동) | 'manual' (사용자가 ? 버튼 클릭)
+function startCoachMark(trigger) {
+    if (coachState.active) return;   // 중복 실행 방지
+    // 대상 요소 준비 안 됐으면 소량 지연 후 재시도 (초기 로딩 레이스 대비)
+    if (!document.getElementById('domainSelectorBar')) {
+        setTimeout(() => startCoachMark(trigger), 200);
+        return;
+    }
+    // 도메인 강제 선택 모달이 떠 있으면 (최초 로그인/도메인 미설정) 사용자가 도메인을 먼저 고르도록
+    // 대기 — 튜토리얼이 모달을 가리는 문제 방지
+    const dfo = document.getElementById('domainForceOverlay');
+    if (dfo && dfo.style.display && dfo.style.display !== 'none') {
+        if (trigger === 'auto') {
+            // 자동 트리거는 조용히 스킵 (도메인 선택 후 사용자가 ? 버튼으로 볼 수 있음)
+            return;
+        }
+        // 수동 트리거인데 도메인 모달이 열려 있으면 안내 후 종료
+        alert('먼저 분석 영역을 선택해 주세요.');
+        return;
+    }
+    coachState.active = true;
+    coachState.stepIdx = 0;
+    // 오버레이 + 툴팁 컨테이너 생성 (한 번 만들고 재사용)
+    const overlay = document.createElement('div');
+    overlay.className = 'coach-overlay';
+    overlay.id = 'coachOverlay';
+    // 오버레이 클릭 시 아무 반응 X (사용자가 실수로 종료하지 않도록 — 명시적 [닫기] 로만 종료)
+    document.body.appendChild(overlay);
+    const spot = document.createElement('div');
+    spot.className = 'coach-spotlight';
+    spot.id = 'coachSpotlight';
+    document.body.appendChild(spot);
+    const tip = document.createElement('div');
+    tip.className = 'coach-tooltip';
+    tip.id = 'coachTooltip';
+    tip.setAttribute('role', 'dialog');
+    tip.setAttribute('aria-label', '자연어 질의 사용법 튜토리얼');
+    document.body.appendChild(tip);
+    coachState.elems = { overlay, spot, tip };
+    // 리사이즈/스크롤 리스너 (스로틀 없이 CSS transition 만으로도 부드러움)
+    coachState.onResize = () => renderCoachStep();
+    window.addEventListener('resize', coachState.onResize);
+    window.addEventListener('scroll', coachState.onResize, true);
+    // ESC 로 종료 (용어집 ESC 와 충돌하지 않도록: 튜토리얼이 활성일 때만 우선 처리)
+    coachState.onKey = (e) => {
+        if (e.key === 'Escape') { e.stopPropagation(); endCoachMark(); }
+        else if (e.key === 'ArrowRight') { coachNext(); }
+        else if (e.key === 'ArrowLeft')  { coachPrev(); }
+    };
+    document.addEventListener('keydown', coachState.onKey, true);   // capture: 다른 ESC 핸들러보다 먼저
+    renderCoachStep();
+}
+
+function endCoachMark() {
+    if (!coachState.active) return;
+    coachState.active = false;
+    const { overlay, spot, tip } = coachState.elems || {};
+    if (overlay) overlay.remove();
+    if (spot) spot.remove();
+    if (tip) tip.remove();
+    // 완료 카드도 정리
+    const fin = document.getElementById('coachFinalCard');
+    if (fin) fin.remove();
+    if (coachState.onResize) {
+        window.removeEventListener('resize', coachState.onResize);
+        window.removeEventListener('scroll', coachState.onResize, true);
+    }
+    if (coachState.onKey) document.removeEventListener('keydown', coachState.onKey, true);
+    coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null };
+}
+
+function coachNext() {
+    if (!coachState.active) return;
+    if (coachState.stepIdx < COACH_STEPS.length - 1) {
+        coachState.stepIdx++;
+        renderCoachStep();
+    } else {
+        endCoachMark();
+    }
+}
+function coachPrev() {
+    if (!coachState.active) return;
+    if (coachState.stepIdx > 0) {
+        coachState.stepIdx--;
+        renderCoachStep();
+    }
+}
+
+// "다시 보지 않기" 체크박스 토글
+function onCoachDontShowAgain(cb) {
+    try {
+        if (cb.checked) localStorage.setItem(COACH_LS_KEY, '1');
+        else            localStorage.removeItem(COACH_LS_KEY);
+    } catch(_) {}
+}
+
+// [용어집 열기] 완료 카드에서 호출 — 이미 열려있으면 그대로 두고, 닫혀있으면 열기
+function coachOpenGlossaryAndClose() {
+    endCoachMark();
+    try {
+        const alreadyOpen = (typeof glossaryOpen !== 'undefined') && glossaryOpen === true;
+        if (!alreadyOpen && typeof toggleGlossaryPanel === 'function') {
+            toggleGlossaryPanel();
+        }
+    } catch(_) {}
+}
+// [질문 시작하기] 완료 카드에서 호출
+function coachFocusInputAndClose() {
+    endCoachMark();
+    const q = document.getElementById('queryInput');
+    if (q) { try { q.focus(); } catch(_) {} }
+}
+
+// 대상 요소 사각형에 맞춰 스포트라이트/툴팁 위치 계산 후 렌더
+function renderCoachStep() {
+    if (!coachState.active) return;
+    const step = COACH_STEPS[coachState.stepIdx];
+    if (!step) { endCoachMark(); return; }
+    const { overlay, spot, tip } = coachState.elems;
+
+    // 마지막(완료) 스텝 → 스포트라이트/툴팁 대신 중앙 완료 카드
+    if (step.target === '__final__') {
+        spot.style.display = 'none';
+        tip.style.display = 'none';
+        // 이미 카드가 있으면 재사용
+        let fin = document.getElementById('coachFinalCard');
+        if (!fin) {
+            fin = document.createElement('div');
+            fin.className = 'coach-final-card';
+            fin.id = 'coachFinalCard';
+            document.body.appendChild(fin);
+        }
+        const dontShowChecked = (() => { try { return localStorage.getItem(COACH_LS_KEY) === '1'; } catch(_) { return false; } })();
+        fin.innerHTML = `
+            <button class="coach-final-close" onclick="endCoachMark()" title="닫기" aria-label="닫기"><i class="fas fa-times"></i></button>
+            <div class="coach-final-icon"><i class="fas fa-check"></i></div>
+            <h3 class="coach-final-title">${step.title}</h3>
+            <p class="coach-final-desc">${step.html}</p>
+            <div class="coach-final-btns">
+                <button class="coach-btn coach-btn-ghost" onclick="coachOpenGlossaryAndClose()"><i class="fas fa-book" style="margin-right:6px;"></i>용어집 열기</button>
+                <button class="coach-btn coach-btn-primary" onclick="coachFocusInputAndClose()"><i class="fas fa-paper-plane" style="margin-right:6px;"></i>질문 시작하기</button>
+            </div>
+            <label class="coach-tooltip-nohint" style="justify-content:center;margin-top:14px;">
+                <input type="checkbox" ${dontShowChecked ? 'checked' : ''} onchange="onCoachDontShowAgain(this)">
+                <span>다시 보지 않기</span>
+            </label>
+            <div class="coach-tooltip-nav" style="justify-content:center;margin-top:12px;">
+                <button class="coach-btn coach-btn-ghost" onclick="coachPrev()"><i class="fas fa-chevron-left"></i> 이전</button>
+            </div>
+        `;
+        return;
+    }
+
+    // 일반 스텝: 대상 요소 사각형 계산
+    const el = document.querySelector(step.target);
+    if (!el) {
+        // 대상 요소를 찾지 못하면 스킵 (자동 다음 스텝)
+        console.warn('[coach] target not found:', step.target);
+        coachNext();
+        return;
+    }
+    // 대상 요소가 화면에 보이도록 스크롤 (필요 시)
+    try { el.scrollIntoView({ behavior:'smooth', block:'nearest', inline:'nearest' }); } catch(_) {}
+
+    // 완료 카드가 남아 있으면 제거
+    const fin = document.getElementById('coachFinalCard');
+    if (fin) fin.remove();
+
+    spot.style.display = '';
+    tip.style.display = '';
+
+    const rect = el.getBoundingClientRect();
+    const pad = 6;   // 스포트라이트 패딩
+    const spotTop = Math.max(0, rect.top - pad);
+    const spotLeft = Math.max(0, rect.left - pad);
+    const spotW = rect.width + pad * 2;
+    const spotH = rect.height + pad * 2;
+    spot.style.top    = spotTop  + 'px';
+    spot.style.left   = spotLeft + 'px';
+    spot.style.width  = spotW    + 'px';
+    spot.style.height = spotH    + 'px';
+
+    // 툴팁 콘텐츠 렌더
+    const idx = coachState.stepIdx;
+    const total = COACH_STEPS.length;
+    const dontShowChecked = (() => { try { return localStorage.getItem(COACH_LS_KEY) === '1'; } catch(_) { return false; } })();
+    tip.innerHTML = `
+        <div class="coach-tooltip-arrow" id="coachTooltipArrow"></div>
+        <div class="coach-tooltip-header">
+            <span class="coach-tooltip-step">STEP ${idx + 1} / ${total}</span>
+            <button class="coach-tooltip-close" onclick="endCoachMark()" title="닫기" aria-label="닫기"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="coach-tooltip-body">
+            <h4 class="coach-tooltip-title">${step.title}</h4>
+            <div class="coach-tooltip-desc">${step.html}</div>
+        </div>
+        <div class="coach-tooltip-footer">
+            <label class="coach-tooltip-nohint">
+                <input type="checkbox" ${dontShowChecked ? 'checked' : ''} onchange="onCoachDontShowAgain(this)">
+                <span>다시 보지 않기</span>
+            </label>
+            <div class="coach-tooltip-nav">
+                <button class="coach-btn coach-btn-ghost" onclick="coachPrev()" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i> 이전</button>
+                <button class="coach-btn coach-btn-primary" onclick="coachNext()">${idx === total - 1 ? '완료' : '다음'} <i class="fas fa-chevron-right"></i></button>
+            </div>
+        </div>
+    `;
+
+    // 툴팁 크기 측정 → 배치 결정 (viewport 넘치지 않게 자동 조정)
+    // getBoundingClientRect 가 반영되려면 리플로우가 필요 → offsetHeight 강제 접근
+    const tipRect = tip.getBoundingClientRect();
+    const tipW = tipRect.width || 380;
+    const tipH = tipRect.height || 200;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 12;   // 대상 요소와 툴팁 사이 여백
+
+    // 각 방향별 배치 시 툴팁 좌상단 좌표와 화살표 위치
+    const placements = {
+        bottom: {
+            top: rect.bottom + margin,
+            left: rect.left + rect.width / 2 - tipW / 2,
+            fit: (rect.bottom + margin + tipH) <= vh,
+            arrow: 'top'
+        },
+        top: {
+            top: rect.top - margin - tipH,
+            left: rect.left + rect.width / 2 - tipW / 2,
+            fit: (rect.top - margin - tipH) >= 0,
+            arrow: 'bottom'
+        },
+        right: {
+            top: rect.top + rect.height / 2 - tipH / 2,
+            left: rect.right + margin,
+            fit: (rect.right + margin + tipW) <= vw,
+            arrow: 'left'
+        },
+        left: {
+            top: rect.top + rect.height / 2 - tipH / 2,
+            left: rect.left - margin - tipW,
+            fit: (rect.left - margin - tipW) >= 0,
+            arrow: 'right'
+        }
+    };
+    // preferred 우선 → 안 맞으면 bottom → top → right → left 순
+    const order = [step.preferred || 'bottom', 'bottom', 'top', 'right', 'left'];
+    let chosen = null;
+    for (const dir of order) {
+        if (placements[dir] && placements[dir].fit) { chosen = { dir, ...placements[dir] }; break; }
+    }
+    // 그래도 못 찾으면 preferred 사용 (viewport 를 살짝 벗어나도 이 아래 clamp 로 잡음)
+    if (!chosen) chosen = { dir: step.preferred || 'bottom', ...placements[step.preferred || 'bottom'] };
+    // viewport 안으로 clamp
+    let top  = Math.max(8, Math.min(chosen.top,  vh - tipH - 8));
+    let left = Math.max(8, Math.min(chosen.left, vw - tipW - 8));
+    tip.style.top  = top  + 'px';
+    tip.style.left = left + 'px';
+
+    // 화살표 위치 클래스
+    const arrow = document.getElementById('coachTooltipArrow');
+    if (arrow) {
+        arrow.className = 'coach-tooltip-arrow pos-' + chosen.arrow;
+        // 화살표를 대상 요소 중심 쪽으로 정렬 (툴팁 내부 좌표계)
+        if (chosen.arrow === 'top' || chosen.arrow === 'bottom') {
+            const centerX = rect.left + rect.width / 2 - left;
+            const clampX = Math.max(14, Math.min(centerX, tipW - 14));
+            arrow.style.left = (clampX - 7) + 'px';
+            arrow.style.top = '';
+            arrow.style.right = '';
+            arrow.style.bottom = '';
+            if (chosen.arrow === 'top')    arrow.style.top    = '-7px';
+            if (chosen.arrow === 'bottom') arrow.style.bottom = '-7px';
+        } else {
+            const centerY = rect.top + rect.height / 2 - top;
+            const clampY = Math.max(14, Math.min(centerY, tipH - 14));
+            arrow.style.top = (clampY - 7) + 'px';
+            arrow.style.left = '';
+            arrow.style.right = '';
+            arrow.style.bottom = '';
+            if (chosen.arrow === 'left')  arrow.style.left  = '-7px';
+            if (chosen.arrow === 'right') arrow.style.right = '-7px';
+        }
+    }
+}
+
+// 자동 표시: 로그인/도메인 초기화가 끝난 시점에 한 번만 시도
+//   - localStorage '다시 보지 않기' 저장돼 있으면 스킵
+//   - 도메인 강제 선택 모달이 열려 있으면 자동 스킵 (사용자가 ? 버튼으로 재실행 가능)
+function maybeAutoStartCoachMark() {
+    try {
+        if (localStorage.getItem(COACH_LS_KEY) === '1') return;
+    } catch(_) {}
+    // 다른 로직들(사이드바 메뉴, 도메인 셀렉터 바 렌더 등)이 끝난 뒤 실행되도록 살짝 지연
+    setTimeout(() => startCoachMark('auto'), 800);
+}
+// initUser() 등 초기화 파이프라인이 대개 window load 이후 도착하므로 load 이벤트에서 트리거
+window.addEventListener('load', () => {
+    // /learning /builder 등 다른 페이지에는 이 스크립트가 실려도 대상 요소가 없어 자동 스킵됨
+    // (renderCoachStep 이 target not found → coachNext 로 연쇄 진행되지만 자동 트리거 자체는
+    //  domainSelectorBar 존재 여부로 초입에서 걸러짐)
+    maybeAutoStartCoachMark();
+});
 </script>
 <!-- [2026-07-23] 업무영역(수익성분석/제조원가) 탭 UI — 프론트 프리뷰. 서버 API/데이터 미변경. -->
 <script src="/area-tabs.js"></script>
