@@ -332,8 +332,8 @@
         }
 
         .glossary-panel{
-            position:fixed;top:80px;right:24px;
-            width:420px;height:560px;
+            position:fixed;bottom:24px;right:24px;
+            width:420px;height:530px;
             min-width:280px;min-height:240px;
             background:#fff;border-radius:14px;
             box-shadow:0 10px 40px rgba(0,0,0,.25),0 2px 8px rgba(0,0,0,.08);
@@ -1342,10 +1342,11 @@ async function openGlossaryPanel() {
 // ---- 뷰포트 자석 위치 로직 -----------------------------------------
 // 팝업을 항상 현재 브라우저(Viewport) 기준으로 배치/보정.
 // 듀얼 모니터 이동, 창 크기 변경, 배율 변경 등으로 화면 밖에 남지 않도록 함.
-const GLOSSARY_DEFAULT_TOP = 80;      // 기본 top 좌표 (요구사항)
-const GLOSSARY_DEFAULT_RIGHT = 24;    // 기본 right 여백 (요구사항)
-const GLOSSARY_MIN_VISIBLE_X = 80;    // 좌우로 최소 이만큼은 화면 안에 남아야 함 (헤더 일부 노출)
-const GLOSSARY_MIN_VISIBLE_Y = 40;    // 상하로 최소 이만큼은 화면 안에 남아야 함 (헤더 완전 노출)
+const GLOSSARY_DEFAULT_RIGHT  = 24;   // 기본 right 여백 (요구사항)
+const GLOSSARY_DEFAULT_BOTTOM = 24;   // 기본 bottom 여백 (요구사항: 우측 하단 배치)
+const GLOSSARY_MIN_TOP        = 60;   // 최상단 여백 최소치 (상단 헤더/툴바 회피)
+const GLOSSARY_MIN_VISIBLE_X  = 80;   // 좌우로 최소 이만큼은 화면 안에 남아야 함 (헤더 일부 노출)
+const GLOSSARY_MIN_VISIBLE_Y  = 40;   // 상하로 최소 이만큼은 화면 안에 남아야 함 (헤더 완전 노출)
 
 function getViewportSize() {
     // visualViewport 우선 (모바일 zoom/키보드 상황에서 더 정확), 없으면 window
@@ -1356,31 +1357,28 @@ function getViewportSize() {
     };
 }
 
-// 팝업을 현재 뷰포트 우측 상단(top:80, right:24)으로 리셋
+// 팝업을 현재 뷰포트 우측 하단(bottom:24, right:24)으로 리셋
+// drag/resize 로직은 left/top 기반이므로, bottom 앵커에서 top 좌표로 변환하여 저장
 function resetGlossaryToViewport() {
     const panel = document.getElementById('glossaryPanel');
     if (!panel) return;
     const vp = getViewportSize();
-    // 저장된 left/right/top 초기화 → CSS 기본 배치로 복원 후 뷰포트 기반으로 재계산
-    // 다만 크기(width/height) 는 사용자가 리사이즈한 값을 유지하되, 뷰포트에 맞게 clamp
+    // 사용자가 리사이즈한 크기는 최대한 유지하되, 뷰포트에 맞게 clamp
     let w = panel.offsetWidth  || 420;
-    let h = panel.offsetHeight || 560;
+    let h = panel.offsetHeight || 530;
     // 뷰포트보다 크면 축소 (여백 24px 유지)
     w = Math.min(w, Math.max(280, vp.w - 48));
-    h = Math.min(h, Math.max(240, vp.h - GLOSSARY_DEFAULT_TOP - 24));
+    h = Math.min(h, Math.max(240, vp.h - GLOSSARY_MIN_TOP - GLOSSARY_DEFAULT_BOTTOM));
     panel.style.width  = w + 'px';
     panel.style.height = h + 'px';
-    // right 기반 배치 사용 (뷰포트 우측 24px 여백)
-    // 단, 우측 24 + 팝업폭 이 뷰포트를 넘으면 left 기반으로 강제 이동
-    if (GLOSSARY_DEFAULT_RIGHT + w > vp.w) {
-        panel.style.left  = Math.max(0, vp.w - w - 8) + 'px';
-        panel.style.right = 'auto';
-        panel.style.top   = GLOSSARY_DEFAULT_TOP + 'px';
-    } else {
-        panel.style.left  = 'auto';
-        panel.style.right = GLOSSARY_DEFAULT_RIGHT + 'px';
-        panel.style.top   = GLOSSARY_DEFAULT_TOP + 'px';
-    }
+    // 우측 하단 앵커 → 실제 저장은 left/top 기반으로 (드래그/리사이즈 로직 호환)
+    // top = 뷰포트높이 - 팝업높이 - bottom여백 (단, 최상단 여백 이상 확보)
+    const top  = Math.max(GLOSSARY_MIN_TOP, vp.h - h - GLOSSARY_DEFAULT_BOTTOM);
+    const left = Math.max(0, vp.w - w - GLOSSARY_DEFAULT_RIGHT);
+    panel.style.left   = Math.round(left) + 'px';
+    panel.style.top    = Math.round(top)  + 'px';
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
 }
 
 // 팝업이 뷰포트 밖으로 벗어난 경우 안쪽으로 강제로 끌어오기
@@ -1429,12 +1427,14 @@ function clampGlossaryIntoViewport() {
     }
 
     // 소수점 이슈 방지: 1px 이상 차이가 있을 때만 갱신
+    // right/bottom 앵커가 남아 있으면 left/top 기반으로 통일 (드래그/리사이즈 로직 호환)
     if (Math.abs(nextLeft - curLeft) > 0.5 || panel.style.right !== 'auto') {
         panel.style.left  = Math.round(nextLeft) + 'px';
         panel.style.right = 'auto';
     }
-    if (Math.abs(nextTop - curTop) > 0.5) {
-        panel.style.top = Math.round(nextTop) + 'px';
+    if (Math.abs(nextTop - curTop) > 0.5 || panel.style.bottom !== 'auto') {
+        panel.style.top    = Math.round(nextTop) + 'px';
+        panel.style.bottom = 'auto';
     }
 }
 
@@ -1579,10 +1579,11 @@ function escHtml(s) {
         offX = e.clientX - rect.left;
         offY = e.clientY - rect.top;
         dragging = true;
-        // right 기반 → left 기반 좌표로 전환하여 이동 자유롭게
+        // right/bottom 기반 → left/top 기반 좌표로 전환하여 이동 자유롭게
         panel.style.left = rect.left + 'px';
         panel.style.top  = rect.top  + 'px';
-        panel.style.right = 'auto';
+        panel.style.right  = 'auto';
+        panel.style.bottom = 'auto';
         document.body.style.userSelect = 'none';
     }
     function onMouseMove(e) {
@@ -1620,11 +1621,14 @@ function escHtml(s) {
         e.preventDefault();
         e.stopPropagation();
         const rect = panel.getBoundingClientRect();
-        // right 기반 배치인 경우 left 기반으로 변환 (드래그와 동일한 방식)
-        if (panel.style.right && panel.style.right !== 'auto') {
-            panel.style.left = rect.left + 'px';
-            panel.style.top  = rect.top  + 'px';
-            panel.style.right = 'auto';
+        // right/bottom 기반 배치인 경우 left/top 기반으로 변환 (드래그와 동일한 방식)
+        const rightAnchored  = panel.style.right  && panel.style.right  !== 'auto';
+        const bottomAnchored = panel.style.bottom && panel.style.bottom !== 'auto';
+        if (rightAnchored || bottomAnchored) {
+            panel.style.left   = rect.left + 'px';
+            panel.style.top    = rect.top  + 'px';
+            panel.style.right  = 'auto';
+            panel.style.bottom = 'auto';
         }
         startX = e.clientX;
         startY = e.clientY;
