@@ -212,6 +212,17 @@
         .syn-chip .syn-del:hover{color:#ef4444;}
         .syn-chip.pending-add{background:#dcfce7;color:#16a34a;border-color:#86efac;animation:pendingPulse 2s infinite;}
         .syn-chip.pending-del{background:#fef2f2;color:#dc2626;border-color:#fecaca;text-decoration:line-through;opacity:0.6;}
+        /* 검색어 하이라이트 — 형광펜 (용어집 index.html .glossary-hl 과 동일 스타일)
+           - 배경만 연한 노랑, 나머지 폰트/색상은 전부 inherit → 원래 글자색·폰트 유지
+           - padding:0; margin:0; line-height:inherit → 행 높이/컬럼 너비/버튼 위치 변화 없음
+           - box-decoration-break:clone → 줄바꿈 시에도 자연스러운 형광펜 효과
+           - syn-chip 안에서도 문제 없이 동작 (inline element) */
+        .learn-hl{
+            background-color:#fef08a;
+            color:inherit;font-weight:inherit;font-style:inherit;font-size:inherit;
+            padding:0;margin:0;line-height:inherit;border-radius:2px;
+            box-decoration-break:clone;-webkit-box-decoration-break:clone;
+        }
         /* Metric row pending styles */
         .metric-row-pending-add{background:#f0fdf4 !important;}
         .metric-row-pending-add td{color:#16a34a;}
@@ -1328,16 +1339,29 @@ function renderOntology() {
         tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-400 py-8">검색 결과가 없습니다. <button class="btn btn-outline btn-sm" style="margin-left:8px;" onclick="clearOntSearch()"><i class="fas fa-times"></i> 검색 해제</button></td></tr>';
         return;
     }
+    // 하이라이트 적용 대상 판정 — 현재 검색 스코프에서 실제 매칭 대상이 되는 필드에만 형광펜 표시
+    //   'all'         → 컬럼명 + 설명 + 동의어 모두 하이라이트
+    //   'column_name' → 컬럼명만
+    //   'description' → 설명만
+    //   'synonym'     → 동의어만
+    //   (빈 검색어는 escWithHighlight 내부에서 이미 no-op)
+    const hlTerm = isFiltering ? ontSearchTerm : '';
+    const hlCol  = (ontSearchScope === 'all' || ontSearchScope === 'column_name') ? hlTerm : '';
+    const hlDesc = (ontSearchScope === 'all' || ontSearchScope === 'description') ? hlTerm : '';
+    const hlSyn  = (ontSearchScope === 'all' || ontSearchScope === 'synonym')     ? hlTerm : '';
+
     tbody.innerHTML = rows.map((c, i) => {
         const existingSyns = (c.synonyms||[]).map(s => {
             const isDel = pendingOntDeletes.includes(s.id);
+            // 주의: title / onclick 등의 속성값에는 하이라이트 마크업이 포함되면 안 됨 → esc() 그대로 사용
+            //      chip 텍스트(표시 영역)에만 escWithHighlight() 적용
             if (isDel) {
-                return `<span class="syn-chip pending-del" title="삭제 예정 (클릭하면 취소)" onclick="undoDelOntSynonym(${s.id})">${esc(s.text)} <i class="fas fa-undo" style="font-size:9px;margin-left:3px;"></i></span>`;
+                return `<span class="syn-chip pending-del" title="삭제 예정 (클릭하면 취소)" onclick="undoDelOntSynonym(${s.id})">${escWithHighlight(s.text, hlSyn)} <i class="fas fa-undo" style="font-size:9px;margin-left:3px;"></i></span>`;
             }
-            return `<span class="syn-chip">${esc(s.text)}<span class="syn-del" onclick="delOntSynonym(${s.id})" title="삭제">&times;</span></span>`;
+            return `<span class="syn-chip">${escWithHighlight(s.text, hlSyn)}<span class="syn-del" onclick="delOntSynonym(${s.id})" title="삭제">&times;</span></span>`;
         }).join('');
         const pendingAdds = pendingOntAdds.filter(p => p.colId === c.id).map(p =>
-            `<span class="syn-chip pending-add">${esc(p.text)}<span class="syn-del" onclick="delOntSynonym(${p.tempId + 900001})" title="취소">&times;</span></span>`
+            `<span class="syn-chip pending-add">${escWithHighlight(p.text, hlSyn)}<span class="syn-del" onclick="delOntSynonym(${p.tempId + 900001})" title="취소">&times;</span></span>`
         ).join('');
         // is_active 가 컬럼에 없을 수도 있는 옛 응답에 대비해 기본값 1 처리
         const isActive = (c.is_active === undefined || c.is_active === null) ? 1 : Number(c.is_active);
@@ -1346,9 +1370,9 @@ function renderOntology() {
         const lblTxt = isActive ? '활성' : '비활성';
         return `
         <tr class="${rowCls}" id="ont-row-${c.id}">
-            <td class="mono font-semibold">${esc(c.column_name)}</td>
+            <td class="mono font-semibold">${escWithHighlight(c.column_name, hlCol)}</td>
             <td class="text-xs text-gray-500">${esc(c.table_name || '')}</td>
-            <td>${esc(c.description || '')}</td>
+            <td>${escWithHighlight(c.description || '', hlDesc)}</td>
             <td><span class="badge badge-blue">${esc(c.data_type || '-')}</span></td>
             <td style="text-align:center;white-space:nowrap;">
                 <label class="toggle-switch" title="${isActive ? '비활성화하면 NLQ/빌더에서 숨겨집니다.' : '활성화하면 NLQ/빌더에 노출됩니다.'}">
@@ -2065,6 +2089,28 @@ function showResult(result) {
 // Utils
 // ============================================================
 function esc(s) { if (s == null) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+
+// 정규식 특수문자 이스케이프 (검색어에 . * + ? ( ) [ ] { } \ ^ $ | 등이 있어도 안전)
+function escRegex(s) {
+    return String(s == null ? '' : s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 검색어 형광펜 하이라이트 (용어집 index.html 의 escHtmlWithHighlight 와 동일 방식)
+//   1) 원본 문자열을 esc() 로 HTML 이스케이프 → XSS 원천 차단
+//   2) 검색어도 esc() → HTML entity 로 변환된 후 매칭 (정합성 유지: 예 '<' → '&lt;')
+//   3) escRegex 로 정규식 특수문자 이스케이프 → RegExp 생성 시 에러 없음
+//   4) 'gi' flag → 대소문자 무시 + 문장 내 모든 매치 강조
+//   5) 검색어가 비어 있으면 esc() 결과 그대로 반환 → 하이라이트 없음
+// 원본 데이터 미변경 / 표시 레이어(HTML 문자열)에만 <span.learn-hl> 마크업 추가
+function escWithHighlight(s, term) {
+    const escaped = esc(s);
+    if (!term) return escaped;
+    const t = String(term).trim();
+    if (!t) return escaped;
+    const escapedTerm = esc(t);
+    const rx = new RegExp(escRegex(escapedTerm), 'gi');
+    return escaped.replace(rx, m => `<span class="learn-hl">${m}</span>`);
+}
 
 // ============================================================
 // Pending changes helpers
