@@ -457,22 +457,27 @@
         .glossary-search-clear:focus-visible{outline:2px solid #818cf8;outline-offset:1px;}
 
         .glossary-body{
-            flex:1;overflow-y:auto;padding:0 0 22px 0;user-select:text;
+            flex:1;overflow-y:auto;overflow-x:hidden;
+            padding:0 0 22px 0;user-select:text;
             scrollbar-gutter:stable;
         }
         .glossary-empty{
             padding:32px 16px;text-align:center;color:#94a3b8;font-size:13px;
         }
         .glossary-cat-label{
+            /* 팝업 본문 너비에 맞게 유지 — 긴 라벨/카운트가 와도 밀리지 않도록 */
+            box-sizing:border-box;width:100%;
             padding:6px 14px;font-size:11px;font-weight:700;
             color:#475569;background:#f1f5f9;
             text-transform:uppercase;letter-spacing:0.5px;
             position:sticky;top:0;z-index:2;
             border-bottom:1px solid #e2e8f0;
             box-shadow:0 2px 4px -2px rgba(15,23,42,.08);
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
         }
         .glossary-cat-label:first-child{margin-top:0;}
         .glossary-item{
+            box-sizing:border-box;width:100%;
             display:flex;align-items:flex-start;gap:10px;
             padding:8px 14px;border-bottom:1px solid #f8fafc;
             transition:background .1s;
@@ -483,19 +488,40 @@
             background:linear-gradient(135deg,#6366f1,#8b5cf6);
             color:#fff;font-weight:700;font-size:12px;
             display:flex;align-items:center;justify-content:center;
+            /* 아이콘·컬럼명·동의어 상단 정렬(부모 flex-start) 기준선을 잡기 위한 여백 */
+            margin-top:1px;
         }
         .glossary-icon.metric{background:linear-gradient(135deg,#7c3aed,#a855f7);}
         .glossary-item-body{
-            flex:1;min-width:0;display:flex;justify-content:space-between;
+            flex:1 1 auto;min-width:0;max-width:100%;
+            display:flex;justify-content:space-between;
             gap:10px;align-items:flex-start;
+            overflow:hidden;
+        }
+        /* 컬럼명(좌) · 동의어(우) 공통: 최대 2줄 말줄임, 어떤 문자열이 와도 넘치지 않도록 */
+        .glossary-col-name,
+        .glossary-synonyms{
+            min-width:0;
+            display:-webkit-box;
+            -webkit-box-orient:vertical;
+            -webkit-line-clamp:2;
+            line-clamp:2;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            /* 언어 무관하게 넘치지 않도록 — CJK 는 자연 줄바꿈, 긴 영문/숫자열은 강제 분할 */
+            overflow-wrap:anywhere;
+            word-break:break-word;
         }
         .glossary-col-name{
+            /* 좌 55% : 우 45% 고정 비율. flex-basis 로 폭 확보하되 자식은 min-width:0 로 축소 허용 */
+            flex:0 0 55%;max-width:55%;
             font-size:13px;font-weight:600;color:#1e293b;
-            flex-shrink:0;
+            line-height:1.4;
         }
         .glossary-synonyms{
+            flex:0 0 45%;max-width:45%;
             font-size:11px;color:#94a3b8;text-align:right;
-            line-height:1.4;word-break:keep-all;
+            line-height:1.4;
         }
         /* 검색어 하이라이트 — 형광펜 효과. 인라인·색상/폰트 유지·행 높이 변화 없음 */
         .glossary-hl{
@@ -1608,15 +1634,17 @@ function renderGlossary() {
         items.forEach(c => {
             const iconChar = c.is_metric ? 'ƒ' : (c.type === 'number' ? '#' : 'T');
             const iconCls = c.is_metric ? 'glossary-icon metric' : 'glossary-icon';
-            const label = escHtmlWithHighlight(c.label || c.name || '-', hlTerm);
-            const syns = (c.synonyms || []).filter(s => s && String(s).trim());
-            const synsText = syns.length > 0 ? escHtmlWithHighlight(syns.join(', '), hlTerm) : '<span style="color:#cbd5e1;">-</span>';
+            // 원본 텍스트 (툴팁용 — 2줄 말줄임 넘치는 경우에도 전체 내용 확인 가능)
+            const labelRaw = c.label || c.name || '-';
+            const synsRaw  = (c.synonyms || []).filter(s => s && String(s).trim()).join(', ');
+            const label = escHtmlWithHighlight(labelRaw, hlTerm);
+            const synsText = synsRaw ? escHtmlWithHighlight(synsRaw, hlTerm) : '<span style="color:#cbd5e1;">-</span>';
             html += `
                 <div class="glossary-item" title="${escHtml(c.name || '')}">
                     <div class="${iconCls}">${iconChar}</div>
                     <div class="glossary-item-body">
-                        <div class="glossary-col-name">${label}</div>
-                        <div class="glossary-synonyms">${synsText}</div>
+                        <div class="glossary-col-name" title="${escHtml(labelRaw)}">${label}</div>
+                        <div class="glossary-synonyms" title="${escHtml(synsRaw)}">${synsText}</div>
                     </div>
                 </div>`;
         });
@@ -1628,10 +1656,11 @@ function renderGlossary() {
         const items = grouped[cat];
         html += `<div class="glossary-cat-label">${escHtml(cat)} (${items.length})</div>`;
         items.forEach(c => {
-            const label = escHtmlWithHighlight(c.label || c.name || '-', hlTerm);
-            const syns = (c.synonyms || []).filter(s => s);
-            const synsText = syns.length ? escHtmlWithHighlight(syns.join(', '), hlTerm) : '<span style="color:#cbd5e1;">-</span>';
-            html += `<div class="glossary-item"><div class="glossary-icon">T</div><div class="glossary-item-body"><div class="glossary-col-name">${label}</div><div class="glossary-synonyms">${synsText}</div></div></div>`;
+            const labelRaw = c.label || c.name || '-';
+            const synsRaw  = (c.synonyms || []).filter(s => s).join(', ');
+            const label = escHtmlWithHighlight(labelRaw, hlTerm);
+            const synsText = synsRaw ? escHtmlWithHighlight(synsRaw, hlTerm) : '<span style="color:#cbd5e1;">-</span>';
+            html += `<div class="glossary-item"><div class="glossary-icon">T</div><div class="glossary-item-body"><div class="glossary-col-name" title="${escHtml(labelRaw)}">${label}</div><div class="glossary-synonyms" title="${escHtml(synsRaw)}">${synsText}</div></div></div>`;
         });
     });
 
