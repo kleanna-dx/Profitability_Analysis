@@ -478,6 +478,13 @@
             font-size:11px;color:#94a3b8;text-align:right;
             line-height:1.4;word-break:keep-all;
         }
+        /* 검색어 하이라이트 — 형광펜 효과. 인라인·색상/폰트 유지·행 높이 변화 없음 */
+        .glossary-hl{
+            background-color:#fef08a;    /* light yellow */
+            color:inherit;font-weight:inherit;font-style:inherit;font-size:inherit;
+            padding:0;margin:0;line-height:inherit;border-radius:2px;
+            box-decoration-break:clone;-webkit-box-decoration-break:clone;
+        }
         .glossary-context-badge{
             display:inline-flex;align-items:center;gap:4px;
             padding:2px 8px;background:rgba(255,255,255,.2);
@@ -1546,6 +1553,8 @@ function renderGlossary() {
     });
 
     let html = '';
+    // 하이라이트 대상 문자열: 현재 검색어 (하이라이트만 위한 로컬 변수, 필터링에는 영향 없음)
+    const hlTerm = term;
     GLOSSARY_CATEGORY_ORDER.forEach(cat => {
         const items = grouped[cat];
         if (!items || items.length === 0) return;
@@ -1553,9 +1562,9 @@ function renderGlossary() {
         items.forEach(c => {
             const iconChar = c.is_metric ? 'ƒ' : (c.type === 'number' ? '#' : 'T');
             const iconCls = c.is_metric ? 'glossary-icon metric' : 'glossary-icon';
-            const label = escHtml(c.label || c.name || '-');
+            const label = escHtmlWithHighlight(c.label || c.name || '-', hlTerm);
             const syns = (c.synonyms || []).filter(s => s && String(s).trim());
-            const synsText = syns.length > 0 ? escHtml(syns.join(', ')) : '<span style="color:#cbd5e1;">-</span>';
+            const synsText = syns.length > 0 ? escHtmlWithHighlight(syns.join(', '), hlTerm) : '<span style="color:#cbd5e1;">-</span>';
             html += `
                 <div class="glossary-item" title="${escHtml(c.name || '')}">
                     <div class="${iconCls}">${iconChar}</div>
@@ -1573,9 +1582,9 @@ function renderGlossary() {
         const items = grouped[cat];
         html += `<div class="glossary-cat-label">${escHtml(cat)} (${items.length})</div>`;
         items.forEach(c => {
-            const label = escHtml(c.label || c.name || '-');
+            const label = escHtmlWithHighlight(c.label || c.name || '-', hlTerm);
             const syns = (c.synonyms || []).filter(s => s);
-            const synsText = syns.length ? escHtml(syns.join(', ')) : '<span style="color:#cbd5e1;">-</span>';
+            const synsText = syns.length ? escHtmlWithHighlight(syns.join(', '), hlTerm) : '<span style="color:#cbd5e1;">-</span>';
             html += `<div class="glossary-item"><div class="glossary-icon">T</div><div class="glossary-item-body"><div class="glossary-col-name">${label}</div><div class="glossary-synonyms">${synsText}</div></div></div>`;
         });
     });
@@ -1588,6 +1597,27 @@ function escHtml(s) {
     return String(s == null ? '' : s)
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// 정규식 특수문자 이스케이프 (검색어에 . * + ? ( ) [ ] { } \ ^ $ | 등이 있어도 안전)
+function escRegex(s) {
+    return String(s == null ? '' : s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 검색어 하이라이트: HTML 이스케이프 후 term 일치 부분을 <span.glossary-hl> 로 래핑.
+// - term 이 비어있으면 단순 escHtml 결과 반환
+// - 대소문자 무시 (i flag), 문장 내 모든 매치 강조 (g flag)
+// - HTML 특수문자가 term 에 포함되어도 escaped 값 기준으로 매칭하므로 안전
+// - 원본 데이터 미변경, 표시 문자열만 마크업 추가
+function escHtmlWithHighlight(s, term) {
+    const escaped = escHtml(s);
+    if (!term) return escaped;
+    const t = String(term).trim();
+    if (!t) return escaped;
+    // 검색 대상(문자열)과 검색어 모두 escHtml 처리한 뒤에 매칭 → HTML entity 정합성 유지
+    const escapedTerm = escHtml(t);
+    const rx = new RegExp(escRegex(escapedTerm), 'gi');
+    return escaped.replace(rx, m => `<span class="glossary-hl">${m}</span>`);
 }
 
 // 헤더 드래그로 위치 이동
