@@ -430,12 +430,31 @@
         .glossary-search{
             padding:8px 14px 10px;border-bottom:1px solid #f1f5f9;background:#fafbfc;flex-shrink:0;
         }
+        .glossary-search-wrap{
+            position:relative;width:100%;
+        }
         .glossary-search input{
-            width:100%;padding:8px 12px;border:1px solid #e2e8f0;
+            width:100%;padding:8px 32px 8px 12px;border:1px solid #e2e8f0;
             border-radius:8px;font-size:13px;font-family:inherit;outline:none;
-            transition:border-color .15s;
+            transition:border-color .15s;box-sizing:border-box;
         }
         .glossary-search input:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
+        /* 브라우저 기본 search cancel 버튼 숨김 (Chrome/Safari/Edge) */
+        .glossary-search input::-webkit-search-cancel-button,
+        .glossary-search input::-webkit-search-decoration{-webkit-appearance:none;appearance:none;}
+        /* 커스텀 X (clear) 버튼 — 검색어가 있을 때만 표시 */
+        .glossary-search-clear{
+            position:absolute;top:50%;right:6px;transform:translateY(-50%);
+            width:22px;height:22px;border:none;background:transparent;
+            padding:0;margin:0;cursor:pointer;border-radius:50%;
+            color:#94a3b8;font-size:12px;line-height:1;
+            display:none;align-items:center;justify-content:center;
+            transition:background .15s,color .15s;
+        }
+        .glossary-search-clear.visible{display:flex;}
+        .glossary-search-clear:hover{background:#e2e8f0;color:#475569;}
+        .glossary-search-clear:active{background:#cbd5e1;}
+        .glossary-search-clear:focus-visible{outline:2px solid #818cf8;outline-offset:1px;}
 
         .glossary-body{
             flex:1;overflow-y:auto;padding:0 0 22px 0;user-select:text;
@@ -1028,7 +1047,12 @@
             </button>
         </div>
         <div class="glossary-search">
-            <input type="text" id="glossarySearchInput" placeholder="필드 검색 (컬럼명·설명·동의어)" oninput="renderGlossary()">
+            <div class="glossary-search-wrap">
+                <input type="text" id="glossarySearchInput" placeholder="필드 검색 (컬럼명·설명·동의어)" oninput="renderGlossary()" autocomplete="off">
+                <button type="button" class="glossary-search-clear" id="glossarySearchClear" onclick="clearGlossarySearch()" title="검색어 지우기" aria-label="검색어 지우기">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
         </div>
         <div class="glossary-body" id="glossaryBody">
             <div class="glossary-empty">로딩 중...</div>
@@ -1489,11 +1513,18 @@ function closeGlossaryPanel() {
     glossaryOpen = false;
 }
 
-// ESC 키로 용어집 닫기 (열려 있을 때만)
+// ESC 키:
+//   1) 용어집이 열려 있고 검색어가 있으면 → 검색어만 지우기 (팝업은 유지)
+//   2) 검색어가 비어 있으면 → 팝업 닫기
+// 사용자가 검색 결과 확인 후 검색어만 초기화하고 싶은 경우를 배려
 document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && glossaryOpen) {
-        closeGlossaryPanel();
+    if (e.key !== 'Escape' || !glossaryOpen) return;
+    const searchEl = document.getElementById('glossarySearchInput');
+    if (searchEl && searchEl.value.length > 0) {
+        clearGlossarySearch();
+        return;
     }
+    closeGlossaryPanel();
 });
 
 async function loadGlossary() {
@@ -1522,11 +1553,26 @@ async function loadGlossary() {
     }
 }
 
+// 검색어 한 번에 지우기 — X 버튼 클릭 시 호출
+function clearGlossarySearch() {
+    const searchEl = document.getElementById('glossarySearchInput');
+    if (!searchEl) return;
+    searchEl.value = '';
+    renderGlossary();
+    // 지운 뒤 다시 검색창에 포커스 — 바로 이어서 재입력 가능
+    searchEl.focus();
+}
+
 function renderGlossary() {
     const body = document.getElementById('glossaryBody');
     if (!body) return;
     const searchEl = document.getElementById('glossarySearchInput');
-    const term = (searchEl?.value || '').trim().toLowerCase();
+    const rawTerm = searchEl?.value || '';
+    const term = rawTerm.trim().toLowerCase();
+
+    // X(clear) 버튼 표시/숨김 동기화 — 원본 입력값 기준 (공백만 있어도 지울 수 있게)
+    const clearBtn = document.getElementById('glossarySearchClear');
+    if (clearBtn) clearBtn.classList.toggle('visible', rawTerm.length > 0);
 
     // 검색: 컬럼명(label) + 원본명(name) + 동의어 부분일치
     const filtered = !term ? glossaryData : glossaryData.filter(c => {
