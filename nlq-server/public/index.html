@@ -332,7 +332,7 @@
         }
 
         .glossary-panel{
-            position:fixed;top:70px;right:20px;
+            position:fixed;top:80px;right:24px;
             width:420px;height:560px;
             min-width:280px;min-height:240px;
             background:#fff;border-radius:14px;
@@ -1313,9 +1313,13 @@ async function openGlossaryPanel() {
     const panel = document.getElementById('glossaryPanel');
     const btn = document.getElementById('glossaryToggleBtn');
     if (!panel) return;
+    // 열 때마다 현재 뷰포트 기준 우측 상단에 재배치 (듀얼 모니터 이동/브라우저 최대화 등 대응)
+    resetGlossaryToViewport();
     panel.classList.add('open');
     btn?.classList.add('active');
     glossaryOpen = true;
+    // open 상태로 클래스가 붙은 후에도 한 번 더 clamp — 크기 변화 대비
+    requestAnimationFrame(() => clampGlossaryIntoViewport());
     // 최초 몇 회는 리사이즈 핸들 위치를 사용자에게 알려주기 위해 펄스 힌트
     try {
         const KEY = 'glossary_resize_hint_shown';
@@ -1334,6 +1338,124 @@ async function openGlossaryPanel() {
     } catch (e) { /* localStorage 미지원 무시 */ }
     await loadGlossary();
 }
+
+// ---- 뷰포트 자석 위치 로직 -----------------------------------------
+// 팝업을 항상 현재 브라우저(Viewport) 기준으로 배치/보정.
+// 듀얼 모니터 이동, 창 크기 변경, 배율 변경 등으로 화면 밖에 남지 않도록 함.
+const GLOSSARY_DEFAULT_TOP = 80;      // 기본 top 좌표 (요구사항)
+const GLOSSARY_DEFAULT_RIGHT = 24;    // 기본 right 여백 (요구사항)
+const GLOSSARY_MIN_VISIBLE_X = 80;    // 좌우로 최소 이만큼은 화면 안에 남아야 함 (헤더 일부 노출)
+const GLOSSARY_MIN_VISIBLE_Y = 40;    // 상하로 최소 이만큼은 화면 안에 남아야 함 (헤더 완전 노출)
+
+function getViewportSize() {
+    // visualViewport 우선 (모바일 zoom/키보드 상황에서 더 정확), 없으면 window
+    const vv = window.visualViewport;
+    return {
+        w: (vv && vv.width)  ? vv.width  : window.innerWidth,
+        h: (vv && vv.height) ? vv.height : window.innerHeight,
+    };
+}
+
+// 팝업을 현재 뷰포트 우측 상단(top:80, right:24)으로 리셋
+function resetGlossaryToViewport() {
+    const panel = document.getElementById('glossaryPanel');
+    if (!panel) return;
+    const vp = getViewportSize();
+    // 저장된 left/right/top 초기화 → CSS 기본 배치로 복원 후 뷰포트 기반으로 재계산
+    // 다만 크기(width/height) 는 사용자가 리사이즈한 값을 유지하되, 뷰포트에 맞게 clamp
+    let w = panel.offsetWidth  || 420;
+    let h = panel.offsetHeight || 560;
+    // 뷰포트보다 크면 축소 (여백 24px 유지)
+    w = Math.min(w, Math.max(280, vp.w - 48));
+    h = Math.min(h, Math.max(240, vp.h - GLOSSARY_DEFAULT_TOP - 24));
+    panel.style.width  = w + 'px';
+    panel.style.height = h + 'px';
+    // right 기반 배치 사용 (뷰포트 우측 24px 여백)
+    // 단, 우측 24 + 팝업폭 이 뷰포트를 넘으면 left 기반으로 강제 이동
+    if (GLOSSARY_DEFAULT_RIGHT + w > vp.w) {
+        panel.style.left  = Math.max(0, vp.w - w - 8) + 'px';
+        panel.style.right = 'auto';
+        panel.style.top   = GLOSSARY_DEFAULT_TOP + 'px';
+    } else {
+        panel.style.left  = 'auto';
+        panel.style.right = GLOSSARY_DEFAULT_RIGHT + 'px';
+        panel.style.top   = GLOSSARY_DEFAULT_TOP + 'px';
+    }
+}
+
+// 팝업이 뷰포트 밖으로 벗어난 경우 안쪽으로 강제로 끌어오기
+// - 크기가 뷰포트보다 크면 축소
+// - 위치가 밖이면 헤더 일부(80×40)는 반드시 보이도록 clamp
+function clampGlossaryIntoViewport() {
+    const panel = document.getElementById('glossaryPanel');
+    if (!panel) return;
+    const vp = getViewportSize();
+
+    // 1) 크기 clamp
+    const MIN_W = 280, MIN_H = 240;
+    const maxW = Math.max(MIN_W, vp.w - 16);   // 최소 좌우 8px 여백
+    const maxH = Math.max(MIN_H, vp.h - 16);
+    let w = panel.offsetWidth;
+    let h = panel.offsetHeight;
+    if (w > maxW) { w = maxW; panel.style.width  = w + 'px'; }
+    if (h > maxH) { h = maxH; panel.style.height = h + 'px'; }
+
+    // 2) 위치 clamp — right 기반이면 left 기반으로 변환 후 판정
+    const rect = panel.getBoundingClientRect();
+    let curLeft = rect.left;
+    let curTop  = rect.top;
+
+    // 팝업 최소 노출 영역: 헤더의 좌측 80px × 상단 40px 이상은 보여야 함
+    // → left 의 유효 범위: [ -(w - GLOSSARY_MIN_VISIBLE_X), vp.w - GLOSSARY_MIN_VISIBLE_X ]
+    // → top  의 유효 범위: [ 0,                              vp.h - GLOSSARY_MIN_VISIBLE_Y ]
+    const minLeft = -(w - GLOSSARY_MIN_VISIBLE_X);
+    const maxLeft = vp.w - GLOSSARY_MIN_VISIBLE_X;
+    const minTop  = 0;
+    const maxTop  = vp.h - GLOSSARY_MIN_VISIBLE_Y;
+
+    // 좀 더 엄격하게: 팝업 전체가 뷰포트 안에 들어갈 수 있으면 완전 포함, 아니면 최소 노출만
+    let nextLeft, nextTop;
+    if (w <= vp.w) {
+        // 완전 포함 가능
+        nextLeft = Math.max(0, Math.min(vp.w - w, curLeft));
+    } else {
+        // 뷰포트보다 크므로 최소 노출만 보장 (위 clamp 후에는 이 분기 발생 X, 방어적)
+        nextLeft = Math.max(minLeft, Math.min(maxLeft, curLeft));
+    }
+    if (h <= vp.h) {
+        nextTop = Math.max(0, Math.min(vp.h - h, curTop));
+    } else {
+        nextTop = Math.max(minTop, Math.min(maxTop, curTop));
+    }
+
+    // 소수점 이슈 방지: 1px 이상 차이가 있을 때만 갱신
+    if (Math.abs(nextLeft - curLeft) > 0.5 || panel.style.right !== 'auto') {
+        panel.style.left  = Math.round(nextLeft) + 'px';
+        panel.style.right = 'auto';
+    }
+    if (Math.abs(nextTop - curTop) > 0.5) {
+        panel.style.top = Math.round(nextTop) + 'px';
+    }
+}
+
+// 뷰포트 변화 이벤트 → 팝업이 열려있을 때만 clamp
+(function registerGlossaryViewportListeners() {
+    let rafId = null;
+    function scheduleClamp() {
+        if (!glossaryOpen) return;
+        if (rafId) return;
+        rafId = requestAnimationFrame(() => {
+            rafId = null;
+            clampGlossaryIntoViewport();
+        });
+    }
+    window.addEventListener('resize', scheduleClamp);
+    window.addEventListener('orientationchange', scheduleClamp);
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', scheduleClamp);
+        window.visualViewport.addEventListener('scroll', scheduleClamp);
+    }
+})();
 
 function closeGlossaryPanel() {
     const panel = document.getElementById('glossaryPanel');
@@ -1472,7 +1594,13 @@ function escHtml(s) {
         panel.style.left = x + 'px';
         panel.style.top  = y + 'px';
     }
-    function onMouseUp() { dragging = false; document.body.style.userSelect = ''; }
+    function onMouseUp() {
+        if (!dragging) return;
+        dragging = false;
+        document.body.style.userSelect = '';
+        // 드래그 종료 시에도 화면 밖 방지
+        try { clampGlossaryIntoViewport(); } catch(e){}
+    }
     // header 는 동적 생성이 아니라 static HTML 이므로 DOMContentLoaded 후 바인딩
     document.addEventListener('DOMContentLoaded', () => {
         const header = document.getElementById('glossaryHeader');
@@ -1527,6 +1655,8 @@ function escHtml(s) {
         resizing = false;
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
+        // 리사이즈 종료 시에도 뷰포트 clamp
+        try { clampGlossaryIntoViewport(); } catch(e){}
     }
     document.addEventListener('DOMContentLoaded', () => {
         const handle = document.getElementById('glossaryResizeHandle');
