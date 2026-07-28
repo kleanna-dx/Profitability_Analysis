@@ -317,23 +317,36 @@
            - 헤더 드래그로 자유 이동 가능
            - 데이터 소스: GET /api/builder/columns (활성 컬럼만, 세션 도메인 기반)
            ============================================================ */
+        /* 용어집 버튼 — 항상 보라색 배경 + 흰색 텍스트/화살표 */
         .glossary-toggle-btn{
-            display:flex;align-items:center;gap:6px;padding:6px 14px;
-            border:1px solid #e5e7eb;border-radius:8px;background:#fff;
-            font-size:12px;color:#4f46e5;cursor:pointer;font-family:inherit;
-            transition:all .15s;margin-left:4px;font-weight:600;
+            display:inline-flex;align-items:center;gap:6px;padding:6px 14px;
+            border:1px solid transparent;border-radius:8px;
+            background:linear-gradient(135deg,#4f46e5,#6366f1);
+            font-size:12px;color:#fff;cursor:pointer;font-family:inherit;
+            transition:filter .15s, box-shadow .15s, transform .05s;
+            margin-left:4px;font-weight:600;
+            box-shadow:0 2px 8px rgba(79,70,229,.25);
         }
         .glossary-toggle-btn:hover{
-            background:#eef2ff;border-color:#c7d2fe;
+            filter:brightness(1.08);
+            box-shadow:0 3px 12px rgba(79,70,229,.35);
         }
-        .glossary-toggle-btn.active{
-            background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;border-color:transparent;
-            box-shadow:0 2px 8px rgba(79,70,229,.25);
+        .glossary-toggle-btn:active{
+            transform:translateY(1px);
+            filter:brightness(0.94);
+        }
+        /* 열림/닫힘 상태 화살표 — .open 상태일 때만 표시 */
+        .glossary-toggle-btn .glossary-arrow{
+            display:none;color:#fff;font-size:10px;line-height:1;
+            transition:transform .2s ease;
+        }
+        .glossary-toggle-btn.open .glossary-arrow{
+            display:inline-block;
         }
 
         .glossary-panel{
             position:fixed;bottom:24px;right:24px;
-            width:420px;height:530px;
+            width:420px;height:510px;
             min-width:280px;min-height:240px;
             background:#fff;border-radius:14px;
             box-shadow:0 10px 40px rgba(0,0,0,.25),0 2px 8px rgba(0,0,0,.08);
@@ -966,9 +979,9 @@
             <span id="topAiLabel">AI</span>
         </div>
         
-        <!-- 📖 용어집 버튼 — 학습관리 데이터 재사용 팝업 오픈 -->
-        <button id="glossaryToggleBtn" class="glossary-toggle-btn" onclick="toggleGlossaryPanel()" title="현재 도메인의 인식 가능한 용어(컬럼/동의어) 보기">
-            <span style="font-size:14px;">📖</span><span>용어집</span>
+        <!-- 용어집 버튼 — 학습관리 데이터 재사용 팝업 오픈. 열림 상태 시 ▼ 화살표 표시 -->
+        <button id="glossaryToggleBtn" class="glossary-toggle-btn" onclick="toggleGlossaryPanel()" aria-expanded="false" title="현재 도메인의 인식 가능한 용어(컬럼/동의어) 보기">
+            <span>용어집</span><span class="glossary-arrow" aria-hidden="true">▼</span>
         </button>
 
         <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
@@ -1316,7 +1329,9 @@ async function openGlossaryPanel() {
     // 열 때마다 현재 뷰포트 기준 우측 상단에 재배치 (듀얼 모니터 이동/브라우저 최대화 등 대응)
     resetGlossaryToViewport();
     panel.classList.add('open');
-    btn?.classList.add('active');
+    // 버튼 열림 상태 표시 (▼ 화살표 노출)
+    btn?.classList.add('open');
+    btn?.setAttribute('aria-expanded', 'true');
     glossaryOpen = true;
     // open 상태로 클래스가 붙은 후에도 한 번 더 clamp — 크기 변화 대비
     requestAnimationFrame(() => clampGlossaryIntoViewport());
@@ -1365,7 +1380,7 @@ function resetGlossaryToViewport() {
     const vp = getViewportSize();
     // 사용자가 리사이즈한 크기는 최대한 유지하되, 뷰포트에 맞게 clamp
     let w = panel.offsetWidth  || 420;
-    let h = panel.offsetHeight || 530;
+    let h = panel.offsetHeight || 510;
     // 뷰포트보다 크면 축소 (여백 24px 유지)
     w = Math.min(w, Math.max(280, vp.w - 48));
     h = Math.min(h, Math.max(240, vp.h - GLOSSARY_MIN_TOP - GLOSSARY_DEFAULT_BOTTOM));
@@ -1461,9 +1476,18 @@ function closeGlossaryPanel() {
     const panel = document.getElementById('glossaryPanel');
     const btn = document.getElementById('glossaryToggleBtn');
     panel?.classList.remove('open');
-    btn?.classList.remove('active');
+    // 버튼 닫힘 상태 표시 (▼ 화살표 숨김)
+    btn?.classList.remove('open');
+    btn?.setAttribute('aria-expanded', 'false');
     glossaryOpen = false;
 }
+
+// ESC 키로 용어집 닫기 (열려 있을 때만)
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && glossaryOpen) {
+        closeGlossaryPanel();
+    }
+});
 
 async function loadGlossary() {
     if (glossaryLoading) return;
