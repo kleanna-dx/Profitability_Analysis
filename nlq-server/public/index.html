@@ -333,7 +333,8 @@
 
         .glossary-panel{
             position:fixed;top:70px;right:20px;
-            width:420px;height:560px;max-height:calc(100vh - 100px);
+            width:420px;height:560px;
+            min-width:280px;min-height:240px;
             background:#fff;border-radius:14px;
             box-shadow:0 10px 40px rgba(0,0,0,.25),0 2px 8px rgba(0,0,0,.08);
             display:none;flex-direction:column;overflow:hidden;
@@ -341,6 +342,15 @@
             border:1px solid #e5e7eb;
         }
         .glossary-panel.open{display:flex;}
+        .glossary-resize-handle{
+            position:absolute;right:0;bottom:0;width:16px;height:16px;
+            cursor:nwse-resize;z-index:2;
+            background:
+                linear-gradient(135deg, transparent 0%, transparent 50%, #cbd5e1 50%, #cbd5e1 60%, transparent 60%, transparent 70%, #cbd5e1 70%, #cbd5e1 80%, transparent 80%);
+            border-bottom-right-radius:14px;
+            opacity:.7;transition:opacity .15s;
+        }
+        .glossary-resize-handle:hover{opacity:1;}
         .glossary-header{
             background:linear-gradient(135deg,#4f46e5,#6366f1);
             color:#fff;padding:14px 16px;
@@ -961,6 +971,7 @@
         <div class="glossary-body" id="glossaryBody">
             <div class="glossary-empty">로딩 중...</div>
         </div>
+        <div class="glossary-resize-handle" id="glossaryResizeHandle" title="드래그하여 크기 조절"></div>
     </div>
 
     <!-- Chat Area -->
@@ -1408,6 +1419,60 @@ function escHtml(s) {
     document.addEventListener('DOMContentLoaded', () => {
         const header = document.getElementById('glossaryHeader');
         if (header) header.addEventListener('mousedown', onMouseDown);
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    });
+})();
+
+// 우측 하단 코너 드래그로 크기 조절
+(function initGlossaryResize() {
+    let resizing = false, startX = 0, startY = 0, startW = 0, startH = 0, startLeft = 0, startTop = 0;
+    const MIN_W = 280, MIN_H = 240;
+    function onMouseDown(e) {
+        const panel = document.getElementById('glossaryPanel');
+        if (!panel) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = panel.getBoundingClientRect();
+        // right 기반 배치인 경우 left 기반으로 변환 (드래그와 동일한 방식)
+        if (panel.style.right && panel.style.right !== 'auto') {
+            panel.style.left = rect.left + 'px';
+            panel.style.top  = rect.top  + 'px';
+            panel.style.right = 'auto';
+        }
+        startX = e.clientX;
+        startY = e.clientY;
+        startW = rect.width;
+        startH = rect.height;
+        startLeft = rect.left;
+        startTop  = rect.top;
+        resizing = true;
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'nwse-resize';
+    }
+    function onMouseMove(e) {
+        if (!resizing) return;
+        const panel = document.getElementById('glossaryPanel');
+        if (!panel) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        // 뷰포트를 벗어나지 않도록 최대 크기 제한
+        const maxW = Math.max(MIN_W, window.innerWidth  - startLeft - 8);
+        const maxH = Math.max(MIN_H, window.innerHeight - startTop  - 8);
+        const w = Math.max(MIN_W, Math.min(maxW, startW + dx));
+        const h = Math.max(MIN_H, Math.min(maxH, startH + dy));
+        panel.style.width  = w + 'px';
+        panel.style.height = h + 'px';
+    }
+    function onMouseUp() {
+        if (!resizing) return;
+        resizing = false;
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+        const handle = document.getElementById('glossaryResizeHandle');
+        if (handle) handle.addEventListener('mousedown', onMouseDown);
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
     });
