@@ -5246,24 +5246,10 @@ const COACH_STEPS = [
         ],
         preferred: 'top',
         title: '3단계 · 정확한 용어 사용 & 질문 구체화',
-        html: `<b>용어집에 등록된 용어 · 동의어</b>를 사용하고, 질문에 <b>기간 · 대상 · 지표 · 집계 기준</b>을 함께 작성해 주세요.<br>
-정확하게 사용할수록 <b>답변 품질</b>이 높아집니다.
-<ul>
-  <li><span class="bad">‘매출’</span> 보다 → <span class="good">‘총매출’ · ‘순매출’ · ‘기타매출’</span></li>
-  <li><span class="bad">‘이익’</span> 보다 → <span class="good">‘영업이익’</span></li>
-</ul>
-<div style="margin-top:6px;"><b>좋은 질문</b></div>
-<ul>
-  <li><span class="good">✔ 2026년 6월 플랜트별 순매출을 알려줘</span></li>
-  <li><span class="good">✔ 2026년 5월 대비 6월 자재별 매출총이익 TOP 10을 보여줘</span></li>
-  <li><span class="good">✔ 2026년 상반기 거래처별 영업이익을 분석해줘</span></li>
-</ul>
-<div style="margin-top:6px;"><b>불명확한 질문</b></div>
-<ul>
-  <li><span class="bad">✘ 매출 알려줘</span></li>
-  <li><span class="bad">✘ 어디가 많이 올랐어?</span></li>
-  <li><span class="bad">✘ 원가 분석해줘</span></li>
-</ul>`
+        // 주의: .coach-tooltip-desc 에 white-space:pre-wrap 이 걸려 있어 소스코드의 개행 문자가
+        //       그대로 시각적 공백으로 렌더링된다. 따라서 아래 html 은 반드시 '한 줄' 로 유지할 것.
+        //       (섹션 여백은 .sec 클래스로 CSS 없이 인라인 margin 만 조절)
+        html: `<b>용어집에 등록된 용어 · 동의어</b>를 사용하고, 질문에 <b>기간 · 대상 · 지표 · 집계 기준</b>을 함께 작성해 주세요. 정확하게 사용할수록 <b>답변 품질</b>이 높아집니다.<ul style="margin:4px 0 0;padding-left:18px;"><li style="margin:1px 0;"><span class="bad">‘매출’</span> 보다 → <span class="good">‘총매출’ · ‘순매출’ · ‘기타매출’</span></li><li style="margin:1px 0;"><span class="bad">‘이익’</span> 보다 → <span class="good">‘영업이익’</span></li></ul><div style="margin-top:6px;"><b>좋은 질문</b></div><ul style="margin:2px 0 0;padding-left:18px;"><li style="margin:1px 0;"><span class="good">✔ 2026년 5월 대비 6월 자재별 매출총이익 TOP 10을 보여줘</span></li><li style="margin:1px 0;"><span class="good">✔ 2026년 상반기 거래처별 영업이익을 분석해줘</span></li></ul><div style="margin-top:6px;"><b>불명확한 질문</b></div><ul style="margin:2px 0 0;padding-left:18px;"><li style="margin:1px 0;"><span class="bad">✘ 매출 알려줘</span></li><li style="margin:1px 0;"><span class="bad">✘ 어디가 많이 올랐어?</span></li></ul>`
     },
     {
         target: '#queryModeBar',
