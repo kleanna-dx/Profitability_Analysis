@@ -533,19 +533,22 @@
             flex:1 1 auto;min-width:0;max-width:100%;
             display:flex;justify-content:space-between;
             gap:10px;align-items:flex-start;
-            overflow:hidden;
+            /* overflow:hidden 을 걸면 자식이 여러 줄로 늘어나도 부모가 잘라버리므로 제거.
+               자식(.glossary-col-name/.glossary-synonyms)에서 min-width:0 + overflow-wrap:anywhere
+               로 넘침을 흡수하고, 부모는 콘텐츠 높이만큼 자연스럽게 늘어난다. */
         }
-        /* 컬럼명(좌) · 동의어(우) 공통: 최대 2줄 말줄임, 어떤 문자열이 와도 넘치지 않도록 */
+        /* 컬럼명(좌) · 동의어(우) 공통 —
+           [정책] 잘림 없이 여러 줄 자연 줄바꿈.
+           - display 는 기본(block-level flex 자식)으로 두고 line-clamp 를 사용하지 않는다.
+             (line-clamp + overflow:hidden 조합은 긴 동의어의 뒷부분을 잘라버림.)
+           - white-space:normal 로 여러 줄 허용 (기본값이지만 상위 스타일 override 대비 명시).
+           - overflow-wrap:anywhere + word-break:break-word — CJK 는 자연 줄바꿈,
+             긴 영문/숫자/URL 등도 임의 지점에서 분할되어 팝업 밖으로 절대 벗어나지 않음.
+           - overflow / text-overflow 를 걸지 않는다 → 하드 클립·... 말줄임 없음. */
         .glossary-col-name,
         .glossary-synonyms{
             min-width:0;
-            display:-webkit-box;
-            -webkit-box-orient:vertical;
-            -webkit-line-clamp:2;
-            line-clamp:2;
-            overflow:hidden;
-            text-overflow:ellipsis;
-            /* 언어 무관하게 넘치지 않도록 — CJK 는 자연 줄바꿈, 긴 영문/숫자열은 강제 분할 */
+            white-space:normal;
             overflow-wrap:anywhere;
             word-break:break-word;
         }
