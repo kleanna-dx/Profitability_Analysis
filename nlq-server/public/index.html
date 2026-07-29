@@ -5208,7 +5208,7 @@ let coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:nul
 //   실제 위치는 viewport 안에 들어가는지 검사한 뒤 자동 조정.
 const COACH_STEPS = [
     {
-        // 1단계 제목이 '업무영역과 도메인 선택' 이므로 두 UI 를 하나의 강조 박스로 묶는다.
+        // 1단계 제목이 '도메인과 업무영역 선택' 이므로 두 UI 를 하나의 강조 박스로 묶는다.
         //   - 상단: #domainSelectorBar  (PS · HL · MGMT 도메인 탭) — 컨테이너 자체가 tight
         //   - 하단: #areaTabBar         (수익성분석 · 제조원가 업무영역 탭, area-tabs.js 로 동적 삽입)
         //     ↳ 컨테이너가 flex full-width 라 그대로 재면 뷰포트 전체로 늘어남.
@@ -5221,8 +5221,8 @@ const COACH_STEPS = [
             { sel: '#areaTabBar', tight: true }
         ],
         preferred: 'bottom',
-        title: '1단계 · 업무영역과 도메인 선택',
-        html: `먼저 조회하려는 <b>업무영역과 도메인</b>을 선택해 주세요.<br>
+        title: '1단계 · 도메인과 업무영역 선택',
+        html: `먼저 조회하려는 <b>도메인과 업무영역</b>을 선택해 주세요.<br>
 현재 선택한 <b>PS · HL · MGMT</b> 기준으로 사용 가능한 데이터와 용어가 달라집니다.`
     },
     {
