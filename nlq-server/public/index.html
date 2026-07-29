@@ -5262,15 +5262,21 @@ const COACH_STEPS = [
         title: '4단계 · 답변 유형 선택',
         html: `단순 합계 · 목록 · 순위 조회는 <b>[현황집계]</b>를 이용해 주세요.<br>
 원인 · 추세 · 상관관계 · 시사점 등 상세한 해석이 필요하면 <b>[분석질문]</b>을 이용해 주세요.`
-    },
-    // 마지막 스텝은 대상 요소 없이 중앙 완료 카드로 렌더링 (target 이 특수값 '__final__')
-    {
-        target: '__final__',
-        title: '준비 완료!',
-        html: `정확한 답변을 위해 <b>용어집에 등록된 용어</b>를 확인하고,<br>
-<b>기간 · 대상 · 지표 · 집계 기준</b>을 포함하여 질문해 주세요.`
     }
 ];
+
+// 완료 화면(가이드 종료 카드)은 '설명 단계' 가 아니라 튜토리얼 종료용 UI 이므로
+// COACH_STEPS 배열에 포함시키지 않고 별도 상수로 분리한다.
+//   - 진행률 표시(STEP N / M)의 분모(M)는 COACH_STEPS.length 만 사용하므로
+//     완료 화면이 자동으로 전체 단계 수에서 빠진다 → "STEP 1 / 4 … STEP 4 / 4".
+//   - 완료 화면 표시 여부는 stepIdx === COACH_STEPS.length 상태로 판정
+//     (즉, 마지막 설명 단계(index = length-1) 에서 '다음' → stepIdx 가 length 가 되면
+//      renderCoachStep 이 완료 카드 분기로 진입).
+const COACH_FINAL = {
+    title: '준비 완료!',
+    html: `정확한 답변을 위해 <b>용어집에 등록된 용어</b>를 확인하고,<br>
+<b>기간 · 대상 · 지표 · 집계 기준</b>을 포함하여 질문해 주세요.`
+};
 
 // 1단계 강조 대상들이 '실제로 렌더링 완료' 되었는지 판정.
 //   단순 존재(document.getElementById)만 확인하면 layout 확정 전 rect 가 0 인 순간이 있어
@@ -5435,7 +5441,11 @@ function endCoachMark() {
 
 function coachNext() {
     if (!coachState.active) return;
-    if (coachState.stepIdx < COACH_STEPS.length - 1) {
+    // stepIdx 범위:
+    //   0 .. COACH_STEPS.length-1  → 설명 단계 (툴팁 렌더)
+    //   COACH_STEPS.length         → 완료 카드 (별도 UI, STEP 번호 없음)
+    //   > COACH_STEPS.length       → 튜토리얼 종료
+    if (coachState.stepIdx < COACH_STEPS.length) {
         coachState.stepIdx++;
         coachState._retriedStep = null;   // 새 스텝 진입 → 재시도 카운트 리셋
         renderCoachStep();
@@ -5513,16 +5523,19 @@ function buildCoachClipPath(rects, vw, vh) {
 // 대상 요소 사각형에 맞춰 스포트라이트/툴팁 위치 계산 후 렌더
 function renderCoachStep() {
     if (!coachState.active) return;
-    const step = COACH_STEPS[coachState.stepIdx];
-    if (!step) { endCoachMark(); return; }
     const { overlay, spot, spotExtra, tip } = coachState.elems;
 
-    // 마지막(완료) 스텝 → 스포트라이트/툴팁 대신 중앙 완료 카드
-    if (step.target === '__final__') {
+    // ---------------------------------------------------------------
+    // 완료 화면 분기
+    //   stepIdx === COACH_STEPS.length (설명 단계 배열의 끝을 넘긴 상태) 이면
+    //   '준비 완료' 카드를 표시. 완료 화면은 COACH_STEPS 에 포함되지 않으므로
+    //   STEP 번호(1/4 … 4/4) 계산에서 자동 제외된다.
+    // ---------------------------------------------------------------
+    if (coachState.stepIdx >= COACH_STEPS.length) {
         spot.style.display = 'none';
         if (spotExtra) spotExtra.style.display = 'none';
         tip.style.display = 'none';
-        // 완료 스텝에서는 clip-path 를 제거하고 오버레이 전체를 어둡게
+        // 완료 화면에서는 clip-path 를 제거하고 오버레이 전체를 어둡게
         overlay.style.setProperty('--coach-clip', 'none');
         // 이미 카드가 있으면 재사용
         let fin = document.getElementById('coachFinalCard');
@@ -5533,11 +5546,12 @@ function renderCoachStep() {
             document.body.appendChild(fin);
         }
         const dontShowChecked = (() => { try { return localStorage.getItem(COACH_LS_KEY) === '1'; } catch(_) { return false; } })();
+        // 완료 화면은 STEP 번호 표시하지 않는다 (설명 단계가 아니므로).
         fin.innerHTML = `
             <button class="coach-final-close" onclick="endCoachMark()" title="닫기" aria-label="닫기"><i class="fas fa-times"></i></button>
             <div class="coach-final-icon"><i class="fas fa-check"></i></div>
-            <h3 class="coach-final-title">${step.title}</h3>
-            <p class="coach-final-desc">${step.html}</p>
+            <h3 class="coach-final-title">${COACH_FINAL.title}</h3>
+            <p class="coach-final-desc">${COACH_FINAL.html}</p>
             <div class="coach-final-btns">
                 <button class="coach-btn coach-btn-ghost" onclick="coachOpenGlossaryAndClose()"><i class="fas fa-book" style="margin-right:6px;"></i>용어집 열기</button>
                 <button class="coach-btn coach-btn-primary" onclick="coachFocusInputAndClose()"><i class="fas fa-paper-plane" style="margin-right:6px;"></i>질문 시작하기</button>
@@ -5552,6 +5566,10 @@ function renderCoachStep() {
         `;
         return;
     }
+
+    // 설명 단계 렌더
+    const step = COACH_STEPS[coachState.stepIdx];
+    if (!step) { endCoachMark(); return; }
 
     // 일반 스텝: 대상 요소 사각형 계산
     //   step.target 은 아래 셋 중 하나:
@@ -5714,7 +5732,7 @@ function renderCoachStep() {
             </label>
             <div class="coach-tooltip-nav">
                 <button class="coach-btn coach-btn-ghost" onclick="coachPrev()" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i> 이전</button>
-                <button class="coach-btn coach-btn-primary" onclick="coachNext()">${idx === total - 1 ? '완료' : '다음'} <i class="fas fa-chevron-right"></i></button>
+                <button class="coach-btn coach-btn-primary" onclick="coachNext()">다음 <i class="fas fa-chevron-right"></i></button>
             </div>
         </div>
     `;
