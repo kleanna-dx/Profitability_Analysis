@@ -5530,65 +5530,48 @@ function renderCoachStep() {
     tip.style.display = '';
 
     // ---------------------------------------------------------------
-    // [v2] 링 & 스포트라이트 구멍 렌더 — 여러 요소 지원
-    //   대상이 하나면 → spot 하나로 그 요소만 감싸는 링 + 오버레이에 그 하나의 구멍
-    //   대상이 둘 이상이면 → spot / spotExtra 로 각 요소를 개별 링으로 감싸고
-    //                       오버레이 clip-path 로 각각 별도의 구멍을 뚫는다.
-    //   (기존 union bbox 방식은 대각선으로 어긋난 두 요소 사이의 넓은 공백까지
-    //    다 감싸버려 시각적으로 지저분해지므로 v2 에서는 개별 링 방식으로 전환)
+    // [v3] 링 & 스포트라이트 구멍 렌더 — 모든 대상을 하나의 union rectangle 로 묶음
+    //   대상이 여러 개여도 각각의 rect 의 min-left/top, max-right/bottom 을 취해
+    //   하나의 큰 사각형을 만든다. 링(#coachSpotlight)도 하나, 오버레이 hole 도 하나.
+    //   → 사용자 요청: 도메인(PS/HL/MGMT) + 업무영역(수익성분석/제조원가) 를
+    //     '개별 두 박스' 가 아니라 '두 영역을 감싸는 하나의 큰 박스' 로 표시.
+    //   (v2 의 spotExtra 개별 링 방식은 여기서 제거. spotExtra 요소는 startCoachMark
+    //    에서 여전히 생성되지만 항상 hidden 으로 유지)
     // ---------------------------------------------------------------
     const pad = 6;   // 스포트라이트/구멍 패딩
-    // 각 요소의 확장 사각형을 계산 (뷰포트 클램프)
     const vpW = window.innerWidth, vpH = window.innerHeight;
-    const spotRects = elems.map(({ rect: r }) => {
-        const top    = Math.max(0,   r.top    - pad);
-        const left   = Math.max(0,   r.left   - pad);
-        const right  = Math.min(vpW, r.right  + pad);
-        const bottom = Math.min(vpH, r.bottom + pad);
-        return { top, left, right, bottom, width: right - left, height: bottom - top };
-    });
 
-    // (1) 링 배치 — 최대 2개(spot / spotExtra)까지 사용
-    const s0 = spotRects[0];
-    spot.style.top    = s0.top    + 'px';
-    spot.style.left   = s0.left   + 'px';
-    spot.style.width  = s0.width  + 'px';
-    spot.style.height = s0.height + 'px';
-    if (spotExtra) {
-        if (spotRects.length >= 2) {
-            const s1 = spotRects[1];
-            spotExtra.style.display = '';
-            spotExtra.style.top    = s1.top    + 'px';
-            spotExtra.style.left   = s1.left   + 'px';
-            spotExtra.style.width  = s1.width  + 'px';
-            spotExtra.style.height = s1.height + 'px';
-        } else {
-            spotExtra.style.display = 'none';
-        }
-    }
-
-    // (2) 오버레이 clip-path — 화면 전체 사각형에서 각 spotRect 를 evenodd 로 파낸다.
-    //   polygon 은 시계방향 outer(화면 전체) + 각 hole 은 반시계방향(evenodd 규칙으로 파냄).
-    //   evenodd 규칙이 CSS clip-path 에서 표준 지원이 되지 않아, 대신
-    //   'outer → hole1 진입/탈출 → hole2 진입/탈출 → ...' 를 하나의 다각형 경로로 이어붙이는
-    //   'stitched polygon' 방식을 쓴다. 각 hole 은 outer 좌측 가장자리를 통해 들어갔다 나온다.
-    //   이 방식은 여러 개의 사각형 구멍을 뚫는 가장 안전한 CSS-only 방법.
-    const clipPath = buildCoachClipPath(spotRects, vpW, vpH);
-    overlay.style.setProperty('--coach-clip', clipPath);
-
-    // 툴팁 배치를 위해 union rect (모든 spotRects 를 감싸는 최소 사각형) 계산
-    const rect = (() => {
+    // 모든 elems 의 rect 를 감싸는 union rectangle 계산
+    const unionRect = (() => {
         let top = Infinity, left = Infinity, right = -Infinity, bottom = -Infinity;
-        for (const r of spotRects) {
+        for (const { rect: r } of elems) {
             if (r.top    < top)    top    = r.top;
             if (r.left   < left)   left   = r.left;
             if (r.right  > right)  right  = r.right;
             if (r.bottom > bottom) bottom = r.bottom;
         }
+        // padding 및 뷰포트 클램프
+        top    = Math.max(0,   top    - pad);
+        left   = Math.max(0,   left   - pad);
+        right  = Math.min(vpW, right  + pad);
+        bottom = Math.min(vpH, bottom + pad);
         return { top, left, right, bottom, width: right - left, height: bottom - top };
     })();
-    // 툴팁 위치 계산에서 쓰는 spotTop/spotLeft/spotW/spotH 는 union rect 기준
-    // (이하 기존 로직이 rect 값을 그대로 사용)
+
+    // (1) 링 배치 — 하나의 union rect 로 감싸는 링 하나만 사용
+    spot.style.top    = unionRect.top    + 'px';
+    spot.style.left   = unionRect.left   + 'px';
+    spot.style.width  = unionRect.width  + 'px';
+    spot.style.height = unionRect.height + 'px';
+    // spotExtra 는 v3 에서 사용하지 않음 — 항상 숨김 유지
+    if (spotExtra) spotExtra.style.display = 'none';
+
+    // (2) 오버레이 clip-path — 화면 전체에서 union rect 하나만 파낸다
+    const clipPath = buildCoachClipPath([unionRect], vpW, vpH);
+    overlay.style.setProperty('--coach-clip', clipPath);
+
+    // 툴팁 배치 계산에 쓰는 spotTop/spotLeft/spotW/spotH 는 union rect 기준
+    const rect = unionRect;
     const spotTop = rect.top;
     const spotLeft = rect.left;
     const spotW = rect.width;
