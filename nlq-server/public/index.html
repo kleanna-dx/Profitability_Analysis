@@ -50,15 +50,43 @@
         .sidebar-menu-item:hover{background:rgba(255,255,255,0.1);color:#fff;}
         .sidebar-menu-item.active{background:rgba(99,102,241,0.3);color:#fff;font-weight:600;}
         .sidebar-menu-item i{width:20px;text-align:center;font-size:15px;}
-        /* 자연어 질의 메뉴 옆의 사용법(?) 버튼 — 사이드메뉴 우측 정렬 */
+        /* 자연어 질의 메뉴 옆의 [ⓘ 사용법] 버튼 — 사이드메뉴 우측 정렬
+           - 메뉴명(14px)보다 작은 11px 폰트 + 얇은 보더의 pill 형태로 부속 요소임을 나타냄
+           - 배경/보더/호버 색으로 클릭 가능한 요소임을 명확히 인지 가능
+           - active(선택) 상태 메뉴 안에서도 대비 유지 */
         .sidebar-help-btn{
-            margin-left:auto;padding:2px 6px;border:none;background:transparent;
-            color:#a5b4fc;font-size:14px;cursor:pointer;border-radius:6px;
-            transition:all .15s;line-height:1;display:inline-flex;align-items:center;
+            margin-left:auto;
+            display:inline-flex;align-items:center;gap:4px;
+            padding:3px 8px 3px 7px;
+            border:1px solid rgba(165,180,252,0.35);
+            background:rgba(99,102,241,0.15);
+            color:#c7d2fe;
+            font-size:11px;font-weight:600;line-height:1;
+            font-family:inherit;
+            border-radius:999px;
+            cursor:pointer;
+            transition:all .15s ease;
+            white-space:nowrap;
         }
-        .sidebar-help-btn i{width:auto;font-size:14px;}
-        .sidebar-help-btn:hover{background:rgba(255,255,255,0.15);color:#fff;transform:scale(1.1);}
-        .sidebar-help-btn:focus-visible{outline:2px solid #818cf8;outline-offset:1px;}
+        .sidebar-help-btn i{width:auto;font-size:11px;}
+        .sidebar-help-btn .sidebar-help-btn-label{font-size:11px;}
+        .sidebar-help-btn:hover{
+            background:rgba(129,140,248,0.35);
+            border-color:rgba(199,210,254,0.6);
+            color:#fff;
+        }
+        .sidebar-help-btn:active{transform:scale(0.96);}
+        .sidebar-help-btn:focus-visible{outline:2px solid #818cf8;outline-offset:2px;}
+        /* 활성 메뉴(진한 보라 배경) 안에서도 버튼이 시인성 유지되도록 살짝 밝게 */
+        .sidebar-menu-item.active .sidebar-help-btn{
+            background:rgba(255,255,255,0.18);
+            border-color:rgba(255,255,255,0.35);
+            color:#fff;
+        }
+        .sidebar-menu-item.active .sidebar-help-btn:hover{
+            background:rgba(255,255,255,0.28);
+            border-color:rgba(255,255,255,0.55);
+        }
         .sidebar-divider{height:1px;background:rgba(255,255,255,0.1);margin:12px 16px;}
 
         /* Main layout */
@@ -1399,13 +1427,15 @@ async function initDomainAndRole() {
             nav.innerHTML = me.menus.map(m => {
                 const isActive = (m.menu_url === '/') ? (currentPath === '/' || currentPath === '/index.html') : (currentPath === m.menu_url);
                 if (m.menu_url === '/') {
-                    // 자연어 질의 메뉴 → 옆에 [사용법(?)] 버튼 부착 (튜토리얼 재실행용)
-                    //   - 클릭 시 startCoachMark() 호출, 이벤트 버블링 방지 (메뉴 클릭 startNewChat 과 분리)
+                    // 자연어 질의 메뉴 → 옆에 [ⓘ 사용법] 버튼 부착 (튜토리얼 재실행용)
+                    //   - 물음표만 있으면 기능이 잘 안 드러남 → 아이콘 + '사용법' 텍스트 조합으로 변경
+                    //   - 클릭 시 startCoachMark('manual') 호출, 이벤트 버블링 방지 (메뉴 클릭 startNewChat 과 분리)
                     //   - 사이드바는 열린 상태 유지 (사용자가 튜토리얼 종료 후 다시 메뉴 접근 가능)
+                    //   - 메뉴명보다 강조되지 않도록 작은 폰트/얇은 보더의 pill 형태
                     return `<div class="sidebar-menu-item${isActive ? ' active' : ''}" onclick="startNewChat();closeSidebar()">
                         <i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span>
-                        <button class="sidebar-help-btn" onclick="event.stopPropagation();closeSidebar();startCoachMark('manual');" title="사용법 다시 보기" aria-label="사용법 다시 보기">
-                            <i class="fas fa-question-circle"></i>
+                        <button class="sidebar-help-btn" onclick="event.stopPropagation();closeSidebar();startCoachMark('manual');" title="자연어 질의 사용법 보기" aria-label="자연어 질의 사용법 보기">
+                            <i class="fas fa-info-circle" aria-hidden="true"></i><span class="sidebar-help-btn-label">사용법</span>
                         </button>
                     </div>`;
                 }
