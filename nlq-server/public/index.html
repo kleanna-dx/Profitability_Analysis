@@ -5201,7 +5201,7 @@ function startNewChat() {
 // - 기존 자연어 질의·용어집·학습관리 기능은 건드리지 않음 (별도 오버레이)
 // ================================================================
 const COACH_LS_KEY = 'nlqCoachMarkSeen_v1';   // '1' 이면 자동 표시 스킵
-let coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null };
+let coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null, _retriedStep:null };
 
 // 스텝 정의: target 은 CSS selector, content 는 툴팁에 표시할 HTML
 //   preferred 는 툴팁을 대상 요소의 어느 방향에 두고 싶은지 힌트 (bottom/top/left/right/auto).
@@ -5272,11 +5272,49 @@ const COACH_STEPS = [
     }
 ];
 
+// 1단계 강조 대상들이 '실제로 렌더링 완료' 되었는지 판정.
+//   단순 존재(document.getElementById)만 확인하면 layout 확정 전 rect 가 0 인 순간이 있어
+//   union bbox 가 한쪽만 잡히는 문제가 있음 (특히 #areaTabBar 는 area-tabs.js 가 동적으로
+//   삽입하고, #domainSelectorBar 도 초기 페인트 직전엔 rect 가 0×0 인 프레임이 존재).
+//   이 함수는 두 요소 모두 DOM 에 있고 getBoundingClientRect() 가 non-zero 일 때만 true.
+function coachStep1TargetsReady() {
+    const dom  = document.getElementById('domainSelectorBar');
+    const area = document.getElementById('areaTabBar');
+    if (!dom || !area) return false;
+    const rd = dom.getBoundingClientRect();
+    const ra = area.getBoundingClientRect();
+    if (rd.width === 0 || rd.height === 0) return false;
+    if (ra.width === 0 || ra.height === 0) return false;
+    // #areaTabBar 는 tight:true 로 자식 union 을 재는데, 자식이 아직 없으면 폴백 경로로 가면서
+    // 문제 재발 가능 → 자식이 최소 1개 이상 그려져 있는지도 확인.
+    let hasAreaChild = false;
+    for (const c of area.children) {
+        const cr = c.getBoundingClientRect();
+        if (cr.width > 0 && cr.height > 0) { hasAreaChild = true; break; }
+    }
+    return hasAreaChild;
+}
+
+// rAF 기반으로 대상 준비를 기다린다 (setTimeout 임시 지연 대신 실제 layout 완료 감지).
+//   maxFrames 프레임 넘도록 준비 안 되면 그래도 콜백 호출 (완전 실패보다 낫도록 폴백).
+function coachWaitForStep1Ready(cb, maxFrames) {
+    let frames = 0;
+    const limit = (typeof maxFrames === 'number') ? maxFrames : 30;   // 약 500ms @ 60fps
+    const tick = () => {
+        if (coachStep1TargetsReady()) { cb(true); return; }
+        if (frames++ >= limit) { cb(false); return; }
+        requestAnimationFrame(tick);
+    };
+    // 한 번 rAF 태워서 최소 1프레임은 대기 (호출 직후엔 아직 layout 안 됐을 수 있음)
+    requestAnimationFrame(tick);
+}
+
 // (?) 버튼 / 최초 진입 트리거에서 호출
 //   trigger: 'auto' (최초 자동) | 'manual' (사용자가 ? 버튼 클릭)
 function startCoachMark(trigger) {
     if (coachState.active) return;   // 중복 실행 방지
-    // 대상 요소 준비 안 됐으면 소량 지연 후 재시도 (초기 로딩 레이스 대비)
+    // #domainSelectorBar 자체가 아직 DOM 에 없으면 짧게 재시도 (여기까지는 존재 여부만 체크).
+    // 존재하지만 layout 이 안 잡힌 경우는 아래 coachWaitForStep1Ready 에서 rAF 로 처리.
     if (!document.getElementById('domainSelectorBar')) {
         setTimeout(() => startCoachMark(trigger), 200);
         return;
@@ -5331,7 +5369,19 @@ function startCoachMark(trigger) {
         else if (e.key === 'ArrowLeft')  { coachPrev(); }
     };
     document.addEventListener('keydown', coachState.onKey, true);   // capture: 다른 ESC 핸들러보다 먼저
-    renderCoachStep();
+
+    // 첫 렌더는 1단계 대상(#domainSelectorBar + #areaTabBar) 이 실제로 layout 완료된 뒤에.
+    //   rAF 폴링으로 두 요소 모두 rect > 0 이 될 때까지 최대 ~500ms 대기.
+    //   준비되기 전에 renderCoachStep 을 호출하면 union bbox 가 한쪽만 잡혀
+    //   '업무영역만 강조' 되는 간헐 문제가 발생하는 것을 방지.
+    coachWaitForStep1Ready((ok) => {
+        if (!coachState.active) return;   // 대기 중에 사용자가 취소했을 수도 있음
+        if (!ok) {
+            // 폴백: 준비 안 됐어도 어쨌든 렌더 (기존 방어 로직이 남아 있는 것보단 낫도록)
+            console.warn('[coach] step1 targets not fully ready after wait — rendering anyway');
+        }
+        renderCoachStep();
+    });
 }
 
 function endCoachMark() {
@@ -5350,13 +5400,14 @@ function endCoachMark() {
         window.removeEventListener('scroll', coachState.onResize, true);
     }
     if (coachState.onKey) document.removeEventListener('keydown', coachState.onKey, true);
-    coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null };
+    coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null, _retriedStep:null };
 }
 
 function coachNext() {
     if (!coachState.active) return;
     if (coachState.stepIdx < COACH_STEPS.length - 1) {
         coachState.stepIdx++;
+        coachState._retriedStep = null;   // 새 스텝 진입 → 재시도 카운트 리셋
         renderCoachStep();
     } else {
         endCoachMark();
@@ -5366,6 +5417,7 @@ function coachPrev() {
     if (!coachState.active) return;
     if (coachState.stepIdx > 0) {
         coachState.stepIdx--;
+        coachState._retriedStep = null;   // 새 스텝 진입 → 재시도 카운트 리셋
         renderCoachStep();
     }
 }
@@ -5480,10 +5532,11 @@ function renderCoachStep() {
     //   → flex 로 full-width 로 늘어난 바(#areaTabBar)를 실제 컨트롤 크기만큼만 감싸고 싶을 때 사용.
     const rawTargets = Array.isArray(step.target) ? step.target : [step.target];
     const elems = [];
+    let missingAny = false;   // 배열 target 중 누락(rect=0 포함) 이 있었는지 추적
     for (const t of rawTargets) {
         const spec = (typeof t === 'string') ? { sel: t, tight: false } : t;
         const node = document.querySelector(spec.sel);
-        if (!node) continue;
+        if (!node) { missingAny = true; continue; }
 
         if (spec.tight) {
             // 자식 중 실제로 화면에 보이는 요소들만 골라 union bbox 계산
@@ -5502,13 +5555,34 @@ function renderCoachStep() {
                 // 자식이 없거나 모두 숨겨진 경우: 컨테이너 자체로 폴백
                 const r = node.getBoundingClientRect();
                 if (r.width > 0 && r.height > 0) elems.push({ node, rect: r });
+                else missingAny = true;
             }
         } else {
             // 화면에서 실제로 보이는 요소만 강조에 포함 (display:none 은 rect 가 0,0,0,0 으로 잡힘)
             const r = node.getBoundingClientRect();
-            if (r.width === 0 && r.height === 0) continue;
+            if (r.width === 0 && r.height === 0) { missingAny = true; continue; }
             elems.push({ node, rect: r });
         }
+    }
+    // ---------------------------------------------------------------
+    // [방어 로직] 배열 target 인데 일부 요소가 layout 미완료로 elems 에 안 잡힌 경우.
+    //   예) 1단계에서 #areaTabBar 는 정상인데 #domainSelectorBar 가 아직 rect=0×0 인 프레임에서
+    //       renderCoachStep 이 호출되면 union bbox 가 areaTabBar 만으로 계산되어 '업무영역만
+    //       포커싱되는' 간헐 오류가 발생.
+    //   → 한 번만 rAF 재시도. 재시도 후에도 여전히 부족하면 있는 요소로라도 렌더 (완전 실패 방지).
+    // ---------------------------------------------------------------
+    //   재시도 판정: 이 스텝(stepIdx) 에서 아직 재시도한 적 없으면 한 번 rAF 이후 재시도.
+    //   주의: stepIdx 가 0 일 수 있으므로 truthy 검사(!x) 로 판정하면 0 을 미재시도로 오인함.
+    //         반드시 명시적으로 stepIdx 와 비교.
+    if (Array.isArray(step.target) && missingAny && coachState._retriedStep !== coachState.stepIdx) {
+        coachState._retriedStep = coachState.stepIdx;
+        requestAnimationFrame(() => {
+            // rAF 시점엔 사용자가 이미 다음 스텝으로 갔거나 튜토리얼을 닫았을 수 있음
+            if (!coachState.active) return;
+            if (coachState.stepIdx !== coachState._retriedStep) return;
+            renderCoachStep();
+        });
+        return;
     }
     if (elems.length === 0) {
         // 대상 요소를 하나도 찾지 못하면 스킵 (자동 다음 스텝)
