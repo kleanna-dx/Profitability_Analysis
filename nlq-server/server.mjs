@@ -3473,6 +3473,49 @@ async function generateAnalysisSqls(query, domainCode, dateCtx, conversationCont
     console.warn('[analysisSqls] 컬럼 카탈로그 로드 실패:', e.message);
   }
 
+  // ── 1-1) ★ 도메인 동의어 확정 매핑 (사용자 질의를 활성 도메인 기준으로 해석)
+  //   현황집계·분석계획 경로와 동일하게 matchSynonymsDirectly 를 호출해
+  //   "거래처/고객" 같은 도메인 의존 용어를 확정된 컬럼으로 강제 매핑합니다.
+  //   특정 컬럼(CUSTOMER 등) 하드코딩 지시를 대체.
+  let synonymDirective2 = '';
+  try {
+    const synonymMatches = await matchSynonymsDirectly(query || '', dc);
+    if (Array.isArray(synonymMatches) && synonymMatches.length > 0) {
+      const columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc' || m.source === 'ontology_desc_partial');
+      if (columnMatches.length > 0) {
+        const groups = new Map();
+        for (const m of columnMatches) {
+          const key = m.matchedKeyword || m.synonym;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(m);
+        }
+        for (const [k, g] of groups) {
+          const seen = new Set();
+          const dedup = [];
+          for (const m of g) {
+            if (!seen.has(m.column_name)) { seen.add(m.column_name); dedup.push(m); }
+          }
+          groups.set(k, dedup);
+        }
+        const lines = [];
+        lines.push('[★ 도메인 동의어 확정 매핑 — 최우선 적용! 사용자 용어를 아래 컬럼으로 해석하세요]');
+        lines.push(`활성 도메인: ${dc}`);
+        for (const [keyword, group] of groups) {
+          if (group.length === 1) {
+            const m = group[0];
+            lines.push(`- "${keyword}" → ${m.column_name}${m.description ? ` (${m.description})` : ''}`);
+          } else {
+            lines.push(`- "${keyword}" → ${group.map(m => m.column_name).join(', ')}`);
+          }
+        }
+        lines.push('▶ 다른 도메인의 관례 컬럼명(예: CUSTOMER 등)으로 임의 대체하지 마세요.');
+        synonymDirective2 = '\n' + lines.join('\n') + '\n';
+      }
+    }
+  } catch (e) {
+    console.warn('[analysisSqls] matchSynonymsDirectly 실패:', e.message);
+  }
+
   // ── 2) 직전 턴 SQL (있으면 가장 최근 SELECT문 1개)
   let prevSqlBlock = '';
   if (Array.isArray(conversationContext) && conversationContext.length > 0) {
@@ -3497,7 +3540,7 @@ bw_profitability_data (단일 테이블)
 [기간 컨텍스트]
 - 당월: ${cmLabel} (CALMONTH='${cm}')
 - 전월: ${prevLabel} (CALMONTH='${prevCm}')
-
+${synonymDirective2}
 [★★★★★ 학습관리에 등록된 지표(Metric) 산식 — 지표성 컬럼은 반드시 이 산식 사용 ★★★★★]
 ${metricCatalog || '(등록된 metric 없음)'}
 
@@ -3519,7 +3562,7 @@ ${columnCatalog || '(카탈로그 없음)'}
 - 특히 'BIC_*', '/BIC/*' 같은 SAP BW 일반 명명규칙은 **이 DB에 존재하지 않습니다**. 사용 금지.
 - 수량은 ZQTY_BOX / ZQTY_BAG / ZQTY_KE 중 적합한 것을 선택. (BIC_ZQTY* 아님)
 - 브랜드는 ZBRAND / ZBRAND_NM (BIC_ZBRAND 아님).
-- 거래처/고객은 CUSTOMER / CUSTOMER_NM, 영업사원은 ZKUNN2 / ZKUNN2_NM.
+- **거래처/고객/영업사원 등 도메인별로 달라지는 축은 활성 도메인(${dc})의 ontology_synonym·ontology_column 매핑을 기준으로 하세요. 특정 컬럼(CUSTOMER, ZKUNN2 등)으로 하드코딩 금지 — 반드시 위 [사용 가능한 실제 컬럼] 목록에 나와 있는 도메인별 실제 컬럼을 사용하세요.**
 - 유통경로는 DISTR_CHAN / DISTR_CHAN_NM (BIC_ZDISTCHAN 아님).
 - 컬럼이 위 목록에 정확히 존재하는지 한 번 더 확인한 뒤 SQL을 작성하세요.
 
@@ -3737,6 +3780,85 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
     console.warn('[AnalysisPlan] 컬럼 카탈로그 로드 실패:', e.message);
   }
 
+  // ── ★ 도메인 동의어 리졸버 (분석질문 경로에도 현황집계와 동일하게 적용)
+  //   현황집계 buildRAGSystemPrompt 와 동일하게 matchSynonymsDirectly 를 호출해
+  //   사용자 질의의 용어를 활성 도메인(HL/PS)의 ontology_synonym·metric 으로 확정 매핑합니다.
+  //   여기서 확정된 code/name 컬럼을 LLM 이 그대로 plan.dimensions[].columns[] 에 담도록 강제하여,
+  //   SQL 생성 단계(buildAggregationSqlFromPlan)가 도메인 컬럼(HL: ZZKVGR7 / PS: CUSTOMER 등)을
+  //   그대로 사용하도록 합니다. — "거래처=CUSTOMER" 같은 하드코딩 예시 금지.
+  let synonymDirective = '';
+  try {
+    const synonymMatches = await matchSynonymsDirectly(query, dc);
+    if (Array.isArray(synonymMatches) && synonymMatches.length > 0) {
+      const metricMatches = synonymMatches.filter(m => m.source === 'metric' || m.source === 'metric_desc');
+      const columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc' || m.source === 'ontology_desc_partial');
+
+      const lines = [];
+      lines.push('[★★★ 도메인 동의어 확정 매핑 — 최우선 적용! 아래 매핑을 반드시 dimensions/filters/metrics 에 사용하세요 ★★★]');
+      lines.push(`활성 도메인: ${dc}`);
+
+      if (columnMatches.length > 0) {
+        // matchedKeyword 로 그룹핑 (같은 사용자 키워드에 여러 컬럼 매핑되는 경우)
+        const groups = new Map();
+        for (const m of columnMatches) {
+          const key = m.matchedKeyword || m.synonym;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(m);
+        }
+        // 중복 컬럼 제거
+        for (const [k, g] of groups) {
+          const seen = new Set();
+          const dedup = [];
+          for (const m of g) {
+            if (!seen.has(m.column_name)) { seen.add(m.column_name); dedup.push(m); }
+          }
+          groups.set(k, dedup);
+        }
+        lines.push('');
+        lines.push('🔷 [Ontology 컬럼 매핑 — dimension/filter 로 사용]');
+        for (const [keyword, group] of groups) {
+          if (group.length === 1) {
+            const m = group[0];
+            lines.push(`- 사용자가 말한 "${keyword}" → 컬럼: ${m.column_name}${m.description ? ` (${m.description})` : ''}`);
+          } else {
+            lines.push(`- 사용자가 말한 "${keyword}" → ${group.length}개 컬럼:`);
+            for (const m of group) {
+              lines.push(`    · ${m.column_name}${m.description ? ` (${m.description})` : ''}`);
+            }
+          }
+        }
+        lines.push('');
+        lines.push('▶ 위 매핑에서 "코드 컬럼"과 그에 대응하는 "명(이름) 컬럼"이 함께 등장하면,');
+        lines.push('  두 컬럼을 한 dimension 의 columns 배열에 함께 묶으세요.');
+        lines.push('  (예: columns=["<코드컬럼>", "<명컬럼>"])');
+        lines.push('▶ 이 매핑에 없는 다른 이름의 컬럼(예: 다른 도메인 관례명)으로 임의 대체하지 마세요.');
+        lines.push('▶ 활성 도메인이 다르면 같은 한글 용어라도 컬럼명이 달라집니다. 반드시 위 매핑을 그대로 사용.');
+      }
+
+      if (metricMatches.length > 0) {
+        lines.push('');
+        lines.push('🚨 [Metric 산식 매핑 — metrics[].formula 로 사용]');
+        for (const m of metricMatches) {
+          const formulaMatch = (m.column_name || '').match(/^(\w+)\((.+)\)$/);
+          const innerFormula = formulaMatch ? formulaMatch[2] : m.column_name;
+          const aggInside = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(innerFormula || '');
+          const sqlExpr = aggInside ? innerFormula : `SUM(${innerFormula})`;
+          lines.push(`- 사용자가 말한 "${m.synonym}" → formula: ${sqlExpr}`);
+        }
+        lines.push('▶ 위 산식은 학습관리 등록값입니다. 임의 변경 금지.');
+      }
+
+      synonymDirective = '\n' + lines.join('\n') + '\n';
+      try {
+        console.log(`[AnalysisPlan] domain=${dc} synonym matches: columns=${columnMatches.length}, metrics=${metricMatches.length}`);
+      } catch(_) {}
+    } else {
+      console.log(`[AnalysisPlan] domain=${dc} synonym matches: (none)`);
+    }
+  } catch (e) {
+    console.warn('[AnalysisPlan] matchSynonymsDirectly 호출 실패:', e.message);
+  }
+
   const cm = dateCtx.latestMonth || '';
   const prevCm = dateCtx.prevMonth || '';
   const cmLabel = cm ? `${cm.substring(0,4)}년 ${parseInt(cm.substring(4,6))}월` : '';
@@ -3912,7 +4034,11 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
    ※ 단, 분자/분모가 학습관리에도 raw 컬럼에도 명확히 대응하는 개념이 아닌 경우(예: 매우 복잡한 조합식)에는
      무리하게 재료 metric 을 만들지 말고 파생 지표만 두어도 됩니다.
 
-4. dimensions 는 최소한만. 사용자가 "거래처별"이라 하면 CUSTOMER + CUSTOMER_NM 두 컬럼 묶어 하나의 dimension.
+4. dimensions 는 최소한만. 사용자가 "○○별"이라 하면 **위 [도메인 동의어 확정 매핑]** 에서 그 용어에 매핑된 컬럼을 사용하세요.
+   - 코드 컬럼과 명(이름) 컬럼이 함께 매핑돼 있으면 두 컬럼을 한 dimension 의 columns 배열에 묶습니다.
+   - 예: 도메인 매핑이 "거래처 → ZZKVGR7, ZZKVGR7_NM" 이면 columns=["ZZKVGR7","ZZKVGR7_NM"].
+     다른 도메인이면 같은 "거래처"라도 다른 컬럼일 수 있습니다. **절대 특정 컬럼명(CUSTOMER 등)으로 하드코딩하지 마세요** — 반드시 위 매핑에서 뽑아 쓰세요.
+   - 매핑이 없는 용어라면 [사용 가능 실제 컬럼] 에서 가장 명백히 일치하는 컬럼을 선택.
 
 5. period 는 사용자가 명시한 기간 → USER_QUERY.
    명시하지 않으면 UI 기간(당월: ${cmLabel} / CALMONTH='${cm}') 사용 → UI_FILTER.
@@ -3945,7 +4071,7 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 - 당월: ${cmLabel} (CALMONTH='${cm}')
 - 전월: ${prevLabel} (CALMONTH='${prevCm}')
 - 활성 도메인 (UI 필터): ${dc}
-
+${synonymDirective}
 [★ 학습관리 등록 지표 (지표성 컬럼은 반드시 이 산식 사용)]
 ${metricCatalog || '(없음)'}
 
