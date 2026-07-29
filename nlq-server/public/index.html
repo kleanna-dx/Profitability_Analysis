@@ -5299,7 +5299,7 @@ function coachStep1TargetsReady() {
 //   maxFrames 프레임 넘도록 준비 안 되면 그래도 콜백 호출 (완전 실패보다 낫도록 폴백).
 function coachWaitForStep1Ready(cb, maxFrames) {
     let frames = 0;
-    const limit = (typeof maxFrames === 'number') ? maxFrames : 30;   // 약 500ms @ 60fps
+    const limit = (typeof maxFrames === 'number') ? maxFrames : 60;   // 약 1s @ 60fps
     const tick = () => {
         if (coachStep1TargetsReady()) { cb(true); return; }
         if (frames++ >= limit) { cb(false); return; }
@@ -5331,57 +5331,87 @@ function startCoachMark(trigger) {
         alert('먼저 분석 영역을 선택해 주세요.');
         return;
     }
+
+    // ---------------------------------------------------------------
+    // [중요] 오버레이/스포트라이트/툴팁 DOM 은 layout 완료 확인 후에 생성한다.
+    //   이전에는 여기서 바로 body 에 추가했는데, 그러면
+    //     - 어두운 오버레이가 최대 ~500ms 이상 미리 깔려서 '페이지가 늦게 열리는 것'처럼 보임
+    //     - 첫 렌더가 잘못된 좌표로 계산되면 툴팁이 잘못된 위치에 잠깐 나타남
+    //   따라서 준비 완료 → UI 요소 생성 → renderCoachStep 순서로 변경.
+    // ---------------------------------------------------------------
+
+    // 트리거별 대기 프레임 상한 (수동 은 짧게, 자동 은 넉넉하게).
+    //   자동은 로딩 직후라 layout 이 늦게 잡힐 수 있어 관대하게 (~2초).
+    //   수동은 사용자가 이미 UI 를 보고 클릭한 뒤라 대개 즉시 통과.
+    const waitLimit = (trigger === 'auto') ? 120 : 60;
+
+    // '준비 대기 중' 상태를 마킹 — 사용자가 대기 중에 다시 호출해도 중복 실행되지 않도록.
+    //   (elems 는 아직 null. renderCoachStep 이 이 상태를 보고 스스로 방어할 필요는 없음 —
+    //    아래 콜백 안에서만 renderCoachStep 을 호출하므로.)
     coachState.active = true;
     coachState.stepIdx = 0;
-    // 오버레이 + 툴팁 컨테이너 생성 (한 번 만들고 재사용)
-    const overlay = document.createElement('div');
-    overlay.className = 'coach-overlay';
-    overlay.id = 'coachOverlay';
-    // 오버레이 클릭 시 아무 반응 X (사용자가 실수로 종료하지 않도록 — 명시적 [닫기] 로만 종료)
-    document.body.appendChild(overlay);
-    const spot = document.createElement('div');
-    spot.className = 'coach-spotlight';
-    spot.id = 'coachSpotlight';
-    document.body.appendChild(spot);
-    // [v2] 두 번째(및 그 이상) 강조 링 — 한 스텝에서 여러 영역을 강조할 때 사용.
-    //   대부분 스텝은 spot 하나만 쓰지만, 1단계처럼 도메인 탭 + 업무영역 탭을
-    //   개별 링으로 각각 감싸려면 spotExtra 도 함께 사용한다.
-    const spotExtra = document.createElement('div');
-    spotExtra.className = 'coach-spotlight';
-    spotExtra.id = 'coachSpotlightExtra';
-    spotExtra.style.display = 'none';
-    document.body.appendChild(spotExtra);
-    const tip = document.createElement('div');
-    tip.className = 'coach-tooltip';
-    tip.id = 'coachTooltip';
-    tip.setAttribute('role', 'dialog');
-    tip.setAttribute('aria-label', '자연어 질의 사용법 튜토리얼');
-    document.body.appendChild(tip);
-    coachState.elems = { overlay, spot, spotExtra, tip };
-    // 리사이즈/스크롤 리스너 (스로틀 없이 CSS transition 만으로도 부드러움)
-    coachState.onResize = () => renderCoachStep();
-    window.addEventListener('resize', coachState.onResize);
-    window.addEventListener('scroll', coachState.onResize, true);
-    // ESC 로 종료 (용어집 ESC 와 충돌하지 않도록: 튜토리얼이 활성일 때만 우선 처리)
-    coachState.onKey = (e) => {
-        if (e.key === 'Escape') { e.stopPropagation(); endCoachMark(); }
-        else if (e.key === 'ArrowRight') { coachNext(); }
-        else if (e.key === 'ArrowLeft')  { coachPrev(); }
-    };
-    document.addEventListener('keydown', coachState.onKey, true);   // capture: 다른 ESC 핸들러보다 먼저
+    coachState._retriedStep = null;
+    coachState.elems = null;
 
-    // 첫 렌더는 1단계 대상(#domainSelectorBar + #areaTabBar) 이 실제로 layout 완료된 뒤에.
-    //   rAF 폴링으로 두 요소 모두 rect > 0 이 될 때까지 최대 ~500ms 대기.
-    //   준비되기 전에 renderCoachStep 을 호출하면 union bbox 가 한쪽만 잡혀
-    //   '업무영역만 강조' 되는 간헐 문제가 발생하는 것을 방지.
     coachWaitForStep1Ready((ok) => {
-        if (!coachState.active) return;   // 대기 중에 사용자가 취소했을 수도 있음
+        // 대기 중에 사용자가 이미 튜토리얼을 취소했거나(active=false) 다른 시나리오로
+        // 상태가 바뀌었을 수 있음
+        if (!coachState.active) return;
         if (!ok) {
-            // 폴백: 준비 안 됐어도 어쨌든 렌더 (기존 방어 로직이 남아 있는 것보단 낫도록)
-            console.warn('[coach] step1 targets not fully ready after wait — rendering anyway');
+            // 폴백: layout 완료 감지 실패
+            //   - 자동 트리거는 조용히 종료 (사용자에게 잘못된 위치의 안내를 보여주는 것보다
+            //     아예 안 보여주고 (?) 버튼으로 재실행할 수 있게 하는 게 안전)
+            //   - 수동 트리거는 그래도 렌더 (사용자가 명시적으로 요청한 것이므로)
+            if (trigger === 'auto') {
+                console.warn('[coach] auto-start aborted: step1 targets not ready within timeout');
+                coachState.active = false;
+                coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null, _retriedStep:null };
+                return;
+            }
+            console.warn('[coach] step1 targets not fully ready — rendering anyway (manual trigger)');
         }
+
+        // ---- 오버레이/스포트라이트/툴팁 UI 요소 생성 (준비 완료 후) ----
+        const overlay = document.createElement('div');
+        overlay.className = 'coach-overlay';
+        overlay.id = 'coachOverlay';
+        // 오버레이 클릭 시 아무 반응 X (사용자가 실수로 종료하지 않도록 — 명시적 [닫기] 로만 종료)
+        document.body.appendChild(overlay);
+        const spot = document.createElement('div');
+        spot.className = 'coach-spotlight';
+        spot.id = 'coachSpotlight';
+        document.body.appendChild(spot);
+        // [v2] 두 번째(및 그 이상) 강조 링 — 한 스텝에서 여러 영역을 강조할 때 사용.
+        //   v3 아키텍처에서는 union rectangle 로 통합하여 spotExtra 는 항상 hidden 이지만,
+        //   backward-compat 을 위해 요소 자체는 유지.
+        const spotExtra = document.createElement('div');
+        spotExtra.className = 'coach-spotlight';
+        spotExtra.id = 'coachSpotlightExtra';
+        spotExtra.style.display = 'none';
+        document.body.appendChild(spotExtra);
+        const tip = document.createElement('div');
+        tip.className = 'coach-tooltip';
+        tip.id = 'coachTooltip';
+        tip.setAttribute('role', 'dialog');
+        tip.setAttribute('aria-label', '자연어 질의 사용법 튜토리얼');
+        document.body.appendChild(tip);
+        coachState.elems = { overlay, spot, spotExtra, tip };
+
+        // 리사이즈/스크롤 리스너
+        coachState.onResize = () => renderCoachStep();
+        window.addEventListener('resize', coachState.onResize);
+        window.addEventListener('scroll', coachState.onResize, true);
+
+        // ESC 로 종료 (용어집 ESC 와 충돌하지 않도록: 튜토리얼이 활성일 때만 우선 처리)
+        coachState.onKey = (e) => {
+            if (e.key === 'Escape') { e.stopPropagation(); endCoachMark(); }
+            else if (e.key === 'ArrowRight') { coachNext(); }
+            else if (e.key === 'ArrowLeft')  { coachPrev(); }
+        };
+        document.addEventListener('keydown', coachState.onKey, true);   // capture: 다른 ESC 핸들러보다 먼저
+
         renderCoachStep();
-    });
+    }, waitLimit);
 }
 
 function endCoachMark() {
@@ -5585,8 +5615,15 @@ function renderCoachStep() {
         return;
     }
     if (elems.length === 0) {
-        // 대상 요소를 하나도 찾지 못하면 스킵 (자동 다음 스텝)
         console.warn('[coach] target not found:', step.target);
+        // [defense-in-depth] 1단계(stepIdx=0)에서 요소를 찾지 못하면
+        //   layout 미완료 상태이므로 절대 다음 스텝으로 자동 진행하지 않는다.
+        //   (진행 시 후속 스텝이 잘못된 좌표에 렌더되는 회귀 방지.
+        //    사용자는 ? 버튼으로 재시도 가능.)
+        if (coachState.stepIdx === 0) {
+            endCoachMark();
+            return;
+        }
         coachNext();
         return;
     }
