@@ -3578,6 +3578,15 @@ ${columnCatalog || '(카탈로그 없음)'}
    - 대상 이름이 모호하면 LIKE 부분 매칭 사용.
    - 대상이 '항상 ~ 낮다/높다' 같은 추세 질문이면 최근 3~6개월 CALMONTH로 확장 가능 (CALMONTH >= '20YYMM').
 4. 집계 함수와 일반 컬럼이 함께 있을 땐 반드시 GROUP BY 추가.
+4-1. **★★★ 코드·명칭 쌍 GROUP BY 원칙 (매우 중요) ★★★**
+   차원에 코드 컬럼과 명(_NM/_NAME) 컬럼이 함께 있는 경우:
+   - **반드시 코드 컬럼으로만 GROUP BY**, 명 컬럼은 MAX() 로 SELECT 표시용.
+   - 대표 쌍: MATERIAL/MATERIAL_NM, PLANT/PLANT_NM, PROFIT_CTR/PROFIT_CTR_NM,
+     ZZKVGR7/ZZKVGR7_NM, ZBRAND/ZBRAND_NM, DISTR_CHAN/DISTR_CHAN_NM, ZKUNN2/ZKUNN2_NM 등.
+   - ✓ 정답: SELECT MATERIAL AS '자재코드', MAX(MATERIAL_NM) AS '자재명', SUM(...) AS '매출총이익' ... GROUP BY MATERIAL
+   - ✗ 금지: GROUP BY MATERIAL_NM (명 컬럼만) — 서로 다른 코드가 같은 명이면 합쳐지고, 코드가 같아도 명 표기가 다르면 분리됨.
+   - ✗ 금지: GROUP BY MATERIAL, MATERIAL_NM 함께 (동일 코드의 명 변경/표기차로 그룹 분리 위험).
+   - 예외: 사용자가 명시적으로 "동일 명칭끼리 합쳐줘" 라고 요청한 경우에만 명 기준 GROUP BY 허용.
 5. **금액 지표는 반드시 위 [Metric 산식]에 적힌 표현식을 그대로 사용**. raw ZAMT 컬럼을 임의로 SUM하지 말 것.
    단가/평균 등 등록되지 않은 비율은 (등록된 금액 산식) / NULLIF(SUM(수량),0) 형태로.
 6. 결과가 많아질 가능성이 있으면 LIMIT 50 정도로 제한, ORDER BY 명시.
@@ -3921,8 +3930,9 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   "answerMode": "RESULT_BASED" | "CONCEPT_EXPLANATION",
   "domain": { "value": "PS|HL", "source": "USER_QUERY|UI_FILTER" },
   "period": { "from": "YYYYMM", "to": "YYYYMM", "source": "USER_QUERY|UI_FILTER" },
-  "dimensions": [                          // GROUP BY 축
+  "dimensions": [                          // GROUP BY 축 — columns[0]=코드(GROUP BY), columns[1..]=명(MAX 표시)
     { "name": "표시명(한글)", "columns": ["COL_CODE","COL_NAME"] }
+    // 명시적 명 기준 그룹핑 필요 시: { "name": "...", "columns": [...], "groupByAll": true }
   ],
   "metrics": [                             // SELECT 지표
     { "name": "표시명(한글)", "formula": "SUM(...)/NULLIF(SUM(...),0)" }
@@ -4036,9 +4046,20 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 
 4. dimensions 는 최소한만. 사용자가 "○○별"이라 하면 **위 [도메인 동의어 확정 매핑]** 에서 그 용어에 매핑된 컬럼을 사용하세요.
    - 코드 컬럼과 명(이름) 컬럼이 함께 매핑돼 있으면 두 컬럼을 한 dimension 의 columns 배열에 묶습니다.
+   - **★★★ columns 배열의 순서는 반드시 [코드 컬럼, 명 컬럼] 순서 ★★★**
+     · columns[0] = 코드 컬럼 (예: MATERIAL, ZZKVGR7, PLANT, PROFIT_CTR) — **GROUP BY 기준**
+     · columns[1..] = 명 컬럼 (예: MATERIAL_NM, ZZKVGR7_NM) — **MAX() 로 표시용만**
+     · SQL 빌더가 columns[0] 만 GROUP BY 하고 나머지는 MAX() 로 감쌉니다. 이 순서를 반드시 지키세요.
    - 예: 도메인 매핑이 "거래처 → ZZKVGR7, ZZKVGR7_NM" 이면 columns=["ZZKVGR7","ZZKVGR7_NM"].
+     자재/SKU 라면 columns=["MATERIAL","MATERIAL_NM"] (코드가 먼저).
      다른 도메인이면 같은 "거래처"라도 다른 컬럼일 수 있습니다. **절대 특정 컬럼명(CUSTOMER 등)으로 하드코딩하지 마세요** — 반드시 위 매핑에서 뽑아 쓰세요.
+   - **명 컬럼(_NM/_NAME 계열)만 단독으로 columns 에 넣지 마세요.** 이유:
+     · 서로 다른 코드가 같은 명이면 하나로 합쳐지고,
+     · 동일 코드의 명이 변경/표기차이 나면 여러 그룹으로 분리되며,
+     · 공백·대소문자·NULL 로 결과가 달라져 현황집계와 정합성이 깨집니다.
    - 매핑이 없는 용어라면 [사용 가능 실제 컬럼] 에서 가장 명백히 일치하는 컬럼을 선택.
+   - **예외**: 사용자가 명시적으로 "동일한 명칭끼리 합쳐줘" 같이 명 기준 그룹핑을 요청한 경우에만
+     dimension 에 "groupByAll": true 를 추가해 두면 SQL 빌더가 명 컬럼도 GROUP BY 에 포함합니다.
 
 5. period 는 사용자가 명시한 기간 → USER_QUERY.
    명시하지 않으면 UI 기간(당월: ${cmLabel} / CALMONTH='${cm}') 사용 → UI_FILTER.
@@ -4187,15 +4208,63 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   const groupByParts = [];
 
   // dimensions
+  // ★ [2026-07-30] 코드·명칭 쌍 GROUP BY 원칙 (현황집계 규칙 12 와 동일)
+  //   dimension 의 columns[] 에 코드/명 두 컬럼이 함께 오면:
+  //     - 첫 컬럼(코드로 간주) 만 GROUP BY.
+  //     - 나머지(명으로 간주) 는 MAX(col) AS col 로 표시용으로만 노출.
+  //   이유:
+  //     - MATERIAL_NM 같은 VARCHAR 명 컬럼을 GROUP BY 하면
+  //       ① 서로 다른 코드가 같은 명이면 하나로 합쳐지고
+  //       ② 동일 코드의 명 변경/표기차/공백/NULL 로 여러 그룹 분리되며
+  //       ③ 인덱스 미사용으로 성능이 나쁨.
+  //     - 현황집계는 프롬프트 규칙 12 로 이걸 강제하지만, 분석질문은
+  //       plan.dimensions[].columns[] 를 그대로 사용하는 구조라 SQL 빌더에서 강제해야 함.
+  //   명 컬럼 판별: 이름이 _NM, _NAME, NAME_KO, _KOR 등으로 끝나거나 (대소문자 무관),
+  //                또는 columns 배열에서 두 번째 이후 위치에 오는 것.
+  //   예외: dimension.groupByAll === true 또는 columns.length === 1 이면 기존 동작.
+  const isNameLikeColumn = (col) => {
+    const u = String(col || '').toUpperCase();
+    return /(_NM|_NAME|_KO|_KOR|_KR|NAME_KO|_TEXT|_TXT|_DESC)$/.test(u);
+  };
   const dimAliasByName = {};
+  const dimCodeColByName = {};   // dimension.name → 코드 컬럼 (partitionBy lookup 용)
   for (const d of dims) {
     if (!Array.isArray(d.columns) || d.columns.length === 0) continue;
-    // 여러 컬럼(코드+명) 을 dimension 하나로 묶기 위해 각 컬럼 각각 SELECT 하되 GROUP BY 에 모두 넣는다
-    for (const col of d.columns) {
-      selectParts.push(`\`${col}\``);
-      groupByParts.push(`\`${col}\``);
+    const cols = d.columns.filter(c => c && typeof c === 'string');
+    if (cols.length === 0) continue;
+
+    // 1) 코드 컬럼 후보 선택
+    //    a) 명시적으로 groupByAll=true 인 경우 → 모두 GROUP BY (기존 동작)
+    //    b) columns.length === 1 → 그 컬럼 GROUP BY
+    //    c) 두 개 이상: "명 아닌" 첫 컬럼 = 코드로 간주. 없으면 첫 컬럼 사용.
+    const forceAll = d.groupByAll === true;
+    let codeCol;
+    if (forceAll || cols.length === 1) {
+      codeCol = cols[0];
+    } else {
+      codeCol = cols.find(c => !isNameLikeColumn(c)) || cols[0];
     }
-    dimAliasByName[d.name] = d.columns[d.columns.length - 1];  // 이름 컬럼(뒤쪽) 을 대표 alias 로
+
+    if (forceAll) {
+      // 사용자가 "명칭끼리 합쳐줘" 등 명시적 요청 시 등: 모든 컬럼 GROUP BY
+      for (const col of cols) {
+        selectParts.push(`\`${col}\``);
+        groupByParts.push(`\`${col}\``);
+      }
+    } else {
+      // 코드 컬럼: SELECT + GROUP BY
+      selectParts.push(`\`${codeCol}\``);
+      groupByParts.push(`\`${codeCol}\``);
+      // 나머지(명 컬럼 포함): MAX() 로 표시
+      for (const col of cols) {
+        if (col === codeCol) continue;
+        selectParts.push(`MAX(\`${col}\`) AS \`${col}\``);
+      }
+    }
+
+    // 대표 alias: 코드 컬럼 (partitionBy lookup 에 사용)
+    dimAliasByName[d.name] = codeCol;
+    dimCodeColByName[d.name] = codeCol;
   }
 
   // metrics — alias 는 한글 name, SQL 은 산식 그대로 (metricSqlMap 로 이미 산식 채워짐)
