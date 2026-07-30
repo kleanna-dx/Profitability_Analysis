@@ -1467,7 +1467,9 @@ function renderDomainSelectorBar() {
         const isActive = d.domain_code === currentDomain;
         const lockCls = sessionDomainLocked ? ' locked' : '';
         const lockIcon = sessionDomainLocked && isActive ? '<i class="fas fa-lock domain-lock-icon"></i>' : '';
-        return `<button class="domain-btn${isActive ? ' active' : ''}${lockCls}" onclick="onDomainBtnClick('${d.domain_code}')" title="${d.domain_name} (${d.domain_code})"><i class="fas ${icon}" style="font-size:11px;"></i>${d.domain_code}${lockIcon}</button>`;
+        // [2026-07-30] 사용자 표시명은 서버 응답의 display_code(예: MGMT→'통합') 우선, 없으면 domain_code. onclick 은 내부 코드(domain_code) 그대로 유지.
+        const _disp = d.display_code || d.domain_code;
+        return `<button class="domain-btn${isActive ? ' active' : ''}${lockCls}" onclick="onDomainBtnClick('${d.domain_code}')" title="${d.domain_name} (${_disp})"><i class="fas ${icon}" style="font-size:11px;"></i>${_disp}${lockIcon}</button>`;
     }).join('');
     bar.style.display = 'flex';
     if (!sessionStorage.getItem('domainGlowShown')) { bar.classList.add('glow'); sessionStorage.setItem('domainGlowShown', '1'); setTimeout(() => bar.classList.remove('glow'), 6500); }
@@ -1478,7 +1480,9 @@ function updateDomainInfoBanner() {
     const text = document.getElementById('domainInfoText');
     if (!banner || !text) return;
     const label = domainsList.find(d => d.domain_code === currentDomain)?.domain_name || currentDomain;
-    text.textContent = `${label} (${currentDomain}) 기준 — 필드·산식·학습 데이터가 달라집니다`;
+    // [2026-07-30] currentDomain 노출 시 공통 표시명 헬퍼 적용 (MGMT → '통합')
+    const _curDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(currentDomain) : currentDomain);
+    text.textContent = `${label} (${_curDisp}) 기준 — 필드·산식·학습 데이터가 달라집니다`;
     banner.style.display = 'flex';
     setTimeout(() => { banner.style.display = 'none'; }, 8000);
 }
@@ -1489,7 +1493,9 @@ function showDomainForceOverlay() {
     if (!overlay || !btnsEl) return;
     btnsEl.innerHTML = domainsList.map(d => {
         const icon = domainIcons[d.domain_code] || 'fa-globe';
-        return `<button class="domain-force-btn sparkle" onclick="selectForceDomain('${d.domain_code}')"><i class="fas ${icon}"></i>${d.domain_name} (${d.domain_code})</button>`;
+        // [2026-07-30] 표시 라벨은 display_code 우선. 클릭 값은 내부 코드 그대로.
+        const _disp = d.display_code || d.domain_code;
+        return `<button class="domain-force-btn sparkle" onclick="selectForceDomain('${d.domain_code}')"><i class="fas ${icon}"></i>${d.domain_name} (${_disp})</button>`;
     }).join('');
     overlay.style.display = 'flex';
 }
@@ -1527,7 +1533,10 @@ async function onDomainBtnClick(dc) {
     if (sessionDomainLocked) {
         const label = domainsList.find(d => d.domain_code === dc)?.domain_name || dc;
         const curLabel = domainsList.find(d => d.domain_code === currentDomain)?.domain_name || currentDomain;
-        alert(`현재 채팅은 ${curLabel} (${currentDomain}) 기준으로 진행 중입니다.\n분석 영역을 변경하면 기존 대화와 데이터 기준이 달라질 수 있습니다.\n\n${label} (${dc})(으)로 변경하려면 새 채팅을 시작해주세요.`);
+        // [2026-07-30] alert 문구의 도메인 코드 노출은 사용자 표시명(MGMT → '통합') 사용
+        const _dcDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(dc) : dc);
+        const _curDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(currentDomain) : currentDomain);
+        alert(`현재 채팅은 ${curLabel} (${_curDisp}) 기준으로 진행 중입니다.\n분석 영역을 변경하면 기존 대화와 데이터 기준이 달라질 수 있습니다.\n\n${label} (${_dcDisp})(으)로 변경하려면 새 채팅을 시작해주세요.`);
         return;
     }
     await switchDomain(dc);
@@ -1750,7 +1759,9 @@ async function loadGlossary() {
     // 컨텍스트 배지: 현재 도메인 표시 (제조원가 등 업무영역은 향후 백엔드 지원 시 확장)
     if (ctx) {
         const dLabel = (domainsList.find(d => d.domain_code === currentDomain) || {}).domain_name || currentDomain;
-        ctx.textContent = `${dLabel} (${currentDomain}) 기준 · 활성 필드`;
+        // [2026-07-30] currentDomain 배지 표기에도 표시명 헬퍼 적용 (MGMT → '통합')
+        const _curDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(currentDomain) : currentDomain);
+        ctx.textContent = `${dLabel} (${_curDisp}) 기준 · 활성 필드`;
     }
     try {
         const r = await fetch('/api/builder/columns?_t=' + Date.now());
@@ -4777,7 +4788,9 @@ function renderFavoriteQuestionsList(items) {
     items.forEach(it => {
         const text = it.query_text || '';
         const dc = it.domain_code;
-        const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${dc}]</span>` : '';
+        // [2026-07-30] 배지 표기는 사용자 표시명(MGMT → '통합'). 내부 코드는 dc 로 유지 (배경색 분기용).
+        const _dcDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(dc) : dc);
+        const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${_dcDisp}]</span>` : '';
         // [2026-06-15] 저장 당시의 질의 유형 배지 — 클릭 전에 어떤 모드로 복원될지 미리 안내
         const qm = it.query_mode;
         const modeBadge = (qm === 'analysis')
@@ -4965,7 +4978,9 @@ function renderHistoryList(items) {
         const activeCls = isCurrentSession ? ' active' : '';
         const countBadge = qCount > 1 ? `<span style="display:inline-block;background:rgba(99,102,241,0.2);color:#a5b4fc;font-size:9px;padding:1px 5px;border-radius:8px;margin-left:4px;">${qCount}개 질문</span>` : '';
         const dc = item.domain_code;
-        const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${dc}]</span>` : '';
+        // [2026-07-30] 질의 이력 배지 표기는 사용자 표시명(MGMT → '통합'). 내부 코드는 dc 로 유지.
+        const _dcDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(dc) : dc);
+        const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${_dcDisp}]</span>` : '';
         const meta = `${time}${countBadge}`;
         // 즐겨찾기 별 아이콘 — 채워진 별(fas) vs 빈 별(far)
         const isBookmarked = !!item.is_bookmarked;
@@ -5255,8 +5270,10 @@ const COACH_STEPS = [
         ],
         preferred: 'bottom',
         title: '1단계 · 도메인과 업무영역 선택',
+        // [2026-07-30] MGMT 는 사용자 표시명 '통합' 으로 노출. 내부 코드(MGMT)는 유지.
+        // (정적 HTML 이라 window.__domainDisplayCode 를 호출하기 어려워 직접 치환)
         html: `먼저 조회하려는 <b>도메인과 업무영역</b>을 선택해 주세요.<br>
-현재 선택한 <b>PS · HL · MGMT</b> 기준으로 사용 가능한 데이터와 용어가 달라집니다.`
+현재 선택한 <b>PS · HL · 통합</b> 기준으로 사용 가능한 데이터와 용어가 달라집니다.`
     },
     {
         target: '#glossaryToggleBtn',

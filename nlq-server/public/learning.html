@@ -883,8 +883,10 @@ function renderDomainBanner() {
         const activeClass = isActive ? 'active' : '';
         // 고정 모드일 때 비활성 탭은 disabled 스타일
         const disabledStyle = isDomainLocked && !isActive ? 'opacity:.4;pointer-events:none;' : '';
+        // [2026-07-30] 도메인 탭 라벨은 서버 display_code(MGMT→'통합') 우선. onclick 은 내부 코드 그대로.
+        const _disp = d.display_code || d.domain_code;
         return `<div class="domain-tab ${activeClass} ${lockedClass}" style="${disabledStyle}" onclick="switchDomainTab('${d.domain_code}')">
-                    <i class="fas ${icon}" style="margin-right:4px;font-size:12px;"></i>${d.domain_name} (${d.domain_code})
+                    <i class="fas ${icon}" style="margin-right:4px;font-size:12px;"></i>${d.domain_name} (${_disp})
                 </div>`;
     }).join('');
 

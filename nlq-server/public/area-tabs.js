@@ -19,6 +19,44 @@
  *  본 파일은 오직 프론트 CSS/DOM 만 다룸.
  *  서버 API / DB / 응답 스키마 / 이력 저장 로직 등은 절대 미변경.
  * ===================================================================== */
+/* ─────────────────────────────────────────────────────────────────────
+ * [2026-07-30] 도메인 표시명 공통 유틸 (프런트 전역)
+ *
+ *   요구사항: 사용자에게 노출되는 화면에서 MGMT 는 '통합' 으로 표시하되
+ *   내부 domain_code (API 파라미터·세션·SQL·권한) 는 그대로 유지.
+ *   화면마다 개별 문자열 치환을 하지 않고 이 헬퍼 하나로 통일한다.
+ *
+ *   서버 /api/domains 응답에도 display_code 필드가 함께 오지만
+ *   서버 응답 없이 코드 상수만 있는 경우(예: domainIcons, hardcoded string)를
+ *   위해 프런트에도 미러 매핑을 둔다.
+ *
+ *   사용:
+ *     window.__domainDisplayCode('MGMT')     // → '통합'
+ *     window.__domainDisplayCode('PS')       // → 'PS'  (변경 없음)
+ *     window.__domainDisplayCode(d.display_code || d.domain_code)
+ *
+ *   서버 응답 우선 원칙:
+ *     - domainsList 배열의 각 원소에는 display_code 가 이미 채워져 있음.
+ *       가능한 경우 그것을 그대로 쓰고, 문자열 상수 라벨링 시에만 이 유틸을 호출.
+ * ───────────────────────────────────────────────────────────────────── */
+(function () {
+    if (window.__domainDisplayCode) return;
+    var MAP = { MGMT: '통합' };  // 필요 시 여기에만 추가
+    window.__DOMAIN_DISPLAY_CODE_MAP = MAP;
+    window.__domainDisplayCode = function (code) {
+        if (code == null) return code;
+        return MAP[code] || code;
+    };
+    // 사용자 입력 인식용 역매핑 ('통합' → 'MGMT'). 대소문자 무관.
+    var REV = {};
+    Object.keys(MAP).forEach(function (k) { REV[MAP[k].toUpperCase()] = k; });
+    window.__resolveDomainAlias = function (input) {
+        if (input == null) return input;
+        var key = String(input).trim().toUpperCase();
+        return REV[key] || input;
+    };
+})();
+
 (function() {
     'use strict';
 

@@ -1556,7 +1556,9 @@ function renderDomainSelectorBar(){
         const icon=domainIcons[d.domain_code]||'fa-globe';const isActive=d.domain_code===currentDomain;
         const lockCls=builderDomainLocked?' locked':'';
         const lockIcon=builderDomainLocked&&isActive?'<i class="fas fa-lock domain-lock-icon"></i>':'';
-        return `<button class="domain-btn${isActive?' active':''}${lockCls}" onclick="onBuilderDomainClick('${d.domain_code}')" title="${d.domain_name} (${d.domain_code})"><i class="fas ${icon}" style="font-size:11px;"></i>${d.domain_code}${lockIcon}</button>`;
+        // [2026-07-30] 사용자 표시명은 서버 display_code(MGMT→'통합') 우선. onclick 은 내부 코드 그대로 유지.
+        const _disp=d.display_code||d.domain_code;
+        return `<button class="domain-btn${isActive?' active':''}${lockCls}" onclick="onBuilderDomainClick('${d.domain_code}')" title="${d.domain_name} (${_disp})"><i class="fas ${icon}" style="font-size:11px;"></i>${_disp}${lockIcon}</button>`;
     }).join('');
     bar.style.display='flex';
     if(!sessionStorage.getItem('builderDomainGlow')){bar.classList.add('glow');sessionStorage.setItem('builderDomainGlow','1');setTimeout(()=>bar.classList.remove('glow'),6500);}
@@ -1565,13 +1567,16 @@ function updateDomainInfoBanner(){
     const banner=document.getElementById('domainInfoBanner'),text=document.getElementById('domainInfoText');
     if(!banner||!text)return;
     const label=domainsList.find(d=>d.domain_code===currentDomain)?.domain_name||currentDomain;
-    text.textContent=`${label} (${currentDomain}) 기준 — 필드·산식 기준이 달라집니다`;
+    // [2026-07-30] currentDomain 노출은 공통 표시명 헬퍼 적용 (MGMT → '통합')
+    const _curDisp=(window.__domainDisplayCode?window.__domainDisplayCode(currentDomain):currentDomain);
+    text.textContent=`${label} (${_curDisp}) 기준 — 필드·산식 기준이 달라집니다`;
     banner.style.display='flex';setTimeout(()=>{banner.style.display='none';},8000);
 }
 function showDomainForceOverlay(){
     const overlay=document.getElementById('domainForceOverlay'),btnsEl=document.getElementById('domainForceBtns');
     if(!overlay||!btnsEl)return;
-    btnsEl.innerHTML=domainsList.map(d=>`<button class="domain-force-btn sparkle" onclick="selectForceDomain('${d.domain_code}')"><i class="fas ${domainIcons[d.domain_code]||'fa-globe'}"></i>${d.domain_name} (${d.domain_code})</button>`).join('');
+    // [2026-07-30] 강제 선택 오버레이 라벨도 display_code 우선 (클릭 값은 내부 코드)
+    btnsEl.innerHTML=domainsList.map(d=>{const _disp=d.display_code||d.domain_code;return `<button class="domain-force-btn sparkle" onclick="selectForceDomain('${d.domain_code}')"><i class="fas ${domainIcons[d.domain_code]||'fa-globe'}"></i>${d.domain_name} (${_disp})</button>`;}).join('');
     overlay.style.display='flex';
 }
 function hideDomainForceOverlay(){const o=document.getElementById('domainForceOverlay');if(o)o.style.display='none';}
@@ -1586,7 +1591,10 @@ function onBuilderDomainClick(dc){
     if(builderDomainLocked){
         const curLabel=domainsList.find(d=>d.domain_code===currentDomain)?.domain_name||currentDomain;
         const newLabel=domainsList.find(d=>d.domain_code===dc)?.domain_name||dc;
-        alert(`현재 쿼리빌더는 ${curLabel} (${currentDomain}) 기준으로 구성되어 있습니다.\n\n${newLabel} (${dc})(으)로 변경하려면 좌측 사이드바의 "새 쿼리빌더" 버튼을 눌러주세요.`);
+        // [2026-07-30] alert 문구의 도메인 코드 노출은 사용자 표시명 사용 (MGMT → '통합')
+        const _curDisp=(window.__domainDisplayCode?window.__domainDisplayCode(currentDomain):currentDomain);
+        const _dcDisp=(window.__domainDisplayCode?window.__domainDisplayCode(dc):dc);
+        alert(`현재 쿼리빌더는 ${curLabel} (${_curDisp}) 기준으로 구성되어 있습니다.\n\n${newLabel} (${_dcDisp})(으)로 변경하려면 좌측 사이드바의 "새 쿼리빌더" 버튼을 눌러주세요.`);
         return;
     }
     switchDomain(dc);
@@ -4209,7 +4217,9 @@ function renderBuilderHistory(items) {
             const starStyle = item.is_bookmarked ? 'fas' : 'far';
             // 도메인 배지
             const dc = item.domain_code;
-            const domainBadge = dc ? `<span style="display:inline-block;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};">[${dc}]</span>` : '';
+            // [2026-07-30] 질의 이력 배지 표기는 사용자 표시명(MGMT → '통합'). 내부 코드는 dc 로 유지 (색상/힌트용).
+            const _dcDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(dc) : dc);
+            const domainBadge = dc ? `<span style="display:inline-block;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};">[${_dcDisp}]</span>` : '';
             // 클릭 시 사이드바에 표시된 도메인을 hint 로 전달 → 상단 배지를 정확히 동기화
             const hintArg = dc ? `,'${dc}'` : '';
             html += `

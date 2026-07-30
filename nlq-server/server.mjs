@@ -832,7 +832,8 @@ app.get('/api/me', async (req, res) => {
 // ★ 세션 active_domain 변경 + users.domain_code 에도 영구저장 (최초 선택 후 재접속 시 자동 진입)
 app.post('/api/me/domain', async (req, res) => {
   if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
-  const { domain_code } = req.body;
+  // [2026-07-30] 사용자 입력에서 '통합' 등 표시명이 들어와도 내부 코드(MGMT)로 정규화
+  const domain_code = resolveDomainAlias(req.body.domain_code);
   if (!domain_code) return res.status(400).json({ error: 'domain_code 필수' });
 
   // 유효성 검증: domain_master에 존재하고 활성인 코드만 허용
@@ -867,11 +868,42 @@ app.post('/api/me/domain', async (req, res) => {
   res.json({ success: true, active_domain: domain_code, domain_code });
 });
 
+// ────────────────────────────────────────────────────────────────
+// [2026-07-30] 도메인 표시명 (display_code) 공통 헬퍼
+//   요구사항: 사용자에게 노출되는 화면에서는 MGMT 를 '통합' 으로 표시하되
+//   내부 domain_code (DB / API / 세션 / 권한 / SQL) 는 그대로 유지.
+//   화면마다 개별 치환하지 않고 이 헬퍼 하나로 통일.
+// ────────────────────────────────────────────────────────────────
+const DOMAIN_DISPLAY_CODE_MAP = {
+  MGMT: '통합',
+  // 필요 시 여기에만 추가. PS/HL 은 코드 그대로 표시.
+};
+function domainDisplayCode(domainCode) {
+  if (!domainCode) return domainCode;
+  return DOMAIN_DISPLAY_CODE_MAP[domainCode] || domainCode;
+}
+// 사용자 입력에서 표시명을 내부 코드로 되돌리는 역매핑
+//   (사용자가 자연어 질의에 "통합" 이라고 써도 MGMT 로 인식되도록)
+const DOMAIN_DISPLAY_TO_CODE_MAP = {};
+for (const [code, disp] of Object.entries(DOMAIN_DISPLAY_CODE_MAP)) {
+  DOMAIN_DISPLAY_TO_CODE_MAP[disp.toUpperCase()] = code;
+}
+function resolveDomainAlias(input) {
+  if (!input) return input;
+  const key = String(input).trim().toUpperCase();
+  return DOMAIN_DISPLAY_TO_CODE_MAP[key] || input;
+}
+
 // 도메인 목록 API
+//   응답에 display_code 를 함께 실어 프런트가 표시용으로 사용.
 app.get('/api/domains', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT domain_code, domain_name, sort_order FROM domain_master WHERE is_active = 1 ORDER BY sort_order');
-    res.json(rows);
+    const enriched = rows.map(r => ({
+      ...r,
+      display_code: domainDisplayCode(r.domain_code),   // 예: MGMT → '통합', PS → 'PS'
+    }));
+    res.json(enriched);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2866,7 +2898,13 @@ async function buildRAGSystemPrompt(query, domainCode) {
   }
 
   // ★★★ 도메인 컨텍스트 주입 — LLM이 현재 분석 도메인을 정확히 인지하도록
-  const domainNames = { PS: '생활용품사업부(PS)', HL: '홈앤라이프사업부(HL)', MGMT: '경영관리(MGMT)' };
+  //  ※ 내부 코드(MGMT) 유지 + 사용자 표시명(통합) 병기: 사용자가 어떤 표현을 써도 LLM 이 매핑 가능하도록.
+  const _dispM = domainDisplayCode('MGMT');
+  const domainNames = {
+    PS: '생활용품사업부(PS)',
+    HL: '홈앤라이프사업부(HL)',
+    MGMT: `경영관리(${_dispM}, 내부코드=MGMT)`,
+  };
   const domainCtx = `\n[★★★ 현재 분석 도메인: ${domainNames[domainCode] || domainCode} ★★★]
 - 현재 선택된 도메인은 "${domainCode}" 입니다.
 - 아래 제공된 동의어 매칭, RAG 컨텍스트, Ontology/Metric 정보는 모두 ${domainCode} 도메인 전용입니다.
@@ -5846,7 +5884,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   //   프론트엔드에서 분석 영역 선택 모달을 띄우도록 안내 (조직도 자동매핑 제거 정책)
   if (!activeDomain) {
     return res.status(400).json({
-      error: '분석 영역이 설정되지 않았습니다. PS / HL / MGMT 중 하나를 먼저 선택해 주세요.',
+      error: `분석 영역이 설정되지 않았습니다. PS / HL / ${domainDisplayCode('MGMT')} 중 하나를 먼저 선택해 주세요.`,
       need_domain_select: true,
     });
   }
@@ -9046,7 +9084,8 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
   const dateStart = /^\d{6}$/.test(rawDateStart) ? rawDateStart : '';
   const dateEnd   = /^\d{6}$/.test(rawDateEnd)   ? rawDateEnd   : '';
   // 도메인: 프론트 ?domain=... 우선, 없으면 세션 active_domain 으로 fallback
-  let domainParam = (req.query.domain || '').toString().trim().toUpperCase();
+  // [2026-07-30] 사용자 표시명 alias('통합' → 'MGMT') 도 허용 — resolveDomainAlias 가 대문자화 후 매핑
+  let domainParam = resolveDomainAlias((req.query.domain || '').toString().trim()).toUpperCase();
   if (!['PS', 'HL', 'MGMT'].includes(domainParam)) {
     try {
       domainParam = (await getActiveDomain(req)) || 'PS';
