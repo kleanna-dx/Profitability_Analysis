@@ -479,8 +479,9 @@ async function loadDomains() {
         domainList = await res.json();
         // 도메인 필터 드롭다운 채우기
         const sel = document.getElementById('filterDomain');
+        // [2026-07-30] 드롭다운 라벨은 서버 display_code(MGMT→'통합') 우선. value 는 내부 코드 그대로.
         sel.innerHTML = '<option value="">전체 영역</option>' + domainList.map(d =>
-            `<option value="${d.domain_code}">${d.domain_name} (${d.domain_code})</option>`
+            `<option value="${d.domain_code}">${d.domain_name} (${d.display_code || d.domain_code})</option>`
         ).join('');
     } catch(e) { domainList = []; }
 }
@@ -726,10 +727,12 @@ function renderUserTable(users) {
             return `<option value="${r.id}" ${selected}>${r.role_name} (${r.role_code})</option>`;
         }).join('');
 
-        // 도메인 드롭다운 (미지정 / PS / HL / MGMT)
+        // 도메인 드롭다운 (미지정 / PS / HL / 통합)
+        // [2026-07-30] option 라벨은 display_code(MGMT→'통합') 우선. value 는 내부 코드 유지.
         const domainOptions = domainList.map(d => {
             const selected = u.domain_code === d.domain_code ? 'selected' : '';
-            return `<option value="${d.domain_code}" ${selected}>${d.domain_code}</option>`;
+            const _disp = d.display_code || d.domain_code;
+            return `<option value="${d.domain_code}" ${selected}>${_disp}</option>`;
         }).join('');
 
         // 업무영역 권한 체크박스

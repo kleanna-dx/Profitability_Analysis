@@ -37,6 +37,14 @@ const DOMAIN_DIVISION = {
   MGMT: '(필터 없음 — 전사)',
 };
 
+// [2026-07-30] 도메인 표시명 (사용자 노출용). 내부 코드는 유지, 사용자 문구에만 사용.
+//   server.mjs 의 domainDisplayCode 와 동일 규칙.
+const DOMAIN_DISPLAY_CODE_MAP = { MGMT: '통합' };
+function domainDisplayCode(code) {
+  if (!code) return code;
+  return DOMAIN_DISPLAY_CODE_MAP[code] || code;
+}
+
 // ============================================================
 // [PR #256] 분석 신호 감지 헬퍼 — "안내 문구용" 전용 (실행 경로 변경 X)
 // ------------------------------------------------------------
@@ -661,7 +669,7 @@ export async function handleMetricLookup({ query, activeDomain, conversationCont
 [응답 길이/형식 규칙 — 매우 중요]
 - 응답이 중간에 잘리지 않도록 핵심 결론부터 먼저 답하고, 산식 본문은 마지막에 코드 블록으로 배치
 - 산식의 컬럼이 **15개 이상**이면 "총 N개 컬럼 합산"이라고 요약 + 처음 3개·마지막 2개만 표기 + 전체 산식은 \`\`\`sql 블록\`\`\`에 한 번만
-- 동일 metric이 여러 도메인에 있으면 사용자의 활성 도메인 우선, 다른 도메인은 "타 도메인: HL, MGMT에도 존재" 한 줄로만 언급${analysisHintRule}`;
+- 동일 metric이 여러 도메인에 있으면 사용자의 활성 도메인 우선, 다른 도메인은 "타 도메인: HL, ${domainDisplayCode('MGMT')}에도 존재" 한 줄로만 언급 (MGMT 는 반드시 "${domainDisplayCode('MGMT')}" 표시명 사용, 내부 코드 노출 금지)${analysisHintRule}`;
 
   const userPrompt = `사용자 질문: "${query}"
 도메인: ${activeDomain}
@@ -1220,12 +1228,13 @@ export async function handleDomainExplain({ query, activeDomain, conversationCon
 확인된 사실:
 ${fact}
 
-위 사실 기반으로 사용자에게 친절하게 설명해주세요. 다른 도메인(PS/HL/MGMT)이 무엇인지 비교 설명해도 좋습니다.
+위 사실 기반으로 사용자에게 친절하게 설명해주세요. 다른 도메인(PS/HL/${domainDisplayCode('MGMT')})이 무엇인지 비교 설명해도 좋습니다.
+※ 사용자에게 답변할 때 도메인을 언급할 경우, MGMT 는 반드시 "${domainDisplayCode('MGMT')}" 라는 표시명을 사용하세요 (내부 코드 MGMT 는 노출 금지).
 
-참고 - 다른 도메인:
+참고 - 다른 도메인 (내부 코드 → 사용자 표시명):
 - PS: DIVISION='10'
 - HL: DIVISION='20'
-- MGMT: 전사 (DIVISION 필터 없음)`;
+- MGMT: 사용자 표시명 "${domainDisplayCode('MGMT')}", 전사 (DIVISION 필터 없음)`;
 
   let answer;
   try {
