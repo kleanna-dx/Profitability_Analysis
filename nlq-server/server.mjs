@@ -7042,6 +7042,132 @@ app.get('/api/nlq/error-log/:requestId', async (req, res) => {
 });
 
 // ============================================================
+// [2026-07-30] 오류 접수 API — POST /api/error-reports
+// ------------------------------------------------------------
+// 자연어 질의 오류 카드의 [오류 접수] 버튼에서 호출.
+// requestId 를 sys_aimd_error_reports 에 기록하여
+// 관리자가 nlq-server.log 에서 requestId 로 grep 할 수 있도록 한다.
+//
+// 보안:
+//   - 로그인 필수 (401)
+//   - user_id / domain_code / business_area_code 는 서버 세션에서 채움
+//     (클라이언트가 임의로 다른 user_id, 다른 status 지정 불가)
+//   - error_summary 는 500 자로 절단, Stack Trace / SQL / 내부 경로는 저장 금지
+//     (상세 오류는 nlq-server.log 에서 requestId 로 추적)
+//
+// 멱등성:
+//   - request_id 컬럼에 UNIQUE 제약 → 동일 requestId 재접수는 INSERT IGNORE 처리
+//   - 이미 접수된 경우 기존 레코드를 조회하여 alreadyReported:true 로 반환
+// ============================================================
+app.post('/api/error-reports', async (req, res) => {
+  if (!req.session?.user) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
+  }
+  const user = req.session.user;
+  const body = req.body || {};
+
+  // ---- 1) requestId 검증 ----
+  const requestId = String(body.requestId || '').trim();
+  if (!requestId) {
+    return res.status(400).json({ error: 'requestId 가 필요합니다.' });
+  }
+  // req-YYYYMMDD-HHMMSS-XXXXXX 형식 (requestIdMiddleware 참고). 관대하게 64자 이내, 안전 문자만 허용.
+  if (requestId.length > 64 || !/^[A-Za-z0-9._\-]+$/.test(requestId)) {
+    return res.status(400).json({ error: '유효하지 않은 requestId 형식입니다.' });
+  }
+
+  // ---- 2) 서버측 컨텍스트 채우기 (클라이언트 값 신뢰 금지) ----
+  const userId = user.id;
+  let domainCode = null;
+  try { domainCode = await getActiveDomain(req); } catch (_) { domainCode = null; }
+  if (!domainCode) domainCode = user.domain_code || null;
+
+  let businessAreaCode = null;
+  // 클라이언트가 힌트를 준 경우 화이트리스트(사용자의 실제 권한 area) 안에서만 인정
+  const clientAreaHint = typeof body.businessAreaCode === 'string' ? body.businessAreaCode.trim().toUpperCase() : '';
+  try {
+    const areas = await getUserBusinessAreas(userId, user.role);
+    if (clientAreaHint && areas.includes(clientAreaHint)) {
+      businessAreaCode = clientAreaHint;
+    } else if (areas.length > 0) {
+      businessAreaCode = areas[0];
+    }
+  } catch (_) { /* ignore, null 로 저장 */ }
+
+  // ---- 3) 클라이언트 힌트(요약 정보) 정제 ----
+  const truncate = (s, max) => {
+    if (s === null || s === undefined) return null;
+    const str = String(s);
+    return str.length > max ? str.slice(0, max) : str;
+  };
+  const errorCode    = truncate(body.errorCode,   50);
+  const httpStatus   = Number.isInteger(body.httpStatus) ? body.httpStatus
+                      : (body.httpStatus && /^\d{3}$/.test(String(body.httpStatus))) ? parseInt(body.httpStatus, 10) : null;
+  const errorSummary = truncate(body.errorSummary, 500);
+  const queryMode    = truncate(body.queryMode,   20);
+  const userQuestion = truncate(body.userQuestion, 2000);
+
+  // ---- 4) INSERT (UNIQUE 위반 시 기존 레코드 반환) ----
+  const logTag = `[ErrReport][${requestId}]`;
+  try {
+    const [ins] = await pool.query(
+      `INSERT INTO sys_aimd_error_reports
+         (request_id, user_id, business_area_code, domain_code, query_mode,
+          user_question, error_code, http_status, error_summary, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')`,
+      [requestId, userId, businessAreaCode, domainCode, queryMode,
+       userQuestion, errorCode, httpStatus, errorSummary]
+    );
+    console.log(`${logTag} 신규 접수 완료 (id=${ins.insertId}, user=${userId}, domain=${domainCode || '-'}, area=${businessAreaCode || '-'}, err=${errorCode || '-'})`);
+    return res.json({
+      success: true,
+      alreadyReported: false,
+      id: ins.insertId,
+      requestId,
+      createdAt: new Date().toISOString(),
+      message: '오류가 접수되었습니다. 빠르게 확인하겠습니다.',
+    });
+  } catch (e) {
+    if (e && e.code === 'ER_DUP_ENTRY') {
+      // 이미 접수된 요청 → 기존 레코드 조회
+      try {
+        const [rows] = await pool.query(
+          `SELECT id, request_id, user_id, status, created_at
+             FROM sys_aimd_error_reports
+            WHERE request_id = ?
+            LIMIT 1`,
+          [requestId]
+        );
+        if (rows.length > 0) {
+          const r = rows[0];
+          console.log(`${logTag} 중복 접수 요청 → 기존 id=${r.id} 반환 (status=${r.status})`);
+          return res.json({
+            success: true,
+            alreadyReported: true,
+            id: r.id,
+            requestId: r.request_id,
+            status: r.status,
+            createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+            message: '이미 접수된 오류입니다. 빠르게 확인하겠습니다.',
+          });
+        }
+      } catch (e2) {
+        console.error(`${logTag} 중복 접수 SELECT 실패:`, e2.message);
+      }
+      // 방어적 fallback (거의 도달하지 않음)
+      return res.json({
+        success: true,
+        alreadyReported: true,
+        requestId,
+        message: '이미 접수된 오류입니다.',
+      });
+    }
+    console.error(`${logTag} INSERT 실패:`, e.code || '', e.message);
+    return res.status(500).json({ error: '오류 접수 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.' });
+  }
+});
+
+// ============================================================
 // 비동기 분석 Job 시스템 (POST /api/nlq/async + GET /api/nlq/job/:jobId)
 // ------------------------------------------------------------
 // 배경:
@@ -12637,6 +12763,52 @@ async function ensureBusinessAreaTables() {
   }
 }
 
+// ============================================================
+// [2026-07-30] 오류 접수 (Error Reports) 테이블
+// ------------------------------------------------------------
+// 목적:
+//   자연어 질의 화면에서 사용자가 오류 카드 하단의 [오류 접수] 버튼을 클릭하면
+//   해당 요청의 requestId 를 DB 에 저장 → 관리자가 nlq-server.log 에서
+//   requestId 로 즉시 grep 하여 원인을 확인할 수 있게 함.
+//
+// 설계 원칙:
+//   - request_id 를 UNIQUE 로 두어 DB 레벨 멱등성 보장 (같은 request_id 중복 접수 불가)
+//   - 상세 stack / 원문 SQL / 서버 내부 경로 등은 저장하지 않음 (사용자 요구)
+//     → 상세 오류는 nlq-server.log 에서 request_id 로 추적
+//   - status: OPEN / IN_PROGRESS / RESOLVED / IGNORED (관리자용 워크플로우)
+//   - user_id 는 서버 세션에서 채움 (클라이언트 조작 방지)
+//
+// 사용자 요구사항의 컬럼 스펙 그대로 구현.
+// ============================================================
+async function ensureErrorReportsTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sys_aimd_error_reports (
+        id                  INT AUTO_INCREMENT PRIMARY KEY,
+        request_id          VARCHAR(64)  NOT NULL UNIQUE COMMENT '오류 요청 ID (nlq-server.log grep 키, 중복 접수 방지)',
+        user_id             VARCHAR(64)  NOT NULL        COMMENT '오류를 접수한 사용자 (서버 세션에서 채움)',
+        business_area_code  VARCHAR(32)  NULL            COMMENT '업무영역 내부 코드 (PROFITABILITY / MANUFACTURING_COST 등)',
+        domain_code         VARCHAR(10)  NULL            COMMENT '도메인 내부 코드 (PS / HL / MGMT)',
+        query_mode          VARCHAR(20)  NULL            COMMENT '질의 모드 (aggregate=현황집계 / analysis=분석질문 / builder 등)',
+        user_question       TEXT         NULL            COMMENT '사용자가 입력한 질문 원문',
+        error_code          VARCHAR(50)  NULL            COMMENT '오류 분류 코드 (TIMEOUT / HTTP_504 / SQL_EXECUTION_ERROR / GATEWAY_TIMEOUT / SYSTEM 등)',
+        http_status         INT          NULL            COMMENT 'HTTP 상태 코드 (있는 경우)',
+        error_summary       VARCHAR(500) NULL            COMMENT '사용자 화면에 표시된 안전한 오류 요약 (원문 stack/경로 저장 금지)',
+        status              VARCHAR(20)  NOT NULL DEFAULT 'OPEN' COMMENT 'OPEN / IN_PROGRESS / RESOLVED / IGNORED',
+        created_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_err_reports_request_id (request_id),
+        INDEX idx_err_reports_user       (user_id),
+        INDEX idx_err_reports_status     (status),
+        INDEX idx_err_reports_created    (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AIMD 사용자 오류 접수 (nlq-server.log 매칭 키: request_id)'
+    `);
+    console.log('[ErrReport] 오류 접수 테이블(sys_aimd_error_reports) 준비 완료');
+  } catch (e) {
+    console.error('[ErrReport] 오류 접수 테이블 생성 실패:', e.message);
+  }
+}
+
 // ── RBAC 기본 메뉴 (폴백용) ──
 // RBAC 테이블이 아직 준비 안 됐거나, role_id가 NULL인 경우 role_code로 폴백
 const DEFAULT_MENUS_ALL = [
@@ -14362,6 +14534,9 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
   //  - RBAC 뒤에 배치: sys_aimd_user_areas 는 users.user_id FK를 참조하므로
   //    RBAC의 users 컬럼 정리(레거시 role 컬럼 drop 등) 이후 안전하게 실행됨
   await ensureBusinessAreaTables();
+
+  // [2026-07-30] 오류 접수 테이블 자동 생성 (자연어 질의 오류 카드의 [오류 접수] 버튼용)
+  await ensureErrorReportsTable();
 
   // [2026-06-16] users.password 평문 → SHA-256 일괄 마이그레이션 (멱등성 보장)
   await migrateUserPasswordsToSha256();

@@ -3243,6 +3243,80 @@ function appendServerLogPanel(requestId, data) {
 }
 
 // ============================================================
+// [2026-07-30] 오류 접수 — POST /api/error-reports 호출
+//   - 오류 카드의 [오류 접수] 버튼 클릭 핸들러
+//   - 프론트 중복 클릭 방지: 요청 중 버튼 disabled, 성공 시 "접수 완료"로 고정 disabled
+//   - 서버측 멱등성(UNIQUE(request_id))과 응답의 alreadyReported 플래그도 같은 UI 로 처리
+//     (요구사항: "중복 클릭 시 신규 INSERT 대신 기존 접수 결과 반환")
+//   - 서버는 세션에서 user_id / domain_code / business_area_code 를 채우므로
+//     클라이언트가 임의 조작 불가.
+// ============================================================
+async function submitErrorReport(btn, payload, msgSpanId) {
+    if (!btn || btn.disabled) return;
+    if (!payload || !payload.requestId) {
+        alert('요청 ID 가 없어 접수할 수 없습니다. 페이지를 새로고침한 후 다시 시도해 주세요.');
+        return;
+    }
+    const msgSpan = msgSpanId ? document.getElementById(msgSpanId) : null;
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.style.cursor = 'not-allowed';
+    btn.style.opacity = '0.7';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:5px;"></i>접수 중...';
+    try {
+        const res = await fetch('/api/error-reports', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+            // 실패: 원상복구 후 안내
+            btn.disabled = false;
+            btn.style.cursor = 'pointer';
+            btn.style.opacity = '1';
+            btn.innerHTML = originalHtml;
+            const errMsg = (data && data.error) ? data.error : '오류 접수에 실패했습니다. 잠시 후 다시 시도해 주세요.';
+            if (msgSpan) {
+                msgSpan.style.color = '#b91c1c';
+                msgSpan.textContent = errMsg;
+            } else {
+                alert(errMsg);
+            }
+            return;
+        }
+        // 성공 (신규 INSERT 또는 alreadyReported 둘 다 동일한 UI)
+        btn.innerHTML = '<i class="fas fa-check-circle" style="margin-right:5px;"></i>접수 완료';
+        btn.style.background = '#f0fdf4';
+        btn.style.borderColor = '#86efac';
+        btn.style.color = '#166534';
+        btn.style.opacity = '1';
+        const succTextBase = data.alreadyReported
+            ? '이미 접수된 오류입니다. 빠르게 확인하겠습니다.'
+            : '오류가 접수되었습니다. 빠르게 확인하겠습니다.';
+        const ridText = '요청 ID: ' + payload.requestId;
+        if (msgSpan) {
+            msgSpan.style.color = '#166534';
+            msgSpan.innerHTML = '<i class="fas fa-check" style="margin-right:4px;"></i>' + succTextBase + ' <span style="color:#334155;">/ ' + ridText + '</span>';
+        }
+    } catch (e) {
+        // 네트워크 등 예외 → 원상복구
+        btn.disabled = false;
+        btn.style.cursor = 'pointer';
+        btn.style.opacity = '1';
+        btn.innerHTML = originalHtml;
+        if (msgSpan) {
+            msgSpan.style.color = '#b91c1c';
+            msgSpan.textContent = '오류 접수 중 네트워크 오류가 발생했습니다. 다시 시도해 주세요.';
+        } else {
+            alert('오류 접수 중 네트워크 오류가 발생했습니다. 다시 시도해 주세요.');
+        }
+        console.warn('[submitErrorReport] 실패:', e && e.message);
+    }
+}
+
+// ============================================================
 // Append Error Message
 //   - 두 번째 인자(details)로 진단 정보를 받으면 "오류 상세보기" 토글을 함께 표시
 //   - details 객체에 requestId/stage/errorType/message/httpStatus/contentType/
@@ -3410,18 +3484,52 @@ function appendErrorMessage(msg, details) {
                    </button>`
                 : '';
 
+            // ============================================================
+            // [2026-07-30] [오류 접수] 버튼
+            //   - requestId 가 있을 때만 표시 (없으면 서버 로그 매칭이 불가하여 접수 의미 없음)
+            //   - 클릭 시 POST /api/error-reports 로 requestId + 화면에 이미 보이는 요약 정보만 전송
+            //   - 서버가 user_id / domain_code / business_area_code 를 세션에서 채우므로
+            //     클라이언트가 임의 조작 불가. UNIQUE(request_id) 로 DB 레벨 멱등성 보장.
+            //   - 응답 { alreadyReported:true } 인 경우도 성공 UI 로 동일 처리 (중복 접수 정상 흐름).
+            // ============================================================
+            const reportBtnId = 'err-report-btn-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+            const reportMsgId = 'err-report-msg-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+            const reportPayload = details.requestId ? {
+                requestId:    details.requestId,
+                errorCode:    details.errorType || details.code || null,
+                httpStatus:   details.httpStatus || null,
+                errorSummary: (typeof msg === 'string' ? msg : (details.message || '')).slice(0, 500),
+                queryMode:    details.queryMode || null,
+                userQuestion: (details.query || '').slice(0, 2000),
+            } : null;
+            // onclick 은 single-quote 속성 안에서 JSON(double-quote) 을 그대로 넣는다.
+            // 단, payload 문자열에 literal ' 가 있으면 속성이 깨지므로 \u0027 로, < 는 \u003c 로 이스케이프.
+            const reportPayloadAttr = JSON.stringify(reportPayload)
+                .replace(/</g, '\\u003c')
+                .replace(/'/g, '\\u0027');
+            const reportButtonHtml = reportPayload
+                ? `<button type="button" id="${reportBtnId}" onclick='submitErrorReport(this, ${reportPayloadAttr}, "${reportMsgId}")' style="background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;font-size:11.5px;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:500;">
+                       <i class="fas fa-paper-plane" style="margin-right:5px;"></i>오류 접수
+                   </button>`
+                : '';
+
             detailsHtml = `
                 <div style="margin-top:10px;">
-                    <button type="button" onclick="(function(btn){
-                        const box = btn.nextElementSibling;
-                        const isHidden = box.style.display === 'none' || !box.style.display;
-                        box.style.display = isHidden ? 'block' : 'none';
-                        btn.innerHTML = isHidden
-                            ? '<i class=\\'fas fa-chevron-up\\' style=\\'margin-right:5px;\\'></i>오류 상세 숨기기'
-                            : '<i class=\\'fas fa-chevron-down\\' style=\\'margin-right:5px;\\'></i>오류 상세보기';
-                    })(this)" style="background:#fff;border:1px solid #fca5a5;color:#b91c1c;font-size:11.5px;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:500;">
-                        <i class="fas fa-chevron-down" style="margin-right:5px;"></i>오류 상세보기
-                    </button>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                        <button type="button" onclick="(function(btn){
+                            const box = document.getElementById('${detailId}');
+                            if (!box) return;
+                            const isHidden = box.style.display === 'none' || !box.style.display;
+                            box.style.display = isHidden ? 'block' : 'none';
+                            btn.innerHTML = isHidden
+                                ? '<i class=\\'fas fa-chevron-up\\' style=\\'margin-right:5px;\\'></i>오류 상세 숨기기'
+                                : '<i class=\\'fas fa-chevron-down\\' style=\\'margin-right:5px;\\'></i>오류 상세보기';
+                        })(this)" style="background:#fff;border:1px solid #fca5a5;color:#b91c1c;font-size:11.5px;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:500;">
+                            <i class="fas fa-chevron-down" style="margin-right:5px;"></i>오류 상세보기
+                        </button>
+                        ${reportButtonHtml}
+                        <span id="${reportMsgId}" style="font-size:11.5px;color:#166534;"></span>
+                    </div>
                     <div id="${detailId}" style="display:none;margin-top:8px;background:#fff;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;max-height:520px;overflow:auto;">
                         ${rows.join('')}
                         ${serverLogsHtml}
