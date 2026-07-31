@@ -5949,12 +5949,16 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
   }
   // [2026-07-30] 직접 SQL 입력 차단 — 프론트 우회 방어
+  // [2026-07-31] errorType='direct_sql_disabled' 추가 — 프론트에서 '시스템 오류' 대신
+  //   회색 중립 안내(모래시계 스타일) UI 로 분기하기 위한 라우팅 키.
+  //   메시지 문구도 사용자 요구사항에 맞춰 "현황집계 또는 분석질문" 안내로 통일.
   const sqlBlock = detectDirectSqlQuery(query);
   if (sqlBlock) {
     console.warn(`[SQLModeGuard][${getCurrentRequestId()}] 직접 SQL 실행 요청 차단: reason=${sqlBlock.reason}, userId=${req.session?.user?.id || '-'}, preview=${String(query).slice(0, 80).replace(/\s+/g, ' ')}`);
     return res.status(400).json({
-      error: '직접 SQL 입력 기능은 사용할 수 없습니다. 자연어로 질문해 주세요. (예: "플랜트별 총매출 현황을 알려줘")',
+      error: 'SQL 직접 입력은 지원하지 않습니다. 현황집계 또는 분석질문을 선택하여 자연어로 질문해 주세요.',
       code: 'DIRECT_SQL_DISABLED',
+      errorType: 'direct_sql_disabled',
       requestId: getCurrentRequestId(),
     });
   }
@@ -7386,12 +7390,14 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
   }
   // [2026-07-30] 직접 SQL 입력 차단 — 프론트 우회 방어 (async 경로에도 동일 적용)
+  // [2026-07-31] errorType='direct_sql_disabled' 추가 — sync 경로와 동일한 라우팅 키.
   const sqlBlock = detectDirectSqlQuery(query);
   if (sqlBlock) {
     console.warn(`[SQLModeGuard][${getCurrentRequestId()}] (async) 직접 SQL 실행 요청 차단: reason=${sqlBlock.reason}, userId=${userId}, preview=${String(query).slice(0, 80).replace(/\s+/g, ' ')}`);
     return res.status(400).json({
-      error: '직접 SQL 입력 기능은 사용할 수 없습니다. 자연어로 질문해 주세요. (예: "플랜트별 총매출 현황을 알려줘")',
+      error: 'SQL 직접 입력은 지원하지 않습니다. 현황집계 또는 분석질문을 선택하여 자연어로 질문해 주세요.',
       code: 'DIRECT_SQL_DISABLED',
+      errorType: 'direct_sql_disabled',
       requestId: getCurrentRequestId(),
     });
   }
