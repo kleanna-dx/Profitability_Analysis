@@ -994,6 +994,22 @@
         }
         .mode-toggle:hover{color:#4f46e5;border-color:#c7d2fe;}
         .mode-toggle.active{color:#4f46e5;background:#eef2ff;border-color:#c7d2fe;font-weight:600;}
+        /* [2026-07-30] 직접 SQL 모드 비활성화 — 클릭/포커스/hover/active 모두 무력화 */
+        .mode-toggle:disabled,
+        .mode-toggle[disabled],
+        .mode-toggle[aria-disabled="true"]{
+            color:#cbd5e1;background:#f8fafc;border-color:#e5e7eb;
+            cursor:not-allowed;pointer-events:none;opacity:0.65;
+        }
+        .mode-toggle:disabled:hover,
+        .mode-toggle[disabled]:hover,
+        .mode-toggle[aria-disabled="true"]:hover{
+            color:#cbd5e1;background:#f8fafc;border-color:#e5e7eb;
+        }
+        .mode-toggle:disabled.active,
+        .mode-toggle[disabled].active{
+            background:#f8fafc;color:#cbd5e1;border-color:#e5e7eb;font-weight:normal;
+        }
 
         /* 질문 유형 라디오 (현황집계 / 분석질문) - 입력바 인라인 배치 */
         .query-mode-bar{
@@ -1405,7 +1421,11 @@
     <!-- Input Bar -->
     <div class="input-bar">
         <div class="input-row">
-            <button id="modeToggle" class="mode-toggle" onclick="toggleInputMode()" title="직접 SQL 모드 전환">
+            <!-- [2026-07-30] 직접 SQL 입력 기능 비활성화 (요구사항: 자연어 질문만 허용).
+                 버튼은 화면에 표시하되 disabled + tabindex=-1 로 키보드/마우스 어떤 방법으로도
+                 활성화되지 않게 처리. toggleInputMode() 자체도 서버·클라이언트 방어로 no-op. -->
+            <button id="modeToggle" class="mode-toggle" type="button" disabled aria-disabled="true"
+                    tabindex="-1" title="직접 SQL 입력 기능은 사용할 수 없습니다.">
                 <i class="fas fa-code"></i> SQL
             </button>
             <!-- 질문 유형 선택 (현황집계: 표+SQL / 분석질문: 텍스트 분석만) - 인라인 배치 -->
@@ -1424,7 +1444,8 @@
             <input id="queryInput" type="text" class="input-field"
                 placeholder="자연어로 질문을 입력하세요 (예: 플랜트별 총매출 현황을 알려줘)"
                 autocomplete="off" />
-            <textarea id="sqlInput" class="sql-textarea hidden"
+            <!-- [2026-07-30] 직접 SQL 입력 기능 비활성화. textarea 는 hidden + disabled 로 이중 차단. -->
+            <textarea id="sqlInput" class="sql-textarea hidden" disabled aria-hidden="true"
                 placeholder="SELECT ... FROM bw_profitability_data ..." rows="1"></textarea>
             <button id="sendBtn" class="send-btn" onclick="handleSend()">
                 <i class="fas fa-paper-plane"></i>
@@ -2108,6 +2129,10 @@ function escHtmlWithHighlight(s, term) {
 })();
 
 window.addEventListener('DOMContentLoaded', async () => {
+    // [2026-07-30] 직접 SQL 입력 기능 비활성화 (자연어 질문만 허용).
+    //   화면 진입 시 어떤 잔여 상태라도 무조건 nlq 모드로 초기화.
+    forceNlqMode('DOMContentLoaded 초기화');
+
     // 도메인/역할 초기화
     await initDomainAndRole();
 
@@ -2212,23 +2237,44 @@ function closeSidebar() {
 
 // ============================================================
 // Input Mode Toggle
+// [2026-07-30] 직접 SQL 입력 기능 비활성화 (사용자 요구사항)
+//   - 사용 가능:  현황집계 / 분석질문 (자연어)
+//   - 사용 불가:  SQL 직접 입력·직접 실행
+//   - 이 함수는 어떤 경로(개발자도구, HTML edit, keyboard 이벤트)로 호출되더라도
+//     즉시 return 하여 SQL 모드 전환이 발생하지 않도록 함.
+//   - 서버측 /api/nlq 진입부에서도 '직접 SQL 실행:' 접두어 및 SELECT/DDL 시작
+//     문자열을 감지하여 400 으로 차단 (2중 방어).
 // ============================================================
 function toggleInputMode() {
-    const btn = document.getElementById('modeToggle');
-    const nlq = document.getElementById('queryInput');
-    const sql = document.getElementById('sqlInput');
-    if (inputMode === 'nlq') {
-        inputMode = 'sql';
-        nlq.classList.add('hidden');
-        sql.classList.remove('hidden');
-        btn.classList.add('active');
-        sql.focus();
-    } else {
+    // 항상 nlq 모드로 고정. 이미 sqlInput 이 화면에 있으면 강제 숨기고 nlq 로 복원.
+    forceNlqMode('toggleInputMode 호출 차단');
+    return; // no-op — SQL 모드 전환 금지
+}
+
+// 어떤 이유로든(예: 이전 상태 잔재) sql 모드가 잡혀 있으면 즉시 nlq 로 되돌리는 안전장치.
+// 페이지 초기화, 세션 복원, sendQuery 진입 시 각각 호출됨.
+function forceNlqMode(reason) {
+    try {
         inputMode = 'nlq';
-        sql.classList.add('hidden');
-        nlq.classList.remove('hidden');
-        btn.classList.remove('active');
-        nlq.focus();
+        const nlq = document.getElementById('queryInput');
+        const sql = document.getElementById('sqlInput');
+        const btn = document.getElementById('modeToggle');
+        if (nlq) nlq.classList.remove('hidden');
+        if (sql) {
+            sql.classList.add('hidden');
+            sql.value = '';                    // 잔여 SQL 값 폐기
+            sql.disabled = true;               // 서브밋 경로에서도 차단
+            sql.setAttribute('aria-hidden', 'true');
+        }
+        if (btn) {
+            btn.classList.remove('active');
+            btn.disabled = true;
+            btn.setAttribute('aria-disabled', 'true');
+            btn.setAttribute('tabindex', '-1');
+        }
+        if (reason) console.log('[SQLModeGuard] forceNlqMode() ← ' + reason);
+    } catch (e) {
+        console.warn('[SQLModeGuard] forceNlqMode 실패:', e && e.message);
     }
 }
 
@@ -2257,15 +2303,13 @@ function handleSend() {
         handleCancel();
         return;
     }
-    if (inputMode === 'nlq') {
-        const q = document.getElementById('queryInput').value.trim();
-        if (!q) return;
-        sendQuery(q);
-    } else {
-        const s = document.getElementById('sqlInput').value.trim();
-        if (!s) return;
-        sendQuery('직접 SQL 실행: ' + s);
-    }
+    // [2026-07-30] 직접 SQL 입력 기능 비활성화 — 항상 자연어 경로만 사용.
+    //   inputMode 값이 어떤 이유로든 'sql' 로 남아있어도 forceNlqMode 로 복구한 뒤
+    //   queryInput(자연어 입력) 값만 서버로 전송한다.
+    if (inputMode !== 'nlq') forceNlqMode('handleSend 진입 시 sql 모드 감지');
+    const q = document.getElementById('queryInput').value.trim();
+    if (!q) return;
+    sendQuery(q);
 }
 
 // ============================================================
