@@ -5873,10 +5873,90 @@ async function resolveColumnLabels(rows, sql, domainCode) {
 // ============================================================
 // API: 자연어 질의 실행
 // ============================================================
+// ============================================================
+// [2026-07-30] 직접 SQL 입력 기능 서버측 차단 가드
+// ------------------------------------------------------------
+// 프론트엔드에서 [SQL] 버튼과 sqlInput 을 비활성화했지만,
+// 개발자 도구·curl·mode 값 우회 등으로 사용자가 SQL 원문을 그대로 /api/nlq 에
+// 밀어넣을 가능성이 있음. 이를 서버에서도 검증하여 실행하지 않도록 한다.
+//
+// 감지 규칙 (아래 중 하나라도 매칭되면 사용자 SQL 로 간주하여 400 반환):
+//   R1) 예전 프론트가 sql 모드에서 붙였던 접두어 "직접 SQL 실행:" 로 시작
+//   R2) SQL DDL/DML 파괴적 명령어로 시작
+//       INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE/REPLACE/MERGE/
+//       EXEC/EXECUTE/GRANT/REVOKE/CALL — 자연어에 절대 등장 불가
+//   R3) SELECT/WITH 로 시작하되 SQL 실 문법 패턴이 이어지는 경우
+//       (예: SELECT ... FROM, SELECT * , SELECT COUNT(...) 등).
+//       "SELECT 절에 어떤 컬럼을 쓰면 좋을까?" 같이 뒤에 한글이 붙는 자연어
+//       질문(sql_explain intent)은 통과.
+// ------------------------------------------------------------
+// 자연어 질문 안에 metric·컬럼명이 등장하는 것은 정상이므로 "포함" 이 아닌
+// "선두 문형" 만 검사한다.
+// ============================================================
+function detectDirectSqlQuery(rawQuery) {
+  if (!rawQuery) return null;
+  let q = String(rawQuery).trim();
+
+  // R1) 프론트 구버전이 붙였던 접두어
+  if (/^직접\s*SQL\s*실행\s*[:：]/i.test(q)) {
+    return { blocked: true, reason: 'legacy_direct_sql_prefix' };
+  }
+
+  // 시작 부분의 SQL 주석 스킵 (-- ... , /* ... */)
+  while (true) {
+    if (q.startsWith('--')) {
+      const nl = q.indexOf('\n');
+      if (nl < 0) break;
+      q = q.slice(nl + 1).trimStart();
+      continue;
+    }
+    if (q.startsWith('/*')) {
+      const end = q.indexOf('*/');
+      if (end < 0) break;
+      q = q.slice(end + 2).trimStart();
+      continue;
+    }
+    break;
+  }
+
+  // R2) 파괴적 DDL/DML 시작 — 자연어에는 등장할 수 없음, 무조건 차단
+  const DESTRUCTIVE_HEAD = /^(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|MERGE|EXEC|EXECUTE|GRANT|REVOKE|CALL|USE|SHOW|DESCRIBE|DESC|EXPLAIN)\b/i;
+  if (DESTRUCTIVE_HEAD.test(q)) {
+    return { blocked: true, reason: 'destructive_sql_head' };
+  }
+
+  // R3) SELECT/WITH 는 실제 SQL 문법이 뒤에 붙어야만 차단
+  //   차단: "SELECT *", "SELECT col FROM ...", "SELECT COUNT(*)", "SELECT 1"
+  //   통과(자연어): "SELECT 절에 어떤 컬럼을 쓰면 좋을까?", "WITH 절 사용법 알려줘"
+  //
+  //   차단 패턴:
+  //     - SELECT/WITH 뒤 공백 후 * / DISTINCT / TOP / ALL / 숫자 / SQL식별자(a-z_) / ( / `
+  //     - 이어서 " FROM "/" JOIN " 이 등장하는 경우 (강한 신호)
+  const SQL_SELECT_HEAD_RE = /^(SELECT|WITH)\s+(\*|DISTINCT\b|TOP\b|ALL\b|COUNT\s*\(|SUM\s*\(|AVG\s*\(|MIN\s*\(|MAX\s*\(|`|"|\d+\b|[a-z_][a-z0-9_]*\s*(,|\.|\s+FROM\b|\s+AS\b|\()|\()/i;
+  if (SQL_SELECT_HEAD_RE.test(q)) {
+    return { blocked: true, reason: 'select_sql_pattern' };
+  }
+  // 추가 보강: 앞 200자 이내에 " FROM 테이블 " 패턴이 있고 SELECT/WITH 로 시작하면 SQL 로 간주
+  if (/^(SELECT|WITH)\b/i.test(q) && /\bFROM\s+[`"a-z_][\w`".]*/i.test(q.slice(0, 400))) {
+    return { blocked: true, reason: 'select_from_pattern' };
+  }
+  return null;
+}
+
 app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   const { query, conversationContext, session_id, queryMode } = req.body;
   if (!query || !query.trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
+  }
+  // [2026-07-30] 직접 SQL 입력 차단 — 프론트 우회 방어
+  const sqlBlock = detectDirectSqlQuery(query);
+  if (sqlBlock) {
+    console.warn(`[SQLModeGuard][${getCurrentRequestId()}] 직접 SQL 실행 요청 차단: reason=${sqlBlock.reason}, userId=${req.session?.user?.id || '-'}, preview=${String(query).slice(0, 80).replace(/\s+/g, ' ')}`);
+    return res.status(400).json({
+      error: '직접 SQL 입력 기능은 사용할 수 없습니다. 자연어로 질문해 주세요. (예: "플랜트별 총매출 현황을 알려줘")',
+      code: 'DIRECT_SQL_DISABLED',
+      requestId: getCurrentRequestId(),
+    });
   }
   setRequestStage('nlq_entry');
   const activeDomain = await getActiveDomain(req);
@@ -7304,6 +7384,16 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
   const { query, queryMode, conversationContext, session_id } = req.body || {};
   if (!query || !String(query).trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
+  }
+  // [2026-07-30] 직접 SQL 입력 차단 — 프론트 우회 방어 (async 경로에도 동일 적용)
+  const sqlBlock = detectDirectSqlQuery(query);
+  if (sqlBlock) {
+    console.warn(`[SQLModeGuard][${getCurrentRequestId()}] (async) 직접 SQL 실행 요청 차단: reason=${sqlBlock.reason}, userId=${userId}, preview=${String(query).slice(0, 80).replace(/\s+/g, ' ')}`);
+    return res.status(400).json({
+      error: '직접 SQL 입력 기능은 사용할 수 없습니다. 자연어로 질문해 주세요. (예: "플랜트별 총매출 현황을 알려줘")',
+      code: 'DIRECT_SQL_DISABLED',
+      requestId: getCurrentRequestId(),
+    });
   }
 
   setRequestStage('async_job_accepted');
