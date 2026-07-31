@@ -2871,41 +2871,16 @@ function buildRagDetailPanel(msgId, data) {
         </div>`;
     }
 
-    if (data.ragInfo.mode === 'rag' && data.ragInfo.details) {
-        const details = data.ragInfo.details;
-        const catNames = {
-            schema: '스키마', ontology: '온톨로지', metric: '메트릭',
-            code_mapping: '코드매핑', feedback: '피드백 SQL', join_condition: '조인', rule: '규칙'
-        };
-        const catIcons = {
-            schema: 'fa-columns', ontology: 'fa-project-diagram', metric: 'fa-calculator',
-            code_mapping: 'fa-exchange-alt', feedback: 'fa-check-double', join_condition: 'fa-link', rule: 'fa-gavel'
-        };
-
-        let chunkTags = '';
-        let itemsHtml = '';
-        let totalChunks = 0;
-        for (const [cat, items] of Object.entries(details)) {
-            totalChunks += items.length;
-            chunkTags += `<span class="rag-chunk-tag ${cat}"><i class="fas ${catIcons[cat] || 'fa-tag'} mr-1" style="font-size:9px;"></i>${catNames[cat] || cat} ${items.length}</span>`;
-            for (const item of items) {
-                itemsHtml += `<div class="rag-item">
-                    <span class="rag-score">${item.score.toFixed(3)}</span>
-                    <span class="rag-chunk-tag ${cat}" style="flex-shrink:0;">${catNames[cat] || cat}</span>
-                    <span class="rag-item-text">${esc(item.text)}</span>
-                </div>`;
-            }
-        }
-
-        return `<div class="rag-detail-panel" onclick="toggleRagItems('${msgId}')">
-            <div class="rag-header">
-                <i class="fas fa-brain"></i>
-                <span>RAG 메타데이터 검색 — ${totalChunks}개 청크 사용</span>
-                <span style="margin-left:auto;font-size:10px;color:#6ee7b7;">▼ 클릭하여 상세</span>
-            </div>
-            <div class="rag-chunks">${chunkTags}</div>
-            <div class="rag-items" id="${msgId}_ragItems">${itemsHtml}</div>
-        </div>`;
+    // [2026-07-31] 사용자 요구: RAG 메타데이터 상세 패널을 답변 화면에서 완전 제거.
+    //   - '분석 대상 상세 결과' 표 위의 초록색 'RAG 메타데이터 검색 — N개 청크 사용',
+    //     온톨로지/메트릭/피드백 SQL/조인/규칙 태그, '▼ 클릭하여 상세' 영역을 렌더링에서 배제.
+    //   - 서버의 RAG 검색·처리 기능과 로그 기록은 그대로 유지 (data.ragInfo 필드 자체는
+    //     여전히 서버가 반환하고 buildRagBadge() 상단 배지는 계속 표시됨).
+    //   - 화면 하단 표/차트/SQL 탭이 자연스럽게 바로 이어지도록 이 함수는 rag 모드에서 빈
+    //     문자열을 반환하여 상세 패널 자체가 DOM 에 추가되지 않게 함(숨김이 아닌 제거).
+    //   - 학습 SQL(mode='learned') 안내는 별도 요구가 없어 그대로 유지.
+    if (data.ragInfo.mode === 'rag') {
+        return '';
     }
 
     return '';
@@ -3056,8 +3031,9 @@ function appendBotMessage(data) {
             : (typeof data.rowCount === 'number' ? data.rowCount : data.data.length);
         // buildAnalysisDetailTable 재사용 (sql='' 로 SQL 버튼 숨김 — SQL 은 res-tabs 의 SQL 탭에서 표시)
         // fromHistory=true 이면 이력 재열람 → 페이징 표 하단에 100행 저장 안내 문구 표시
+        // [2026-07-31] periodInfo 전달 — 표 제목 옆 '· 2026년 6월' 형태로 실제 조회 기간 표시
         const fromHistory = !!data.fromHistory;
-        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory);
+        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo);
         _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory };
     }
 
@@ -3693,11 +3669,12 @@ function appendAnalysisOnlyMessage(dataOrText) {
     el.className = 'msg-bot fade-in';
 
     // 파라미터 정규화
-    let analysisText, rows, columnLabels, columnOrder, sql, rowCount, fromHistory;
+    let analysisText, rows, columnLabels, columnOrder, sql, rowCount, fromHistory, periodInfo;
     if (typeof dataOrText === 'string') {
         analysisText = dataOrText;
         rows = null;
         fromHistory = false;
+        periodInfo = null;
     } else {
         const d = dataOrText || {};
         analysisText = d.answer || d.analysis || d.explanation || '분석 답변을 생성하지 못했습니다.';
@@ -3713,6 +3690,9 @@ function appendAnalysisOnlyMessage(dataOrText) {
         // [2026-07-21] 이력 재열람 여부 — restoreSession 에서 true 로 세팅.
         //   최초 실행(POST /api/nlq) 응답에는 없어서 undefined → falsy.
         fromHistory = !!d.fromHistory;
+        // [2026-07-31] 실제 조회 기간 (서버가 실행 SQL 에서 파싱한 { from, to, label })
+        //   최초 실행: data.periodInfo, 이력 재열람: item.period_info → restoreSession 에서 매핑
+        periodInfo = d.periodInfo || null;
     }
 
     // [PR #252] 분석 답변 문장 내 금액을 천 단위 콤마로 자동 포맷
@@ -3721,7 +3701,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
     const tableId = 'aatbl_' + (++msgCounter);
 
     const tableSection = hasTable
-        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory)
+        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo)
         : '';
 
     el.innerHTML = `
@@ -3755,7 +3735,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
 //   - <thead> 헤더 클릭 시 정렬
 //   - 실제 데이터 채움과 이벤트 바인딩은 initAnalysisDetailTable 에서.
 // ============================================================
-function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory) {
+function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo) {
     // 컬럼 헤더 라벨
     const headers = columnOrder.map(c => (columnLabels && columnLabels[c]) || c);
     // [2026-07-21] 이력 재열람 시 하단 안내 문구
@@ -3766,6 +3746,16 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
     const historyNoticeHtml = fromHistory
         ? `<span id="${tableId}_hnotice" style="color:#4b5563;font-size:11px;font-weight:500;margin-left:12px;"><i class="fas fa-info-circle" style="margin-right:4px;color:#6b7280;"></i>질의 이력에는 상세 결과가 최대 100행까지만 저장됩니다. 전체 결과는 동일 질의를 다시 실행해 주세요.</span>`
         : '';
+    // [2026-07-31] 실제 조회 기간 표시 — 사용자 요구사항.
+    //   - 서버가 실행된 SQL 의 CALMONTH 를 파싱해서 넘긴 { from, to, label } 을 그대로 사용.
+    //   - 기간 정보가 없으면(null) 임의로 추정하지 않고 기간 영역 자체를 노출하지 않음.
+    //   - 표·차트·SQL 탭 전환·이력 재열람 모두 동일 buildAnalysisDetailTable 로 재렌더되므로
+    //     자연히 동일한 기간이 유지됨.
+    //   - 표 제목보다 과도하게 강조하지 않도록 색·크기를 제목과 유사한 톤으로 맞춤.
+    const periodLabel = (periodInfo && periodInfo.label) ? String(periodInfo.label) : '';
+    const periodHtml = periodLabel
+        ? ` <span style="color:#4c1d95;font-weight:700;margin-left:4px;">· ${esc(periodLabel)}</span>`
+        : '';
     // SQL 다운로드/펼침 토글 옵션
     const sqlToggleId = tableId + '_sqltoggle';
     const sqlPanelId = tableId + '_sqlpanel';
@@ -3774,7 +3764,7 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
         <div class="analysis-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:linear-gradient(135deg,#eef2ff,#f5f3ff);border-bottom:1px solid #e5e7eb;flex-wrap:wrap;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;color:#4c1d95;font-size:12px;font-weight:700;">
                 <i class="fas fa-table"></i>
-                <span>분석 대상 상세 결과 <span id="${tableId}_count" style="color:#6b7280;font-weight:500;">(${rowCount.toLocaleString('ko-KR')}행)</span></span>
+                <span>분석 대상 상세 결과 <span id="${tableId}_count" style="color:#6b7280;font-weight:500;">(${rowCount.toLocaleString('ko-KR')}행)</span>${periodHtml}</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <div style="position:relative;">
@@ -5439,6 +5429,9 @@ async function restoreSession(sessionKey, hintDomain) {
                             //   "이력에는 최대 100행까지만 저장됩니다" 안내 문구 표시용.
                             //   최초 실행 시(직접 API 호출 경로)에는 false → 안내 미표시.
                             fromHistory: true,
+                            // [2026-07-31] 이력 재열람에서도 실제 조회 기간 동일 표시.
+                            //   서버 /api/history/session/:id 가 generated_sql 로부터 재산출해 period_info 로 반환.
+                            periodInfo: item.period_info || null,
                         });
                     } else {
                         appendAnalysisOnlyMessage(analysisBody);
@@ -5459,6 +5452,9 @@ async function restoreSession(sessionKey, hintDomain) {
                         // [2026-07-22] 이력 재열람 플래그: 페이징 표 하단에
                         //   "이력에는 최대 100행까지만 저장됩니다" 안내 문구 표시용.
                         fromHistory: true,
+                        // [2026-07-31] 이력 재열람에서도 실제 조회 기간 동일 표시.
+                        //   서버 /api/history/session/:id 가 generated_sql 로부터 재산출해 period_info 로 반환.
+                        periodInfo: item.period_info || null,
                     });
                     conversationContext.push({ query: item.query_text, sql: item.generated_sql });
                 }
