@@ -1713,6 +1713,107 @@ async function getDataDateContext() {
 }
 
 // ============================================================
+// [2026-07-31] extractPeriodInfoFromSql — 최종 실행된 SQL 의 CALMONTH 조건을
+//   파싱하여 사용자 화면 상단 '분석 대상 상세 결과' 옆에 표시할 실제 조회 기간
+//   ({ from, to, label }) 로 산출한다.
+//
+//   설계 원칙 (사용자 요구):
+//   - 사용자 질문 원문이 아닌 "실제 SQL 에 적용된 확정 기간"만 표시
+//     → learned SQL rebase, GPT 자동주입, AnalysisPlan 자동채움 모두 SQL 텍스트에 최종
+//        CALMONTH 가 남으므로 여기서 재구성이 안전함.
+//   - 다양한 CALMONTH 표기 형태를 모두 지원:
+//       (a) CALMONTH = 'YYYYMM'
+//       (b) CALMONTH BETWEEN 'YYYYMM' AND 'YYYYMM'
+//       (c) CALMONTH IN ('YYYYMM','YYYYMM',...)
+//       (d) CALMONTH LIKE 'YYYY%'   / LEFT(CALMONTH,4)='YYYY'
+//       (e) CALMONTH >= 'YYYYMM' AND CALMONTH <= 'YYYYMM' (범위 조합)
+//   - 매칭 실패 시 null 반환 → 프론트가 '기간 정보 없음' 을 임의 추정하지 않고
+//     기간 영역을 아예 숨김 처리.
+//
+//   반환 형태 예시:
+//     { from:'202606', to:'202606', label:'2026년 6월' }
+//     { from:'202501', to:'202606', label:'2025년 1월~2026년 6월' }
+//     { from:'202601', to:'202612', label:'2026년' }
+//     { from:'202601', to:'202606', label:'2026년 상반기(1월~6월)' }
+//     { from:'202607', to:'202612', label:'2026년 하반기(7월~12월)' }
+// ============================================================
+function formatYmKorean(ym) {
+  if (!ym || !/^\d{6}$/.test(ym)) return '';
+  const y = ym.substring(0, 4);
+  const m = parseInt(ym.substring(4, 6), 10);
+  return `${y}년 ${m}월`;
+}
+function buildPeriodLabelKorean(from, to) {
+  if (!from) return '';
+  if (!to || from === to) return formatYmKorean(from);
+  const yf = from.substring(0, 4);
+  const mf = parseInt(from.substring(4, 6), 10);
+  const yt = to.substring(0, 4);
+  const mt = parseInt(to.substring(4, 6), 10);
+  // 완전한 한 해: 202601 ~ 202612
+  if (yf === yt && mf === 1 && mt === 12) return `${yf}년`;
+  // 상반기 / 하반기
+  if (yf === yt && mf === 1 && mt === 6) return `${yf}년 상반기(1월~6월)`;
+  if (yf === yt && mf === 7 && mt === 12) return `${yf}년 하반기(7월~12월)`;
+  // 분기 (Q1~Q4)
+  if (yf === yt) {
+    if (mf === 1 && mt === 3)  return `${yf}년 1분기(1월~3월)`;
+    if (mf === 4 && mt === 6)  return `${yf}년 2분기(4월~6월)`;
+    if (mf === 7 && mt === 9)  return `${yf}년 3분기(7월~9월)`;
+    if (mf === 10 && mt === 12) return `${yf}년 4분기(10월~12월)`;
+  }
+  // 일반 범위
+  return `${formatYmKorean(from)}~${formatYmKorean(to)}`;
+}
+function extractPeriodInfoFromSql(sql) {
+  if (!sql || typeof sql !== 'string') return null;
+  // CALMONTH 는 대소문자 무관, 컬럼 앞에 별칭(alias.CALMONTH)이 붙어 있어도 매칭 가능하도록.
+  const S = sql;
+  // (b) BETWEEN — 가장 먼저 확인 (더 구체적)
+  //     CALMONTH BETWEEN 'YYYYMM' AND 'YYYYMM'
+  const mBetween = S.match(/CALMONTH\s+BETWEEN\s+['"](\d{6})['"]\s+AND\s+['"](\d{6})['"]/i);
+  if (mBetween) {
+    const [ , a, b ] = mBetween;
+    const from = a <= b ? a : b;
+    const to   = a <= b ? b : a;
+    return { from, to, label: buildPeriodLabelKorean(from, to) };
+  }
+  // (e) >= AND <= 조합 (같은 SQL 내에 두 조건이 모두 있을 때)
+  const mGe = S.match(/CALMONTH\s*>=\s*['"](\d{6})['"]/i);
+  const mLe = S.match(/CALMONTH\s*<=\s*['"](\d{6})['"]/i);
+  if (mGe && mLe) {
+    const a = mGe[1], b = mLe[1];
+    const from = a <= b ? a : b;
+    const to   = a <= b ? b : a;
+    return { from, to, label: buildPeriodLabelKorean(from, to) };
+  }
+  // (c) IN — 여러 개월 나열 → 최소/최대 로 범위 요약
+  const mIn = S.match(/CALMONTH\s+IN\s*\(([^)]+)\)/i);
+  if (mIn) {
+    const nums = (mIn[1].match(/\d{6}/g) || []).sort();
+    if (nums.length > 0) {
+      const from = nums[0];
+      const to = nums[nums.length - 1];
+      return { from, to, label: buildPeriodLabelKorean(from, to) };
+    }
+  }
+  // (d) LIKE 'YYYY%'  또는  LEFT(CALMONTH,4)='YYYY'
+  const mLike = S.match(/CALMONTH\s+LIKE\s+['"](\d{4})[%_]['"]/i)
+             || S.match(/LEFT\s*\(\s*CALMONTH\s*,\s*4\s*\)\s*=\s*['"](\d{4})['"]/i);
+  if (mLike) {
+    const y = mLike[1];
+    return { from: y + '01', to: y + '12', label: `${y}년` };
+  }
+  // (a) 등호 — 가장 단순한 케이스 (뒤로 배치: BETWEEN 안쪽에 =가 없다는 걸 위에서 걸러야 함)
+  const mEq = S.match(/CALMONTH\s*=\s*['"](\d{6})['"]/i);
+  if (mEq) {
+    const ym = mEq[1];
+    return { from: ym, to: ym, label: formatYmKorean(ym) };
+  }
+  return null;
+}
+
+// ============================================================
 // System Prompt (RAG 기반 동적 생성)
 // ============================================================
 // 핵심 규칙만 포함한 경량 기본 프롬프트 (RAG 컨텍스트가 동적으로 추가됨)
@@ -6348,6 +6449,20 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
+        // [2026-07-31] 분석 결과 상세표 옆에 실제 조회 기간 표시.
+        //   - 우선순위 1: 실제 실행된 SQL 에서 CALMONTH 파싱 (aggregate 와 동일한 방식으로 통일)
+        //   - 우선순위 2: plan.period.from/to (AnalysisPlan 이 확정한 기간) — SQL 파싱 실패 대비 안전망
+        let periodInfo = extractPeriodInfoFromSql(execRecord.baseSql);
+        if (!periodInfo && plan && plan.period && plan.period.from) {
+          const pf = String(plan.period.from).replace(/[^0-9]/g, '');
+          const pt = String(plan.period.to || plan.period.from).replace(/[^0-9]/g, '');
+          if (/^\d{6}$/.test(pf) && /^\d{6}$/.test(pt)) {
+            const from = pf <= pt ? pf : pt;
+            const to   = pf <= pt ? pt : pf;
+            periodInfo = { from, to, label: buildPeriodLabelKorean(from, to) };
+          }
+        }
+
         return res.json({
           success: true,
           isAnalysisAnswer: true,
@@ -6364,6 +6479,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           sql: execRecord.baseSql,               // ← 실제 실행 SQL 노출 (진단·투명성)
           explanation: null,
           chartType: 'table', chartConfig: {},   // ← 표 탭이 기본 활성
+          periodInfo,                            // [2026-07-31] {from,to,label} 또는 null
           analysisPlan: plan,                    // 진단용 (프론트에서는 무시 가능)
           executionSummary: summary,             // 진단용
           validation: validation,                // 진단용
@@ -7004,6 +7120,12 @@ ${formatRule}
     //   3순위 ontology_column.description
     const columnLabels = await resolveColumnLabels(rows, sql, activeDomain);
 
+    // [2026-07-31] 사용자 요구: '분석 대상 상세 결과' 옆에 실제 조회 기간 표시.
+    //   - 최종 실행된 SQL(sql) 에서 CALMONTH 조건을 파싱하여 프론트로 전달.
+    //   - 기간 정보가 없으면 null 로 두어 프론트가 기간 영역을 아예 표시하지 않도록 함.
+    //   - 이력 재열람 경로도 saved 된 generated_sql 로 동일 계산이 가능하므로 일관됨.
+    const periodInfo = extractPeriodInfoFromSql(sql);
+
     const result = {
       success: true,
       query,
@@ -7022,6 +7144,7 @@ ${formatRule}
       ragEnabled: ragReady,
       ragInfo: ragInfo,
       analysis: analysis,  // 분석형 질문이면 텍스트 답변 포함
+      periodInfo,                                      // [2026-07-31] {from,to,label} 또는 null
       // [PR #252] 현황집계 모드에서 GPT 가 "심층 분석이 필요한 질문" 이라고 판단했으면 true.
       //   분석질문 모드(analysisRequired=true)는 이미 분석 답변을 제공하므로 안내 불필요.
       //   실제로 안내 문구를 붙일지는 프론트 렌더링 단계에서 결정 (queryMode==='aggregate' && suggestAnalysis).
@@ -7738,10 +7861,15 @@ app.get('/api/history/session/:sessionId', async (req, res) => {
     }
 
     if (rows.length === 0) return res.status(404).json({ error: '이력을 찾을 수 없습니다.' });
+    // [2026-07-31] 이력 재열람 시에도 최초 실행과 동일한 실제 조회 기간을 표시하기 위해
+    //   저장된 generated_sql 에서 CALMONTH 를 파싱하여 period_info 를 함께 반환.
+    //   - result_data(100행) 나 별도 컬럼 확장 없이 기존 스키마 그대로 사용.
+    //   - SQL 이 없거나 CALMONTH 매칭 실패 시 null → 프론트가 기간 영역을 표시하지 않음.
     const result = rows.map(r => ({
       ...r,
       chart_config: r.chart_config ? JSON.parse(r.chart_config) : null,
       result_data: r.result_data ? JSON.parse(r.result_data) : null,
+      period_info: extractPeriodInfoFromSql(r.generated_sql),
     }));
     res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
