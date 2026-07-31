@@ -256,54 +256,10 @@
         .meta-badge.learned{background:#fef3c7;color:#d97706;border:1px solid #fde68a;}
         .meta-badge.fallback{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}
 
-        /* RAG 검색 상세 패널 */
-        .rag-detail-panel{
-            margin:8px 16px 4px;padding:10px 14px;border-radius:8px;
-            background:linear-gradient(135deg,#f0fdf4,#ecfdf5);border:1px solid #bbf7d0;
-            font-size:12px;color:#064e3b;cursor:pointer;transition:all .2s;
-        }
-        .rag-detail-panel:hover{border-color:#6ee7b7;}
-        .rag-detail-panel .rag-header{
-            display:flex;align-items:center;gap:8px;font-weight:600;
-        }
-        .rag-detail-panel .rag-header i{color:#10b981;}
-        .rag-detail-panel .rag-chunks{
-            display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;
-        }
-        .rag-detail-panel .rag-chunk-tag{
-            font-size:10px;padding:2px 7px;border-radius:6px;
-            background:#d1fae5;color:#065f46;font-weight:500;
-        }
-        .rag-detail-panel .rag-chunk-tag.feedback{background:#dbeafe;color:#1e40af;}
-        .rag-detail-panel .rag-chunk-tag.metric{background:#ede9fe;color:#5b21b6;}
-        .rag-detail-panel .rag-chunk-tag.code_mapping{background:#fef3c7;color:#92400e;}
-        .rag-detail-panel .rag-chunk-tag.rule{background:#fce7f3;color:#9d174d;}
-        .rag-detail-panel .rag-items{
-            margin-top:8px;font-size:11px;color:#047857;max-height:0;
-            overflow:hidden;transition:max-height .3s ease;
-        }
-        .rag-detail-panel .rag-items.open{max-height:500px;}
-        .rag-detail-panel .rag-item{
-            display:flex;align-items:flex-start;gap:6px;padding:3px 0;
-            border-bottom:1px solid rgba(167,243,208,0.4);
-        }
-        .rag-detail-panel .rag-item:last-child{border-bottom:none;}
-        .rag-detail-panel .rag-score{
-            font-size:10px;font-weight:700;color:#059669;min-width:38px;
-            text-align:right;font-family:monospace;
-        }
-        .rag-detail-panel .rag-item-text{flex:1;word-break:break-all;}
-
-        /* 학습 데이터 매칭 패널 */
-        .learned-detail-panel{
-            margin:8px 16px 4px;padding:10px 14px;border-radius:8px;
-            background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1px solid #fde68a;
-            font-size:12px;color:#78350f;
-        }
-        .learned-detail-panel .learned-header{
-            display:flex;align-items:center;gap:8px;font-weight:600;
-        }
-        .learned-detail-panel .learned-header i{color:#d97706;}
+        /* [2026-07-31] RAG 메타데이터 상세 패널(.rag-detail-panel)과
+           '학습 데이터 정확 매칭' 안내 패널(.learned-detail-panel) CSS 는
+           buildRagDetailPanel() 이 항상 빈 문자열을 반환하도록 변경됨에 따라
+           더 이상 렌더링되지 않으므로 스타일 정의를 제거함. */
 
         /* AI 분석 답변 패널 */
         .analysis-panel{
@@ -2857,32 +2813,16 @@ function buildRagBadge(data) {
 }
 
 function buildRagDetailPanel(msgId, data) {
-    if (!data.ragInfo) return '';
-
-    if (data.ragInfo.mode === 'learned') {
-        return `<div class="learned-detail-panel">
-            <div class="learned-header">
-                <i class="fas fa-graduation-cap"></i>
-                <span>학습 데이터 정확 매칭</span>
-            </div>
-            <div style="margin-top:6px;font-size:11px;color:#92400e;">
-                사용자가 검증한 SQL을 직접 사용했습니다. AI 호출 없이 즉시 실행됩니다.
-            </div>
-        </div>`;
-    }
-
     // [2026-07-31] 사용자 요구: RAG 메타데이터 상세 패널을 답변 화면에서 완전 제거.
-    //   - '분석 대상 상세 결과' 표 위의 초록색 'RAG 메타데이터 검색 — N개 청크 사용',
-    //     온톨로지/메트릭/피드백 SQL/조인/규칙 태그, '▼ 클릭하여 상세' 영역을 렌더링에서 배제.
-    //   - 서버의 RAG 검색·처리 기능과 로그 기록은 그대로 유지 (data.ragInfo 필드 자체는
+    //   - '분석 대상 상세 결과' 표 위 초록색 'RAG 메타데이터 검색 — N개 청크 사용',
+    //     온톨로지/메트릭/피드백 SQL/조인/규칙 태그, '▼ 클릭하여 상세' 영역 (mode='rag')
+    //   - 노란색 '학습 데이터 정확 매칭 / 사용자가 검증한 SQL을 직접 사용했습니다...' 안내
+    //     (mode='learned')
+    //   위 두 패널 모두 mode 값과 무관하게 렌더링 대상에서 배제한다.
+    //   - 서버의 RAG 검색·학습 SQL 조회·로그 기록은 그대로 유지 (data.ragInfo 필드 자체는
     //     여전히 서버가 반환하고 buildRagBadge() 상단 배지는 계속 표시됨).
-    //   - 화면 하단 표/차트/SQL 탭이 자연스럽게 바로 이어지도록 이 함수는 rag 모드에서 빈
-    //     문자열을 반환하여 상세 패널 자체가 DOM 에 추가되지 않게 함(숨김이 아닌 제거).
-    //   - 학습 SQL(mode='learned') 안내는 별도 요구가 없어 그대로 유지.
-    if (data.ragInfo.mode === 'rag') {
-        return '';
-    }
-
+    //   - 화면 하단 표/차트/SQL 탭이 자연스럽게 바로 이어지도록 이 함수는 항상 빈 문자열을
+    //     반환하여 상세 패널 자체가 DOM 에 추가되지 않게 함(숨김이 아닌 제거).
     return '';
 }
 
