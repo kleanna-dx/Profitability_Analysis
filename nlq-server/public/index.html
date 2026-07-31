@@ -2506,10 +2506,16 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         const ack = await r.json();
         if (!r.ok || !ack.success || !ack.jobId) {
             typingEl.remove();
+            // [2026-07-31] 직접 SQL 입력 차단(DIRECT_SQL_DISABLED)은 '시스템 오류' 가 아닌
+            //   중립 안내(회색 모래시계 UI)로 표시하도록 errorType 을 서버가 준 값 그대로 사용.
+            //   ack.errorType 이 없더라도 ack.code === 'DIRECT_SQL_DISABLED' 이면 동일 처리.
+            const ackErrorType = ack.errorType
+                || (ack.code === 'DIRECT_SQL_DISABLED' ? 'direct_sql_disabled' : 'system');
             appendErrorMessage(ack.error || '요청을 접수하지 못했습니다.', {
                 requestId: ack.requestId || clientRequestId || null,
                 stage: 'async_accept_failed',
-                errorType: 'system',
+                errorType: ackErrorType,
+                errorCode: ack.code || null,
                 httpStatus: r.status,
                 queryMode: effectiveQueryMode,
                 timeoutMs,
@@ -3391,6 +3397,40 @@ function appendErrorMessage(msg, details) {
     if (errorType === 'db_query_timeout') {
         const rid = details && details.requestId;
         const STANDARD_MSG = '데이터 양이 너무 많아 조회 시간이 초과되었습니다. 질문의 기간, 대상 또는 조회 범위를 줄여 다시 질문해 주세요.';
+        const ridHtml = rid
+            ? `<code style="background:#e2e8f0;padding:2px 8px;border-radius:4px;font-size:11px;color:#334155;cursor:pointer;font-family:'SF Mono',Menlo,monospace;"
+                     onclick="navigator.clipboard.writeText('${esc(rid)}').then(()=>{this.style.background='#bbf7d0';setTimeout(()=>{this.style.background='#e2e8f0';},800);}).catch(()=>{});"
+                     title="클릭하면 복사됩니다">${esc(rid)}</code>`
+            : `<span style="color:#94a3b8;font-size:11px;font-style:italic;">없음</span>`;
+        el.innerHTML = `
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+                <div class="bot-avatar" style="background:linear-gradient(135deg,#94a3b8,#64748b);">
+                    <i class="fas fa-hourglass-half" style="font-size:13px;"></i>
+                </div>
+                <div style="background:#fff;border:1px solid #e2e8f0;padding:14px 16px;border-radius:12px;flex:1;">
+                    <p style="color:#334155;font-size:13px;line-height:1.6;white-space:pre-wrap;margin:0;">${esc(STANDARD_MSG)}</p>
+                    <div style="font-size:11.5px;color:#64748b;margin-top:10px;">
+                        요청 ID: ${ridHtml}
+                    </div>
+                </div>
+            </div>`;
+        chatArea.appendChild(el);
+        scrollToBottom();
+        return;
+    }
+    // ============================================================
+    // [2026-07-31] 직접 SQL 입력 차단(direct_sql_disabled) 전용 중립 안내 UI
+    //   - 배경: 사용자가 SELECT/INSERT 등 SQL 을 직접 입력하면 서버가 400 + code=DIRECT_SQL_DISABLED
+    //     로 차단. 이는 '시스템 장애' 가 아니라 '정책상 지원하지 않는 입력' 이므로
+    //     빨간 시스템 오류 카드 대신 회색 중립 안내(db_query_timeout 과 동일한 hourglass 스타일)로 표시.
+    //   - 판정: errorType === 'direct_sql_disabled' (async ack 실패 지점에서 ack.code 를 기준으로 매핑됨)
+    //   - 표시: 회색 정보 카드 + 표준 문구 + 요청 ID (복사 가능) 만.
+    //     감춤: '오류가 발생했습니다' 헤더, 시스템 오류 배지, 오류 상세보기, 오류 접수 버튼 등.
+    //     ('오류 접수' 는 시스템 장애 신고용이므로 사용자 입력 정책 안내에서는 노출하지 않음)
+    // ============================================================
+    if (errorType === 'direct_sql_disabled') {
+        const rid = details && details.requestId;
+        const STANDARD_MSG = 'SQL 직접 입력은 지원하지 않습니다. 현황집계 또는 분석질문을 선택하여 자연어로 질문해 주세요.';
         const ridHtml = rid
             ? `<code style="background:#e2e8f0;padding:2px 8px;border-radius:4px;font-size:11px;color:#334155;cursor:pointer;font-family:'SF Mono',Menlo,monospace;"
                      onclick="navigator.clipboard.writeText('${esc(rid)}').then(()=>{this.style.background='#bbf7d0';setTimeout(()=>{this.style.background='#e2e8f0';},800);}).catch(()=>{});"
