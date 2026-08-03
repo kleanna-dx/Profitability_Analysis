@@ -89,15 +89,16 @@ WHERE NOT EXISTS (
   SELECT 1 FROM batch_master WHERE interface_id = 'NLP_RFC_001'
 );
 
--- 3-2) NLP_RFC_002 — 제조원가
+-- 3-2) NLP_RFC_002 — 제조원가 RFC (Z_BI_WEB_EX_BL_4)
+--      (구 함수명 Z_BI_PRE_COST 는 PR #329 에서 Z_BI_WEB_EX_BL_4 로 일괄 교체됨)
 INSERT INTO batch_master
   (interface_id, interface_name, sender, receiver, rfc_name, rfc_func_or_url, rfc_param, default_mode, allowed_modes, exec_command, remark, is_active, created_by)
 SELECT
-  'NLP_RFC_002', '제조원가', 'SAP', 'analytics', 'Z_BI_PRE_COST',
+  'NLP_RFC_002', '제조원가 RFC', 'SAP', 'analytics', 'Z_BI_WEB_EX_BL_4',
   'POST /profit-api/sap-rfc/execute',
-  '{"function":"Z_BI_PRE_COST","params":{"I_CMONTH":"{CMONTH}"}}',
+  '{"function":"Z_BI_WEB_EX_BL_4","params":{"I_CMONTH":"{CMONTH}"}}',
   'replace', 'replace,append,dry-run', 'SAP_RFC_SYNC',
-  '제조원가 인터페이스 (월마감 후 실행)', 1, 'admin'
+  '제조원가 RFC (Z_BI_WEB_EX_BL_4) — sys_aimd_cot015 적재 / 월마감 후 실행', 1, 'admin'
 WHERE NOT EXISTS (
   SELECT 1 FROM batch_master WHERE interface_id = 'NLP_RFC_002'
 );
