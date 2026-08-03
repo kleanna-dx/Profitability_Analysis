@@ -2440,6 +2440,14 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         if (!ct.includes('application/json')) {
             const text = await r.text();
             typingEl.remove();
+            // [2026-08-03] 요구사항 #6: 게이트웨이가 504 로 잘라도 조회 처리 중 타임아웃이면 통일 안내
+            //   - HTTP 504 자체 또는 응답 본문에 DB 타임아웃 문구가 포함되면 QUERY_SCOPE_TIMEOUT 으로 처리
+            const bodyLower = (text || '').toLowerCase();
+            const isDbTimeoutText = /max_statement_time|query execution was interrupted|query inactivity timeout|db query timeout|statement timeout/.test(bodyLower);
+            if (r.status === 504 || isDbTimeoutText) {
+                appendQueryScopeTimeoutMessage(r.headers.get('x-request-id') || clientRequestId || null);
+                return;
+            }
             const isHtml = ct.includes('text/html') || /<html[\s>]/i.test(text);
             const inferredType = (r.status === 504 || r.status === 408) && isHtml ? 'gateway_timeout' : 'system';
             appendErrorMessage('요청 접수 단계에서 게이트웨이 오류가 발생했습니다. (HTTP ' + r.status + ')', {
@@ -2462,6 +2470,11 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         const ack = await r.json();
         if (!r.ok || !ack.success || !ack.jobId) {
             typingEl.remove();
+            // [2026-08-03] 요구사항 #5: JSON 파싱 후 errorCode 를 먼저 확인
+            if (isQueryScopeTimeoutResponse(ack)) {
+                appendQueryScopeTimeoutMessage(extractQueryScopeTimeoutRequestId(ack, clientRequestId));
+                return;
+            }
             // [2026-07-31] 직접 SQL 입력 차단(DIRECT_SQL_DISABLED)은 '시스템 오류' 가 아닌
             //   중립 안내(회색 모래시계 UI)로 표시하도록 errorType 을 서버가 준 값 그대로 사용.
             //   ack.errorType 이 없더라도 ack.code === 'DIRECT_SQL_DISABLED' 이면 동일 처리.
@@ -2564,6 +2577,11 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             }
             if (!r.ok) {
                 typingEl.remove();
+                // [2026-08-03] 요구사항 #5: 폴링 실패 응답 안에도 QUERY_SCOPE_TIMEOUT 있으면 통일 안내
+                if (isQueryScopeTimeoutResponse(pollData)) {
+                    appendQueryScopeTimeoutMessage(extractQueryScopeTimeoutRequestId(pollData, asyncRequestId || clientRequestId));
+                    return;
+                }
                 appendErrorMessage(pollData.error || '작업 상태 조회 실패', {
                     requestId: asyncRequestId || clientRequestId || null,
                     stage: 'async_poll_failed',
@@ -2603,19 +2621,13 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         console.log('[NLQ async] 🛑 결과 처리 직전 stale — 렌더 건너뜀 seq=' + mySeq);
         return;
     }
-    if (!pollData || (pollData.status !== 'done' && pollData.status !== 'failed')) {
+    if (!pollData || (pollData.status !== 'done' && pollData.status !== 'failed' && pollData.status !== 'completed_with_notice')) {
         typingEl.remove();
-        appendErrorMessage('작업이 시간 내 완료되지 않았습니다. 잠시 후 [최근 이력] 에서 결과를 확인해 주세요.', {
-            requestId: asyncRequestId || clientRequestId || null,
-            stage: 'async_poll_timeout',
-            errorType: 'timeout',
-            queryMode: effectiveQueryMode,
-            timeoutMs: NLQ_ASYNC_MAX_WAIT_MS,
-            elapsedMs: Date.now() - reqStartMs,
-            query,
-            timestamp: new Date().toISOString(),
-            jobId,
-        });
+        // [2026-08-03] 요구사항 #6: 폴링 최대 대기 초과도 "조회 처리 중 타임아웃" 으로 간주
+        //   - 프론트 폴링이 6분(NLQ_ASYNC_MAX_WAIT_MS) 안에 완료 신호를 못 받은 상황
+        //   - 서버 job 은 계속 진행 중일 수 있으나, 사용자에게는 조회 시간 초과와 동일한 안내 필요
+        //   - 빨간 timeout 오류 대신 회색 안내로 통일
+        appendQueryScopeTimeoutMessage(asyncRequestId || clientRequestId || null);
         return;
     }
 
@@ -2625,6 +2637,17 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     const finalRequestId = data.requestId || data.error_detail?.requestId || pollData.innerRequestId || asyncRequestId || null;
     const innerStatus = pollData.statusCode || 200;
 
+    // [2026-08-03] 요구사항 #5: HTTP 상태와 무관하게 errorCode 를 먼저 확인해서 통일 라우팅
+    //   - pollData 최상위(서버 GET /api/nlq/job/:jobId 가 추가한 errorCode) 또는
+    //   - pollData.result 내부(self-fetch 로 받은 body 자체) 중 하나라도 QUERY_SCOPE_TIMEOUT 이면 회색 안내
+    //   - status === 'completed_with_notice' 도 이 분기에서 잡힘
+    if (isQueryScopeTimeoutResponse(pollData) || isQueryScopeTimeoutResponse(data)) {
+        appendQueryScopeTimeoutMessage(
+            extractQueryScopeTimeoutRequestId(pollData, finalRequestId || clientRequestId)
+        );
+        return;
+    }
+
     if (pollData.status === 'failed' || data.error || !data.success && !data.answer && !data.results) {
         // 실패 경로 — 동기 호출의 !res.ok 분기와 동일
         const serverDetail = data.error_detail || {};
@@ -2632,6 +2655,8 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             requestId: finalRequestId || clientRequestId || null,
             stage: serverDetail.stage || pollData.error?.stage || 'async_job_failed',
             errorType: serverDetail.errorType || 'system',
+            // [2026-08-03] appendErrorMessage 진입부에서 errorCode 로도 라우팅되도록 함께 전달
+            errorCode: serverDetail.errorCode || data.errorCode || pollData.errorCode || null,
             httpStatus: innerStatus,
             contentType: pollData.error?.contentType || 'application/json',
             message: serverDetail.message || data.error || pollData.error?.message || '',
@@ -3283,6 +3308,83 @@ async function submitErrorReport(btn, payload, msgSpanId) {
 }
 
 // ============================================================
+// [2026-08-03] QUERY_SCOPE_TIMEOUT 공통 판정 & 중립 안내 렌더 (요구사항 #5)
+// ------------------------------------------------------------
+//   - 서버 응답이 async 실패 / 폴링 실패 / 게이트웨이 504 / 폴 최대 대기 초과 / 이력 재열람 등
+//     어떤 경로로 도착하더라도, errorCode/error_code/errorType/error_type/error_detail 어디에
+//     QUERY_SCOPE_TIMEOUT 이 담겨 있으면 회색 안내로 통일 표시한다.
+//   - HTTP 상태만 보고 빨간 오류를 그리지 않는다. 반드시 JSON 파싱 후 이 함수로 먼저 검사.
+// ============================================================
+const QUERY_SCOPE_TIMEOUT_STANDARD_MSG =
+    '데이터 양이 너무 많아 조회 시간이 초과되었습니다. 질문의 기간, 대상 또는 조회 범위를 줄여 다시 질문해 주세요.';
+
+function isQueryScopeTimeoutResponse(obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    // 1) 최상위 errorCode / error_code
+    if (obj.errorCode === 'QUERY_SCOPE_TIMEOUT') return true;
+    if (obj.error_code === 'QUERY_SCOPE_TIMEOUT') return true;
+    // 2) legacy errorType/error_type == 'db_query_timeout' (기존 aggregate 경로)
+    if (obj.errorType === 'db_query_timeout') return true;
+    if (obj.error_type === 'db_query_timeout') return true;
+    // 3) error_detail 내부
+    if (obj.error_detail) {
+        if (obj.error_detail.errorCode === 'QUERY_SCOPE_TIMEOUT') return true;
+        if (obj.error_detail.errorType === 'db_query_timeout') return true;
+        if (obj.error_detail.code === 'QUERY_SCOPE_TIMEOUT') return true;
+    }
+    // 4) async job 결과 조회 응답 안에 result 가 감싸진 경우
+    if (obj.result && obj.result !== obj) {
+        if (isQueryScopeTimeoutResponse(obj.result)) return true;
+    }
+    // 5) 서버가 status='completed_with_notice' 로 명시적으로 알린 경우
+    if (obj.status === 'completed_with_notice' && obj.errorCode === 'QUERY_SCOPE_TIMEOUT') return true;
+    return false;
+}
+
+// QUERY_SCOPE_TIMEOUT 회색 중립 안내 카드 렌더
+//   - appendErrorMessage 내부의 db_query_timeout 분기와 동일한 스타일을 재사용
+//   - 어느 진입 경로에서도 이 함수 하나로 호출 → 표시 일관성 보장
+function appendQueryScopeTimeoutMessage(requestId) {
+    const chatArea = document.getElementById('chatArea');
+    if (!chatArea) return;
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+    const rid = requestId || null;
+    const ridHtml = rid
+        ? `<code style="background:#e2e8f0;padding:2px 8px;border-radius:4px;font-size:11px;color:#334155;cursor:pointer;font-family:'SF Mono',Menlo,monospace;"
+                 onclick="navigator.clipboard.writeText('${esc(rid)}').then(()=>{this.style.background='#bbf7d0';setTimeout(()=>{this.style.background='#e2e8f0';},800);}).catch(()=>{});"
+                 title="클릭하면 복사됩니다">${esc(rid)}</code>`
+        : `<span style="color:#94a3b8;font-size:11px;font-style:italic;">없음</span>`;
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#94a3b8,#64748b);">
+                <i class="fas fa-hourglass-half" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#fff;border:1px solid #e2e8f0;padding:14px 16px;border-radius:12px;flex:1;">
+                <p style="color:#334155;font-size:13px;line-height:1.6;white-space:pre-wrap;margin:0;">${esc(QUERY_SCOPE_TIMEOUT_STANDARD_MSG)}</p>
+                <div style="font-size:11.5px;color:#64748b;margin-top:10px;">
+                    요청 ID: ${ridHtml}
+                </div>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+    scrollToBottom();
+}
+
+// 응답 오브젝트에서 표시용 requestId 를 뽑아내는 헬퍼
+//   우선순위: 내부 실행 requestId > 응답 최상위 requestId > error_detail.requestId > client fallback
+function extractQueryScopeTimeoutRequestId(obj, fallback) {
+    if (!obj) return fallback || null;
+    return obj.innerRequestId
+        || obj.requestId
+        || obj.result?.requestId
+        || obj.error_detail?.requestId
+        || obj.result?.error_detail?.requestId
+        || fallback
+        || null;
+}
+
+// ============================================================
 // Append Error Message
 //   - 두 번째 인자(details)로 진단 정보를 받으면 "오류 상세보기" 토글을 함께 표시
 //   - details 객체에 requestId/stage/errorType/message/httpStatus/contentType/
@@ -3299,16 +3401,24 @@ function appendErrorMessage(msg, details) {
     const badgeHtml = getErrorTypeBadgeHtml(errorType);
 
     // ============================================================
-    // [2026-07-23] DB 조회 타임아웃(db_query_timeout) 전용 중립 안내 UI
+    // [2026-08-03] QUERY_SCOPE_TIMEOUT 최우선 라우팅 (요구사항 #5)
+    //   - 어느 호출 지점에서 왔든 details 안에 errorCode='QUERY_SCOPE_TIMEOUT' 이거나
+    //     기존 errorType='db_query_timeout' 이면 회색 안내로 통일 렌더.
+    //   - HTTP 상태 코드나 msg 내용은 보지 않는다.
+    // ============================================================
+    if (details && (details.errorCode === 'QUERY_SCOPE_TIMEOUT'
+                 || details.error_code === 'QUERY_SCOPE_TIMEOUT'
+                 || errorType === 'db_query_timeout')) {
+        appendQueryScopeTimeoutMessage(details.requestId || null);
+        return;
+    }
+
+    // ============================================================
+    // [2026-07-23] DB 조회 타임아웃(db_query_timeout) 전용 중립 안내 UI (하위 호환용 유지)
+    //   - 위 QUERY_SCOPE_TIMEOUT 라우팅에서 이미 처리되지만, 옛 호출자가 errorType 만 넘긴 경우 대비.
     //   - 배경: NLQ_DB_QUERY_TIMEOUT_MS(120s) 초과 시 서버가 error_type='db_query_timeout' + requestId 로 반환.
     //     기존 빨간 시스템 오류 UI 는 사용자가 장애로 오인하기 쉬워, 별도 회색 중립 안내로 분리.
     //   - 판정: errorType === 'db_query_timeout' 만 적용 (문법/서버/인증 등 다른 오류는 기존 UI 유지).
-    //   - 표시: 회색 정보 카드 + 표준 문구 + 요청 ID (복사 가능) 만.
-    //     감춤: '오류가 발생했습니다' 헤더, 시스템 오류 배지, 원문 에러 메시지,
-    //           빨간 아이콘/테두리, 오류 상세보기 버튼, 서버 로그 매칭 문구, 스택/기술 세부.
-    //   - 서버 로그/이력 추적은 requestId 만으로 가능 (운영팀 문의용 복사 지원).
-    //   - 이력 재열람 경로도 동일: PR #251 에 의해 서버가 실패 이력에도 error_type='db_query_timeout' 을
-    //     저장하므로, restoreSession 에서 그대로 appendErrorMessage 로 재진입 시 이 분기가 동작.
     // ============================================================
     if (errorType === 'db_query_timeout') {
         const rid = details && details.requestId;
@@ -5404,9 +5514,13 @@ async function restoreSession(sessionKey, hintDomain) {
                 //     여기서 그대로 꺼내 appendErrorMessage 에 details 로 넘긴다.
                 //   - 과거 이력(NULL) 은 프론트에서 'Request ID 없음' 으로 표시.
                 //   - errorType 미기록 이력은 'system' 배지로 fallback (기존 동작과 동일).
+                // [2026-08-03] 요구사항 #5: 이력 재열람 시에도 errorCode 를 함께 전달해
+                //   appendErrorMessage 진입부의 QUERY_SCOPE_TIMEOUT 라우팅이 동작하도록 함.
+                //   (item.error_code 컬럼은 hard_fail_count SQL 및 aggregate 실패 저장에서 이미 채워짐)
                 appendErrorMessage(item.error_message || '실행 실패', {
                     requestId: item.request_id || null,
                     errorType: item.error_type || 'system',
+                    errorCode: item.error_code || null,
                     fromHistory: true,
                 });
             }

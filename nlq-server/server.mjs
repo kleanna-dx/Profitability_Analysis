@@ -1592,8 +1592,49 @@ function buildQueryScopeTimeoutResponse({ req, err, sql, extra = {} }) {
       isAnalysisAnswer: !!extra.isAnalysisAnswer,
       answerType: LEGACY_DB_QUERY_TIMEOUT_CODE,
       analysis: extra.isAnalysisAnswer ? QUERY_SCOPE_TIMEOUT_MESSAGE : null,
+      // 요구사항 #4: 비동기 job 결과에서도 사용되는 message 필드 (프론트 폴백용)
+      message: QUERY_SCOPE_TIMEOUT_MESSAGE,
     },
   };
+}
+
+// ============================================================
+// [2026-08-03] 비동기 self-fetch 실패를 QUERY_SCOPE_TIMEOUT 으로 변환하기 위한 넓은 판정
+// ------------------------------------------------------------
+// runNlqJobInBackground 의 self-fetch 는 아래 상황에서 예외를 던진다:
+//   - AbortController.abort(new Error('self-fetch timeout (10min)'))
+//   - undici 의 headersTimeout / bodyTimeout / socket hangup (ETIMEDOUT, UND_ERR_HEADERS_TIMEOUT, UND_ERR_BODY_TIMEOUT, ECONNRESET)
+//   - HTTP 504 게이트웨이 응답 body 안에 "Query inactivity timeout" 등 DB 문구 포함
+// 이 모든 케이스를 "DB 조회시간 초과" 로 통일해 안내하기 위한 판정 함수.
+// (isDbQueryTimeoutError 는 유지 — DB 드라이버 예외 판정용. 이 함수는 그 확장 버전.)
+// ============================================================
+function isQueryScopeTimeoutFromAny({ err, httpStatus, bodyText, bodyJson } = {}) {
+  // 1) DB 드라이버 예외 판정 (isDbQueryTimeoutError 재사용)
+  if (isDbQueryTimeoutError(err)) return true;
+  // 2) undici / node fetch 특유의 timeout 코드
+  if (err) {
+    const code = String(err.code || '').toUpperCase();
+    if (['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'].includes(code)) return true;
+    if (code === 'ECONNRESET' && /timeout/i.test(String(err.message || ''))) return true;
+    if (/self-fetch\s+timeout|fetch\s+failed.*timeout/i.test(String(err.message || ''))) return true;
+  }
+  // 3) HTTP 504 (게이트웨이 타임아웃) — 상위 게이트웨이가 DB 대기 중 자른 경우
+  if (Number(httpStatus) === 504) return true;
+  // 4) 응답 body 안에 DB 타임아웃 문구가 있는 경우 (게이트웨이가 원문을 그대로 흘려보낸 경우)
+  const bodyStr = (typeof bodyText === 'string' && bodyText)
+    || (bodyJson ? JSON.stringify(bodyJson) : '');
+  if (bodyStr && /max_statement_time|query\s+execution\s+was\s+interrupted|query\s+inactivity\s+timeout|db\s+query\s+timeout|statement\s+timeout/i.test(bodyStr)) {
+    return true;
+  }
+  // 5) 응답 JSON 안에 이미 QUERY_SCOPE_TIMEOUT 코드가 담긴 경우
+  if (bodyJson && (bodyJson.errorCode === QUERY_SCOPE_TIMEOUT_CODE
+                || bodyJson.error_code === QUERY_SCOPE_TIMEOUT_CODE
+                || bodyJson.error_detail?.errorCode === QUERY_SCOPE_TIMEOUT_CODE
+                || bodyJson.errorType === LEGACY_DB_QUERY_TIMEOUT_CODE
+                || bodyJson.error_type === LEGACY_DB_QUERY_TIMEOUT_CODE)) {
+    return true;
+  }
+  return false;
 }
 
 // ============================================================
@@ -7582,14 +7623,48 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
       job.status = 'done';
       job.result = data;
     } else {
-      job.status = 'failed';
-      job.result = data;
-      job.error = {
-        message: data?.error || data?.message || `내부 호출 실패 (HTTP ${r.status})`,
-        statusCode: r.status,
-        contentType,
-        rawTextPreview: rawText ? rawText.slice(0, 500) : null,
-      };
+      // [2026-08-03] self-fetch 응답이 실패로 도착한 경우:
+      //   1) 응답 body 자체가 이미 QUERY_SCOPE_TIMEOUT 이거나
+      //   2) HTTP 504 이거나
+      //   3) body 안에 DB 타임아웃 문구가 있으면
+      //   → 공통 QUERY_SCOPE_TIMEOUT 페이로드로 통일 (job.result 를 표준 응답으로 교체)
+      const isTimeout = isQueryScopeTimeoutFromAny({
+        httpStatus: r.status,
+        bodyText: rawText,
+        bodyJson: data,
+      });
+      if (isTimeout) {
+        const timeoutErr = new Error(data?.error || data?.message || rawText || `HTTP ${r.status}`);
+        const timeoutResp = buildQueryScopeTimeoutResponse({
+          req: { requestId: job.innerRequestId || job.requestId },
+          err: timeoutErr,
+          sql: data?.sql || null,
+          extra: {
+            isAnalysisAnswer: (job.queryMode === 'analysis'),
+            failedSql: data?.sql || null,
+            dbElapsedMs: (Date.now() - job.startedAt),
+            source: 'async_self_fetch_response',
+          },
+        });
+        // status 는 'failed' 유지 (기존 프론트 폴링 로직 호환) 하되,
+        // 요구사항 #4 의 completed_with_notice 스키마를 위한 별도 플래그도 노출
+        job.status = 'failed';
+        job.completedWithNotice = true;
+        job.errorCode = QUERY_SCOPE_TIMEOUT_CODE;
+        job.result = timeoutResp.body;
+        job.statusCode = timeoutResp.httpStatus;
+        job.error = null;  // 표준 페이로드로 대체됐으므로 별도 error 오브젝트 불필요
+        console.log(`[nlq-async] ⏱️ job ${jobId} → QUERY_SCOPE_TIMEOUT (from self-fetch response, HTTP ${r.status})`);
+      } else {
+        job.status = 'failed';
+        job.result = data;
+        job.error = {
+          message: data?.error || data?.message || `내부 호출 실패 (HTTP ${r.status})`,
+          statusCode: r.status,
+          contentType,
+          rawTextPreview: rawText ? rawText.slice(0, 500) : null,
+        };
+      }
     }
     job.finishedAt = Date.now();
   } catch (e) {
@@ -7602,6 +7677,27 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
       job.error = null;
       job.finishedAt = Date.now();
       console.log(`[nlq-async] 🛑 job ${jobId} aborted by user cancel (err=${e?.message || e})`);
+    } else if (isQueryScopeTimeoutFromAny({ err: e })) {
+      // [2026-08-03] self-fetch 자체가 timeout/abort 로 예외를 던진 경우도 QUERY_SCOPE_TIMEOUT 으로 통일
+      //   대표 케이스: 10분 self-fetch timeout, undici headersTimeout/bodyTimeout, ETIMEDOUT
+      const timeoutResp = buildQueryScopeTimeoutResponse({
+        req: { requestId: job.innerRequestId || job.requestId },
+        err: e,
+        sql: null,
+        extra: {
+          isAnalysisAnswer: (job.queryMode === 'analysis'),
+          dbElapsedMs: (Date.now() - job.startedAt),
+          source: 'async_self_fetch_exception',
+        },
+      });
+      job.status = 'failed';
+      job.completedWithNotice = true;
+      job.errorCode = QUERY_SCOPE_TIMEOUT_CODE;
+      job.result = timeoutResp.body;
+      job.statusCode = timeoutResp.httpStatus;
+      job.error = null;
+      job.finishedAt = Date.now();
+      console.log(`[nlq-async] ⏱️ job ${jobId} → QUERY_SCOPE_TIMEOUT (from self-fetch exception: ${e?.name || ''}/${e?.code || ''} ${e?.message || ''})`);
     } else {
       job.status = 'failed';
       job.error = { message: e?.message || String(e), code: e?.code || null };
@@ -7665,12 +7761,14 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     console.error(`[nlq-async] uncaught in job ${jobId}:`, e);
   });
 
-  console.log(`[nlq-async] 📥 accepted jobId=${jobId} user=${userId} mode=${job.queryMode} query="${job.query.slice(0, 60)}..."`);
+  console.log(`[nlq-async] 📥 accepted jobId=${jobId} asyncRequestId=${requestId} user=${userId} mode=${job.queryMode} query="${job.query.slice(0, 60)}..."`);
   return res.json({
     success: true,
     jobId,
     status: 'pending',
+    // 요구사항 #3: 최초 async 접수 requestId 명시 (innerRequestId 는 self-fetch 후 별도로 채워짐)
     requestId,
+    asyncRequestId: requestId,
     startedAt: new Date(job.startedAt).toISOString(),
     pollUrl: `/api/nlq/job/${jobId}`,
     recommendedPollIntervalMs: 1500,
@@ -7697,13 +7795,31 @@ app.get('/api/nlq/job/:jobId', async (req, res) => {
   }
   const now = Date.now();
   const elapsedMs = (job.finishedAt || now) - job.startedAt;
+  // ============================================================
+  // [2026-08-03] job 결과 조회 응답의 QUERY_SCOPE_TIMEOUT 통일 처리
+  // ------------------------------------------------------------
+  // - job.completedWithNotice(=QUERY_SCOPE_TIMEOUT 로 변환됨) 이면
+  //   요구사항 #4 스키마(status='completed_with_notice', errorCode, requestId, message) 를 최상위로 실어
+  //   프론트가 HTTP 상태나 result 내부 파싱 없이도 errorCode 만으로 안내를 렌더할 수 있게 한다.
+  // - 기존 프론트(pollData.status='failed' 분기) 호환을 위해 status 는 'failed' 도 함께 유지 가능.
+  //   → 명세를 정확히 지키기 위해 status 는 'completed_with_notice' 로 노출하고,
+  //     기존 프론트가 status='failed' 만 인식하는 경우도 커버할 수 있도록 legacyStatus 필드로 원래 값 보관.
+  // ============================================================
+  const isCompletedWithNotice = !!job.completedWithNotice;
+  const publicStatus = isCompletedWithNotice ? 'completed_with_notice' : job.status;
+  // 실제 실행 requestId(내부 /api/nlq 요청의 x-request-id) 를 우선 노출.
+  //   요구사항 #3: 프론트에는 내부 실행 requestId 가 표시되어야 함
+  const effectiveRequestId = job.innerRequestId || job.requestId;
   const payload = {
     success: true,
     jobId: job.jobId,
-    status: job.status,        // pending | running | done | failed | cancelled
+    status: publicStatus,        // pending | running | done | failed | cancelled | completed_with_notice
+    legacyStatus: job.status,    // 하위 호환: 기존 프론트가 'failed' 분기로 진입해도 result.errorCode 매칭됨
     cancelled: !!job.cancelled,
-    requestId: job.requestId,
-    innerRequestId: job.innerRequestId,
+    // ── 요구사항 #3: 3개 requestId 를 모두 노출
+    requestId: effectiveRequestId,      // 프론트에 표시되는 값(내부 실행 우선)
+    asyncRequestId: job.requestId,      // 최초 async 접수 시 발급된 requestId
+    innerRequestId: job.innerRequestId, // self-fetch 로 실행된 실제 요청의 requestId
     statusCode: job.statusCode,
     queryMode: job.queryMode,
     startedAt: new Date(job.startedAt).toISOString(),
@@ -7713,6 +7829,16 @@ app.get('/api/nlq/job/:jobId', async (req, res) => {
     result: (job.status === 'done' || job.status === 'failed') ? job.result : null,
     error: job.error,
   };
+  // ── 요구사항 #4: completed_with_notice 스키마 필드를 최상위로 노출
+  //    (프론트가 result.error_detail 을 파싱하지 않아도 errorCode 로 즉시 안내 라우팅 가능)
+  if (isCompletedWithNotice) {
+    payload.errorCode = QUERY_SCOPE_TIMEOUT_CODE;
+    payload.message = QUERY_SCOPE_TIMEOUT_MESSAGE;
+    // result 안에도 반드시 표준 페이로드가 있어야 프론트 기존 분기(status='failed')도 자동으로 잡힘
+    if (!payload.result) {
+      payload.result = job.result;
+    }
+  }
   return res.json(payload);
 });
 
