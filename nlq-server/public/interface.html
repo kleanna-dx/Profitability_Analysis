@@ -1508,11 +1508,19 @@ async function openJobLogModal(jobId){
   try{
     const d = await api('/api/interface/history/'+jobId);
     // 메타 정보
+    //   [PR #329] RFC 함수명(rfc_name)과 입력값(I_CMONTH=cmonth)을 상세 화면에서 표시.
+    //     - 이력 상세에서 실제 실행 함수명 (예: Z_BI_WEB_EX_BL_4) 이 노출되도록 함
+    //     - 구 함수명 Z_BI_PRE_COST 는 마스터에서 이미 교체됐으므로 자연스레 안 보임
+    const rfcNameLine = d.rfc_name
+      ? `<br><b>RFC 함수:</b> <span class="col-mono" style="color:#7c3aed;font-weight:600;">${escapeHtml(d.rfc_name)}</span>`
+        + (d.cmonth ? ` &nbsp;|&nbsp; <b>입력값:</b> <span class="col-mono">I_CMONTH=${escapeHtml(d.cmonth)}</span>` : '')
+      : '';
     document.getElementById('jlMeta').innerHTML = `
       <b>인터페이스:</b> ${escapeHtml(d.interface_id||'-')}${d.interface_name?` <span style="color:#94a3b8;">(${escapeHtml(d.interface_name)})</span>`:''}
       &nbsp;|&nbsp; <b>구분:</b> ${escapeHtml(d.job_type||'-')}
       &nbsp;|&nbsp; <b>모드:</b> ${escapeHtml(d.mode||'-')}
       &nbsp;|&nbsp; <b>상태:</b> ${badge(d.status)}
+      ${rfcNameLine}
       <br>
       <b>시작:</b> ${fmtSec(d.started_at)} &nbsp;|&nbsp; <b>종료:</b> ${fmtSec(d.finished_at)}
       &nbsp;|&nbsp; <b>처리행수:</b> ${Number(d.inserted_rows||0).toLocaleString()}

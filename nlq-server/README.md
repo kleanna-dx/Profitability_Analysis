@@ -23,6 +23,12 @@
 9. **PPT 보고서 생성** — Python(python-pptx)으로 수익성분석 보고서 자동 생성
 10. **질의 이력 관리** — 모든 질의/결과를 DB에 저장, 사이드바에서 재조회
 11. **DB 성능 인덱스** — PLANT, DIVISION, PRODH1, DISTR_CHAN 등 7개 인덱스 추가
+12. **인터페이스 관리** — SAP RFC 호출을 통한 데이터 적재 (수익성 · 제조원가)
+    - **NLP_RFC_001 수익성분석 RFC** (`Z_BI_WEB_EX_BL`) → `bw_profitability_data` 적재
+    - **NLP_RFC_002 제조원가 RFC** (`Z_BI_WEB_EX_BL_4`) → `sys_aimd_cot015` 적재 [PR #329]
+    - I_CMONTH(YYYYMM) 파라미터 · CALMONTH 검증 · 트랜잭션 DELETE+INSERT 재적재 · NO_DATA 상태 구분
+    - 인터페이스 수행관리(batch_schedule) + 이력관리(batch_jobs) 통합
+    - 이력 상세에 실제 실행 함수명(rfc_name) 표시
 
 ### 🚧 향후 개선 예정
 - 비주얼 쿼리 빌더 (드래그&드롭 방식 SQL 생성)
@@ -104,6 +110,10 @@
 | `nl_query_history` | 질의 이력 | 자동 증가 |
 | `rag_embeddings` | RAG 벡터 인덱스 | 178 |
 | `ontology_synonym` | 온톨로지 동의어 | 18 |
+| `batch_master` | 인터페이스 마스터 (rfc_name, rfc_param, IFTBL) | NLP_RFC_001/002 등 |
+| `batch_schedule` | 인터페이스 수행관리 (스케줄) | 자동 증가 |
+| `batch_jobs` | 인터페이스 이력관리 (실행 이력) | 자동 증가 |
+| `sys_aimd_cot015` | 제조원가 RFC 적재 테이블 (seq + 35 필드) | RFC 적재량 |
 
 ### bw_profitability_data 인덱스
 - PRIMARY (SEQ), CALMONTH, CALDAY, PROFIT_CTR, MATERIAL, CUSTOMER
@@ -154,7 +164,22 @@ curl http://localhost:3000/api/status
 pm2 logs nlq-server --nostream
 ```
 
-## 최근 변경사항 (2026-05-06)
+## 최근 변경사항
+
+### 2026-08-03 (PR #329) — 제조원가 RFC 함수명 변경 및 인터페이스 연계
+- **RFC 함수명 변경**: `Z_BI_PRE_COST` → `Z_BI_WEB_EX_BL_4` (인터페이스 설정 · 배치 · 로그 · 화면 전 영역 일괄 교체)
+- **DB 마이그레이션**: `sql/044_update_nlp_rfc_002_to_z_bi_web_ex_bl_4.sql` (batch_master UPDATE + Z_BI_PRE_COST 잔존 청소)
+- **적재 로직**: `scripts/sap_rfc_sync_mfg_cost.py` (수익성 스크립트와 완전 분리)
+  - `I_CMONTH` YYYYMM 전달 → `Z_BI_WEB_EX_BL_4` 호출 → `T_DATA` 파싱 → `sys_aimd_cot015` 적재
+  - CALMONTH 검증, 숫자 정리(공백/쉼표/후행부호), /BIC/ prefix 자동 제거, 필드 오류 로그
+  - 재적재 시 트랜잭션 DELETE+INSERT (autocommit=False + rollback)
+  - Exit code: 0=SUCCESS / 1=FAILED / 2=NO_DATA (수익성 상태값과 통일)
+- **수행관리·이력관리 연계**: `[신규 등록]` → batch_schedule → NLP_RFC_002 실행 → batch_jobs 이력 저장
+- **이력 상세 화면**: `RFC 함수: Z_BI_WEB_EX_BL_4 | 입력값: I_CMONTH=YYYYMM` 표시 (구 함수명 노출 없음)
+- **분리 원칙**: 수익성 RFC(`Z_BI_WEB_EX_BL`) 로직에 영향 없음 (별도 스크립트 + 별도 적재 테이블)
+- **테스트**: 91건 통과 (unit 42 + DB 통합 22 + 인터페이스 흐름 27)
+
+### 2026-05-06
 - RAG removeFromIndex 버그 수정 (sourceId=null 처리)
 - SPA fallback에서 /api/* 경로 제외 (Report API 충돌 해결)
 - bw_profitability_data 테이블에 7개 성능 인덱스 추가

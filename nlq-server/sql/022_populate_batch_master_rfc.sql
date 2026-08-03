@@ -37,7 +37,7 @@ INSERT INTO batch_master
   (interface_id,     interface_name,    sender, receiver,    rfc_name,           rfc_func_or_url,                                rfc_param,                                                          default_mode, allowed_modes,                exec_command,      remark,                                  is_active, created_by)
 VALUES
   ('SNOP_RFC_001',   '수익성분석',        'SAP', 'analytics', 'Z_BI_WEB_EX_BL',  'POST /profit-api/sap-rfc/execute',             '{"function":"Z_BI_WEB_EX_BL","params":{"I_CMONTH":"{CMONTH}"}}',  'replace',    'replace,append,dry-run',     'SAP_RFC_SYNC',    'SAP BW 수익성분석 데이터 동기화',           1, 'admin'),
-  ('SNOP_RFC_002',   '제조원가',          'SAP', 'analytics', 'Z_BI_PRE_COST',   'POST /profit-api/sap-rfc/execute',             '{"function":"Z_BI_PRE_COST","params":{"I_CMONTH":"{CMONTH}"}}',   'replace',    'replace,append,dry-run',     'SAP_RFC_SYNC',    '제조원가 인터페이스 (월마감 후 실행)',       1, 'admin'),
+  ('SNOP_RFC_002',   '제조원가 RFC',     'SAP', 'analytics', 'Z_BI_WEB_EX_BL_4','POST /profit-api/sap-rfc/execute',             '{"function":"Z_BI_WEB_EX_BL_4","params":{"I_CMONTH":"{CMONTH}"}}','replace',    'replace,append,dry-run',     'SAP_RFC_SYNC',    '제조원가 RFC (Z_BI_WEB_EX_BL_4) — 월마감 후 실행',   1, 'admin'),
   ('SNOP_RFC_003',   '생산실적',          'SAP', 'analytics', 'Z_BI_PROD',       'POST /profit-api/sap-rfc/execute',             '{"function":"Z_BI_PROD","params":{"I_CMONTH":"{CMONTH}"}}',       'replace',    'replace,append,dry-run',     'SAP_RFC_SYNC',    '월별 생산실적 데이터 동기화',                 1, 'admin'),
   ('SNOP_RFC_004',   '판매실적',          'SAP', 'analytics', 'Z_BI_SALES',      'POST /profit-api/sap-rfc/execute',             '{"function":"Z_BI_SALES","params":{"I_CMONTH":"{CMONTH}"}}',      'replace',    'replace,append,dry-run',     'SAP_RFC_SYNC',    '월별 판매실적 데이터 동기화',                 1, 'admin'),
   ('SNOP_RFC_005',   '월말마감실적',      'SAP', 'analytics', 'Z_BI_MONTH_CLOSE','POST /profit-api/sap-rfc/execute',             '{"function":"Z_BI_MONTH_CLOSE","params":{"I_CMONTH":"{CMONTH}"}}','replace',    'replace,append,dry-run',     'SAP_RFC_SYNC',    '월말마감 후 재계산 (말일 23시 실행)',         1, 'admin'),
@@ -70,12 +70,12 @@ UPDATE batch_master
  WHERE interface_id = 'NLP_RFC_001';
 
 UPDATE batch_master
-   SET rfc_name        = 'Z_BI_PRE_COST',
+   SET rfc_name        = 'Z_BI_WEB_EX_BL_4',
        rfc_func_or_url = 'POST /profit-api/sap-rfc/execute',
-       rfc_param       = '{"function":"Z_BI_PRE_COST","params":{"I_CMONTH":"{CMONTH}"}}',
+       rfc_param       = '{"function":"Z_BI_WEB_EX_BL_4","params":{"I_CMONTH":"{CMONTH}"}}',
        default_mode    = 'replace',
        allowed_modes   = 'replace,append,dry-run',
        exec_command    = 'SAP_RFC_SYNC',
-       remark          = COALESCE(remark, '제조원가 인터페이스 (월마감 후 실행)'),
+       remark          = COALESCE(remark, '제조원가 RFC (Z_BI_WEB_EX_BL_4) — 월마감 후 실행'),
        updated_by      = 'admin'
  WHERE interface_id = 'NLP_RFC_002';

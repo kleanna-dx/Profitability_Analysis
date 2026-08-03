@@ -14769,10 +14769,14 @@ app.get('/api/interface/history', requireAdmin, async (req, res) => {
 });
 
 // 이력 단건 (로그 포함)
+//   [PR #329] rfc_name / rfc_param 을 함께 반환 — 이력 상세 모달에서
+//   실제 실행 함수명 (예: Z_BI_WEB_EX_BL_4) 을 표시하기 위함.
+//   구 함수명 (Z_BI_PRE_COST) 이 이력 상세에서도 노출되지 않도록
+//   프론트는 이 rfc_name 필드를 그대로 표시한다.
 app.get('/api/interface/history/:jobId', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT j.*, m.interface_name
+      `SELECT j.*, m.interface_name, m.rfc_name, m.rfc_param
          FROM batch_jobs j
          LEFT JOIN batch_master m ON m.interface_id = j.interface_id
         WHERE j.id = ?`,
