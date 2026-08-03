@@ -1502,6 +1502,12 @@ async function nlqPoolQueryWithTimeout(sql, params, timeoutMs) {
 }
 
 // Helper: mysql2/MariaDB 의 쿼리 timeout 에러 여부 판정
+// [2026-08-03] 판정 범위 확장 — 프론트/게이트웨이가 DB 조회 시간 초과로 인식해야 하는 모든 케이스:
+//   - MariaDB max_statement_time 초과 (errno 1969)
+//   - "Query execution was interrupted" (max_statement_time 도달 시 실제 메시지)
+//   - mysql2 driver 의 client-side "Query inactivity timeout"
+//   - 명시적 "DB query timeout"
+//   - AbortError / ETIMEDOUT / ESOCKETTIMEDOUT (self-fetch 등에서 발생)
 function isDbQueryTimeoutError(err) {
   if (!err) return false;
   const code = String(err.code || '').toUpperCase();
@@ -1510,9 +1516,84 @@ function isDbQueryTimeoutError(err) {
   return (
     code === 'PROTOCOL_SEQUENCE_TIMEOUT' ||
     code === 'ER_STATEMENT_TIMEOUT' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ESOCKETTIMEDOUT' ||
+    err?.name === 'AbortError' ||
     errno === 1969 ||
-    /max_statement_time|query\s+execution\s+was\s+interrupted|statement\s+timeout|query\s+timeout/i.test(msg)
+    /max_statement_time|query\s+execution\s+was\s+interrupted|statement\s+timeout|query\s+timeout|query\s+inactivity\s+timeout|db\s+query\s+timeout/i.test(msg)
   );
+}
+
+// ============================================================
+// [2026-08-03] QUERY_SCOPE_TIMEOUT 공통 처리
+// ------------------------------------------------------------
+// 배경: aggregate / analysis 두 경로에서 DB 조회 시간 초과 응답을 서로 다르게 만들다 보니
+//   - analysis 경로는 error_detail 이 없어서 프론트가 red 시스템 오류 UI 로 렌더링
+//   - 문구도 aggregate("DB 조회 시간이 초과되었습니다") 와 analysis("DB 조회 한도 120초를 초과") 가 서로 다름
+//   - HTTP 504 async job → 프론트 pollData.status='failed' 분기에서 errorType='system' 으로 폴백
+// 이를 해결하기 위해 공통 상수/헬퍼로 통일한다.
+//
+// - QUERY_SCOPE_TIMEOUT_MESSAGE : 사용자에게 노출되는 표준 문구 (변경 금지)
+// - QUERY_SCOPE_TIMEOUT_CODE    : 서버 errorCode / 프론트 매칭 상수
+// - LEGACY_DB_QUERY_TIMEOUT_CODE: 기존 이력/모니터링 호환용 (프론트가 계속 인식해야 하는 값)
+// - buildQueryScopeTimeoutResponse(): 공통 응답 페이로드 생성
+// - buildQueryScopeTimeoutErrorDetail(): 프론트가 pollData.status='failed' 로 받았을 때 사용
+// ============================================================
+const QUERY_SCOPE_TIMEOUT_MESSAGE =
+  '데이터 양이 너무 많아 조회 시간이 초과되었습니다. 질문의 기간, 대상 또는 조회 범위를 줄여 다시 질문해 주세요.';
+const QUERY_SCOPE_TIMEOUT_CODE = 'QUERY_SCOPE_TIMEOUT';
+// 프론트 index.html 3313 라인 및 renderHistoryList/hard_fail_count 집계 SQL 이
+// 계속 'db_query_timeout' 문자열을 참조하므로, 하위 호환용 error_type 값은 유지한다.
+const LEGACY_DB_QUERY_TIMEOUT_CODE = 'db_query_timeout';
+
+function buildQueryScopeTimeoutErrorDetail({ req, err, extra = {} }) {
+  const requestId = (typeof getCurrentRequestId === 'function' ? getCurrentRequestId() : null)
+    || req?.requestId || null;
+  return {
+    requestId,
+    stage: 'db_query_timeout',
+    errorType: LEGACY_DB_QUERY_TIMEOUT_CODE,      // 프론트 3313 라인 매칭 대상 (하위 호환)
+    errorCode: QUERY_SCOPE_TIMEOUT_CODE,          // 신규 표준 코드
+    code: QUERY_SCOPE_TIMEOUT_CODE,
+    message: QUERY_SCOPE_TIMEOUT_MESSAGE,
+    // 내부 진단 정보(로그 추적용)는 error_detail 하위에만 포함 — 프론트 중립 UI 에서는 렌더하지 않음
+    diagnostic: {
+      originalMessage: String(err?.sqlMessage || err?.message || '') || null,
+      errno: err?.errno || null,
+      code: err?.code || null,
+      elapsedMs: extra.dbElapsedMs || null,
+      limitMs: extra.dbTimeoutLimitMs || NLQ_DB_QUERY_TIMEOUT_MS,
+      failedSql: extra.failedSql || null,
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildQueryScopeTimeoutResponse({ req, err, sql, extra = {} }) {
+  const errorDetail = buildQueryScopeTimeoutErrorDetail({ req, err, extra });
+  return {
+    httpStatus: 504,
+    body: {
+      success: false,
+      sql: sql || null,
+      rows: [],
+      rowCount: 0,
+      answer: QUERY_SCOPE_TIMEOUT_MESSAGE,
+      explanation: null,
+      // 프론트가 참조하는 모든 필드 — 신규/기존 필드를 함께 실어 어느 분기로 진입해도 인식되게 함
+      requestId: errorDetail.requestId,
+      errorCode: QUERY_SCOPE_TIMEOUT_CODE,
+      error_code: QUERY_SCOPE_TIMEOUT_CODE,        // snake_case (기존 aggregate 호환)
+      error_type: LEGACY_DB_QUERY_TIMEOUT_CODE,    // 프론트 3313 라인 매칭 (하위 호환)
+      errorType: LEGACY_DB_QUERY_TIMEOUT_CODE,
+      error_user_friendly: true,
+      error_detail: errorDetail,                   // pollData.status='failed' 경로가 사용
+      // analysis 경로 호환 필드
+      isAnalysisAnswer: !!extra.isAnalysisAnswer,
+      answerType: LEGACY_DB_QUERY_TIMEOUT_CODE,
+      analysis: extra.isAnalysisAnswer ? QUERY_SCOPE_TIMEOUT_MESSAGE : null,
+    },
+  };
 }
 
 // ============================================================
@@ -6316,9 +6397,17 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           `err=${execRecord.baseError || '-'}, ops_diag=${execRecord.diagnostics.length}`);
 
         // ── [4] 결과 검증 → 실패 시 plan 1회 재생성 후 재실행
+        //
+        // [2026-08-03] DB 타임아웃(baseTimedOut) 은 AnalysisPlan JSON 오류가 아니라
+        //   조회 범위(대량 그룹핑/기간·대상 과다) 문제이므로 재계획 대상에서 제외한다.
+        //   이전에는 missing=['baseExecution'] 만 보고 재계획 → 동일 SQL 재실행 → 추가 120초 소진 →
+        //   전체 처리시간 265초 후에야 504 반환하는 문제가 있었다.
+        //   → 첫 실행이 timeout 이면 즉시 QUERY_SCOPE_TIMEOUT 응답으로 종료.
         let validation = validateAnalysisResults(plan, execRecord);
         console.log(`[AnalysisPlan] 1차 검증: ok=${validation.ok}, missing=${JSON.stringify(validation.missing)}`);
-        if (!validation.ok) {
+
+        const firstAttemptTimedOut = !!execRecord.baseTimedOut;
+        if (!validation.ok && !firstAttemptTimedOut) {
           const reason = `missing=${validation.missing.join(',')} | notes=${validation.notes.join(' / ')} | baseError=${execRecord.baseError || '-'} | diag=${(execRecord.diagnostics||[]).join(' / ')}`;
           console.log(`[AnalysisPlan] 재시도 (plan 수정 요청): ${reason}`);
           setRequestStage('analysis_replan');
@@ -6333,9 +6422,45 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           } catch (retryErr) {
             console.warn(`[AnalysisPlan] 재시도 실패 (원본 plan으로 답변 시도): ${retryErr.message}`);
           }
+        } else if (!validation.ok && firstAttemptTimedOut) {
+          console.log(`[AnalysisPlan] 1차 실행 DB 타임아웃 → 재계획 스킵 (동일 범위 재실행 방지)`);
+          setRequestStage('analysis_db_timeout_no_retry');
         }
 
-        // ── 실행이 근본적으로 실패한 경우: 임의 결과 만들지 말고 정직하게 안내
+        // ── DB 타임아웃 (1차 또는 2차): 공통 QUERY_SCOPE_TIMEOUT 응답으로 즉시 종료
+        //   - aggregate 경로와 동일한 문구·스키마·error_detail 로 응답 → 프론트는 어떤 진입
+        //     경로(sync/async success/async failed)로 받든 중립 hourglass UI 표시.
+        //   - 재계획 후 2차도 timeout 이면 동일 처리 (동일 범위 재실행 방지 규칙에도 부합).
+        if (execRecord.baseTimedOut || (execRecord.baseError && /* 검증 실패 SQL 안 실행된 경우 대비 */ isDbQueryTimeoutError({ message: execRecord.baseError }))) {
+          setRequestStage('analysis_db_timeout');
+          const timeoutErr = new Error(execRecord.baseError || 'DB query timeout');
+          const timeoutResp = buildQueryScopeTimeoutResponse({
+            req, err: timeoutErr, sql: execRecord.baseSql || null,
+            extra: {
+              query, queryMode: 'analysis', domain: activeDomain,
+              failedSql: execRecord.baseSql || null,
+              dbElapsedMs: execRecord.baseExecMs || 0,
+              dbTimeoutLimitMs: NLQ_DB_QUERY_TIMEOUT_MS,
+              isAnalysisAnswer: true,
+            },
+          });
+          const nlqUserIdFail = req.session?.user?.id || null;
+          saveHistorySafe(
+            nlqUserIdFail, query, execRecord.baseSql || null,
+            QUERY_SCOPE_TIMEOUT_MESSAGE, 'analysis', {}, [],
+            0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain,
+            { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE }
+          );
+          // analysisPlan / executionDiagnostics 는 진단용 필드 — 프론트 중립 UI 는 렌더하지 않음
+          const analysisTimeoutBody = {
+            ...timeoutResp.body,
+            analysisPlan: plan,
+            executionDiagnostics: execRecord.diagnostics || [],
+          };
+          return res.status(timeoutResp.httpStatus).json(analysisTimeoutBody);
+        }
+
+        // ── 실행이 근본적으로 실패한 경우 (타임아웃이 아닌 실제 실행 오류): 정직하게 안내
         if (execRecord.baseError && execRecord.baseRowCount === 0) {
           setRequestStage('analysis_execution_failed');
           const _fmtYm2 = (v) => v ? `${v.substring(0,4)}년 ${parseInt(v.substring(4,6))}월` : '';
@@ -6347,33 +6472,22 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           } else if (_pfrom) {
             cmLabel2 = _fmtYm2(_pfrom);
           }
-          // [PR #250] analysis 경로에서도 DB 타임아웃 판정 시 별도 안내 + 504 반환
-          const analysisTimedOut = !!execRecord.baseTimedOut;
-          const failMsg = analysisTimedOut
-            ? `**${cmLabel2}** 기간·도메인(${(plan.domain && plan.domain.value) || activeDomain}) 분석 SQL 이 ` +
-              `DB 조회 한도(${NLQ_DB_QUERY_TIMEOUT_SEC}초) 를 초과했습니다.\n\n` +
-              `- 원인: 대량 그룹핑/조인 또는 인덱스 미사용 가능성\n` +
-              `- 대응: 기간을 짧게, 그룹핑 컬럼을 줄여 다시 시도해 주세요.`
-            : `**${cmLabel2}** 기간·도메인(${(plan.domain && plan.domain.value) || activeDomain}) 조건으로 분석에 필요한 데이터를 조회할 수 없었습니다.\n\n` +
+          const failMsg = `**${cmLabel2}** 기간·도메인(${(plan.domain && plan.domain.value) || activeDomain}) 조건으로 분석에 필요한 데이터를 조회할 수 없었습니다.\n\n` +
               `- 실행 오류: ${execRecord.baseError}\n` +
               `- 확인 사항: 기간·도메인·필터·컬럼명이 올바른지, 학습관리 산식이 최신인지 재검토가 필요합니다.\n\n` +
               `실제 계산되지 않은 수치를 임의로 만들어 인용하지 않도록, **현재 데이터만으로는 결과 확정이 어렵다**고 안내드립니다.`;
           const nlqUserIdFail = req.session?.user?.id || null;
-          // [PR #251] 실패 이력에 requestId + errorType 동반 저장 →
-          //   이력 재열람 시 최초 오류 화면과 동일 requestId / 배지 복원
-          const analysisErrorType = analysisTimedOut ? 'db_query_timeout' : 'execution_failed';
           const analysisRequestId = (typeof getCurrentRequestId === 'function' ? getCurrentRequestId() : null) || req.requestId || null;
-          saveHistory(
+          saveHistorySafe(
             nlqUserIdFail, query, execRecord.baseSql,
             failMsg, 'analysis', {}, [],
             0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain,
-            { requestId: analysisRequestId, errorType: analysisErrorType }
-          ).catch(e => console.error('[History] 저장 실패:', e.message));
-          const analysisHttpStatus = analysisTimedOut ? 504 : 200;
-          return res.status(analysisHttpStatus).json({
-            success: analysisTimedOut ? false : true,
+            { requestId: analysisRequestId, errorType: 'execution_failed' }
+          );
+          return res.status(200).json({
+            success: true,
             isAnalysisAnswer: true,
-            answerType: analysisTimedOut ? 'db_query_timeout' : 'execution_failed',
+            answerType: 'execution_failed',
             answer: failMsg,
             analysis: failMsg,
             rows: [], rowCount: 0,
@@ -6381,9 +6495,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             chartType: 'analysis', chartConfig: {},
             analysisPlan: plan,
             executionDiagnostics: execRecord.diagnostics,
-            error_type: analysisErrorType,
-            error_code: analysisErrorType,
-            // [PR #251] 최초 실행 화면과 이력 재열람 화면 requestId 일치용
+            error_type: 'execution_failed',
+            error_code: 'execution_failed',
             requestId: analysisRequestId,
           });
         }
@@ -6887,13 +7000,35 @@ ${sqlValidation.reason}
       console.error(`[NLQ] DB 실행 실패${dbTimedOut ? ' (timeout)' : ''}: ${errMsg} (${dbElapsedMs}ms)`);
       console.error(`[NLQ] 실패 SQL: ${sql}`);
 
-      // 사용자 친화적 에러 메시지로 변환
-      let friendly = '죄송합니다. 질문을 처리하는 중 오류가 발생했습니다. 좀 더 구체적으로 다시 말씀해 주세요.';
+      // ────────────────────────────────────────────────────────
+      // [2026-08-03] DB 조회 시간 초과: 공통 QUERY_SCOPE_TIMEOUT 응답으로 통일
+      //   - aggregate/analysis 두 경로가 동일 문구·동일 스키마를 반환하도록 함
+      //   - 프론트는 error_type='db_query_timeout' (하위호환) + errorCode='QUERY_SCOPE_TIMEOUT'
+      //     둘 다로 매칭하며, error_detail.errorType 도 동일값 → async 실패 경로에서도 중립 UI
+      //   - 표준 문구는 QUERY_SCOPE_TIMEOUT_MESSAGE 상수로 관리 (변경 시 한 곳만 수정)
+      // ────────────────────────────────────────────────────────
       if (dbTimedOut) {
-        // ★ [2026-07-22 PR #247] DB 쿼리 timeout 은 별도의 명확한 메시지 + requestId 로 반환
-        friendly = `죄송합니다. DB 조회 시간이 초과되었습니다 (${Math.round(dbElapsedMs / 1000)}초, 한도 ${NLQ_DB_QUERY_TIMEOUT_SEC}초).\n` +
-                   '질문 범위를 좁혀 다시 시도해 주세요. 예) 기간을 짧게, 그룹핑 컬럼을 줄이기.';
-      } else if (/Invalid use of group function/i.test(errMsg)) {
+        const timeoutResp = buildQueryScopeTimeoutResponse({
+          req, err: dbErr, sql,
+          extra: {
+            query, queryMode: userQueryMode, domain: activeDomain,
+            failedSql: sql, dbElapsedMs, dbTimeoutLimitMs: NLQ_DB_QUERY_TIMEOUT_MS,
+            isAnalysisAnswer: false,
+          },
+        });
+        // 실패 이력 저장 — deadlock 방지를 위해 saveHistorySafe 사용 (retry + swallow)
+        const failUserId = req.session?.user?.id || null;
+        saveHistorySafe(
+          failUserId, query, sql, null, null, null, null, 0, dbElapsedMs,
+          'FAILED', errMsg, session_id || null, activeDomain,
+          { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE }
+        );
+        return res.status(timeoutResp.httpStatus).json(timeoutResp.body);
+      }
+
+      // ── 일반 DB 실행 오류 (문법/컬럼/파라미터 등)
+      let friendly = '죄송합니다. 질문을 처리하는 중 오류가 발생했습니다. 좀 더 구체적으로 다시 말씀해 주세요.';
+      if (/Invalid use of group function/i.test(errMsg)) {
         friendly = '죄송합니다. 분석형 질문을 처리하는 중 쿼리 생성에 문제가 있었습니다. 질문을 좀 더 구체적으로 다시 말씀해 주세요. 예: "2026년 4월 제품군별 매출과 영업이익 분석"';
       } else if (/Unknown column/i.test(errMsg)) {
         friendly = '죄송합니다. 질문에 등록되지 않은 용어가 포함된 것 같습니다. 학습관리에서 해당 용어를 확인해 주세요.';
@@ -6903,50 +7038,26 @@ ${sqlValidation.reason}
         friendly = '죄송합니다. 쿼리 문법 오류가 발생했습니다. 질문을 다시 표현해 주세요.';
       }
 
-      // ★ 상세 진단 정보 포함 (DB 실행 단계 오류)
       const errorDetail = buildErrorDetail({
-        req,
-        stage: dbTimedOut ? 'db_query_timeout' : 'db_execution',
-        errorType: dbTimedOut ? 'db_query_timeout' : 'db_execution',
-        err: dbErr,
+        req, stage: 'db_execution', errorType: 'db_execution', err: dbErr,
         extra: {
-          query,
-          queryMode: userQueryMode,
-          domain: activeDomain,
-          failedSql: sql,
-          dbElapsedMs,
-          dbTimeoutLimitMs: NLQ_DB_QUERY_TIMEOUT_MS,
+          query, queryMode: userQueryMode, domain: activeDomain,
+          failedSql: sql, dbElapsedMs, dbTimeoutLimitMs: NLQ_DB_QUERY_TIMEOUT_MS,
         },
       });
-      // [PR #251] 실패 이력 저장 — requestId + errorType 함께 저장하여
-      //   이력 재열람 시에도 최초 오류 화면과 동일한 requestId / 배지 복원
       const failUserId = req.session?.user?.id || null;
-      const failErrorType = dbTimedOut ? 'db_query_timeout' : 'db_execution';
-      saveHistory(
+      saveHistorySafe(
         failUserId, query, sql, null, null, null, null, 0, 0,
         'FAILED', errMsg, session_id || null, activeDomain,
-        { requestId: errorDetail.requestId || null, errorType: failErrorType }
-      ).catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
-
-      // [PR #250] DB 타임아웃은 HTTP 504 (Gateway Timeout) 로 명시 반환.
-      //   - 이전에는 HTTP 200 + success:false 로 반환하여, 프론트/모니터링/
-      //     외부 게이트웨이에서 "성공" 으로 분류되는 문제가 있었음.
-      //   - 일반 DB 실행 오류(문법/컬럼 등) 는 종전대로 200 유지 (클라이언트가
-      //     안내 문구를 그대로 렌더링해야 하는 재작성 가능 오류이기 때문).
-      const httpStatus = dbTimedOut ? 504 : 200;
-      return res.status(httpStatus).json({
-        success: false,
-        sql,
-        rows: [],
-        rowCount: 0,
+        { requestId: errorDetail.requestId || null, errorType: 'db_execution' }
+      );
+      return res.status(200).json({
+        success: false, sql, rows: [], rowCount: 0,
         answer: friendly,
-        explanation: dbTimedOut
-          ? `DB 쿼리 타임아웃: ${Math.round(dbElapsedMs / 1000)}초 경과 (한도 ${NLQ_DB_QUERY_TIMEOUT_SEC}초). ${errMsg}`
-          : `DB 실행 오류: ${errMsg}`,
+        explanation: `DB 실행 오류: ${errMsg}`,
         requestId: errorDetail.requestId,
         error_user_friendly: true,
-        error_type: dbTimedOut ? 'db_query_timeout' : 'db_execution',
-        error_code: dbTimedOut ? 'db_query_timeout' : 'db_execution',
+        error_type: 'db_execution', error_code: 'db_execution',
         error_detail: errorDetail,
       });
     }
@@ -7712,6 +7823,47 @@ app.get('/api/history/retention', (req, res) => {
 //   - 하위호환: 기존 13개 위치 인자 호출부는 그대로 동작 (options 미지정 시 NULL 저장)
 //   - 목적: 이력 재열람 시에도 최초 오류 화면과 동일한 requestId / 오류 유형 배지 복원
 // ============================================================
+// [2026-08-03] saveHistory 의 deadlock-safe 래퍼.
+// 배경: 사용자 요청에 따르면 DB 타임아웃 응답 이후 이력 저장 과정에서 Deadlock 발생.
+//   원인 추정: saveHistory 는 INSERT + DELETE(retention) + DELETE(user 200-cap) 세 개 문장을
+//   같은 커넥션 안에서 순차 실행하며, 실패한 무거운 쿼리 직후 여러 요청이 동시에 이 경로에
+//   진입하면 nl_query_history 에 대한 gap lock / next-key lock 충돌로 deadlock 발생 가능.
+// 대응:
+//   1) fire-and-forget 로 호출 (응답 반환 이후에도 계속 시도) → 사용자 응답 절대 블로킹 안 함
+//   2) ER_LOCK_DEADLOCK / ER_LOCK_WAIT_TIMEOUT 발생 시 최대 3회 재시도 (100/300/900ms 백오프)
+//   3) 최종 실패해도 응답 흐름과 무관하게 로그만 남기고 삼킴
+// 반환값: Promise<void> — 결과 대기 없이 호출해도 안전 (모든 실패는 내부에서 처리)
+function saveHistorySafe(...args) {
+  const doSave = async () => {
+    let attempt = 0;
+    const maxAttempts = 3;
+    while (attempt < maxAttempts) {
+      try {
+        await saveHistory(...args);
+        return;
+      } catch (e) {
+        const code = String(e?.code || '').toUpperCase();
+        const isDeadlock = code === 'ER_LOCK_DEADLOCK' || code === 'ER_LOCK_WAIT_TIMEOUT'
+          || /deadlock|lock wait timeout/i.test(String(e?.message || ''));
+        attempt++;
+        if (isDeadlock && attempt < maxAttempts) {
+          const backoffMs = 100 * Math.pow(3, attempt - 1); // 100ms, 300ms
+          console.warn(`[History] Deadlock (attempt ${attempt}/${maxAttempts}), backoff ${backoffMs}ms: ${e.message}`);
+          await new Promise(r => setTimeout(r, backoffMs));
+          continue;
+        }
+        console.error(`[History] 저장 실패 (attempt ${attempt}, ${isDeadlock ? 'deadlock' : 'non-retryable'}): ${e.message}`);
+        return; // swallow — response flow 방해 금지
+      }
+    }
+  };
+  // fire-and-forget — Promise 반환하되 상위에서 await 필요 없음
+  const p = doSave();
+  // unhandledRejection 방지
+  p.catch(() => {});
+  return p;
+}
+
 async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId, domainCode, options) {
   // result_data는 최대 100행만 저장 (DB 용량 절약)
   const trimmedData = resultData ? JSON.stringify(resultData.slice(0, 100)) : null;
