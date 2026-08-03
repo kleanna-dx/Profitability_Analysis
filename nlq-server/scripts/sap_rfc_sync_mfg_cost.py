@@ -399,6 +399,8 @@ def main():
     if len(t_data) == 0:
         print(f"\n[NO_DATA] T_DATA 가 비어 있습니다. (RFC 호출은 성공)")
         print(f"[NO_DATA] I_CMONTH={cmonth} 에 해당하는 제조원가 데이터가 SAP 에 존재하지 않음.")
+        # Node.js 호출자가 파싱할 표준 요약 라인 (총계=0)
+        print(f"[SUMMARY] total=0 inserted=0 deleted=0")
         sys.exit(EXIT_NO_DATA)
 
     # ── (3) T_DATA 컬럼 확인 (진단용) ──
@@ -466,6 +468,7 @@ def main():
     # ── (6) DB INSERT (dry-run 이 아닐 때만) ──
     if args.dry_run:
         print(f"\n[DRY RUN] DB INSERT 건너뜀. 총 {len(converted)}건이 INSERT 될 예정.")
+        print(f"[SUMMARY] total={len(t_data)} inserted=0 deleted=0")
         sys.exit(EXIT_SUCCESS)
 
     try:
@@ -483,6 +486,9 @@ def main():
     print(f"  INSERT        : {result['inserted']} rows")
     print(f"  변환 오류     : {len(CONVERSION_ERRORS)} 건")
     print(f"{'=' * 60}")
+
+    # Node.js 호출자가 파싱할 표준 요약 라인 (executeMfgCostRfc 참조)
+    print(f"[SUMMARY] total={len(t_data)} inserted={result['inserted']} deleted={result['deleted']}")
 
     sys.exit(EXIT_SUCCESS)
 

@@ -1511,9 +1511,14 @@ async function openJobLogModal(jobId){
     //   [PR #329] RFC 함수명(rfc_name)과 입력값(I_CMONTH=cmonth)을 상세 화면에서 표시.
     //     - 이력 상세에서 실제 실행 함수명 (예: Z_BI_WEB_EX_BL_4) 이 노출되도록 함
     //     - 구 함수명 Z_BI_PRE_COST 는 마스터에서 이미 교체됐으므로 자연스레 안 보임
+    // [PR #331] 이력 상세에 실제 적재 대상 테이블(target_table)도 함께 표시
+    //   - NLP_RFC_001 → bw_profitability_data
+    //   - NLP_RFC_002 → sys_aimd_cot015
+    //   실제 실행값(rfc_name + target_table)이 인터페이스별로 정확히 표시되는지 확인 가능
     const rfcNameLine = d.rfc_name
       ? `<br><b>RFC 함수:</b> <span class="col-mono" style="color:#7c3aed;font-weight:600;">${escapeHtml(d.rfc_name)}</span>`
         + (d.cmonth ? ` &nbsp;|&nbsp; <b>입력값:</b> <span class="col-mono">I_CMONTH=${escapeHtml(d.cmonth)}</span>` : '')
+        + (d.target_table ? ` &nbsp;|&nbsp; <b>적재 테이블:</b> <span class="col-mono" style="color:#059669;font-weight:600;">${escapeHtml(d.target_table)}</span>` : '')
       : '';
     document.getElementById('jlMeta').innerHTML = `
       <b>인터페이스:</b> ${escapeHtml(d.interface_id||'-')}${d.interface_name?` <span style="color:#94a3b8;">(${escapeHtml(d.interface_name)})</span>`:''}
