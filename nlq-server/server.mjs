@@ -6186,6 +6186,45 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     });
   }
   setRequestStage('nlq_entry');
+  // ============================================================
+  // [PR #335] aggregate 전용 단계별 타이밍 추적
+  //   - async 경로일 때 X-Async-Job-Id 헤더로 job.timings 참조
+  //   - aggregate 모드가 아니면 no-op (analysis 는 영향 없음)
+  //   - 헬퍼 두 개:
+  //     · aggTimingSet(key, value?): job.timings[key] = value ?? Date.now()
+  //     · aggTimingFlushLog(): 종료 시점에 [AGGREGATE_TIMING] 요약 로그 출력
+  // ============================================================
+  const asyncJobIdHeader = req.headers['x-async-job-id'] || null;
+  const asyncJob = asyncJobIdHeader ? nlqJobs.get(String(asyncJobIdHeader)) : null;
+  const aggTimings = (asyncJob && asyncJob.queryMode === 'aggregate' && asyncJob.timings) ? asyncJob.timings : null;
+  const aggTimingSet = (key, value) => {
+    if (aggTimings && key) aggTimings[key] = (value !== undefined ? value : Date.now());
+  };
+  const aggTimingFlushLog = (finalStatus, extra = {}) => {
+    if (!aggTimings) return;
+    const t = aggTimings;
+    const rid = getCurrentRequestId();
+    const jid = asyncJobIdHeader;
+    const fmt = (ms) => (ms == null ? 'null' : new Date(ms).toISOString());
+    const dur = (a, b) => (a != null && b != null ? Math.max(0, b - a) : null);
+    const totalMs = t.requestReceivedAt ? (Date.now() - t.requestReceivedAt) : null;
+    // 요약 로그 (단일 라인 · grep 하기 쉬운 형식)
+    console.log(
+      `[AGGREGATE_TIMING] requestId=${rid} jobId=${jid || '-'} mode=aggregate ` +
+      `status=${finalStatus || 'unknown'} errorCode=${extra.errorCode || '-'} ` +
+      `executionAttempt=${t.executionAttempt} retryExecuted=${t.retryExecuted} ` +
+      `totalMs=${totalMs} ` +
+      `learnedSqlMs=${dur(t.learnedSqlMatchStartedAt, t.learnedSqlMatchFinishedAt)} ` +
+      `llmSqlGenMs=${dur(t.llmSqlGenerateStartedAt, t.llmSqlGenerateFinishedAt)} ` +
+      `sqlPostProcessMs=${dur(t.llmSqlGenerateFinishedAt, t.sqlGeneratedAt)} ` +
+      `dbElapsedMs=${t.dbElapsedMs} ` +
+      `dbToJobStatusMs=${dur(t.dbExecutionTimedOutAt || t.dbExecutionFinishedAt, t.jobStatusUpdatedAt)} ` +
+      `dbExecutionStartedAt=${fmt(t.dbExecutionStartedAt)} ` +
+      `dbExecutionTimedOutAt=${fmt(t.dbExecutionTimedOutAt)} ` +
+      `dbExecutionFinishedAt=${fmt(t.dbExecutionFinishedAt)} ` +
+      `jobStatusUpdatedAt=${fmt(t.jobStatusUpdatedAt)}`
+    );
+  };
   const activeDomain = await getActiveDomain(req);
   // ★ 도메인 미설정 방어: users.domain_code가 NULL이고 세션에도 active_domain이 없으면
   //   프론트엔드에서 분석 영역 선택 모달을 띄우도록 안내 (조직도 자동매핑 제거 정책)
@@ -6337,6 +6376,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 
     // 0. 학습 데이터에서 정확 매칭 검색 (corrected 우선, 가장 최근 것 사용)
     let matchedSql = null;
+    aggTimingSet('learnedSqlMatchStartedAt');   // [PR #335] aggregate 타이밍 시작
     try {
       const [fbMatch] = await pool.query(
         `SELECT corrected_sql, feedback_type FROM sql_feedback
@@ -6352,6 +6392,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     } catch (e) {
       console.error('[NLQ] 학습 데이터 조회 실패:', e.message);
     }
+    aggTimingSet('learnedSqlMatchFinishedAt');   // [PR #335] aggregate 타이밍 종료
 
     let sql, answer = '', explanation, chartType, chartConfig, analysisRequired = false;
     // [PR #252] GPT 가 '이 질문은 심층 분석이 필요하다'고 판단한 원본 값 보존.
@@ -6818,12 +6859,14 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       messages.push({ role: 'user', content: query });
 
       setRequestStage('llm_sql_generate');
+      aggTimingSet('llmSqlGenerateStartedAt');   // [PR #335]
       const completion = await openai.chat.completions.create({
         model: GPT_MODEL,
         messages,
         temperature: 0.1,
         response_format: { type: 'json_object' },
       });
+      aggTimingSet('llmSqlGenerateFinishedAt');  // [PR #335]
 
       const raw = completion.choices[0].message.content;
       console.log(`[NLQ] GPT 응답: ${raw}`);
@@ -6866,6 +6909,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 
       sql = parsed.sql;
       setRequestStage('sql_generated');
+      aggTimingSet('sqlGeneratedAt');   // [PR #335]
       // ★ GPT 생성 SQL에도 Metric 산식 자동 치환 적용 (GPT가 프롬프트를 무시하고 단순 컬럼 사용 시 안전장치)
       sql = await applyMetricFormulaReplacement(sql, activeDomain);
       // answer는 1단계에서 무시 — SQL 실행 후 결과 기반으로 4-A에서 생성
@@ -7028,6 +7072,8 @@ ${sqlValidation.reason}
     //     정상 JSON 응답으로 db_query_timeout 을 반환 → 사용자가 로그 추적 가능.
     setRequestStage('db_execution');
     const startTime = Date.now();
+    aggTimingSet('dbExecutionStartedAt', startTime);   // [PR #335]
+    if (aggTimings) aggTimings.executionAttempt = 1;
     let rows;
     try {
       [rows] = await nlqPoolQueryWithTimeout(sql, null, NLQ_DB_QUERY_TIMEOUT_MS);
@@ -7049,6 +7095,12 @@ ${sqlValidation.reason}
       //   - 표준 문구는 QUERY_SCOPE_TIMEOUT_MESSAGE 상수로 관리 (변경 시 한 곳만 수정)
       // ────────────────────────────────────────────────────────
       if (dbTimedOut) {
+        // [PR #335] aggregate 타임아웃: DB 실행 시각·경과시간 기록
+        aggTimingSet('dbExecutionTimedOutAt');
+        if (aggTimings) {
+          aggTimings.dbElapsedMs = dbElapsedMs;
+          aggTimings.retryExecuted = false;   // aggregate 는 재실행 없음 (증명 로그)
+        }
         const timeoutResp = buildQueryScopeTimeoutResponse({
           req, err: dbErr, sql,
           extra: {
@@ -7058,12 +7110,16 @@ ${sqlValidation.reason}
           },
         });
         // 실패 이력 저장 — deadlock 방지를 위해 saveHistorySafe 사용 (retry + swallow)
+        //   [PR #335] 요구사항 #6: 이력 저장은 fire-and-forget (아래 함수 자체가 이미 그렇게 동작).
+        //   응답/폴링 종료를 이력 저장이 막지 않음. 실패해도 job 상태는 TIMEOUT 유지.
         const failUserId = req.session?.user?.id || null;
         saveHistorySafe(
           failUserId, query, sql, null, null, null, null, 0, dbElapsedMs,
           'FAILED', errMsg, session_id || null, activeDomain,
           { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE }
         );
+        // [PR #335] aggregate 타이밍 로그 flush — DB 타임아웃 지점에서 즉시 출력
+        aggTimingFlushLog('TIMEOUT', { errorCode: QUERY_SCOPE_TIMEOUT_CODE });
         return res.status(timeoutResp.httpStatus).json(timeoutResp.body);
       }
 
@@ -7104,6 +7160,9 @@ ${sqlValidation.reason}
     }
     const execTime = Date.now() - startTime;
     setRequestStage('db_execution_done');
+    // [PR #335] aggregate 정상 DB 종료 시각 기록
+    aggTimingSet('dbExecutionFinishedAt');
+    if (aggTimings) aggTimings.dbElapsedMs = execTime;
 
     console.log(`[NLQ] SQL 실행: ${execTime}ms, ${rows.length}행`);
 
@@ -7308,6 +7367,8 @@ ${formatRule}
     saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain)
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
+    // [PR #335] aggregate 정상 종료 타이밍 로그
+    aggTimingFlushLog('done', { errorCode: null });
     return res.json(result);
   } catch (err) {
     console.error('[NLQ] Error:', err);
@@ -7646,15 +7707,33 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
             source: 'async_self_fetch_response',
           },
         });
-        // status 는 'failed' 유지 (기존 프론트 폴링 로직 호환) 하되,
-        // 요구사항 #4 의 completed_with_notice 스키마를 위한 별도 플래그도 노출
-        job.status = 'failed';
-        job.completedWithNotice = true;
+        // ============================================================
+        // [PR #335] aggregate(현황집계) 는 즉시 terminal 'TIMEOUT' 으로 저장
+        //   - 기존: job.status='failed' + completedWithNotice=true 로 인해
+        //     GET /api/nlq/job/:jobId 가 status='completed_with_notice' 반환
+        //     → 프론트 폴링 break 조건('done'/'failed') 에 안 걸려 6분(360s)
+        //       NLQ_ASYNC_MAX_WAIT_MS 까지 무한 폴링 → 사용자 체감 ~358s
+        //   - PR #335: aggregate 는 새 terminal status 'TIMEOUT' 사용
+        //     → 프론트 폴링이 즉시 종료
+        //   - analysis 는 완전히 기존 동작 유지 (재계획/재시도/failed+notice)
+        // ============================================================
+        if (job.queryMode === 'aggregate') {
+          job.status = 'TIMEOUT';                 // 새 terminal status (aggregate 전용)
+          job.aggregateTimeout = true;            // aggregate TIMEOUT 마커
+        } else {
+          // analysis 는 기존 동작 100% 유지
+          job.status = 'failed';
+          job.completedWithNotice = true;
+        }
         job.errorCode = QUERY_SCOPE_TIMEOUT_CODE;
         job.result = timeoutResp.body;
         job.statusCode = timeoutResp.httpStatus;
         job.error = null;  // 표준 페이로드로 대체됐으므로 별도 error 오브젝트 불필요
-        console.log(`[nlq-async] ⏱️ job ${jobId} → QUERY_SCOPE_TIMEOUT (from self-fetch response, HTTP ${r.status})`);
+        // [AGGREGATE_TIMING] job 상태 갱신 시각 기록 (aggregate 만)
+        if (job.queryMode === 'aggregate' && job.timings) {
+          job.timings.jobStatusUpdatedAt = Date.now();
+        }
+        console.log(`[nlq-async] ⏱️ job ${jobId} → QUERY_SCOPE_TIMEOUT (from self-fetch response, HTTP ${r.status}, mode=${job.queryMode}, jobStatus=${job.status})`);
       } else {
         job.status = 'failed';
         job.result = data;
@@ -7690,14 +7769,23 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
           source: 'async_self_fetch_exception',
         },
       });
-      job.status = 'failed';
-      job.completedWithNotice = true;
+      // [PR #335] aggregate 는 즉시 terminal 'TIMEOUT' 사용 (위 응답 분기와 동일 정책)
+      if (job.queryMode === 'aggregate') {
+        job.status = 'TIMEOUT';
+        job.aggregateTimeout = true;
+      } else {
+        job.status = 'failed';
+        job.completedWithNotice = true;
+      }
       job.errorCode = QUERY_SCOPE_TIMEOUT_CODE;
       job.result = timeoutResp.body;
       job.statusCode = timeoutResp.httpStatus;
       job.error = null;
       job.finishedAt = Date.now();
-      console.log(`[nlq-async] ⏱️ job ${jobId} → QUERY_SCOPE_TIMEOUT (from self-fetch exception: ${e?.name || ''}/${e?.code || ''} ${e?.message || ''})`);
+      if (job.queryMode === 'aggregate' && job.timings) {
+        job.timings.jobStatusUpdatedAt = Date.now();
+      }
+      console.log(`[nlq-async] ⏱️ job ${jobId} → QUERY_SCOPE_TIMEOUT (from self-fetch exception: ${e?.name || ''}/${e?.code || ''} ${e?.message || ''}, mode=${job.queryMode}, jobStatus=${job.status})`);
     } else {
       job.status = 'failed';
       job.error = { message: e?.message || String(e), code: e?.code || null };
@@ -7752,6 +7840,25 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     error: null,
     statusCode: null,
     innerRequestId: null,
+    // [PR #335] aggregate 전용 단계별 타이밍 추적
+    //   - aggregate 모드일 때만 채워지며 analysis 는 참조하지 않음
+    //   - /api/nlq 핸들러 안에서 requestId 로 조회해서 채운 뒤,
+    //     job 종료 시점에 [AGGREGATE_TIMING] 로 요약 로그 출력
+    timings: (queryMode !== 'analysis') ? {
+      requestReceivedAt: Date.now(),
+      learnedSqlMatchStartedAt: null,
+      learnedSqlMatchFinishedAt: null,
+      llmSqlGenerateStartedAt: null,
+      llmSqlGenerateFinishedAt: null,
+      sqlGeneratedAt: null,
+      dbExecutionStartedAt: null,
+      dbExecutionFinishedAt: null,     // 정상 종료 시각
+      dbExecutionTimedOutAt: null,     // 타임아웃 시각
+      dbElapsedMs: null,
+      jobStatusUpdatedAt: null,
+      executionAttempt: 0,             // DB 실행 횟수 (aggregate 는 항상 1)
+      retryExecuted: false,
+    } : null,
   };
   nlqJobs.set(jobId, job);
 
@@ -7805,15 +7912,31 @@ app.get('/api/nlq/job/:jobId', async (req, res) => {
   //   → 명세를 정확히 지키기 위해 status 는 'completed_with_notice' 로 노출하고,
   //     기존 프론트가 status='failed' 만 인식하는 경우도 커버할 수 있도록 legacyStatus 필드로 원래 값 보관.
   // ============================================================
-  const isCompletedWithNotice = !!job.completedWithNotice;
-  const publicStatus = isCompletedWithNotice ? 'completed_with_notice' : job.status;
+  // ============================================================
+  // [PR #335] aggregate TIMEOUT 은 새 terminal status 'TIMEOUT' 으로 노출
+  //   - 기존: completedWithNotice 플래그 → publicStatus='completed_with_notice'
+  //     → 프론트 폴링 break 조건('done'/'failed')에 안 걸려 6분(360s) 대기
+  //   - PR #335: aggregate 는 job.status='TIMEOUT' 을 그대로 노출
+  //     → 프론트 break 조건에 'TIMEOUT' 추가 → 즉시 폴링 종료
+  //   - analysis 는 기존 completed_with_notice 동작 100% 유지 (하위 호환)
+  // ============================================================
+  const isAggregateTimeout = !!job.aggregateTimeout;
+  const isCompletedWithNotice = !!job.completedWithNotice;   // analysis 전용 (하위 호환)
+  let publicStatus;
+  if (isAggregateTimeout) {
+    publicStatus = 'TIMEOUT';                // aggregate 신규 terminal status
+  } else if (isCompletedWithNotice) {
+    publicStatus = 'completed_with_notice';  // analysis 하위 호환 유지
+  } else {
+    publicStatus = job.status;
+  }
   // 실제 실행 requestId(내부 /api/nlq 요청의 x-request-id) 를 우선 노출.
   //   요구사항 #3: 프론트에는 내부 실행 requestId 가 표시되어야 함
   const effectiveRequestId = job.innerRequestId || job.requestId;
   const payload = {
     success: true,
     jobId: job.jobId,
-    status: publicStatus,        // pending | running | done | failed | cancelled | completed_with_notice
+    status: publicStatus,        // pending | running | done | failed | cancelled | TIMEOUT (aggregate) | completed_with_notice (analysis 하위호환)
     legacyStatus: job.status,    // 하위 호환: 기존 프론트가 'failed' 분기로 진입해도 result.errorCode 매칭됨
     cancelled: !!job.cancelled,
     // ── 요구사항 #3: 3개 requestId 를 모두 노출
@@ -7826,18 +7949,25 @@ app.get('/api/nlq/job/:jobId', async (req, res) => {
     runningAt: job.runningAt ? new Date(job.runningAt).toISOString() : null,
     finishedAt: job.finishedAt ? new Date(job.finishedAt).toISOString() : null,
     elapsedMs,
-    result: (job.status === 'done' || job.status === 'failed') ? job.result : null,
+    // TIMEOUT 은 job 이 이미 종료된 상태 → result 노출
+    result: (job.status === 'done' || job.status === 'failed' || job.status === 'TIMEOUT') ? job.result : null,
     error: job.error,
   };
-  // ── 요구사항 #4: completed_with_notice 스키마 필드를 최상위로 노출
-  //    (프론트가 result.error_detail 을 파싱하지 않아도 errorCode 로 즉시 안내 라우팅 가능)
-  if (isCompletedWithNotice) {
+  // ── QUERY_SCOPE_TIMEOUT 안내에 필요한 필드는 aggregate/analysis 공통으로 최상위에 실어줌
+  //    (프론트가 result.error_detail 을 파싱하지 않아도 errorCode 만으로 즉시 안내 라우팅 가능)
+  if (isAggregateTimeout || isCompletedWithNotice) {
     payload.errorCode = QUERY_SCOPE_TIMEOUT_CODE;
     payload.message = QUERY_SCOPE_TIMEOUT_MESSAGE;
-    // result 안에도 반드시 표준 페이로드가 있어야 프론트 기존 분기(status='failed')도 자동으로 잡힘
     if (!payload.result) {
       payload.result = job.result;
     }
+  }
+  // [PR #335] aggregate TIMEOUT 전용 명세 필드 (사용자 요구사항 응답 예시)
+  //   mode, executionAttempt, retryExecuted 를 최상위에 노출해 클라이언트가 즉시 검증 가능
+  if (isAggregateTimeout) {
+    payload.mode = 'aggregate';
+    payload.executionAttempt = 1;   // DB 는 정확히 1회 실행 (aggregate 는 재실행 없음)
+    payload.retryExecuted = false;
   }
   return res.json(payload);
 });
