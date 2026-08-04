@@ -2600,7 +2600,13 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
                 console.log('[NLQ async poll] 서버에서 cancelled 상태 확인 — 조용히 종료 seq=' + mySeq);
                 return;
             }
-            if (pollData.status === 'done' || pollData.status === 'failed') {
+            // [PR #335] aggregate 즉시 종료: 새 terminal status 'TIMEOUT' 도 break 대상.
+            //   - 기존: 서버가 aggregate DB 타임아웃 시 status='completed_with_notice' 반환 →
+            //     이 break 조건에 안 걸려 NLQ_ASYNC_MAX_WAIT_MS (6분/360s) 까지 무한 폴링 →
+            //     사용자 체감 약 358초 지연.
+            //   - PR #335: 서버가 aggregate 는 status='TIMEOUT' 을 반환하므로 즉시 종료.
+            //   - analysis 는 기존과 동일하게 'failed' + completedWithNotice 로 진입 (하위 호환).
+            if (pollData.status === 'done' || pollData.status === 'failed' || pollData.status === 'TIMEOUT') {
                 break;
             }
             // 아직 pending/running — 계속
@@ -2621,7 +2627,9 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         console.log('[NLQ async] 🛑 결과 처리 직전 stale — 렌더 건너뜀 seq=' + mySeq);
         return;
     }
-    if (!pollData || (pollData.status !== 'done' && pollData.status !== 'failed' && pollData.status !== 'completed_with_notice')) {
+    // [PR #335] terminal status 목록에 'TIMEOUT' (aggregate 신규) 을 포함.
+    //   'completed_with_notice' 는 analysis 하위 호환용으로 유지.
+    if (!pollData || (pollData.status !== 'done' && pollData.status !== 'failed' && pollData.status !== 'completed_with_notice' && pollData.status !== 'TIMEOUT')) {
         typingEl.remove();
         // [2026-08-03] 요구사항 #6: 폴링 최대 대기 초과도 "조회 처리 중 타임아웃" 으로 간주
         //   - 프론트 폴링이 6분(NLQ_ASYNC_MAX_WAIT_MS) 안에 완료 신호를 못 받은 상황
@@ -2640,7 +2648,7 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     // [2026-08-03] 요구사항 #5: HTTP 상태와 무관하게 errorCode 를 먼저 확인해서 통일 라우팅
     //   - pollData 최상위(서버 GET /api/nlq/job/:jobId 가 추가한 errorCode) 또는
     //   - pollData.result 내부(self-fetch 로 받은 body 자체) 중 하나라도 QUERY_SCOPE_TIMEOUT 이면 회색 안내
-    //   - status === 'completed_with_notice' 도 이 분기에서 잡힘
+    //   - [PR #335] status === 'TIMEOUT' (aggregate) 또는 'completed_with_notice' (analysis) 모두 이 분기에서 잡힘
     if (isQueryScopeTimeoutResponse(pollData) || isQueryScopeTimeoutResponse(data)) {
         appendQueryScopeTimeoutMessage(
             extractQueryScopeTimeoutRequestId(pollData, finalRequestId || clientRequestId)
@@ -3336,8 +3344,10 @@ function isQueryScopeTimeoutResponse(obj) {
     if (obj.result && obj.result !== obj) {
         if (isQueryScopeTimeoutResponse(obj.result)) return true;
     }
-    // 5) 서버가 status='completed_with_notice' 로 명시적으로 알린 경우
+    // 5) 서버가 status='completed_with_notice' 로 명시적으로 알린 경우 (analysis 하위 호환)
     if (obj.status === 'completed_with_notice' && obj.errorCode === 'QUERY_SCOPE_TIMEOUT') return true;
+    // 6) [PR #335] 서버가 status='TIMEOUT' 으로 알린 경우 (aggregate 신규 terminal status)
+    if (obj.status === 'TIMEOUT' && obj.errorCode === 'QUERY_SCOPE_TIMEOUT') return true;
     return false;
 }
 
