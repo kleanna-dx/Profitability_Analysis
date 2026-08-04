@@ -1,5 +1,7 @@
 package com.company.module.profit.dto.request;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import lombok.Getter;
@@ -14,6 +16,12 @@ import lombok.Setter;
  *
  * <p>세 필드가 모두 null 또는 빈 값이면 기존 동작(수익성분석 = Z_BI_WEB_EX_BL /
  * bw_profitability_data) 을 유지하므로 스케줄러 / 기존 클라이언트와 완전 후위호환.</p>
+ *
+ * <p>[PR #334] Node.js 는 batch_master 스키마와 관례를 맞춰 snake_case
+ * (interface_id / rfc_name / target_table) 로 전송한다. Jackson 기본 매핑은
+ * 명명 규칙 자동 변환을 하지 않으므로, {@link JsonProperty} 로 wire name 을
+ * 명시하고 {@link JsonAlias} 로 camelCase 도 계속 수신 가능하게 한다
+ * (기존 클라이언트 / 테스트 하위호환).</p>
  */
 @Getter
 @Setter
@@ -49,6 +57,8 @@ public class SapRfcSyncRequest {
      */
     @Pattern(regexp = "^$|^[A-Z0-9_]+$",
              message = "interfaceId 는 영문 대문자/숫자/언더스코어만 사용 가능")
+    @JsonProperty("interface_id")
+    @JsonAlias({"interfaceId"})
     private String interfaceId;
 
     /**
@@ -60,6 +70,8 @@ public class SapRfcSyncRequest {
      */
     @Pattern(regexp = "^$|^[A-Z0-9_/]+$",
              message = "rfcName 은 영문 대문자/숫자/언더스코어/슬래시만 사용 가능")
+    @JsonProperty("rfc_name")
+    @JsonAlias({"rfcName"})
     private String rfcName;
 
     /**
@@ -71,5 +83,7 @@ public class SapRfcSyncRequest {
      */
     @Pattern(regexp = "^$|^[a-zA-Z0-9_]+$",
              message = "targetTable 은 영숫자/언더스코어만 사용 가능")
+    @JsonProperty("target_table")
+    @JsonAlias({"targetTable"})
     private String targetTable;
 }
