@@ -14,17 +14,22 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * SAP RFC -> MariaDB bw_profitability_data 동기화 서비스
+ * SAP RFC -> MariaDB 동기화 서비스
  *
  * <p>batch_jobs 테이블에 배치 이력을 기록 (Node.js와 공유)</p>
  *
- * <p>기능:</p>
+ * <p>[PR #332] 두 인터페이스 통합 실행:</p>
  * <ul>
- *   <li>SAP BW 시스템에서 RFC 함수(Z_BI_WEB_EX_BL)를 호출하여 T_DATA를 수신</li>
- *   <li>수신 데이터를 integration DB의 bw_profitability_data 테이블에 INSERT</li>
- *   <li>REPLACE 모드: 해당 월 기존 데이터 DELETE 후 INSERT</li>
- *   <li>배치 작업 이력을 batch_jobs 테이블에 기록</li>
+ *   <li>수익성분석 (NLP_RFC_001) - Z_BI_WEB_EX_BL   → bw_profitability_data</li>
+ *   <li>제조원가   (NLP_RFC_002) - Z_BI_WEB_EX_BL_4 → sys_aimd_cot015</li>
  * </ul>
+ *
+ * <p>동일한 JCo(module-profit.jar) 를 사용하여 두 RFC 를 호출하고, 요청 body 로
+ * 전달된 <code>rfcName</code> / <code>targetTable</code> 값을 기반으로 매핑 전략
+ * ({@link TableMapping}) 을 선택하여 파싱/INSERT 대상을 결정한다.</p>
+ *
+ * <p>후위호환: rfcName/targetTable 이 null/blank 이면 수익성분석 기본 매핑을 사용.
+ * 스케줄러 · 기존 클라이언트를 그대로 두고도 동작이 100% 동일.</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -35,11 +40,53 @@ public class SapRfcSyncService {
     private final JdbcTemplate jdbcTemplate;
     private final SapRfcProperties sapProperties;
 
-    /** bw_profitability_data 컬럼 목록 (SEQ 제외)
-     *  주의: 2026-06 기준 16개 컬럼이 BIC_ 프리픽스로 재네이밍됨.
-     *  SAP RFC T_DATA 가 보내는 필드명은 여전히 옛 이름이므로,
-     *  SAP→DB 매핑은 {@link #SAP_FIELD_TO_DB_COLUMN} 으로 수행. */
-    private static final List<String> DB_COLUMNS = List.of(
+    // ================================================================
+    // [PR #332] 인터페이스별 테이블 매핑 (전략 패턴)
+    // ================================================================
+
+    /**
+     * 대상 테이블별 컬럼/매핑/SQL 을 한 곳에 캡슐화한 불변 값 객체.
+     *
+     * <p>동일한 JCo 호출 코드가 두 인터페이스에서 재사용되도록 하기 위해,
+     * 인터페이스별로 달라지는 요소(대상 테이블 / DB 컬럼 목록 / SAP→DB 컬럼명
+     * 매핑 / 숫자·소수 컬럼 집합 / INSERT · DELETE · COUNT SQL) 를 이 객체가
+     * 통째로 들고 있는다.</p>
+     */
+    static final class TableMapping {
+        final String targetTable;
+        final List<String> dbColumns;
+        final Map<String, String> sapFieldToDbColumn;
+        final Set<String> numericColumns;
+        final Set<String> decimalColumns;
+        final String insertSql;
+        final String deleteSql;
+        final String countSql;
+
+        TableMapping(String targetTable,
+                     List<String> dbColumns,
+                     Map<String, String> sapFieldToDbColumn,
+                     Set<String> numericColumns,
+                     Set<String> decimalColumns) {
+            this.targetTable = targetTable;
+            this.dbColumns = List.copyOf(dbColumns);
+            this.sapFieldToDbColumn = Map.copyOf(sapFieldToDbColumn);
+            this.numericColumns = Set.copyOf(numericColumns);
+            this.decimalColumns = Set.copyOf(decimalColumns);
+            String cols = String.join(", ", this.dbColumns);
+            String placeholders = String.join(", ", Collections.nCopies(this.dbColumns.size(), "?"));
+            this.insertSql = "INSERT INTO " + targetTable + " (" + cols + ") VALUES (" + placeholders + ")";
+            this.deleteSql = "DELETE FROM " + targetTable + " WHERE CALMONTH = ?";
+            this.countSql  = "SELECT COUNT(*) FROM " + targetTable + " WHERE CALMONTH = ?";
+        }
+    }
+
+    // ================================================================
+    // 매핑 (1) 수익성분석 — bw_profitability_data
+    //   ※ 기존 상수 정의를 그대로 옮겨온 것이므로 동작은 완전 동일.
+    // ================================================================
+
+    /** bw_profitability_data 컬럼 목록 (SEQ 제외). BIC_ 재네이밍은 SAP_FIELD_TO_DB_COLUMN 에서 처리. */
+    private static final List<String> DB_COLUMNS_PROFITABILITY = List.of(
             "CALYEAR", "CALMONTH", "CALDAY",
             "CO_AREA", "CO_AREA_NM",
             "PROFIT_CTR", "PROFIT_CTR_NM",
@@ -83,28 +130,8 @@ public class SapRfcSyncService {
             "ZAMT061", "ZAMT062", "ZAMT063", "ZAMT064"
     );
 
-    /** 숫자형 컬럼 Set (DB 컬럼명 기준) */
-    private static final Set<String> NUMERIC_COLUMNS;
-    static {
-        Set<String> nums = new HashSet<>(Arrays.asList("BIC_ZQTY_BOX", "BIC_ZQTY_BAG", "BIC_ZQTY_KE"));
-        for (int i = 1; i <= 64; i++) {
-            nums.add(String.format("ZAMT%03d", i));
-        }
-        NUMERIC_COLUMNS = Collections.unmodifiableSet(nums);
-    }
-
-    /**
-     * SAP RFC T_DATA 필드명 → DB 컬럼명 매핑.
-     *
-     * <p>2026-06 기준 bw_profitability_data 의 16개 컬럼이 BIC_ 프리픽스로 재네이밍되었지만,
-     * SAP BW 측 RFC(Z_BI_WEB_EX_BL) 가 내려주는 T_DATA 의 필드명은 여전히 옛 이름이다.
-     * 따라서 RFC 필드명 → DB 컬럼명 변환 테이블을 두고, fieldIndexMap 빌드 시
-     * 이 매핑을 거쳐 매칭한다.</p>
-     *
-     * <p>매핑이 없는 컬럼(예: CALMONTH, ZAMT001~064 등)은 SAP 필드명 == DB 컬럼명 이므로
-     * 본 맵에 등록하지 않는다.</p>
-     */
-    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN;
+    /** SAP RFC T_DATA 필드명 → DB 컬럼명 매핑 (수익성). */
+    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_PROFITABILITY;
     static {
         Map<String, String> m = new HashMap<>();
         m.put("ZDISTCHAN",   "BIC_ZDISTCHAN");
@@ -123,26 +150,145 @@ public class SapRfcSyncService {
         m.put("ZQTY_BOX",    "BIC_ZQTY_BOX");
         m.put("ZQTY_BAG",    "BIC_ZQTY_BAG");
         m.put("ZQTY_KE",     "BIC_ZQTY_KE");
-        SAP_FIELD_TO_DB_COLUMN = Collections.unmodifiableMap(m);
+        SAP_FIELD_TO_DB_COLUMN_PROFITABILITY = Collections.unmodifiableMap(m);
     }
 
-    /** INSERT SQL (미리 생성) */
-    private static final String INSERT_SQL;
+    /** 수익성 숫자형 컬럼 (수량 3개 + ZAMT001~064). */
+    private static final Set<String> NUMERIC_COLUMNS_PROFITABILITY;
+    /** 수익성 소수 유지 컬럼 (BIC_ZQTY_*). */
+    private static final Set<String> DECIMAL_COLUMNS_PROFITABILITY =
+            Set.of("BIC_ZQTY_BOX", "BIC_ZQTY_BAG", "BIC_ZQTY_KE");
     static {
-        String cols = String.join(", ", DB_COLUMNS);
-        String placeholders = String.join(", ", Collections.nCopies(DB_COLUMNS.size(), "?"));
-        INSERT_SQL = "INSERT INTO bw_profitability_data (" + cols + ") VALUES (" + placeholders + ")";
+        Set<String> nums = new HashSet<>(DECIMAL_COLUMNS_PROFITABILITY);
+        for (int i = 1; i <= 64; i++) {
+            nums.add(String.format("ZAMT%03d", i));
+        }
+        NUMERIC_COLUMNS_PROFITABILITY = Collections.unmodifiableSet(nums);
+    }
+
+    /** 수익성분석 매핑 인스턴스. */
+    static final TableMapping PROFITABILITY_MAPPING = new TableMapping(
+            "bw_profitability_data",
+            DB_COLUMNS_PROFITABILITY,
+            SAP_FIELD_TO_DB_COLUMN_PROFITABILITY,
+            NUMERIC_COLUMNS_PROFITABILITY,
+            DECIMAL_COLUMNS_PROFITABILITY
+    );
+
+    // ================================================================
+    // 매핑 (2) 제조원가 — sys_aimd_cot015 (PR #332 신규)
+    //   ※ 043_create_sys_aimd_cot015.sql 스키마 및 Python 참고 스크립트
+    //     scripts/sap_rfc_sync_mfg_cost.py 의 DB_COLUMNS/NUMERIC 정의와
+    //     정확히 일치.
+    // ================================================================
+
+    /** sys_aimd_cot015 컬럼 목록 (seq 제외, INSERT 순서). 총 35 컬럼. */
+    private static final List<String> DB_COLUMNS_COT015 = List.of(
+            "CALMONTH", "PLANT", "PLANT_NM", "MATERIAL", "MATERIAL_NM",
+            "ZCGUBUN_D", "ZCGUBUN", "BASE_UOM", "LBKUM", "CURRENCY",
+            "TOTAL", "KST_V", "KST_F",
+            "KST001", "KST002", "KST004", "KST006", "KST008", "KST010",
+            "KST012", "KST014", "KST015", "KST017", "KST019", "KST021",
+            "KST025", "KST027", "KST029", "KST031", "KST033", "KST035",
+            "KST037", "KST039",
+            "TOTAL1", "TOTAL2"
+    );
+
+    /**
+     * 제조원가는 /BIC/ prefix 처리를 {@link #normalizeSapFieldName} 에서 일반 규칙으로
+     * 처리하므로 별도 이름 매핑이 필요없음.
+     */
+    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_COT015 = Map.of();
+
+    /** 제조원가 소수 유지 컬럼 (LBKUM: 생산수량 DECIMAL 17,3). */
+    private static final Set<String> DECIMAL_COLUMNS_COT015 = Set.of("LBKUM");
+
+    /** 제조원가 숫자형 컬럼 = LBKUM + BIGINT 원가 컬럼. */
+    private static final Set<String> NUMERIC_COLUMNS_COT015 = Set.of(
+            "LBKUM",
+            "TOTAL", "KST_V", "KST_F", "TOTAL1", "TOTAL2",
+            "KST001", "KST002", "KST004", "KST006", "KST008", "KST010",
+            "KST012", "KST014", "KST015", "KST017", "KST019", "KST021",
+            "KST025", "KST027", "KST029", "KST031", "KST033", "KST035",
+            "KST037", "KST039"
+    );
+
+    /** 제조원가 매핑 인스턴스. */
+    static final TableMapping MFG_COST_COT015_MAPPING = new TableMapping(
+            "sys_aimd_cot015",
+            DB_COLUMNS_COT015,
+            SAP_FIELD_TO_DB_COLUMN_COT015,
+            NUMERIC_COLUMNS_COT015,
+            DECIMAL_COLUMNS_COT015
+    );
+
+    // ================================================================
+    // 매핑 선택 / SAP 필드명 정규화
+    // ================================================================
+
+    /**
+     * targetTable 값으로부터 {@link TableMapping} 선택.
+     * <p>null/blank 이면 수익성 기본 매핑(=기존 동작) 을 반환하여 후위호환 보장.
+     * 알 수 없는 값이면 즉시 예외로 실패시켜 오적재를 원천 차단.</p>
+     */
+    private static TableMapping resolveMapping(String targetTable) {
+        if (targetTable == null || targetTable.isBlank()) {
+            return PROFITABILITY_MAPPING;
+        }
+        switch (targetTable) {
+            case "bw_profitability_data": return PROFITABILITY_MAPPING;
+            case "sys_aimd_cot015":       return MFG_COST_COT015_MAPPING;
+            default:
+                throw new IllegalArgumentException(
+                        "지원하지 않는 target_table 입니다: '" + targetTable + "'"
+                        + " (허용: bw_profitability_data, sys_aimd_cot015)");
+        }
     }
 
     /**
-     * SAP RFC 동기화 실행 (비동기)
+     * SAP RFC 응답 필드명 → DB 컬럼명 후보 정규화.
+     * <ol>
+     *   <li>매핑 테이블(mapping.sapFieldToDbColumn) 에 명시된 항목은 그 값 사용</li>
+     *   <li>없으면 대문자화 후 /BIC/ prefix 제거 (예: /BIC/ZCGUBUN → ZCGUBUN)</li>
+     * </ol>
      */
+    private static String normalizeSapFieldName(String sapName, TableMapping mapping) {
+        if (sapName == null) return null;
+        String upper = sapName.toUpperCase(Locale.ROOT);
+        String mapped = mapping.sapFieldToDbColumn.get(upper);
+        if (mapped != null) return mapped;
+        // 옛 이름 그대로 매핑 확인 (수익성 매핑은 옛 이름 → BIC_ 프리픽스)
+        String mapped2 = mapping.sapFieldToDbColumn.get(sapName);
+        if (mapped2 != null) return mapped2;
+        if (upper.startsWith("/BIC/")) return upper.substring(5);
+        return upper;
+    }
+
+    // ================================================================
+    // Public API — 후위호환 오버로드
+    // ================================================================
+
+    /** [후위호환] 기존 스케줄러가 호출하는 시그니처. 수익성분석 경로로 실행. */
     @Async("batchTaskExecutor")
     public void executeAsync(Long batchId, String cmonth, String mode, String userId) {
-        log.info("[SAP RFC] 비동기 실행 시작 - batchId={}, cmonth={}, mode={}", batchId, cmonth, mode);
+        executeAsync(batchId, cmonth, mode, userId, null, null);
+    }
 
+    /**
+     * [PR #332] 인터페이스 라우팅 정보를 받는 신규 오버로드.
+     * rfcName / targetTable 이 null/blank 이면 수익성분석 기본값 사용.
+     */
+    @Async("batchTaskExecutor")
+    public void executeAsync(Long batchId, String cmonth, String mode, String userId,
+                             String rfcName, String targetTable) {
         try {
-            execute(batchId, cmonth, mode);
+            TableMapping mapping = resolveMapping(targetTable);
+            String actualRfc = (rfcName != null && !rfcName.isBlank())
+                    ? rfcName
+                    : sapProperties.getRfcFunction();
+            log.info("[SAP RFC] 비동기 실행 시작 - batchId={}, cmonth={}, mode={}, rfc={}, table={}",
+                    batchId, cmonth, mode, actualRfc, mapping.targetTable);
+            execute(batchId, cmonth, mode, actualRfc, mapping);
         } catch (Exception e) {
             log.error("[SAP RFC] 비동기 실행 실패 - batchId={}: {}", batchId, e.getMessage(), e);
             failBatch(batchId, e.getMessage());
@@ -167,8 +313,6 @@ public class SapRfcSyncService {
 
     /**
      * Node.js가 이미 생성한 batch_jobs 레코드를 찾아 반환
-     * - 존재하면 기존 레코드 반환 (Node.js가 INSERT한 것)
-     * - 존재하지 않으면 새로 생성
      */
     @Transactional
     public BatchStatus getOrCreateBatchJob(Long jobId, String cmonth, String mode, String userId) {
@@ -179,15 +323,17 @@ public class SapRfcSyncService {
                 });
     }
 
-    /**
-     * 동기화 실행 (동기 - 내부 호출)
-     * 각 단계별 상세 로그를 batch_jobs.log_text에 기록
-     *
-     * <p>메모리 최적화: SAP T_DATA를 전부 메모리에 올리지 않고,
-     * 청크(CHUNK_SIZE) 단위로 파싱→변환→INSERT를 반복하여
-     * 22만건 이상도 -Xmx2g 이내에서 처리 가능</p>
-     */
+    /** [후위호환] 기존 시그니처. 수익성분석 경로로 실행. */
     public void execute(Long batchId, String cmonth, String mode) {
+        execute(batchId, cmonth, mode, sapProperties.getRfcFunction(), PROFITABILITY_MAPPING);
+    }
+
+    /**
+     * 동기화 실행 (신규 시그니처 · PR #332)
+     * <p>{@code rfcName} / {@code mapping} 파라미터를 통해 어떤 SAP RFC 를 호출하고
+     * 어떤 테이블로 적재할지 결정한다.</p>
+     */
+    public void execute(Long batchId, String cmonth, String mode, String rfcName, TableMapping mapping) {
         Instant jobStart = Instant.now();
 
         // 1. 상태 -> running
@@ -203,15 +349,16 @@ public class SapRfcSyncService {
                 sapProperties.getUser(), sapProperties.getLang()));
         appendBatchLog(batchId, String.format("  - 커넥션 풀: capacity=%d, peakLimit=%d",
                 sapProperties.getPoolCapacity(), sapProperties.getPeakLimit()));
-        appendBatchLog(batchId, String.format("  - RFC 함수: %s", sapProperties.getRfcFunction()));
+        appendBatchLog(batchId, String.format("  - RFC 함수: %s   (기본값: %s)",
+                rfcName, sapProperties.getRfcFunction()));
+        appendBatchLog(batchId, String.format("  - 적재 테이블: %s", mapping.targetTable));
         appendBatchLog(batchId, String.format("  - 입력 파라미터: I_CMONTH=%s", cmonth));
 
         Instant rfcStart = Instant.now();
-        log.info("[SAP RFC] RFC 호출 시작 - cmonth={}", cmonth);
+        log.info("[SAP RFC] RFC 호출 시작 - cmonth={}, rfc={}, table={}",
+                cmonth, rfcName, mapping.targetTable);
 
-        // callRfcAndInsert: SAP 호출 → 스트리밍 파싱 → DB INSERT 를 한 메서드에서 수행
-        // 반환: [totalRows, insertedRows] — 메모리에 전체 데이터를 보유하지 않음
-        long[] result = callRfcAndInsert(batchId, cmonth, mode);
+        long[] result = callRfcAndInsert(batchId, cmonth, mode, rfcName, mapping);
         int totalRows = (int) result[0];
         int insertedRows = (int) result[1];
         int deletedRows = (int) result[2];
@@ -226,31 +373,30 @@ public class SapRfcSyncService {
                 totalRows, insertedRows, deletedRows, totalElapsed));
 
         // INSERT 후 실제 DB 건수 검증
-        long afterCount = countExistingData(cmonth);
-        appendBatchLog(batchId, String.format("  - DB 검증: CALMONTH=%s 현재 %,d건", cmonth, afterCount));
+        long afterCount = countExistingData(cmonth, mapping);
+        appendBatchLog(batchId, String.format("  - DB 검증: %s CALMONTH=%s 현재 %,d건",
+                mapping.targetTable, cmonth, afterCount));
 
         completeBatch(batchId, totalRows, insertedRows, deletedRows);
     }
 
     // ================================================================
-    // SAP RFC 호출
+    // SAP RFC 호출 (매핑 인지 · 스트리밍 INSERT)
     // ================================================================
 
     /** 스트리밍 INSERT 청크 크기: 5,000행씩 파싱→INSERT 후 GC 해제 */
     private static final int CHUNK_SIZE = 5000;
 
     /**
-     * SAP RFC 호출 + 스트리밍 DB INSERT (메모리 최적화 핵심)
+     * SAP RFC 호출 + 스트리밍 DB INSERT (메모리 최적화)
      *
-     * <p>기존 callRfc()는 22만 건 전체를 List에 올린 뒤 insertData()로 넘겼기 때문에
-     * 피크 메모리가 ~1.8GB에 달해 -Xmx2g에서도 OOM 위험이 있었음.</p>
-     *
-     * <p>개선: T_DATA를 CHUNK_SIZE(5,000행)씩 파싱 → 즉시 변환 → batchUpdate INSERT
-     * → 청크 해제를 반복하여, 동시에 메모리에 올라가는 데이터는 항상 ~5,000행 분량.</p>
+     * <p>[PR #332] rfcName / mapping 파라미터를 받아 두 인터페이스를 동일한
+     * 실행 코드에서 처리한다.</p>
      *
      * @return long[3] = {totalRows, insertedRows, deletedRows}
      */
-    private long[] callRfcAndInsert(Long batchId, String cmonth, String mode) {
+    private long[] callRfcAndInsert(Long batchId, String cmonth, String mode,
+                                    String rfcName, TableMapping mapping) {
         try {
             // ── Step 1: JCo 클래스 로드 ──
             appendBatchLog(batchId, "  [RFC-1] SAP JCo 클래스 로드 중...");
@@ -269,18 +415,16 @@ public class SapRfcSyncService {
             appendBatchLog(batchId, String.format("  [RFC-2] Destination 연결 완료 (%dms)", step2ms));
 
             // ── Step 3: Repository + Function 조회 ──
-            appendBatchLog(batchId, String.format("  [RFC-3] RFC 함수 조회 중... (%s)",
-                    sapProperties.getRfcFunction()));
+            appendBatchLog(batchId, String.format("  [RFC-3] RFC 함수 조회 중... (%s)", rfcName));
             Instant step3 = Instant.now();
             Object repository = destination.getClass().getMethod("getRepository").invoke(destination);
             Object function = repository.getClass().getMethod("getFunction", String.class)
-                    .invoke(repository, sapProperties.getRfcFunction());
+                    .invoke(repository, rfcName);
             long step3ms = Duration.between(step3, Instant.now()).toMillis();
 
             if (function == null) {
-                appendBatchLog(batchId, String.format("  [RFC-3] RFC 함수 NOT FOUND: %s",
-                        sapProperties.getRfcFunction()));
-                throw new RuntimeException("RFC 함수를 찾을 수 없습니다: " + sapProperties.getRfcFunction());
+                appendBatchLog(batchId, String.format("  [RFC-3] RFC 함수 NOT FOUND: %s", rfcName));
+                throw new RuntimeException("RFC 함수를 찾을 수 없습니다: " + rfcName);
             }
             appendBatchLog(batchId, String.format("  [RFC-3] RFC 함수 조회 완료 (%dms)", step3ms));
 
@@ -290,8 +434,8 @@ public class SapRfcSyncService {
                     .invoke(importParams, "I_CMONTH", cmonth);
 
             appendBatchLog(batchId, String.format("  [RFC-4] RFC 실행 중... (%s, I_CMONTH=%s)",
-                    sapProperties.getRfcFunction(), cmonth));
-            log.info("[SAP RFC] {} 호출 (I_CMONTH={})", sapProperties.getRfcFunction(), cmonth);
+                    rfcName, cmonth));
+            log.info("[SAP RFC] {} 호출 (I_CMONTH={})", rfcName, cmonth);
 
             Instant step4 = Instant.now();
             function.getClass().getMethod("execute", destination.getClass().getInterfaces()[0])
@@ -323,26 +467,22 @@ public class SapRfcSyncService {
             appendBatchLog(batchId, String.format("  [RFC-5] 필드 수: %d개/행", totalFieldCount));
 
             // 필드명 → 인덱스 매핑 (DB 컬럼만)
-            // JCo Table에서 필드명은 getRecordMetaData().getName(int)로 가져와야 함
             Object metaData = tDataTable.getClass()
                     .getMethod("getRecordMetaData").invoke(tDataTable);
             java.lang.reflect.Method getNameMethod = metaData.getClass()
                     .getMethod("getName", int.class);
 
-            // SAP 필드명을 DB 컬럼명으로 변환하여 fieldIndexMap 구성
-            // (BIC_ 재네이밍 이후 SAP T_DATA 는 여전히 옛 이름을 사용하므로 매핑 필요)
-            Set<String> dbColumnSet = new HashSet<>(DB_COLUMNS);
+            Set<String> dbColumnSet = new HashSet<>(mapping.dbColumns);
             Map<String, Integer> fieldIndexMap = new LinkedHashMap<>();
             for (int j = 0; j < totalFieldCount; j++) {
                 String sapName = (String) getNameMethod.invoke(metaData, j);
-                // SAP 필드명 → DB 컬럼명 변환 (매핑 없으면 동일 이름 사용)
-                String dbName = SAP_FIELD_TO_DB_COLUMN.getOrDefault(sapName, sapName);
+                String dbName = normalizeSapFieldName(sapName, mapping);
                 if (dbColumnSet.contains(dbName)) {
                     fieldIndexMap.put(dbName, j);
                 }
             }
-            appendBatchLog(batchId, String.format("  [RFC-5] 매핑 필드: %d/%d개 (DB 컬럼 기준)",
-                    fieldIndexMap.size(), totalFieldCount));
+            appendBatchLog(batchId, String.format("  [RFC-5] 매핑 필드: %d/%d개 (DB 컬럼 기준, 대상=%s)",
+                    fieldIndexMap.size(), totalFieldCount, mapping.targetTable));
 
             // 리플렉션 메서드 캐시
             java.lang.reflect.Method getStringMethod = tDataTable.getClass().getMethod("getString", int.class);
@@ -373,21 +513,26 @@ public class SapRfcSyncService {
             // ── replace 모드: 기존 데이터 삭제 ──
             int deletedRows = 0;
             if ("replace".equals(mode)) {
-                appendBatchLog(batchId, "[4/6] REPLACE 모드 — 기존 데이터 삭제 중...");
-                long existingCount = countExistingData(cmonth);
-                appendBatchLog(batchId, String.format("  - CALMONTH=%s 기존 데이터: %,d건", cmonth, existingCount));
+                appendBatchLog(batchId, String.format("[4/6] REPLACE 모드 — %s 기존 데이터 삭제 중...",
+                        mapping.targetTable));
+                long existingCount = countExistingData(cmonth, mapping);
+                appendBatchLog(batchId, String.format("  - %s CALMONTH=%s 기존 데이터: %,d건",
+                        mapping.targetTable, cmonth, existingCount));
                 Instant delStart = Instant.now();
-                deletedRows = (int) deleteExistingData(cmonth);
+                deletedRows = (int) deleteExistingData(cmonth, mapping);
                 long delElapsed = Duration.between(delStart, Instant.now()).toSeconds();
-                appendBatchLog(batchId, String.format("  - 삭제 완료: %,d건 (%d초 소요)", deletedRows, delElapsed));
-                log.info("[SAP RFC] REPLACE 모드 - 기존 {}건 삭제 완료 (CALMONTH={})", deletedRows, cmonth);
+                appendBatchLog(batchId, String.format("  - 삭제 완료: %,d건 (%d초 소요)",
+                        deletedRows, delElapsed));
+                log.info("[SAP RFC] REPLACE 모드 - {} 기존 {}건 삭제 완료 (CALMONTH={})",
+                        mapping.targetTable, deletedRows, cmonth);
             } else {
-                appendBatchLog(batchId, String.format("[4/6] APPEND 모드 — 기존 데이터 유지 (현재 %,d건)", countExistingData(cmonth)));
+                appendBatchLog(batchId, String.format("[4/6] APPEND 모드 — %s 기존 데이터 유지 (현재 %,d건)",
+                        mapping.targetTable, countExistingData(cmonth, mapping)));
             }
 
-            // ── Step 6: 스트리밍 파싱 + INSERT (CHUNK_SIZE 단위) ──
-            appendBatchLog(batchId, String.format("[5/6] 스트리밍 INSERT 시작 — %,d행 (청크 %,d행, 배치 1,000건)",
-                    rowCount, CHUNK_SIZE));
+            // ── Step 6: 스트리밍 파싱 + INSERT ──
+            appendBatchLog(batchId, String.format("[5/6] 스트리밍 INSERT 시작 — %,d행 (청크 %,d행, 배치 1,000건, 대상=%s)",
+                    rowCount, CHUNK_SIZE, mapping.targetTable));
             Instant insertStart = Instant.now();
 
             long totalInserted = 0;
@@ -398,24 +543,22 @@ public class SapRfcSyncService {
             for (int i = 0; i < rowCount; i++) {
                 setRowMethod.invoke(tDataTable, i);
 
-                // SAP 행 → Object[] 직접 변환 (중간 HashMap 생략으로 메모리 절약)
-                Object[] values = new Object[DB_COLUMNS.size()];
-                for (int c = 0; c < DB_COLUMNS.size(); c++) {
-                    String col = DB_COLUMNS.get(c);
+                Object[] values = new Object[mapping.dbColumns.size()];
+                for (int c = 0; c < mapping.dbColumns.size(); c++) {
+                    String col = mapping.dbColumns.get(c);
                     Integer fieldIdx = fieldIndexMap.get(col);
                     if (fieldIdx == null) {
-                        // SAP에 없는 DB 컬럼
-                        values[c] = NUMERIC_COLUMNS.contains(col) ? 0 : null;
+                        values[c] = mapping.numericColumns.contains(col) ? 0 : null;
                         continue;
                     }
                     String rawValue = (String) getStringMethod.invoke(tDataTable, fieldIdx);
                     if (rawValue == null || rawValue.trim().isEmpty()) {
-                        values[c] = NUMERIC_COLUMNS.contains(col) ? 0 : null;
-                    } else if (NUMERIC_COLUMNS.contains(col)) {
+                        values[c] = mapping.numericColumns.contains(col) ? 0 : null;
+                    } else if (mapping.numericColumns.contains(col)) {
                         try {
                             double d = Double.parseDouble(rawValue.replace(",", "").trim());
-                            // BIC_ZQTY_* (수량) 는 DECIMAL → double, ZAMT* (금액) 는 BIGINT → long
-                            values[c] = col.startsWith("BIC_ZQTY_") ? d : (long) d;
+                            // 소수 유지 컬럼(BIC_ZQTY_* / LBKUM) 은 double, 그 외 숫자(ZAMT*/KST*/TOTAL*) 는 long
+                            values[c] = mapping.decimalColumns.contains(col) ? d : (long) d;
                         } catch (NumberFormatException e) {
                             values[c] = 0;
                         }
@@ -429,25 +572,24 @@ public class SapRfcSyncService {
                 if (batch.size() >= batchSize || i == rowCount - 1) {
                     int currentBatch = (int) (totalInserted / batchSize) + 1;
                     try {
-                        jdbcTemplate.batchUpdate(INSERT_SQL, batch);
+                        jdbcTemplate.batchUpdate(mapping.insertSql, batch);
                         totalInserted += batch.size();
 
-                        // 10% 단위 또는 첫/마지막 배치에 진행률 로그
                         if (currentBatch == 1 || i == rowCount - 1 ||
                                 (currentBatch % Math.max(1, totalBatches / 10)) == 0) {
                             double pct = (double) totalInserted / rowCount * 100;
                             String progressMsg = String.format(
-                                    "  - INSERT 진행: %,d/%,d (%.0f%%) [배치 %d/%d]",
-                                    totalInserted, rowCount, pct, currentBatch, totalBatches);
+                                    "  - INSERT 진행: %,d/%,d (%.0f%%) [배치 %d/%d, 대상=%s]",
+                                    totalInserted, rowCount, pct, currentBatch, totalBatches, mapping.targetTable);
                             log.info("[DB] {}", progressMsg);
                             appendBatchLog(batchId, progressMsg);
                         }
                     } catch (Exception e) {
                         String errMsg = String.format(
-                                "  - INSERT 실패 (배치 %d/%d, 행 %,d~%,d): %s",
+                                "  - INSERT 실패 (배치 %d/%d, 행 %,d~%,d, 대상=%s): %s",
                                 currentBatch, totalBatches,
                                 totalInserted + 1, totalInserted + batch.size(),
-                                e.getMessage());
+                                mapping.targetTable, e.getMessage());
                         log.error("[DB] {}", errMsg);
                         appendBatchLog(batchId, errMsg);
                         throw e;
@@ -455,7 +597,6 @@ public class SapRfcSyncService {
                     batch.clear();
                 }
 
-                // 진행률 로그 (10,000행 단위)
                 if (rowCount > 10000 && i > 0 && i % 10000 == 0) {
                     log.info("[SAP RFC] 스트리밍 진행: {}/{} ({}%)",
                             i, rowCount, (int)((double) i / rowCount * 100));
@@ -466,7 +607,7 @@ public class SapRfcSyncService {
             long insertElapsed = Duration.between(insertStart, Instant.now()).toSeconds();
             appendBatchLog(batchId, String.format("  - 파싱+INSERT 완료: %,d행 (%dms, INSERT %d초)",
                     totalInserted, step5ms, insertElapsed));
-            log.info("[SAP RFC] 스트리밍 INSERT 완료: {}건", totalInserted);
+            log.info("[SAP RFC] 스트리밍 INSERT 완료: {}건 (대상={})", totalInserted, mapping.targetTable);
 
             return new long[]{rowCount, totalInserted, deletedRows};
 
@@ -491,21 +632,15 @@ public class SapRfcSyncService {
     // DB 작업
     // ================================================================
 
-    private long deleteExistingData(String cmonth) {
-        String countSql = "SELECT COUNT(*) FROM bw_profitability_data WHERE CALMONTH = ?";
-        Long existing = jdbcTemplate.queryForObject(countSql, Long.class, cmonth);
+    private long deleteExistingData(String cmonth, TableMapping mapping) {
+        Long existing = jdbcTemplate.queryForObject(mapping.countSql, Long.class, cmonth);
         long count = existing != null ? existing : 0;
-
         if (count > 0) {
-            jdbcTemplate.update("DELETE FROM bw_profitability_data WHERE CALMONTH = ?", cmonth);
-            log.info("[DB] CALMONTH={} 기존 데이터 {}건 삭제", cmonth, count);
+            jdbcTemplate.update(mapping.deleteSql, cmonth);
+            log.info("[DB] {} CALMONTH={} 기존 데이터 {}건 삭제", mapping.targetTable, cmonth, count);
         }
         return count;
     }
-
-    // insertData(), convertRow() 메서드 제거됨
-    // → callRfcAndInsert() 내부에서 SAP 파싱과 동시에 직접 변환+INSERT 수행
-    // → 중간 List<Map> 없이 SAP row → Object[] → batchUpdate 스트리밍
 
     // ================================================================
     // 배치 상태 관리 (batch_jobs 테이블)
@@ -524,12 +659,9 @@ public class SapRfcSyncService {
 
     /**
      * batch_jobs.log_text에 로그 한 줄 추가 (타임스탬프 포함)
-     * + 서버 로그파일(slf4j)에도 동시 출력
      */
     protected void appendBatchLog(Long batchId, String message) {
-        // 서버 로그파일에 출력 (journalctl / logback으로 확인 가능)
         log.info("[Batch:{}] {}", batchId, message);
-
         String ts = java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
         jdbcTemplate.update(
@@ -566,12 +698,26 @@ public class SapRfcSyncService {
     // 유틸리티
     // ================================================================
 
+    /** [후위호환] 수익성 테이블(bw_profitability_data) 기준 카운트. */
     public long countExistingData(String cmonth) {
-        String sql = "SELECT COUNT(*) FROM bw_profitability_data WHERE CALMONTH = ?";
-        Long count = jdbcTemplate.queryForObject(sql, Long.class, cmonth);
+        return countExistingData(cmonth, PROFITABILITY_MAPPING);
+    }
+
+    /**
+     * [PR #332] targetTable 문자열로 카운트할 매핑 결정.
+     * null/blank 이면 수익성 기본.
+     */
+    public long countExistingData(String cmonth, String targetTable) {
+        return countExistingData(cmonth, resolveMapping(targetTable));
+    }
+
+    /** targetTable 인지 카운트 (내부용). */
+    public long countExistingData(String cmonth, TableMapping mapping) {
+        Long count = jdbcTemplate.queryForObject(mapping.countSql, Long.class, cmonth);
         return count != null ? count : 0;
     }
 
+    /** 월별 데이터 현황 (수익성분석 대시보드 전용 유지). */
     public List<Map<String, Object>> getMonthlyDataSummary() {
         String sql = "SELECT CALMONTH, COUNT(*) AS CNT " +
                      "FROM bw_profitability_data " +
@@ -586,7 +732,6 @@ public class SapRfcSyncService {
 
     /**
      * 실행 중인 배치가 있는지 확인 (특정 ID 제외)
-     * - Node.js가 이미 running으로 만든 자기 자신을 제외
      */
     public boolean hasRunningBatchExcluding(Long excludeId) {
         return !batchStatusRepository.findRunningBatchesExcluding(excludeId).isEmpty();
