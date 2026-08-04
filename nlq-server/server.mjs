@@ -14596,10 +14596,13 @@ app.delete('/api/interface/master/:id', requireAdmin, async (req, res) => {
 
 // 스케줄 목록 (마스터 JOIN)
 //  - once 예약은 같은 interface_id 가 여러 행 존재할 수 있음
-//  - 정렬: 인터페이스 ASC, once 의 경우 exec_datetime ASC 로 시간순
 //  - 필터: interfaceId (또는 interface_id) 로 특정 인터페이스만 조회
 //         · rfc_name 문자열 비교가 아니라 안정적인 interface_id 로 필터링
 //         · 'ALL' 또는 미지정 → 전체 조회
+//  - 정렬: id DESC 로 통일 (최신 등록 건이 위로)
+//         · 전체/개별 필터 모두 동일한 정렬 기준 적용
+//         · 이전 4-key 복합 정렬(인터페이스별 그룹핑) 제거 — 사용자가
+//           "전체 선택 시 인터페이스별로 묶이지 않고 최신순으로 보이길" 요구
 app.get('/api/interface/schedule', requireAdmin, async (req, res) => {
   try {
     const interfaceId = (req.query.interfaceId ?? req.query.interface_id ?? '').trim();
@@ -14620,10 +14623,7 @@ app.get('/api/interface/schedule', requireAdmin, async (req, res) => {
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
         ${whereSql}
-        ORDER BY s.interface_id ASC,
-                 (s.schedule_type = 'once') DESC,
-                 s.exec_datetime DESC,
-                 s.id ASC`,
+        ORDER BY s.id DESC`,
       params
     );
     res.json({ items: rows });
