@@ -1812,13 +1812,52 @@ let ragReady = false;  // RAG 인덱스 빌드 완료 여부
 /**
  * DB에서 최신 데이터 기간(CALMONTH) 조회 → 당월/전월 기준 계산
  * "당월"은 오늘 날짜가 아니라 마감 완료되어 적재된 최신 월을 의미
+ *
+ * [PR #340 / 2026-08-04] 메모리 캐시 도입 (TTL 10분)
+ *   비주얼 쿼리 빌더의 [날짜 조건] 기본값을 "마감 완료된 최신월" 로 표시하기 위해
+ *   이 함수가 페이지 로드 / area 변경 / domain 변경마다 호출될 수 있어졌음.
+ *   MAX(CALMONTH) 는 idx_calmonth 인덱스 스캔이라 개별 쿼리도 가볍지만,
+ *   운영 DB 부하가 눈에 띄는 상황이면 매 요청마다 DB 히트는 낭비이므로
+ *   프로세스 메모리에 10분 TTL 캐시를 둔다.
+ *
+ *   - 캐시 무효화 규칙:
+ *       · TTL 만료 (10분)
+ *       · 새 CALMONTH 데이터 적재 시(RFC/배치) → invalidateDataDateContextCache() 명시 호출
+ *   - 실패(DB 조회 실패) 는 캐시하지 않는다.
+ *     다음 호출에서 즉시 재시도되어야 하기 때문 (일시 장애가 10분간 고정되면 안 됨).
+ *   - 반환 스키마에 `ok: true/false` 추가.
+ *     기존 NLQ 파이프라인은 `ok` 를 무시하고 latestMonth 를 그대로 사용하므로 무영향.
+ *     신규 프론트엔드(비주얼 쿼리 빌더) 는 `ok=false` 인 경우 안내 처리를 하도록 분기.
  */
+const DATE_CTX_CACHE_TTL_MS = 10 * 60 * 1000; // 10분
+let _dateCtxCache = null; // { value: {...}, expiresAt: number }
+
+function invalidateDataDateContextCache() {
+  _dateCtxCache = null;
+  console.log('[DateCtx] 캐시 무효화 완료');
+}
+
 async function getDataDateContext() {
+  // 캐시 히트 (TTL 유효 & 성공 응답만 캐시됨)
+  if (_dateCtxCache && Date.now() < _dateCtxCache.expiresAt) {
+    return _dateCtxCache.value;
+  }
+
   try {
     const [rows] = await pool.query(
       'SELECT MAX(CALMONTH) AS latest FROM bw_profitability_data'
     );
-    const latest = rows[0]?.latest || '202604';
+    const latest = rows[0]?.latest;
+    if (!latest) {
+      // 테이블은 있으나 데이터 없음 → 캐시 안 함 + ok=false
+      console.warn('[DateCtx] bw_profitability_data 에 데이터 없음 (MAX(CALMONTH)=NULL)');
+      return {
+        ok: false,
+        errorCode: 'NO_DATA',
+        latestMonth: '202604', prevMonth: '202603',
+        latestLabel: '2026년 4월', prevLabel: '2026년 3월',
+      };
+    }
     const y = parseInt(latest.substring(0, 4));
     const m = parseInt(latest.substring(4, 6));
     const prevY = m === 1 ? y - 1 : y;
@@ -1826,11 +1865,22 @@ async function getDataDateContext() {
     const prevMonth = `${prevY}${String(prevM).padStart(2, '0')}`;
     const latestLabel = `${y}년 ${m}월`;
     const prevLabel = `${prevY}년 ${prevM}월`;
-    console.log(`[DateCtx] 최신 데이터: ${latest} → 당월=${latestLabel}, 전월=${prevLabel}`);
-    return { latestMonth: latest, prevMonth, latestLabel, prevLabel };
+    const value = { ok: true, latestMonth: latest, prevMonth, latestLabel, prevLabel };
+
+    // 성공 응답만 캐시
+    _dateCtxCache = { value, expiresAt: Date.now() + DATE_CTX_CACHE_TTL_MS };
+    console.log(`[DateCtx] 최신 데이터: ${latest} → 당월=${latestLabel}, 전월=${prevLabel} (캐시 TTL 10분)`);
+    return value;
   } catch (e) {
     console.error('[DateCtx] 데이터 기간 조회 실패:', e.message);
-    return { latestMonth: '202604', prevMonth: '202603', latestLabel: '2026년 4월', prevLabel: '2026년 3월' };
+    // 실패는 캐시하지 않음 (다음 호출에서 재시도)
+    return {
+      ok: false,
+      errorCode: 'DB_ERROR',
+      errorMessage: e.message,
+      latestMonth: '202604', prevMonth: '202603',
+      latestLabel: '2026년 4월', prevLabel: '2026년 3월',
+    };
   }
 }
 
@@ -8518,18 +8568,38 @@ app.get('/api/status', async (req, res) => {
 
 // ============================================================
 // API: 데이터 기준월 컨텍스트 (프론트엔드 기준월 안내용)
+// ------------------------------------------------------------
+// [PR #340 / 2026-08-04]
+//   - 비주얼 쿼리 빌더의 [날짜 조건] 기본값을 "마감 완료된 최신월" 로 표시하기 위해
+//     ok / errorCode 필드를 추가.
+//   - 응답 스키마 (Backward compatible):
+//       { ok: true,  latestMonth, prevMonth, latestLabel, prevLabel }
+//       { ok: false, errorCode, errorMessage?, latestMonth?, ... }  ← HTTP 503 반환
+//   - 기존 프론트엔드 (index.html) 는 latestLabel 만 읽고 ok 는 무시하므로 무영향.
+//   - 서버 캐시 (TTL 10분) 로 반복 호출은 DB 히트 없이 즉시 응답.
 // ============================================================
 app.get('/api/data-date-context', async (req, res) => {
   try {
     const ctx = await getDataDateContext();
+    // 서버 캐시 히트 여부와 무관하게 응답. 브라우저/게이트웨이 캐시는 짧게(60초) 허용.
+    res.set('Cache-Control', 'private, max-age=60');
+    if (ctx.ok === false) {
+      // 조회 실패: 프론트가 "안내 처리" 를 할 수 있도록 명시적 5xx + 에러코드
+      return res.status(503).json({
+        ok: false,
+        errorCode: ctx.errorCode || 'UNKNOWN',
+        errorMessage: ctx.errorMessage,
+      });
+    }
     res.json({
+      ok: true,
       latestMonth: ctx.latestMonth,
       prevMonth: ctx.prevMonth,
       latestLabel: ctx.latestLabel,
       prevLabel: ctx.prevLabel,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ ok: false, errorCode: 'INTERNAL', error: err.message });
   }
 });
 
@@ -14328,6 +14398,15 @@ async function executeBatchJob(jobId, cmonth, mode) {
             [totalRows, insertedRows, deletedRows, mergedLog, jobId]
           );
           console.log(`[Batch] 작업 ${jobId} 완료: T_DATA=${totalRows}행, INSERT=${insertedRows}행, DELETE=${deletedRows}행 (${elapsedSec}초)`);
+
+          // [PR #340] 수익성분석 테이블에 새 데이터가 적재되면 데이터 기준월 캐시 무효화.
+          //   비주얼 쿼리 빌더의 [날짜 조건] 기본값 / NLQ 의 dateContext 가 즉시 최신월로 갱신되도록.
+          //   제조원가(sys_aimd_cot015) 적재 시엔 현재 캐시가 bw_profitability_data 만 다루므로
+          //   무효화 불필요.
+          if (cfg && cfg.target_table === 'bw_profitability_data' && insertedRows > 0) {
+            invalidateDataDateContextCache();
+          }
+
           completed = true;
           break;
 

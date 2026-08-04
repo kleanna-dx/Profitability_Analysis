@@ -1788,19 +1788,34 @@ function filterFields() {
 }
 
 // ─── Date Condition ──────────────────────────
-function initDateSelectors() {
+// [PR #340 / 2026-08-04] 날짜 조건 기본값을 "마감 완료된 최신 적재월" 로 초기화.
+//   - 기존: 브라우저 시스템 날짜의 전월 (예: 접속일이 2026-07-15 이면 202606)
+//   - 변경: /api/data-date-context 응답의 latestMonth (예: 실제 적재된 최신월이 202606이면 202606)
+//   - 정책:
+//       · 서버 응답 성공 시  → 시작·종료 년월을 latestMonth 로 동기화
+//       · 서버 응답 실패 시  → 시스템 현재월(기본값)을 조용히 폴백으로 뿌림.
+//         (사용자 요청: 배너로 유도하지 말고 그냥 기본값 월을 뿌려줄 것.)
+//       · 사용자가 직접 셀렉트를 바꾼 뒤엔 이 함수를 다시 호출해도 사용자 선택을 존중 (덮어쓰지 않음).
+//       · [수익성분석] / [제조원가] 탭 전환 시 재조회.
+//         현재 [제조원가] 는 UI 프리뷰 상태라 데이터 경로가 없으므로
+//         이 함수는 [수익성분석] 일 때만 서버 조회를 수행.
+//   - 성능: 서버가 캐시(TTL 10분) 하므로 area/domain 이 변해도 DB 재조회 없이 즉시 응답.
+let _dateSelectorsInitialized = false;   // 년도/월 옵션 리스트가 한 번만 생성되도록 가드
+let _userTouchedDate = false;            // 사용자가 셀렉트를 한 번이라도 만졌으면 true
+let _appliedLatestMonth = null;          // 마지막으로 적용한 서버 latestMonth (재적용 판단용)
+
+function _populateDateOptionsOnce() {
+    if (_dateSelectorsInitialized) return;
     const startY = document.getElementById('dateStartYear');
     const startM = document.getElementById('dateStartMonth');
     const endY = document.getElementById('dateEndYear');
     const endM = document.getElementById('dateEndMonth');
 
-    // 년도: 2020 ~ 현재+1년
+    // 년도: 2020 ~ 현재+1년 (셀렉트 옵션 자체는 시스템 년 기준으로 넉넉하게)
     const curYear = new Date().getFullYear();
     for (let y = 2020; y <= curYear + 1; y++) {
-        const opt1 = new Option(`${y}년`, y);
-        const opt2 = new Option(`${y}년`, y);
-        startY.add(opt1);
-        endY.add(opt2);
+        startY.add(new Option(`${y}년`, y));
+        endY.add(new Option(`${y}년`, y));
     }
     // 월: 01~12
     for (let m = 1; m <= 12; m++) {
@@ -1810,19 +1825,158 @@ function initDateSelectors() {
         endM.add(new Option(label, val));
     }
 
-    // 기본값: 전월 (예: 현재 2026년 5월 → 2026년 4월)
-    const now = new Date();
-    let prevMonth = now.getMonth(); // 0-indexed이므로 현재월-1 = 전월
-    let prevYear = now.getFullYear();
-    if (prevMonth === 0) { prevMonth = 12; prevYear--; } // 1월이면 전년도 12월
-    startY.value = String(prevYear); startM.value = String(prevMonth).padStart(2, '0');
-    endY.value = String(prevYear); endM.value = String(prevMonth).padStart(2, '0');
-
-    // 변경 이벤트
+    // 변경 이벤트 등록 (한 번만)
     [startY, startM, endY, endM].forEach(el => {
-        el.addEventListener('change', onDateChange);
+        el.addEventListener('change', () => {
+            _userTouchedDate = true;  // 사용자 조작 이후엔 서버 latestMonth 가 와도 덮어쓰지 않음
+            onDateChange();
+        });
     });
+
+    // 기본은 빈 상태 (사용자에게 "값 채우는 중" 임을 명확히 하기 위해).
+    //   서버 응답이 오면 setDateToLatestMonth() 에서 채워지고,
+    //   실패 시엔 안내 문구가 표시된다.
+    startY.value = '';
+    startM.value = '';
+    endY.value = '';
+    endM.value = '';
+
+    _dateSelectorsInitialized = true;
+}
+
+function _applyLatestMonthToSelectors(ym /* 'YYYYMM' */) {
+    if (!ym || ym.length !== 6) return false;
+    const y = ym.substring(0, 4);
+    const m = ym.substring(4, 6);
+    const startY = document.getElementById('dateStartYear');
+    const startM = document.getElementById('dateStartMonth');
+    const endY = document.getElementById('dateEndYear');
+    const endM = document.getElementById('dateEndMonth');
+    if (!startY || !startM || !endY || !endM) return false;
+
+    // 년도 옵션에 해당 값이 없으면 동적으로 추가 (백데이터가 셀렉트 상한을 넘긴 예외 상황 방어)
+    const ensureYearOption = (sel, yyyy) => {
+        const has = Array.from(sel.options).some(o => o.value === yyyy);
+        if (!has) sel.add(new Option(`${yyyy}년`, yyyy));
+    };
+    ensureYearOption(startY, y);
+    ensureYearOption(endY, y);
+
+    startY.value = y; startM.value = m;
+    endY.value = y;   endM.value = m;
+    _appliedLatestMonth = ym;
+    return true;
+}
+
+function _showDateBanner(kind, msg) {
+    // kind: 'info' | 'warn' | 'error' | '' (숨김)
+    let bar = document.getElementById('dateContextBanner');
+    if (!bar) {
+        // 날짜 조건 섹션 위에 배너를 삽입 (섹션 헤더 바로 다음)
+        const label = document.querySelector('label[for="dateStartYear"], .date-condition-title')
+                     || document.getElementById('dateStartYear');
+        // 어느 컨테이너 위에 붙일지 안전하게 찾기: 시작 년도 셀렉트의 부모 컨테이너의 부모
+        const anchor = document.getElementById('dateStartYear')?.closest('section, .date-cond, .filter-panel, div');
+        if (!anchor) return;
+        bar = document.createElement('div');
+        bar.id = 'dateContextBanner';
+        bar.style.cssText = 'margin:6px 0 10px;padding:8px 10px;border-radius:6px;font-size:12px;line-height:1.4;display:none;';
+        anchor.parentNode.insertBefore(bar, anchor);
+    }
+    if (!kind || !msg) { bar.style.display = 'none'; bar.textContent = ''; return; }
+    const palette = {
+        info:  { bg: '#eef2ff', fg: '#3730a3', border: '#c7d2fe' },
+        warn:  { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' },
+        error: { bg: '#fee2e2', fg: '#991b1b', border: '#fecaca' },
+    }[kind] || { bg:'#f1f5f9', fg:'#334155', border:'#e2e8f0' };
+    bar.style.background = palette.bg;
+    bar.style.color = palette.fg;
+    bar.style.border = `1px solid ${palette.border}`;
+    bar.textContent = msg;
+    bar.style.display = 'block';
+}
+
+// 조회 실패 시 사용할 기본값 = 시스템 현재월 (YYYYMM).
+//   - 사용자가 이미 셀렉트를 만졌으면 값을 덮어쓰지 않음.
+//   - 성공하면 나중에 실제 latestMonth 로 재적용됨.
+function _applyCurrentMonthFallback() {
+    if (_userTouchedDate) return false;
+    const now = new Date();
+    const yyyy = String(now.getFullYear());
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const applied = _applyLatestMonthToSelectors(yyyy + mm);
+    if (applied) {
+        // 자동 폴백은 조용히 처리 (배너 노출 안 함). 종료<시작 자동보정만 트리거.
+        try { onDateChange(); } catch (e) {}
+    }
+    return applied;
+}
+
+// 현재 area 탭이 '제조원가' 인지 여부. area-tabs.js 가 <body data-area> 를 채운다.
+function _isManufacturingCostArea() {
+    try {
+        // 우선순위: window.AreaTabs.current → body dataset
+        const cur = (window.AreaTabs && window.AreaTabs.current) || document.body?.dataset?.area || '';
+        return cur === 'manufacturing-cost';
+    } catch (e) { return false; }
+}
+
+async function _fetchAndApplyLatestMonth() {
+    // 제조원가 영역은 데이터 경로가 없으므로 조회 자체를 하지 않음 (설계상 결정: 사용자 지정 B안).
+    if (_isManufacturingCostArea()) {
+        _showDateBanner('', '');
+        // 사용자가 아직 안 만졌으면 셀렉트를 비운 상태로 둠 (기존 값이 있으면 유지)
+        return;
+    }
+    try {
+        const r = await fetch('/api/data-date-context', { credentials: 'same-origin' });
+        if (!r.ok) {
+            // 서버가 명시적 5xx (예: NO_DATA / DB_ERROR) 로 응답
+            //   → 사용자 요청대로 조용히 시스템 현재월로 폴백 (배너 없음).
+            let code = 'UNKNOWN';
+            try { const j = await r.json(); code = j.errorCode || code; } catch (e) {}
+            console.warn('[DateCtx] latestMonth 조회 실패 (HTTP', r.status, '/', code, ') → 시스템 현재월 폴백');
+            _showDateBanner('', '');
+            _applyCurrentMonthFallback();
+            return;
+        }
+        const data = await r.json();
+        if (data && data.ok && data.latestMonth) {
+            // 사용자가 이미 직접 만졌다면 값 덮어쓰지 않음 (배너만 정보성으로 표시)
+            if (_userTouchedDate) {
+                _showDateBanner('info', `데이터 기준월(마감 완료된 최신월): ${data.latestLabel} — 사용자 선택 유지 중`);
+                return;
+            }
+            const applied = _applyLatestMonthToSelectors(data.latestMonth);
+            if (applied) {
+                _showDateBanner('info', `데이터 기준월을 마감 완료된 최신월 ${data.latestLabel} 로 설정했습니다.`);
+                onDateChange(); // 종료<시작 자동보정 + 비교버튼 상태 갱신
+            }
+        } else {
+            // ok=false 이거나 latestMonth 누락 → 조용히 폴백
+            console.warn('[DateCtx] 응답에 latestMonth 없음 → 시스템 현재월 폴백');
+            _showDateBanner('', '');
+            _applyCurrentMonthFallback();
+        }
+    } catch (e) {
+        // 네트워크/파싱 예외 → 조용히 폴백
+        console.warn('[DateCtx] latestMonth 조회 실패:', e && e.message, '→ 시스템 현재월 폴백');
+        _showDateBanner('', '');
+        _applyCurrentMonthFallback();
+    }
+}
+
+function initDateSelectors() {
+    _populateDateOptionsOnce();
+    _fetchAndApplyLatestMonth();
     updateCompareButtons();
+
+    // area 탭 전환 시 (수익성분석 ↔ 제조원가) 재조회. area-tabs.js 가 발행하는 커스텀 이벤트를 청취.
+    //   - 서버는 캐시(TTL 10분) 하므로 area 를 왔다갔다 해도 DB 재히트 없음.
+    if (!window.__vqbDateCtxAreaHooked) {
+        window.__vqbDateCtxAreaHooked = true;
+        window.addEventListener('areachange', () => { _fetchAndApplyLatestMonth(); });
+    }
 }
 
 function getDateRange() {
