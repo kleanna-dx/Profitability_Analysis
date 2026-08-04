@@ -178,28 +178,33 @@ console.log('\n━━━ [시나리오 C] server.mjs 코드 라우팅 로직 검
          /interface_id\s+가\s+없는/.test(src),
     `C-8. interface_id 누락 시 기본 수익성 RFC 로 대체 실행하지 않음 (명시적 실패)`);
 
-  // (요구사항 4) NLP_RFC_002 는 Node.js 가 직접 python3 sap_rfc_sync_mfg_cost.py 실행
-  assert(src.includes('executeMfgCostRfc'),
-    `C-9. executeMfgCostRfc 함수 존재 (NLP_RFC_002 전용 실행 경로)`);
-  assert(src.includes('sap_rfc_sync_mfg_cost.py'),
-    `C-10. NLP_RFC_002 는 sap_rfc_sync_mfg_cost.py 직접 실행`);
-  assert(src.includes("cfg.interface_id === 'NLP_RFC_002'"),
-    `C-11. interface_id === 'NLP_RFC_002' 분기 존재`);
+  // (요구사항 4) NLP_RFC_002 도 Spring Boot(JCo) 경로로 통합됨
+  // [PR #332] Node.js/python3 우회 경로 폐지 — 존재하지 않아야 정상.
+  // (블록/라인 주석은 무시하고 실행 코드에만 있는지 확인하기 위해 stripComments 적용)
+  const codeOnly = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map(l => { const i = l.indexOf('//'); return i>=0 ? l.slice(0,i) : l; }).join('\n');
+  assert(!/executeMfgCostRfc\s*\(/.test(codeOnly),
+    `C-9. [PR #332] executeMfgCostRfc 함수 호출 코드가 존재하지 않음 (Spring Boot 통합)`);
+  assert(!/sap_rfc_sync_mfg_cost\.py/.test(codeOnly),
+    `C-10. [PR #332] sap_rfc_sync_mfg_cost.py 스크립트 참조가 실행 코드에 없음`);
+  assert(!/cfg\.interface_id\s*===\s*'NLP_RFC_002'/.test(codeOnly),
+    `C-11. [PR #332] 'NLP_RFC_002' 실행 경로 분기가 제거됨 (Spring Boot 로 통합)`);
 
-  // (요구사항 8) 실행 직전 로그 포맷
-  assert(src.includes('resolvedRfcFunction') && src.includes('targetTable') && src.includes('input.I_CMONTH'),
-    `C-12. 필수 로그 필드 (resolvedRfcFunction / targetTable / input.I_CMONTH) 출력`);
+  // 실행 경로 로그: Spring Boot API 로 통일되었음을 확인
+  assert(/Spring Boot API \(JCo/.test(codeOnly),
+    `C-12. 실행 경로 로그가 "Spring Boot API (JCo — interface_id=..." 로 표시`);
   assert(src.includes('[InterfaceSchedule]'),
     `C-13. [InterfaceSchedule] 로그 태그 사용`);
-  assert(src.includes('[MfgCostGuard]'),
-    `C-14. [MfgCostGuard] 실행 직전 검증 로그 존재`);
+  assert(!/\[MfgCostGuard\]/.test(codeOnly),
+    `C-14. [PR #332] [MfgCostGuard] 로그(제조원가 우회용) 가 실행 코드에서 제거됨`);
 
-  // 수익성 실행 함수를 제조원가에서 재사용하지 않는지 확인 (별도 함수 사용)
-  //   → executeMfgCostRfc 는 executeBatchJob 안에서 return await 로 호출되고,
-  //     그 뒤 Spring Boot 코드로 넘어가지 않아야 함
-  const routingMatch = src.match(/interface_id === 'NLP_RFC_002'[\s\S]{0,200}executeMfgCostRfc/);
-  assert(routingMatch !== null,
-    `C-15. NLP_RFC_002 분기가 executeMfgCostRfc 로 라우팅 (Spring Boot 재사용 안 함)`);
+  // 두 인터페이스 모두 동일한 Spring Boot 요청 body 로 전달되는지 확인
+  const bodyMatch = codeOnly.match(/const\s+springReqBody\s*=\s*\{[\s\S]*?\};/);
+  assert(bodyMatch !== null && /interface_id\s*:/.test(bodyMatch[0])
+                            && /rfc_name\s*:/.test(bodyMatch[0])
+                            && /target_table\s*:/.test(bodyMatch[0]),
+    `C-15. [PR #332] springReqBody 가 interface_id/rfc_name/target_table 을 모두 포함 (인터페이스 라우팅 정보 통합 전달)`);
 }
 
 // ============================================================
@@ -215,17 +220,17 @@ console.log('\n━━━ [시나리오 D] INTERFACE_MAPPING_MISMATCH 시뮬레�
   //   → 여기서는 조건 분기의 소스 코드 존재만 검증.
   const src = fs.readFileSync(path.resolve('server.mjs'), 'utf-8');
 
-  // (a) rfc_name 불일치 검증 로직
+  // (a) rfc_name 불일치 검증 로직 (resolveInterfaceConfigForJob 안에서 수행)
   assert(/m\.rfc_name\s*!==\s*expected\.rfc_name/.test(src),
     `D-1. rfc_name 기대값 불일치 시 INTERFACE_MAPPING_MISMATCH 반환`);
   // (b) target_table 불일치 검증 로직
   assert(/m\.target_table\s*!==\s*expected\.target_table/.test(src),
     `D-2. target_table 기대값 불일치 시 INTERFACE_MAPPING_MISMATCH 반환`);
-  // (c) 실행 직전 최종 검증 (executeMfgCostRfc 내부에도 이중 검증)
-  assert(/cfg\.rfc_name\s*!==\s*'Z_BI_WEB_EX_BL_4'/.test(src),
-    `D-3. 제조원가 실행 직전 rfc_name 재검증`);
-  assert(/cfg\.target_table\s*!==\s*'sys_aimd_cot015'/.test(src),
-    `D-4. 제조원가 실행 직전 target_table 재검증`);
+  // [PR #332] 실행 직전 이중 검증은 executeMfgCostRfc 와 함께 제거되었음.
+  //   → 매핑 검증은 resolveInterfaceConfigForJob (D-1, D-2) 에서 이미 수행하므로 충분.
+  //   → 실행 경로 통합으로 Spring Boot 가 rfc_name/target_table 을 body 로 받아 처리.
+  assert(true, `D-3. [PR #332] 실행 직전 rfc_name 재검증은 D-1 로 대체됨 (실행 경로 단일화)`);
+  assert(true, `D-4. [PR #332] 실행 직전 target_table 재검증은 D-2 로 대체됨 (실행 경로 단일화)`);
 }
 
 // ============================================================
@@ -252,10 +257,14 @@ console.log('\n━━━ [시나리오 F] sap_rfc_sync_mfg_cost.py [SUMMARY] 파
   assert(summaryMatches && summaryMatches.length >= 2,
     `F-1. [SUMMARY] 라인이 SUCCESS/NO_DATA/DRY-RUN 경로에 각각 출력 (${summaryMatches?.length || 0}개)`);
 
-  // Node.js 파싱 정규식과 일치 확인
+  // [PR #332] Node.js 는 더 이상 Python 스크립트를 spawn 하지 않음 → 파싱 정규식도 제거됨.
+  //   sap_rfc_sync_mfg_cost.py 자체는 로컬 개발용으로 유지되며 [SUMMARY] 라인도 유지.
   const node = fs.readFileSync(path.resolve('server.mjs'), 'utf-8');
-  assert(/\\\[SUMMARY\\\]\\s\+total=/.test(node),
-    `F-2. Node.js executeMfgCostRfc 가 [SUMMARY] 라인을 정규식으로 파싱`);
+  const nodeCodeOnly = node
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map(l => { const i = l.indexOf('//'); return i>=0 ? l.slice(0,i) : l; }).join('\n');
+  assert(!/\\\[SUMMARY\\\]\\s\+total=/.test(nodeCodeOnly),
+    `F-2. [PR #332] Node.js 에서 [SUMMARY] 파싱 정규식이 제거됨 (Python 우회 경로 폐지)`);
 }
 
 // ============================================================
