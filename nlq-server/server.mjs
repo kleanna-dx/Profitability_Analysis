@@ -14597,10 +14597,21 @@ app.delete('/api/interface/master/:id', requireAdmin, async (req, res) => {
 // 스케줄 목록 (마스터 JOIN)
 //  - once 예약은 같은 interface_id 가 여러 행 존재할 수 있음
 //  - 정렬: 인터페이스 ASC, once 의 경우 exec_datetime ASC 로 시간순
+//  - 필터: interfaceId (또는 interface_id) 로 특정 인터페이스만 조회
+//         · rfc_name 문자열 비교가 아니라 안정적인 interface_id 로 필터링
+//         · 'ALL' 또는 미지정 → 전체 조회
 app.get('/api/interface/schedule', requireAdmin, async (req, res) => {
   try {
+    const interfaceId = (req.query.interfaceId ?? req.query.interface_id ?? '').trim();
+    const where = [];
+    const params = [];
+    if (interfaceId && interfaceId !== 'ALL') {
+      where.push('s.interface_id = ?');
+      params.push(interfaceId);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const [rows] = await pool.query(
-      `SELECT s.id, s.interface_id, m.interface_name,
+      `SELECT s.id, s.interface_id, m.interface_name, m.rfc_name,
               s.schedule_type, s.exec_time, s.exec_datetime,
               s.exec_day_of_month, s.target_cmonth, s.exec_mode,
               s.is_active, s.last_run_at, s.last_run_status, s.next_run_at,
@@ -14608,10 +14619,12 @@ app.get('/api/interface/schedule', requireAdmin, async (req, res) => {
               m.default_mode
          FROM batch_schedule s
          LEFT JOIN batch_master m ON m.interface_id = s.interface_id
+        ${whereSql}
         ORDER BY s.interface_id ASC,
                  (s.schedule_type = 'once') DESC,
                  s.exec_datetime DESC,
-                 s.id ASC`
+                 s.id ASC`,
+      params
     );
     res.json({ items: rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
