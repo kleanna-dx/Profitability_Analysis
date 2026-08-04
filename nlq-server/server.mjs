@@ -13837,15 +13837,29 @@ app.post('/api/batch/execute', requireAdmin, async (req, res) => {
  * 배치 작업 비동기 실행
  *
  * ── [PR #331] interface_id 기반 라우팅으로 재구성 ──
- * 파라미터로 넘어온 jobId 의 interface_id 를 기준으로 batch_master 를 조회하여
- * RFC 함수명 / 적재 테이블 / 실행 경로를 결정합니다.
+ * ── [PR #332] 실행 경로를 Spring Boot 로 통일 ──
  *
- * 실행 경로 (execution route) 결정:
- *   - NLP_RFC_001 (수익성분석 / Z_BI_WEB_EX_BL / bw_profitability_data)
- *       → Spring Boot API (/profit-api/sap-rfc/execute) 호출
- *   - NLP_RFC_002 (제조원가 / Z_BI_WEB_EX_BL_4 / sys_aimd_cot015)
- *       → Node.js 가 직접 python3 scripts/sap_rfc_sync_mfg_cost.py 실행
+ * 파라미터로 넘어온 jobId 의 interface_id 를 기준으로 batch_master 를 조회하여
+ * RFC 함수명 / 적재 테이블을 결정하고, 그 값을 body 에 담아 Spring Boot API
+ * (/profit-api/sap-rfc/execute) 를 호출합니다.
+ *
+ * 실행 경로 (execution route):
+ *   - NLP_RFC_001 (수익성분석 / Z_BI_WEB_EX_BL   / bw_profitability_data)
+ *       → Spring Boot API (JCo) 호출
+ *   - NLP_RFC_002 (제조원가   / Z_BI_WEB_EX_BL_4 / sys_aimd_cot015)
+ *       → Spring Boot API (JCo) 호출  ← [PR #332] Node.js/python3 우회 경로 폐지
  *   - 그 외 : INTERFACE_CONFIG_ERROR 로 실패 처리
+ *
+ * [PR #332] 왜 Python 우회 경로를 제거했나:
+ *   - PR #331 은 NLP_RFC_002 를 Node.js → python3 sap_rfc_sync_mfg_cost.py
+ *     경로로 실행했으나, 운영 Node.js 서버에는 pyrfc / SAP NWRFCSDK 가
+ *     설치되어 있지 않아 "No module named 'pyrfc'" 로 즉시 실패하고 있었음.
+ *   - Spring Boot(module-profit.jar) 는 이미 JCo 로 SAP 접속에 성공하고
+ *     있으므로, rfc_name / target_table 을 body 로 전달하여 두 인터페이스를
+ *     하나의 실행 경로(JCo) 로 통합하는 것이 안정적이고 유지보수도 유리.
+ *   - Spring Boot 측 SapRfcSyncService 도 rfc_name / target_table 을
+ *     읽어 두 매핑(bw_profitability_data / sys_aimd_cot015) 을 분기 처리
+ *     하도록 함께 수정 필요.
  *
  * 사전 매핑 검증 (mapping guard):
  *   - batch_master 에서 조회한 rfc_name / IFTBL 이 기대값과 다르면
@@ -14010,14 +14024,17 @@ async function executeBatchJob(jobId, cmonth, mode) {
     );
 
     // ═══════════════════════════════════════════════════════════════
-    // (1) interface_id 기반 실행 경로 분기
+    // (1) 실행 경로: 모든 인터페이스는 Spring Boot(JCo) 통해 실행
+    // ───────────────────────────────────────────────────────────────
+    // [PR #332] PR #331 에서 도입했던 NLP_RFC_002 → Node.js/python3 우회
+    // 경로를 제거하고, 두 인터페이스 모두 Spring Boot API 로 통일한다.
+    //   - 운영 Node.js 서버에는 pyrfc/SAP NWRFCSDK 가 설치되어 있지 않아
+    //     Python 우회 경로가 실전에서 실패했었음 (PR #331 사후 확인).
+    //   - Spring Boot 는 이미 JCo(module-profit.jar) 로 SAP 접속 중이므로
+    //     rfc_name / target_table 을 body 로 전달해 두 인터페이스를 모두
+    //     처리하도록 확장한다. (Spring Boot 측 SapRfcSyncService 변경 필요)
     // ═══════════════════════════════════════════════════════════════
-    if (cfg.interface_id === 'NLP_RFC_002') {
-      // 제조원가 RFC — Node.js 가 직접 python3 sap_rfc_sync_mfg_cost.py 실행
-      return await executeMfgCostRfc(jobId, cmonth, mode, cfg, logLines, addLog);
-    }
-    // 그 외 (NLP_RFC_001 수익성분석) → 기존 Spring Boot 경로
-    addLog(`실행 경로: Spring Boot API (수익성분석 전용)`);
+    addLog(`실행 경로: Spring Boot API (JCo — interface_id=${cfg.interface_id}, rfc=${cfg.rfc_name}, table=${cfg.target_table})`);
 
     // Spring Boot API URL (환경변수 또는 기본값)
     const springBaseUrl = process.env.SPRING_API_URL || 'http://localhost:18093';
@@ -14231,162 +14248,6 @@ async function executeBatchJob(jobId, cmonth, mode) {
 
     console.error(`[Batch] 작업 ${jobId} 실패:`, errMsg);
   }
-}
-
-/**
- * [PR #331] NLP_RFC_002 제조원가 RFC 실행 (Node.js 직접 실행 경로)
- *
- * 수익성분석 (Spring Boot) 과 완전 분리된 실행 경로:
- *   - Node.js 가 python3 scripts/sap_rfc_sync_mfg_cost.py 를 직접 spawn 실행
- *   - Python 스크립트가 pyrfc → Z_BI_WEB_EX_BL_4 호출 → T_DATA 수신 → sys_aimd_cot015 적재
- *   - REPLACE 모드는 Python 스크립트 내부에서 트랜잭션 DELETE+INSERT 처리 (--replace 플래그)
- *   - Exit code: 0=SUCCESS / 1=FAILED / 2=NO_DATA (스크립트 내부 EXIT_* 상수)
- *
- * 이 경로에서는 절대 Z_BI_WEB_EX_BL / bw_profitability_data 를 참조하지 않음.
- */
-async function executeMfgCostRfc(jobId, cmonth, mode, cfg, logLines, addLog) {
-  addLog(`실행 경로: Node.js 직접 실행 (제조원가 전용)`);
-  addLog(`스크립트: scripts/sap_rfc_sync_mfg_cost.py`);
-
-  // (1) 스크립트 경로 확인
-  const path = await import('path');
-  const fs = await import('fs');
-  const scriptPath = path.default.resolve(process.cwd(), 'scripts/sap_rfc_sync_mfg_cost.py');
-  if (!fs.default.existsSync(scriptPath)) {
-    const errMsg = `제조원가 RFC 스크립트를 찾을 수 없음: ${scriptPath}`;
-    addLog(errMsg);
-    await pool.query(
-      `UPDATE batch_jobs SET status='failed', finished_at=NOW(),
-              error_message=?, log_text=? WHERE id=?`,
-      [errMsg, logLines.join('\n'), jobId]
-    );
-    return;
-  }
-
-  // (2) 실행 인자 구성
-  //     python3 sap_rfc_sync_mfg_cost.py <YYYYMM> [--replace|--append|--dry-run]
-  const modeArg = mode === 'append' ? '--append'
-                : mode === 'dry-run' ? '--dry-run'
-                : '--replace';
-  const args = [scriptPath, cmonth, modeArg];
-  addLog(`실행 명령: python3 ${args.map(a => a.includes(' ') ? `"${a}"` : a).join(' ')}`);
-
-  // (3) 실행 직전 최종 검증 로그 (요청 스펙: RFC 호출 직전과 DB 적재 직전에 각각)
-  const guardLog = [
-    `[MfgCostGuard] 실행 직전 최종 검증`,
-    `  interfaceId=${cfg.interface_id}         (기대: NLP_RFC_002)`,
-    `  resolvedRfcFunction=${cfg.rfc_name}     (기대: Z_BI_WEB_EX_BL_4)`,
-    `  targetTable=${cfg.target_table}         (기대: sys_aimd_cot015)`,
-    `  cmonth=${cmonth}`,
-  ].join('\n');
-  console.log(guardLog);
-  addLog(guardLog);
-
-  // (4) 최종 매핑 검증 - 하나라도 어긋나면 실행 중단
-  if (cfg.interface_id !== 'NLP_RFC_002'
-      || cfg.rfc_name !== 'Z_BI_WEB_EX_BL_4'
-      || cfg.target_table !== 'sys_aimd_cot015') {
-    const errMsg = `INTERFACE_MAPPING_MISMATCH: 최종 검증 실패 (interface_id=${cfg.interface_id}, rfc=${cfg.rfc_name}, table=${cfg.target_table})`;
-    addLog(errMsg);
-    await pool.query(
-      `UPDATE batch_jobs SET status='failed', finished_at=NOW(),
-              error_message=?, log_text=? WHERE id=?`,
-      [errMsg, logLines.join('\n'), jobId]
-    );
-    return;
-  }
-
-  // (5) python3 스크립트 실행 (환경변수로 DB 정보 전달)
-  await pool.query('UPDATE batch_jobs SET log_text=? WHERE id=?', [logLines.join('\n'), jobId]);
-
-  const { spawn } = await import('child_process');
-  const startedAt = Date.now();
-  let stdoutBuf = '';
-  let stderrBuf = '';
-
-  const child = spawn('python3', args, {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      // Python 스크립트가 pymysql 로 접근할 수 있도록 DB 환경변수 재확인
-      DB_HOST: process.env.DB_HOST || 'localhost',
-      DB_PORT: process.env.DB_PORT || '3306',
-      DB_USER: process.env.DB_USER || '',
-      DB_PASSWORD: process.env.DB_PASSWORD || '',
-      DB_NAME: process.env.DB_NAME || '',
-      MFG_COST_JOB_ID: String(jobId),
-    },
-  });
-
-  child.stdout.on('data', (chunk) => {
-    const text = chunk.toString();
-    stdoutBuf += text;
-    // 30KB 초과분은 잘라내서 메모리 폭주 방지
-    if (stdoutBuf.length > 60000) stdoutBuf = stdoutBuf.slice(-30000);
-  });
-  child.stderr.on('data', (chunk) => {
-    const text = chunk.toString();
-    stderrBuf += text;
-    if (stderrBuf.length > 60000) stderrBuf = stderrBuf.slice(-30000);
-  });
-
-  await new Promise((resolve) => {
-    child.on('close', async (code) => {
-      const elapsedMs = Date.now() - startedAt;
-      const elapsedSec = Math.round(elapsedMs / 1000);
-      const combinedLog =
-        logLines.join('\n') +
-        '\n\n── Python (sap_rfc_sync_mfg_cost.py) STDOUT ──\n' +
-        (stdoutBuf || '(empty)') +
-        (stderrBuf ? '\n\n── STDERR ──\n' + stderrBuf : '');
-
-      // Exit code: 0=SUCCESS, 1=FAILED, 2=NO_DATA
-      if (code === 0 || code === 2) {
-        // 성공 (또는 NO_DATA) — stdout 에서 row 수 파싱 시도
-        //   Python 스크립트는 다음과 같은 요약 라인을 출력:
-        //     "[SUMMARY] total=NNN inserted=NNN deleted=NNN"
-        const m = /\[SUMMARY\]\s+total=(\d+)\s+inserted=(\d+)\s+deleted=(\d+)/.exec(stdoutBuf);
-        const totalRows    = m ? parseInt(m[1]) : 0;
-        const insertedRows = m ? parseInt(m[2]) : 0;
-        const deletedRows  = m ? parseInt(m[3]) : 0;
-
-        const finalLog = combinedLog +
-          `\n\n── Node.js 결과 요약 ──\n` +
-          `exit_code=${code} (${code === 2 ? 'NO_DATA' : 'SUCCESS'})\n` +
-          `total=${totalRows} inserted=${insertedRows} deleted=${deletedRows}\n` +
-          `elapsed=${elapsedSec}초\n` +
-          (code === 2 ? '[NO_DATA] T_DATA 응답이 비어있어 적재된 행이 없습니다.\n' : '');
-
-        await pool.query(
-          `UPDATE batch_jobs SET status='success', finished_at=NOW(),
-                  total_rows=?, inserted_rows=?, deleted_rows=?, log_text=?
-             WHERE id=?`,
-          [totalRows, insertedRows, deletedRows, finalLog, jobId]
-        );
-        console.log(`[Batch ${jobId}] 제조원가 RFC 완료: total=${totalRows}, inserted=${insertedRows}, deleted=${deletedRows}, exit=${code}`);
-      } else {
-        const errMsg = `제조원가 RFC 실행 실패 (exit_code=${code}). stderr=${(stderrBuf || '').slice(0, 500)}`;
-        await pool.query(
-          `UPDATE batch_jobs SET status='failed', finished_at=NOW(),
-                  error_message=?, log_text=? WHERE id=?`,
-          [errMsg.substring(0, 5000), combinedLog, jobId]
-        );
-        console.error(`[Batch ${jobId}] 제조원가 RFC 실패 (exit=${code})`);
-      }
-      resolve();
-    });
-
-    child.on('error', async (err) => {
-      const errMsg = `python3 spawn 실패: ${err.message}`;
-      addLog(errMsg);
-      await pool.query(
-        `UPDATE batch_jobs SET status='failed', finished_at=NOW(),
-                error_message=?, log_text=? WHERE id=?`,
-        [errMsg, logLines.join('\n'), jobId]
-      );
-      resolve();
-    });
-  });
 }
 
 // 해당 월 기존 데이터 건수 조회 (실행 전 확인용)
