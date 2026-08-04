@@ -421,16 +421,29 @@
 
         <!-- TAB: schedule -->
         <div class="tab-panel fade-in" id="tab-schedule" style="display:none;">
-            <div class="flex items-center justify-between mb-3">
-                <div class="text-sm text-gray-600">총 <strong id="schedCount">0</strong> 건</div>
-                <button class="btn btn-primary btn-sm" onclick="openSchedModal()"><i class="fas fa-plus"></i> 신규 등록</button>
+            <!-- 필터바: 이력관리와 동일한 패턴, interface_id 기반 필터링 -->
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <div class="filter-group-label"><i class="fas fa-code"></i> 인터페이스 (RFC)</div>
+                    <div class="filter-group-body">
+                        <select id="schedRfc" class="filter-input wide" onchange="loadSchedule()">
+                            <option value="ALL">전체</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="filter-actions">
+                    <button class="btn btn-primary btn-sm" onclick="loadSchedule()"><i class="fas fa-search"></i> 조회</button>
+                    <button class="btn btn-outline btn-sm" onclick="resetSchedFilter()"><i class="fas fa-rotate-left"></i> 초기화</button>
+                    <div class="filter-count" style="margin-left:10px;">총 <strong id="schedCount">0</strong> 건</div>
+                    <button class="btn btn-primary btn-sm" onclick="openSchedModal()" style="margin-left:auto;"><i class="fas fa-plus"></i> 신규 등록</button>
+                </div>
             </div>
             <div style="overflow-x:auto;">
             <table class="it-table">
                 <thead>
                     <tr>
-                        <th>인터페이스 ID</th>
-                        <th>인터페이스 명</th>
+                        <th style="width:60px;">ID</th>
+                        <th>인터페이스</th>
                         <th>수행 주기</th>
                         <th>수행 시간/간격</th>
                         <th>활성</th>
@@ -906,11 +919,13 @@ function renderMonthlyChart(resp){
 function onInterfaceChange(){
   currentInterface=document.getElementById('interfaceSelect').value || '';
   refreshTopArea();
-  // 이력관리 탭의 RFC 필터를 상단 선택과 동기화
-  // (탭이 history 가 아니더라도 미리 맞춰둬서 탭 진입 시 일관성 유지)
+  // 이력관리 / 수행관리 탭의 RFC 필터를 상단 선택과 동기화
+  // (탭이 활성이 아니더라도 미리 맞춰둬서 탭 진입 시 일관성 유지)
   syncHistRfcWithTopInterface();
-  // 현재 활성 탭이 history 이면 같이 갱신
-  if(currentTab==='history') loadHistory();
+  syncSchedRfcWithTopInterface();
+  // 현재 활성 탭이 history/schedule 이면 같이 갱신
+  if(currentTab==='history')  loadHistory();
+  if(currentTab==='schedule') loadSchedule();
 }
 
 // 상단 인터페이스 선택 → 이력관리 탭의 RFC 필터 동기화
@@ -1087,13 +1102,30 @@ function schedCycleText(s){
     default:        return `매일 ${(s.exec_time||'').slice(0,5)}`;
   }
 }
+// 수행관리 필터 초기화 (전체 조회로 되돌림)
+function resetSchedFilter(){
+  const sel=document.getElementById('schedRfc');
+  if(sel) sel.value='ALL';
+  loadSchedule();
+}
+
 async function loadSchedule(){
+  // 수행관리 필터: 이력관리와 동일하게 DOM 셀렉트에서 현재 값을 읽어
+  //               서버에 interfaceId 로 전달 (필터값은 CRUD/토글 후에도 자동 유지)
+  //               - value 는 안정적인 interface_id (rfc_name 문자열 비교가 아님)
+  //               - 'ALL' 또는 값 없음 → 전체 조회
   try{
-    const j=await api('/api/interface/schedule');
+    // 드롭다운이 아직 안 채워졌으면 먼저 채움 (탭 첫 진입 시)
+    if(!rfcListCache.length) await loadRfcList();
+    const qs=new URLSearchParams();
+    const sel=document.getElementById('schedRfc');
+    const interfaceId=sel ? (sel.value||'ALL') : 'ALL';
+    if(interfaceId && interfaceId!=='ALL') qs.set('interfaceId', interfaceId);
+    const j=await api('/api/interface/schedule'+(qs.toString()?'?'+qs.toString():''));
     scheduleList=j.items||[];
     document.getElementById('schedCount').textContent=scheduleList.length;
     document.getElementById('schedBody').innerHTML = scheduleList.length===0
-      ? `<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:18px;">등록된 스케줄이 없습니다.</td></tr>`
+      ? `<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:18px;">등록된 수행 스케줄이 없습니다.</td></tr>`
       : scheduleList.map(s=>{
         const isOnce   = s.schedule_type==='once';
         const isManual = s.schedule_type==='manual';
@@ -1103,8 +1135,11 @@ async function loadSchedule(){
           : '';
         return `
         <tr>
-          <td class="col-mono">${escapeHtml(s.interface_id)}</td>
-          <td>${escapeHtml(s.interface_name||'-')}</td>
+          <td style="text-align:center;">${s.id}</td>
+          <td>
+            ${s.rfc_name?`<span class="col-mono" style="color:#7c3aed;font-weight:600;">${escapeHtml(s.rfc_name)}</span><br>`:''}
+            <span style="font-size:11.5px;color:#475569;">${escapeHtml(s.interface_id||'-')}${s.interface_name?` <span style="color:#94a3b8;">(${escapeHtml(s.interface_name)})</span>`:''}</span>
+          </td>
           <td style="text-align:center;">${schedTypeBadge(s.schedule_type)}</td>
           <td style="text-align:center;">${schedCycleText(s)}${onceMeta?'<br>'+onceMeta:''}</td>
           <td style="text-align:center;">
@@ -1402,6 +1437,8 @@ async function loadRfcList(){
   try{
     const j=await api('/api/interface/rfc-list');
     rfcListCache=j.items||[];
+
+    // 이력관리 탭 RFC 드롭다운 — value = rfc_name (기존 방식 유지, 하위호환)
     const sel=document.getElementById('histRfc');
     if(sel){
       const current=sel.value||'ALL';
@@ -1411,7 +1448,33 @@ async function loadRfcList(){
       // 옵션을 새로 그렸으므로 상단 선택과 동기화 (옵션이 존재하면 그쪽 우선)
       syncHistRfcWithTopInterface();
     }
+
+    // 수행관리 탭 RFC 드롭다운 — value = interface_id (안정적인 stable key)
+    //   · rfc_name 문자열 비교가 아니라 interface_id 로 필터링
+    //   · 라벨: "Z_BI_WEB_EX_BL_4 (제조원가 RFC)" 형식
+    const selSched=document.getElementById('schedRfc');
+    if(selSched){
+      const current=selSched.value||'ALL';
+      selSched.innerHTML='<option value="ALL">전체</option>'+
+        rfcListCache.map(r=>`<option value="${escapeHtml(r.interface_id)}">${escapeHtml(r.rfc_name)}${r.interface_name?` (${escapeHtml(r.interface_name)})`:''}</option>`).join('');
+      // 기존 선택값이 새 옵션에도 존재하면 유지, 없으면 상단과 동기화
+      if(Array.from(selSched.options).some(o=>o.value===current)) selSched.value=current;
+      else syncSchedRfcWithTopInterface();
+    }
   }catch(e){/* 조용히 실패 — 필터 없이도 동작 */}
+}
+
+// 상단 인터페이스 선택 → 수행관리 탭의 RFC 필터 동기화
+// - currentInterface (interface_id) 그대로 사용 (수행관리 드롭다운 value 도 interface_id)
+// - 해당 옵션이 없으면 'ALL' fallback
+function syncSchedRfcWithTopInterface(){
+  const sel=document.getElementById('schedRfc');
+  if(!sel) return;
+  let target='ALL';
+  if(currentInterface && Array.from(sel.options).some(o=>o.value===currentInterface)){
+    target=currentInterface;
+  }
+  sel.value=target;
 }
 function resetHistFilter(){
   document.getElementById('histRfc').value='ALL';
