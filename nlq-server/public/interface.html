@@ -432,9 +432,8 @@
                     </div>
                 </div>
                 <div class="filter-actions">
-                    <button class="btn btn-primary btn-sm" onclick="loadSchedule()"><i class="fas fa-search"></i> 조회</button>
-                    <button class="btn btn-outline btn-sm" onclick="resetSchedFilter()"><i class="fas fa-rotate-left"></i> 초기화</button>
-                    <div class="filter-count" style="margin-left:10px;">총 <strong id="schedCount">0</strong> 건</div>
+                    <!-- 조회/초기화 버튼 제거: 드롭다운 onchange 로 즉시 갱신되므로 잉여 -->
+                    <div class="filter-count">총 <strong id="schedCount">0</strong> 건</div>
                     <button class="btn btn-primary btn-sm" onclick="openSchedModal()" style="margin-left:auto;"><i class="fas fa-plus"></i> 신규 등록</button>
                 </div>
             </div>
@@ -1102,13 +1101,6 @@ function schedCycleText(s){
     default:        return `매일 ${(s.exec_time||'').slice(0,5)}`;
   }
 }
-// 수행관리 필터 초기화 (전체 조회로 되돌림)
-function resetSchedFilter(){
-  const sel=document.getElementById('schedRfc');
-  if(sel) sel.value='ALL';
-  loadSchedule();
-}
-
 async function loadSchedule(){
   // 수행관리 필터: 이력관리와 동일하게 DOM 셀렉트에서 현재 값을 읽어
   //               서버에 interfaceId 로 전달 (필터값은 CRUD/토글 후에도 자동 유지)
