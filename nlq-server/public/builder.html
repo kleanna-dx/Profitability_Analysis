@@ -1793,8 +1793,8 @@ function filterFields() {
 //   - 변경: /api/data-date-context 응답의 latestMonth (예: 실제 적재된 최신월이 202606이면 202606)
 //   - 정책:
 //       · 서버 응답 성공 시  → 시작·종료 년월을 latestMonth 로 동기화
-//       · 서버 응답 실패 시  → 시스템 현재월 폴백 금지. 셀렉트를 비운 상태로 두고
-//         화면 상단에 안내 배너를 표시. 사용자가 직접 선택하도록 유도.
+//       · 서버 응답 실패 시  → 시스템 현재월(기본값)을 조용히 폴백으로 뿌림.
+//         (사용자 요청: 배너로 유도하지 말고 그냥 기본값 월을 뿌려줄 것.)
 //       · 사용자가 직접 셀렉트를 바꾼 뒤엔 이 함수를 다시 호출해도 사용자 선택을 존중 (덮어쓰지 않음).
 //       · [수익성분석] / [제조원가] 탭 전환 시 재조회.
 //         현재 [제조원가] 는 UI 프리뷰 상태라 데이터 경로가 없으므로
@@ -1896,6 +1896,22 @@ function _showDateBanner(kind, msg) {
     bar.style.display = 'block';
 }
 
+// 조회 실패 시 사용할 기본값 = 시스템 현재월 (YYYYMM).
+//   - 사용자가 이미 셀렉트를 만졌으면 값을 덮어쓰지 않음.
+//   - 성공하면 나중에 실제 latestMonth 로 재적용됨.
+function _applyCurrentMonthFallback() {
+    if (_userTouchedDate) return false;
+    const now = new Date();
+    const yyyy = String(now.getFullYear());
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const applied = _applyLatestMonthToSelectors(yyyy + mm);
+    if (applied) {
+        // 자동 폴백은 조용히 처리 (배너 노출 안 함). 종료<시작 자동보정만 트리거.
+        try { onDateChange(); } catch (e) {}
+    }
+    return applied;
+}
+
 // 현재 area 탭이 '제조원가' 인지 여부. area-tabs.js 가 <body data-area> 를 채운다.
 function _isManufacturingCostArea() {
     try {
@@ -1916,12 +1932,12 @@ async function _fetchAndApplyLatestMonth() {
         const r = await fetch('/api/data-date-context', { credentials: 'same-origin' });
         if (!r.ok) {
             // 서버가 명시적 5xx (예: NO_DATA / DB_ERROR) 로 응답
+            //   → 사용자 요청대로 조용히 시스템 현재월로 폴백 (배너 없음).
             let code = 'UNKNOWN';
             try { const j = await r.json(); code = j.errorCode || code; } catch (e) {}
-            const msg = code === 'NO_DATA'
-                ? '데이터 기준월을 조회할 수 없습니다: 적재된 데이터가 없습니다. 조회 기간을 직접 선택해 주세요.'
-                : '데이터 기준월 조회에 실패했습니다. 잠시 후 새로고침하거나 조회 기간을 직접 선택해 주세요.';
-            _showDateBanner('warn', msg);
+            console.warn('[DateCtx] latestMonth 조회 실패 (HTTP', r.status, '/', code, ') → 시스템 현재월 폴백');
+            _showDateBanner('', '');
+            _applyCurrentMonthFallback();
             return;
         }
         const data = await r.json();
@@ -1937,11 +1953,16 @@ async function _fetchAndApplyLatestMonth() {
                 onDateChange(); // 종료<시작 자동보정 + 비교버튼 상태 갱신
             }
         } else {
-            _showDateBanner('warn', '데이터 기준월을 조회할 수 없습니다. 조회 기간을 직접 선택해 주세요.');
+            // ok=false 이거나 latestMonth 누락 → 조용히 폴백
+            console.warn('[DateCtx] 응답에 latestMonth 없음 → 시스템 현재월 폴백');
+            _showDateBanner('', '');
+            _applyCurrentMonthFallback();
         }
     } catch (e) {
-        console.warn('[DateCtx] latestMonth 조회 실패:', e && e.message);
-        _showDateBanner('warn', '데이터 기준월 조회에 실패했습니다. 네트워크 확인 후 다시 시도해 주세요.');
+        // 네트워크/파싱 예외 → 조용히 폴백
+        console.warn('[DateCtx] latestMonth 조회 실패:', e && e.message, '→ 시스템 현재월 폴백');
+        _showDateBanner('', '');
+        _applyCurrentMonthFallback();
     }
 }
 
