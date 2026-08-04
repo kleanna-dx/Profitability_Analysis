@@ -941,13 +941,27 @@
             margin-bottom: 0;
         }
         .date-section-header {
-            display: flex; align-items: center; gap: 8px;
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
             margin-bottom: 12px; font-size: 0.88rem; font-weight: 700; color: var(--indigo);
         }
         .date-section-header .badge {
             font-size: 0.68rem; padding: 2px 8px; border-radius: 8px; font-weight: 700;
             background: #ddd6fe; color: #6d28d9;
         }
+        /* [PR #340 후속] 날짜 조건 인라인 안내 문구
+           - '날짜 조건' 헤더 오른쪽에 '단월/기간' 배지 다음으로 이어서 표시
+           - 좁은 화면에서는 date-section-header 의 flex-wrap 에 의해 자연스럽게 다음 줄로
+           - min-width:0 + overflow:hidden + ellipsis 로 가로 스크롤 방지 */
+        .date-section-header .date-context-inline {
+            font-size: 0.78rem; font-weight: 500; color: var(--text-light);
+            flex: 1 1 auto; min-width: 0;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .date-section-header .date-context-inline:empty {
+            display: none;
+        }
+        .date-section-header .date-context-inline.warn { color: #92400e; }
+        .date-section-header .date-context-inline.error { color: #991b1b; }
         .date-controls {
             display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
         }
@@ -1176,6 +1190,8 @@
                 <div class="date-section-header">
                     <i class="fas fa-calendar-alt"></i> 날짜 조건
                     <span class="badge" id="dateBadge">필수</span>
+                    <!-- [PR #340 후속] 최신 기준월 안내 문구 (헤더 오른쪽 인라인). JS 에서 채움. -->
+                    <span class="date-context-inline" id="dateContextInline"></span>
                 </div>
                 <div class="date-controls">
                     <div class="date-input-group">
@@ -1870,30 +1886,29 @@ function _applyLatestMonthToSelectors(ym /* 'YYYYMM' */) {
 
 function _showDateBanner(kind, msg) {
     // kind: 'info' | 'warn' | 'error' | '' (숨김)
-    let bar = document.getElementById('dateContextBanner');
-    if (!bar) {
-        // 날짜 조건 섹션 위에 배너를 삽입 (섹션 헤더 바로 다음)
-        const label = document.querySelector('label[for="dateStartYear"], .date-condition-title')
-                     || document.getElementById('dateStartYear');
-        // 어느 컨테이너 위에 붙일지 안전하게 찾기: 시작 년도 셀렉트의 부모 컨테이너의 부모
-        const anchor = document.getElementById('dateStartYear')?.closest('section, .date-cond, .filter-panel, div');
-        if (!anchor) return;
-        bar = document.createElement('div');
-        bar.id = 'dateContextBanner';
-        bar.style.cssText = 'margin:6px 0 10px;padding:8px 10px;border-radius:6px;font-size:12px;line-height:1.4;display:none;';
-        anchor.parentNode.insertBefore(bar, anchor);
+    // [PR #340 후속 / 2026-08-04] 별도 박스 배너 대신, [날짜 조건] 헤더 오른쪽의
+    //   #dateContextInline span 에 텍스트만 채워 인라인으로 노출.
+    //   - 좁은 화면에서는 상위 flex-wrap:wrap 에 의해 다음 줄로 자연스럽게 내려감.
+    //   - 안내 문구가 없거나 kind가 falsy 이면 비워서 CSS :empty 로 display:none.
+    //   - 과거 버전에서 문서에 남아있을 수 있는 dateContextBanner 박스는 있으면 제거.
+    const legacy = document.getElementById('dateContextBanner');
+    if (legacy) legacy.remove();
+
+    const el = document.getElementById('dateContextInline');
+    if (!el) return;
+
+    // 색상 클래스 초기화 후 재적용 (기본 info 색은 CSS 기본 스타일이 담당)
+    el.classList.remove('warn', 'error');
+    if (!kind || !msg) {
+        el.textContent = '';
+        el.removeAttribute('title');
+        return;
     }
-    if (!kind || !msg) { bar.style.display = 'none'; bar.textContent = ''; return; }
-    const palette = {
-        info:  { bg: '#eef2ff', fg: '#3730a3', border: '#c7d2fe' },
-        warn:  { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' },
-        error: { bg: '#fee2e2', fg: '#991b1b', border: '#fecaca' },
-    }[kind] || { bg:'#f1f5f9', fg:'#334155', border:'#e2e8f0' };
-    bar.style.background = palette.bg;
-    bar.style.color = palette.fg;
-    bar.style.border = `1px solid ${palette.border}`;
-    bar.textContent = msg;
-    bar.style.display = 'block';
+    if (kind === 'warn')  el.classList.add('warn');
+    if (kind === 'error') el.classList.add('error');
+    el.textContent = msg;
+    // 길어져서 ellipsis 로 잘리는 경우 hover 로 전체 문구 확인 가능하도록 title 세팅
+    el.title = msg;
 }
 
 // 조회 실패 시 사용할 기본값 = 시스템 현재월 (YYYYMM).
