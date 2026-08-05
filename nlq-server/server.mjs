@@ -869,6 +869,67 @@ app.post('/api/me/domain', async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────
+// [PR #343 / 2026-08-05] 사용자별 가이드(튜토리얼) 노출 상태 API
+//   - 배경: 이전에는 프런트에서 localStorage['nlqCoachMarkSeen_v1'] 로
+//           '다시 보지 않기' 여부를 저장했으나, localStorage 는 브라우저
+//           범위이므로 같은 브라우저를 공유하는 다른 사용자에게도
+//           그 설정이 그대로 적용되는 버그가 있었음.
+//   - 해결: sys_aimd_user_guides 테이블에 (user_id, guide_code) 단위로
+//           저장하여 로그인 사용자별로 완전히 분리 관리.
+//   - guide_code 예: 'NLQ_COACHMARK_V1'
+//   - 실패 정책(fail-open): 조회 실패 시 do_not_show=false 로 응답하여
+//           신규 사용자가 튜토리얼을 놓치지 않도록 함.
+// ────────────────────────────────────────────────────────────────
+// GET /api/me/guide/:guide_code — 사용자별 가이드 상태 조회
+app.get('/api/me/guide/:guide_code', async (req, res) => {
+  if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
+  const guide_code = String(req.params.guide_code || '').trim();
+  if (!guide_code) return res.status(400).json({ error: 'guide_code 필수' });
+  try {
+    const [rows] = await pool.query(
+      'SELECT do_not_show, completed_at FROM sys_aimd_user_guides WHERE user_id=? AND guide_code=?',
+      [req.session.user.id, guide_code]
+    );
+    if (rows.length === 0) {
+      return res.json({ do_not_show: false, completed_at: null });
+    }
+    return res.json({
+      do_not_show: !!rows[0].do_not_show,
+      completed_at: rows[0].completed_at,
+    });
+  } catch (e) {
+    console.error('[UserGuide GET] 조회 실패:', e.message);
+    // fail-open: 신규 사용자는 튜토리얼을 반드시 봐야 하므로 do_not_show=false
+    return res.status(500).json({ error: '조회 실패', do_not_show: false });
+  }
+});
+
+// POST /api/me/guide/:guide_code — 사용자별 가이드 상태 upsert
+//   body: { do_not_show: boolean }
+app.post('/api/me/guide/:guide_code', async (req, res) => {
+  if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
+  const guide_code = String(req.params.guide_code || '').trim();
+  if (!guide_code) return res.status(400).json({ error: 'guide_code 필수' });
+  const do_not_show = req.body?.do_not_show ? 1 : 0;
+  const completed_at = do_not_show ? new Date() : null;
+  try {
+    await pool.query(
+      `INSERT INTO sys_aimd_user_guides (user_id, guide_code, do_not_show, completed_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         do_not_show  = VALUES(do_not_show),
+         completed_at = VALUES(completed_at)`,
+      [req.session.user.id, guide_code, do_not_show, completed_at]
+    );
+    console.log(`[UserGuide] 저장: ${req.session.user.id} / ${guide_code} / do_not_show=${do_not_show}`);
+    return res.json({ ok: true, do_not_show: !!do_not_show, completed_at });
+  } catch (e) {
+    console.error('[UserGuide POST] 저장 실패:', e.message);
+    return res.status(500).json({ error: '저장 실패' });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
 // [2026-07-30] 도메인 표시명 (display_code) 공통 헬퍼
 //   요구사항: 사용자에게 노출되는 화면에서는 MGMT 를 '통합' 으로 표시하되
 //   내부 domain_code (DB / API / 세션 / 권한 / SQL) 는 그대로 유지.
@@ -13466,6 +13527,42 @@ async function ensureBusinessAreaTables() {
 }
 
 // ============================================================
+// [2026-08-05] 사용자별 가이드(코치마크·튜토리얼) 노출 상태 테이블
+// ------------------------------------------------------------
+// 목적:
+//   기존 localStorage 기반 저장(nlqCoachMarkSeen_v1)은 같은 브라우저를 공유하는
+//   여러 사용자에게 서로 영향(A가 '다시 보지 않기' 하면 B도 안 뜸)을 주는
+//   문제가 있어, 사용자별로 독립 저장이 필요.
+//
+// 설계 원칙:
+//   - PK 는 (user_id, guide_code) 조합 → 한 사용자가 여러 가이드를 각각 관리 가능
+//     (예: 향후 빌더 튜토리얼, 관리자 온보딩 등 추가되어도 동일 스키마 재사용)
+//   - guide_code 예시: 'NLQ_COACHMARK_V1' (자연어 질의 튜토리얼 v1)
+//   - do_not_show=1 이면 자동 표시 스킵. 0 또는 row 없음 → 표시.
+//   - user_id 는 서버 세션에서 채움 (클라이언트 조작 방지)
+//   - ON DELETE CASCADE: 사용자 삭제 시 관련 가이드 상태도 함께 정리
+// ============================================================
+async function ensureUserGuideTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sys_aimd_user_guides (
+        user_id      VARCHAR(64) NOT NULL,
+        guide_code   VARCHAR(64) NOT NULL COMMENT '가이드 식별자 (예: NLQ_COACHMARK_V1)',
+        do_not_show  TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '1이면 자동 표시 스킵',
+        completed_at DATETIME    NULL DEFAULT NULL COMMENT '사용자가 튜토리얼 완료(또는 다시보지않기 체크)한 시각',
+        updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, guide_code),
+        INDEX idx_sys_aimd_ug_user (user_id),
+        CONSTRAINT fk_sys_aimd_ug_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AIMD 사용자별 가이드/튜토리얼 노출 상태'
+    `);
+    console.log('[UserGuide] sys_aimd_user_guides 테이블 준비 완료');
+  } catch (e) {
+    console.error('[UserGuide] 테이블 생성 실패:', e.message);
+  }
+}
+
+// ============================================================
 // [2026-07-30] 오류 접수 (Error Reports) 테이블
 // ------------------------------------------------------------
 // 목적:
@@ -15458,6 +15555,11 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
 
   // [2026-07-30] 오류 접수 테이블 자동 생성 (자연어 질의 오류 카드의 [오류 접수] 버튼용)
   await ensureErrorReportsTable();
+
+  // [2026-08-05] 사용자별 가이드/튜토리얼 노출 상태 테이블 자동 생성
+  //   - 기존 localStorage 기반 저장은 브라우저 공유 문제(A/B 사용자 공용) 로 폐지
+  //   - sys_aimd_user_guides 는 (user_id, guide_code) 조합으로 사용자별 독립 저장
+  await ensureUserGuideTable();
 
   // [2026-06-16] users.password 평문 → SHA-256 일괄 마이그레이션 (멱등성 보장)
   await migrateUserPasswordsToSha256();

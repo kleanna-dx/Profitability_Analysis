@@ -1504,6 +1504,35 @@ async function initDomainAndRole() {
         userDefaultDomain = me.domain_code || null;
         currentDomain = me.active_domain || me.domain_code || 'PS';
 
+        // [PR #343 / 2026-08-05] 사용자별 가이드(튜토리얼) 상태를 서버에서 로드
+        //   - 기존에는 localStorage['nlqCoachMarkSeen_v1'] 로 관리되어 같은 브라우저를
+        //     공유하는 다른 사용자에게도 '다시 보지 않기' 설정이 그대로 적용되는 버그가 있었음.
+        //   - 이제 sys_aimd_user_guides 테이블에 (user_id, guide_code) 단위로 저장되므로
+        //     로그인 사용자별/브라우저 무관하게 독립 관리됨.
+        //   - fail-open 정책: 조회 실패 시 do_not_show=false 로 튜토리얼 정상 노출.
+        //   - 아울러 이전 사용자의 localStorage 잔여 값이 다음 사용자에게 영향을 주지
+        //     않도록 legacy 키를 로그인 직후 즉시 삭제한다.
+        try { localStorage.removeItem('nlqCoachMarkSeen_v1'); } catch(_) {}
+        try {
+            const gRes = await fetch('/api/me/guide/' + encodeURIComponent(GUIDE_CODE_NLQ_COACHMARK));
+            if (gRes.ok) {
+                const gJson = await gRes.json();
+                window.__guideState = window.__guideState || {};
+                window.__guideState[GUIDE_CODE_NLQ_COACHMARK] = {
+                    do_not_show: !!gJson.do_not_show,
+                    completed_at: gJson.completed_at || null,
+                    loaded: true,
+                };
+            } else {
+                // fail-open: 서버 오류 시 신규 사용자가 튜토리얼을 놓치지 않도록 false 로 셋
+                window.__guideState = window.__guideState || {};
+                window.__guideState[GUIDE_CODE_NLQ_COACHMARK] = { do_not_show: false, completed_at: null, loaded: true };
+            }
+        } catch (_) {
+            window.__guideState = window.__guideState || {};
+            window.__guideState[GUIDE_CODE_NLQ_COACHMARK] = { do_not_show: false, completed_at: null, loaded: true };
+        }
+
         const uid = document.getElementById('userInfoDisplay');
         if (uid && me.name) {
             uid.innerHTML = `<strong style="font-size:13px;color:#1e293b;">${me.name}님</strong><br><span style="font-size:11px;color:#6b7280;font-weight:700;">(${me.user})</span>`;
@@ -1546,9 +1575,10 @@ async function initDomainAndRole() {
         //     안 잡혔다고 판단하여 auto 트리거가 폴백 종료됨.
         //   - 여기(도메인/도메인바 렌더 완료 직후)에서 한 번 더 시도하면 layout 이 확실히
         //     잡힌 상태라 정상 진입.
-        //   - localStorage[COACH_LS_KEY]='1'(다시 보지 않기) 이면 maybeAutoStartCoachMark
-        //     내부에서 스킵. 이미 튜토리얼이 실행 중이어도 startCoachMark 의
-        //     coachState.active 중복 방지로 무해.
+        //   - PR #343 이후: 사용자별 DB (sys_aimd_user_guides.do_not_show) 값이
+        //     window.__guideState 캐시에 로드돼 있으면 maybeAutoStartCoachMark 내부에서
+        //     그 값을 참조하여 스킵 여부 결정. 이미 튜토리얼이 실행 중이어도
+        //     startCoachMark 의 coachState.active 중복 방지로 무해.
         try { if (typeof maybeAutoStartCoachMark === 'function' && userDefaultDomain) maybeAutoStartCoachMark(); } catch(_) {}
 
         const params = new URLSearchParams(window.location.search);
@@ -1630,7 +1660,8 @@ async function selectForceDomain(dc) {
     //     사이드 메뉴의 [사용법] 버튼을 눌러야만 튜토리얼을 볼 수 있는 리그레션이 있었음.
     //   - 여기(사용자가 도메인 골라서 방금 모달 닫힌 직후)에 재트리거하면 원래 의도대로
     //     '첫 진입 사용자에게 바로 가이드' 동작이 복원됨.
-    //   - localStorage[COACH_LS_KEY]='1' 이면 스킵 (다시 보지 않기 존중).
+    //   - PR #343 이후: 사용자별 DB (sys_aimd_user_guides.do_not_show) 가
+    //     true 이면 스킵 (다시 보지 않기 존중).
     try { if (typeof maybeAutoStartCoachMark === 'function') maybeAutoStartCoachMark(); } catch(_) {}
 }
 
@@ -5631,7 +5662,23 @@ function startNewChat() {
 // - 리사이즈/스크롤 시 스포트라이트/툴팁 위치 재계산
 // - 기존 자연어 질의·용어집·학습관리 기능은 건드리지 않음 (별도 오버레이)
 // ================================================================
-const COACH_LS_KEY = 'nlqCoachMarkSeen_v1';   // '1' 이면 자동 표시 스킵
+// [PR #343 / 2026-08-05] 가이드 노출 상태 관리 전환
+//   - 이전: localStorage[COACH_LS_KEY]='1' 이면 자동 표시 스킵.
+//           그러나 localStorage 는 브라우저 범위라 같은 브라우저에서 A → B 로 로그인
+//           바꿔도 A의 '다시 보지 않기' 가 그대로 B에게 적용되는 버그가 있었음.
+//   - 이후: 사용자별 sys_aimd_user_guides.do_not_show 값을 서버에서 받아
+//           window.__guideState[GUIDE_CODE_NLQ_COACHMARK].do_not_show 에 캐시.
+//           체크박스 토글 시 POST /api/me/guide/:guide_code 로 업서트.
+//   - COACH_LS_KEY 상수는 legacy 키를 삭제(cleanup) 하기 위해서만 유지되며,
+//     자동 표시 여부 판단에는 더 이상 사용하지 않는다.
+const GUIDE_CODE_NLQ_COACHMARK = 'NLQ_COACHMARK_V1';
+const COACH_LS_KEY = 'nlqCoachMarkSeen_v1';   // (deprecated) 하위호환/청소 목적으로만 참조
+window.__guideState = window.__guideState || {};
+window.__guideState[GUIDE_CODE_NLQ_COACHMARK] = window.__guideState[GUIDE_CODE_NLQ_COACHMARK] || {
+    do_not_show: false,   // 서버 로드 전 기본값 (fail-open: 신규 사용자에게 튜토리얼 노출)
+    completed_at: null,
+    loaded: false,        // /api/me/guide 로 서버 값이 반영되었는지 여부
+};
 let coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null, _retriedStep:null };
 
 // 스텝 정의: target 은 CSS selector, content 는 툴팁에 표시할 HTML
@@ -5896,10 +5943,27 @@ function coachPrev() {
 }
 
 // "다시 보지 않기" 체크박스 토글
+//   [PR #343 / 2026-08-05] localStorage 대신 서버(사용자별 DB)에 저장.
+//   - 성공/실패 여부와 관계없이 UI 는 사용자 조작 그대로 반영 (낙관적 업데이트).
+//   - 서버 저장이 실패해도 세션 내에서는 캐시 값으로 즉시 반영되어 사용자 경험 유지.
+//   - legacy localStorage 키는 혹시 남아 있더라도 다음 로그인 시 initDomainAndRole 에서
+//     정리되므로 여기서는 별도 조작하지 않음.
 function onCoachDontShowAgain(cb) {
+    const checked = !!cb.checked;
+    // 1) 로컬 캐시 즉시 반영 (같은 세션에서 재렌더링 시 체크 상태 유지)
     try {
-        if (cb.checked) localStorage.setItem(COACH_LS_KEY, '1');
-        else            localStorage.removeItem(COACH_LS_KEY);
+        window.__guideState = window.__guideState || {};
+        window.__guideState[GUIDE_CODE_NLQ_COACHMARK] = window.__guideState[GUIDE_CODE_NLQ_COACHMARK] || {};
+        window.__guideState[GUIDE_CODE_NLQ_COACHMARK].do_not_show = checked;
+        window.__guideState[GUIDE_CODE_NLQ_COACHMARK].completed_at = checked ? new Date().toISOString() : null;
+    } catch(_) {}
+    // 2) 서버(사용자별 DB) 에 upsert
+    try {
+        fetch('/api/me/guide/' + encodeURIComponent(GUIDE_CODE_NLQ_COACHMARK), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ do_not_show: checked }),
+        }).catch(() => { /* 네트워크 오류 무시 — 다음 세션에 다시 시도됨 */ });
     } catch(_) {}
 }
 
@@ -5978,7 +6042,14 @@ function renderCoachStep() {
             fin.id = 'coachFinalCard';
             document.body.appendChild(fin);
         }
-        const dontShowChecked = (() => { try { return localStorage.getItem(COACH_LS_KEY) === '1'; } catch(_) { return false; } })();
+        // [PR #343] 사용자별 DB 값(캐시 window.__guideState) 우선 참조.
+        //   로그인 사용자별로 분리되므로 같은 브라우저 A→B 로그인 시에도 A의 설정이 B에 영향 없음.
+        const dontShowChecked = (() => {
+            try {
+                const st = (window.__guideState || {})[GUIDE_CODE_NLQ_COACHMARK];
+                return !!(st && st.do_not_show);
+            } catch(_) { return false; }
+        })();
         // 완료 화면은 STEP 번호 표시하지 않는다 (설명 단계가 아니므로).
         fin.innerHTML = `
             <button class="coach-final-close" onclick="endCoachMark()" title="닫기" aria-label="닫기"><i class="fas fa-times"></i></button>
@@ -6139,7 +6210,13 @@ function renderCoachStep() {
     // 툴팁 콘텐츠 렌더
     const idx = coachState.stepIdx;
     const total = COACH_STEPS.length;
-    const dontShowChecked = (() => { try { return localStorage.getItem(COACH_LS_KEY) === '1'; } catch(_) { return false; } })();
+    // [PR #343] 사용자별 DB 값(캐시 window.__guideState) 우선 참조 — 브라우저 공유 시 사용자 격리.
+    const dontShowChecked = (() => {
+        try {
+            const st = (window.__guideState || {})[GUIDE_CODE_NLQ_COACHMARK];
+            return !!(st && st.do_not_show);
+        } catch(_) { return false; }
+    })();
     // 스텝별 툴팁 폭 override 지원 — step.width 가 지정되면 그 값(px)으로, 아니면 CSS 기본값(380px) 사용.
     //   긴 예시 문장(예: 3단계의 "2026년 5월 대비 6월 매출총이익 증가액 기준 TOP 10") 이
     //   한 줄로 표시되도록 특정 스텝만 넓게 잡을 때 사용.
@@ -6248,11 +6325,17 @@ function renderCoachStep() {
 }
 
 // 자동 표시: 로그인/도메인 초기화가 끝난 시점에 한 번만 시도
-//   - localStorage '다시 보지 않기' 저장돼 있으면 스킵
+//   [PR #343 / 2026-08-05] 스킵 조건 변경
+//   - 이전: localStorage[COACH_LS_KEY]='1' (브라우저 공유 시 사용자간 상호 영향 버그)
+//   - 이후: 사용자별 DB 캐시 window.__guideState[GUIDE_CODE_NLQ_COACHMARK].do_not_show
+//   - fail-open: 서버 로드 실패(loaded=false) 시에는 do_not_show=false 이므로 정상 노출.
+//   - 로그아웃 상태(loaded=false 이자 fetch 자체가 unauthorized) 라면 로그인 페이지로
+//     리다이렉트되므로 이 함수까지 오지 않는다.
 //   - 도메인 강제 선택 모달이 열려 있으면 자동 스킵 (사용자가 ? 버튼으로 재실행 가능)
 function maybeAutoStartCoachMark() {
     try {
-        if (localStorage.getItem(COACH_LS_KEY) === '1') return;
+        const st = (window.__guideState || {})[GUIDE_CODE_NLQ_COACHMARK];
+        if (st && st.do_not_show === true) return;
     } catch(_) {}
     // 다른 로직들(사이드바 메뉴, 도메인 셀렉터 바 렌더 등)이 끝난 뒤 실행되도록 살짝 지연
     setTimeout(() => startCoachMark('auto'), 800);
