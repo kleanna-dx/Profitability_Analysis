@@ -869,6 +869,58 @@ app.post('/api/me/domain', async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────
+// [PR #343 / 2026-08-05] 자연어질의 가이드 '다시 보지 않기' 사용자별 관리
+//   - 배경: 이전에는 프런트에서 localStorage['nlqCoachMarkSeen_v1'] 로
+//           '다시 보지 않기' 여부를 저장했으나, localStorage 는 브라우저
+//           범위이므로 같은 브라우저를 공유하는 다른 사용자에게도
+//           그 설정이 그대로 적용되는 버그가 있었음.
+//   - 해결: users.nlq_guide_hidden 컬럼(TINYINT(1) DEFAULT 0) 하나로 관리.
+//           로그인한 사용자 행만 업데이트 → 사용자별 완전 격리.
+//   - 관리 대상 가이드가 1개(자연어질의 코치마크) 뿐이라 별도 테이블은 불필요.
+//           향후 다른 가이드가 추가되면 그때 컬럼을 추가하거나 별도 테이블로 확장.
+//   - 실패 정책(fail-open): 조회 실패 시 hidden=false 로 응답하여 신규 사용자가
+//           튜토리얼을 놓치지 않도록 함.
+// ────────────────────────────────────────────────────────────────
+// GET /api/me/nlq-guide-hidden — 현재 로그인 사용자의 가이드 노출 여부 조회
+app.get('/api/me/nlq-guide-hidden', async (req, res) => {
+  if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
+  try {
+    const [rows] = await pool.query(
+      'SELECT nlq_guide_hidden FROM users WHERE user_id = ?',
+      [req.session.user.id]
+    );
+    if (rows.length === 0) {
+      // 세션은 있는데 users 에 없는 이례적 상황 → fail-open
+      return res.json({ hidden: false });
+    }
+    return res.json({ hidden: !!rows[0].nlq_guide_hidden });
+  } catch (e) {
+    console.error('[NlqGuide GET] 조회 실패:', e.message);
+    // fail-open: 신규 사용자는 튜토리얼을 반드시 봐야 하므로 hidden=false
+    return res.status(500).json({ error: '조회 실패', hidden: false });
+  }
+});
+
+// POST /api/me/nlq-guide-hidden — 현재 로그인 사용자의 가이드 노출 여부 저장
+//   body: { hidden: boolean }
+//   반드시 WHERE user_id = 세션ID 로만 UPDATE (다른 사용자에게 영향 없음)
+app.post('/api/me/nlq-guide-hidden', async (req, res) => {
+  if (!req.session?.user) return res.status(401).json({ error: '로그인 필요' });
+  const hidden = req.body?.hidden ? 1 : 0;
+  try {
+    const [result] = await pool.query(
+      'UPDATE users SET nlq_guide_hidden = ? WHERE user_id = ?',
+      [hidden, req.session.user.id]
+    );
+    console.log(`[NlqGuide] 저장: user_id=${req.session.user.id} → nlq_guide_hidden=${hidden} (affected=${result.affectedRows})`);
+    return res.json({ ok: true, hidden: !!hidden });
+  } catch (e) {
+    console.error('[NlqGuide POST] 저장 실패:', e.message);
+    return res.status(500).json({ error: '저장 실패' });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
 // [2026-07-30] 도메인 표시명 (display_code) 공통 헬퍼
 //   요구사항: 사용자에게 노출되는 화면에서는 MGMT 를 '통합' 으로 표시하되
 //   내부 domain_code (DB / API / 세션 / 권한 / SQL) 는 그대로 유지.
@@ -13466,6 +13518,66 @@ async function ensureBusinessAreaTables() {
 }
 
 // ============================================================
+// [2026-08-05] 자연어질의 가이드 '다시 보지 않기' 사용자별 관리
+// ------------------------------------------------------------
+// 목적:
+//   기존 localStorage 기반 저장(nlqCoachMarkSeen_v1)은 같은 브라우저를 공유하는
+//   여러 사용자에게 서로 영향(A가 '다시 보지 않기' 하면 B도 안 뜸)을 주는
+//   문제가 있어, 사용자별로 독립 저장이 필요.
+//
+// 설계:
+//   - users 테이블에 nlq_guide_hidden TINYINT(1) NOT NULL DEFAULT 0 컬럼 추가.
+//   - '다시 보지 않기' 는 자연어질의 코치마크 1개만 대상이라 별도 테이블 대신
+//     users 컬럼 하나로 충분히 관리 가능.
+//   - 저장/조회 모두 WHERE user_id = 세션ID 로만 수행 → 완전 격리.
+//   - is_active / sso_yn 등 users 의 기존 TINYINT(1) 컬럼과 스타일 통일.
+//
+// 마이그레이션 안전성:
+//   - 이 함수는 매 부팅마다 실행되므로 idempotent 해야 함.
+//   - MariaDB/MySQL 은 ALTER TABLE ADD COLUMN IF NOT EXISTS 를 지원 (MariaDB 10.0.2+ / MySQL 8.0.29+)
+//     지원 안 되는 환경 대비, INFORMATION_SCHEMA 로 컬럼 존재 여부 선확인.
+// ============================================================
+async function ensureNlqGuideColumn() {
+  try {
+    const [colRows] = await pool.query(`
+      SELECT COLUMN_NAME
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'users'
+        AND COLUMN_NAME = 'nlq_guide_hidden'
+    `);
+    if (colRows.length === 0) {
+      await pool.query(`
+        ALTER TABLE users
+        ADD COLUMN nlq_guide_hidden TINYINT(1) NOT NULL DEFAULT 0
+        COMMENT '자연어질의 가이드 다시 보지 않기 여부 (0=표시, 1=미표시)'
+      `);
+      console.log('[NlqGuide] users.nlq_guide_hidden 컬럼 추가 완료');
+    } else {
+      // 이미 존재 → 아무 것도 하지 않음 (idempotent)
+    }
+
+    // (원복) 이전 시도에서 잠깐 만들었던 sys_aimd_user_guides 테이블이 있으면 제거.
+    //   users 컬럼 방식으로 최종 결정되었으므로 흔적을 남기지 않는다.
+    try {
+      const [tblRows] = await pool.query(`
+        SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_aimd_user_guides'
+      `);
+      if (tblRows.length > 0) {
+        await pool.query('DROP TABLE sys_aimd_user_guides');
+        console.log('[NlqGuide] (cleanup) sys_aimd_user_guides 테이블 제거');
+      }
+    } catch (dropErr) {
+      // 참조 무결성 등으로 실패해도 본 기능에는 영향 없으므로 경고만
+      console.warn('[NlqGuide] sys_aimd_user_guides 제거 실패(무시):', dropErr.message);
+    }
+  } catch (e) {
+    console.error('[NlqGuide] users.nlq_guide_hidden 준비 실패:', e.message);
+  }
+}
+
+// ============================================================
 // [2026-07-30] 오류 접수 (Error Reports) 테이블
 // ------------------------------------------------------------
 // 목적:
@@ -15458,6 +15570,11 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
 
   // [2026-07-30] 오류 접수 테이블 자동 생성 (자연어 질의 오류 카드의 [오류 접수] 버튼용)
   await ensureErrorReportsTable();
+
+  // [2026-08-05] 자연어질의 가이드 '다시 보지 않기' 사용자별 관리
+  //   - 기존 localStorage 기반 저장은 브라우저 공유 문제(A/B 사용자 공용) 로 폐지
+  //   - users.nlq_guide_hidden TINYINT(1) 컬럼 하나로 사용자별 격리 관리
+  await ensureNlqGuideColumn();
 
   // [2026-06-16] users.password 평문 → SHA-256 일괄 마이그레이션 (멱등성 보장)
   await migrateUserPasswordsToSha256();
