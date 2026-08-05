@@ -5638,6 +5638,146 @@ function validateSqlPreExecution(sql) {
 //   - 조건 제거 후 WHERE 만 남거나 AND/OR 가 노출되면 정리
 //   - 서브쿼리/JOIN 안의 DIVISION 도 동일하게 제거 (SQL 전체 대상)
 // ============================================================
+
+// ============================================================
+// [Task E — 자연어 질의 상단 답변과 표 결과 불일치 수정]
+//   행 수 통계 계산 헬퍼:
+//     - 전체 행 수(rows.length)
+//     - 사업부별(DIVISION) 행 수
+//     - 표시용 사업부명 라벨 ("PS 5행, HL 5행")
+//   answer 생성 프롬프트와 사후 검증에서 공용으로 사용.
+// ============================================================
+const DIVISION_CODE_TO_LABEL_FOR_ANSWER = {
+  '10': 'PS',
+  '20': 'HL',
+};
+function computeRowStats(rows) {
+  const total = Array.isArray(rows) ? rows.length : 0;
+  const byDivision = {};       // { '10': 5, '20': 5 }
+  const byDivisionNm = {};     // { '페이퍼솔루션': 5, ... } (fallback)
+  if (Array.isArray(rows) && rows.length > 0) {
+    for (const r of rows) {
+      if (!r || typeof r !== 'object') continue;
+      // DIVISION 코드 우선 (표준)
+      const divRaw = r.DIVISION ?? r.division ?? null;
+      if (divRaw !== null && divRaw !== undefined) {
+        const key = String(divRaw).trim();
+        if (key) byDivision[key] = (byDivision[key] || 0) + 1;
+      }
+      // DIVISION_NM (fallback — DIVISION 컬럼이 결과에 없는 경우)
+      const nmRaw = r.DIVISION_NM ?? r.division_nm ?? null;
+      if (nmRaw !== null && nmRaw !== undefined) {
+        const key = String(nmRaw).trim();
+        if (key) byDivisionNm[key] = (byDivisionNm[key] || 0) + 1;
+      }
+    }
+  }
+  // 표시용 라벨: "PS 5행, HL 5행" 형태
+  const parts = [];
+  const orderedCodes = Object.keys(byDivision).sort();  // '10','20' 순
+  for (const code of orderedCodes) {
+    const label = DIVISION_CODE_TO_LABEL_FOR_ANSWER[code] || code;
+    parts.push(`${label} ${byDivision[code]}행`);
+  }
+  // DIVISION 코드가 없고 DIVISION_NM 만 있는 경우 fallback
+  if (parts.length === 0 && Object.keys(byDivisionNm).length > 0) {
+    for (const nm of Object.keys(byDivisionNm).sort()) {
+      parts.push(`${nm} ${byDivisionNm[nm]}행`);
+    }
+  }
+  const divisionSummary = parts.join(', ');
+  const hasDivisionBreakdown = parts.length >= 2;  // 사업부 2개 이상일 때만 의미 있음
+  return {
+    total,
+    byDivision,
+    byDivisionNm,
+    divisionSummary,
+    hasDivisionBreakdown,
+  };
+}
+
+// ============================================================
+// [Task E] 답변 사후 검증:
+//   - 데이터가 완전(총행수 > 0, 각 사업부에 실제 행 존재)함에도
+//     LLM 이 "결과가 끊겼다"/"확인할 수 없다" 등의 잘못된 문구를 낸 경우 감지.
+//   - 감지 시 검증된 고정 요약(fallback)으로 대체.
+// ============================================================
+const ANSWER_TRUNCATION_HALLUCINATION_PATTERNS = [
+  /결과가\s*(중간에\s*)?끊[겼겨]/,
+  /중간에\s*끊[겼겨]/,
+  /확인할\s*수\s*없/,
+  /확인이\s*불가/,
+  /데이터가\s*(일부만|잘렸|짤렸)/,
+  /제공된\s*결과가\s*(일부|부분)/,
+];
+function detectAnswerTruncationHallucination(answerText) {
+  if (!answerText || typeof answerText !== 'string') return false;
+  return ANSWER_TRUNCATION_HALLUCINATION_PATTERNS.some(re => re.test(answerText));
+}
+
+// ============================================================
+// [Task E] 사업부별 요약 fallback 답변 생성:
+//   - LLM 답변이 hallucination 이거나 실패한 경우 사용.
+//   - 예: "2026년 6월 기준 PS와 HL의 결과를 조회했습니다. PS 5행, HL 5행으로 총 10개 항목이 포함되었습니다."
+// ============================================================
+function buildFallbackAnswer(rowStats, dateContext, query) {
+  const { total, divisionSummary, hasDivisionBreakdown } = rowStats;
+  if (total === 0) {
+    return '조회 결과가 없습니다. 조건을 다시 확인해 주세요.';
+  }
+  const dateLabel = dateContext?.latestLabel || '';
+  const dateStr = dateLabel ? `**${dateLabel}** 기준 ` : '';
+  if (hasDivisionBreakdown) {
+    return `${dateStr}조회 결과 ${divisionSummary}으로 총 ${total}개 항목이 포함되었습니다.`;
+  }
+  return `${dateStr}조회 결과 총 ${total}개 항목이 포함되었습니다.`;
+}
+
+// ============================================================
+// [Task E] 문장/항목 단위 안전 truncate:
+//   - 지정 글자수 초과 시, 마지막 완결된 문장/항목(., !, ?, "다.", 줄바꿈+`-`) 경계에서 자른 뒤 `...` 추가.
+//   - 값(숫자·SKU명) 중간에서 자르지 않음.
+// ============================================================
+function truncateAnswerAtSentenceBoundary(text, maxChars) {
+  if (!text || typeof text !== 'string') return text || '';
+  if (text.length <= maxChars) return text;
+  const candidate = text.substring(0, maxChars);
+  // 마지막 완결 문장 경계 찾기
+  const boundaries = [
+    candidate.lastIndexOf('다.'),
+    candidate.lastIndexOf('요.'),
+    candidate.lastIndexOf('세요.'),
+    candidate.lastIndexOf('니다.'),
+    candidate.lastIndexOf('.\n'),
+    candidate.lastIndexOf('!\n'),
+    candidate.lastIndexOf('?\n'),
+    candidate.lastIndexOf('\n- '),
+  ];
+  const lastBoundary = Math.max(...boundaries);
+  // 경계가 너무 앞쪽이면(전체의 40% 미만) 그냥 maxChars 위치로 자르되 단어 경계 유지
+  if (lastBoundary > maxChars * 0.4) {
+    // "다." 같은 경우 마침표까지 포함
+    let cutPos = lastBoundary;
+    // 한글 종결어미(다./요./세요./니다.)는 마침표까지 포함
+    if (candidate.substring(cutPos, cutPos + 2) === '다.' ||
+        candidate.substring(cutPos, cutPos + 2) === '요.') {
+      cutPos += 2;
+    } else if (candidate.substring(cutPos, cutPos + 3) === '세요.' ||
+               candidate.substring(cutPos, cutPos + 3) === '니다.') {
+      cutPos += 3;
+    } else if (candidate[cutPos] === '.' || candidate[cutPos] === '!' || candidate[cutPos] === '?') {
+      cutPos += 1;
+    }
+    return candidate.substring(0, cutPos).trim() + ' ...';
+  }
+  // 문장 경계를 못 찾으면 공백 경계에서 자름
+  const lastSpace = candidate.lastIndexOf(' ');
+  if (lastSpace > maxChars * 0.7) {
+    return candidate.substring(0, lastSpace).trim() + ' ...';
+  }
+  return candidate.trim() + ' ...';
+}
+
 function scrubDivisionFilter(inputSql) {
   if (!inputSql) return inputSql;
   if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
@@ -7448,9 +7588,33 @@ ${sqlValidation.reason}
     }
 
     // 4-A. SQL 결과 기반 사용자 친화적 answer 생성 (항상 결과 데이터를 보고 생성)
+    // ─────────────────────────────────────────────────────────────────
+    // [Task E — 답변과 표 결과 불일치 수정 / PR #346]
+    //   버그: "PS, HL SKU별 매출 TOP5" 조회 시 표에는 PS 5행·HL 5행 총 10행이 정상 조회되는데
+    //         상단 답변은 "결과가 중간에 끊겨 확인할 수 없습니다" 라는 hallucination 을 냈음.
+    //   원인:
+    //     (1) sampleText.substring(0, 600) — JSON 문자열이 600자에서 강제 절단됨.
+    //         10행이면 이미 600자를 훨씬 넘겨 LLM 이 실제로 잘린 데이터를 보게 됨.
+    //     (2) LLM 프롬프트에 "총 몇 행이 존재하는지", "사업부별 몇 행인지" 를 명시하지 않음.
+    //   수정:
+    //     (1) 사업부별 행 수 통계(computeRowStats) 를 프롬프트에 명시.
+    //     (2) 답변 생성용 데이터는 완전한 결과(전체 rows) 를 JSON.stringify — 절단 금지.
+    //         (단, 극단적으로 큰 결과에 대비해 상위 50행까지만 프롬프트에 포함하고,
+    //          그럴 경우에도 "총 N행 중 상위 50행 샘플" 임을 프롬프트에 명시함으로써
+    //          LLM 이 "일부만 보여진 것" 을 절단으로 오해하지 않도록 함.)
+    //     (3) 사후 검증: "확인할 수 없다"/"결과가 끊겼다" 문구 감지 시 fallback 요약으로 대체.
+    //     (4) 사후 검증: 답변에서 언급된 사업부 이름과 실제 행 수 일치 여부는 프롬프트에서만 강제.
+    // ─────────────────────────────────────────────────────────────────
+    const rowStats = computeRowStats(rows);
     try {
-      const sampleData = rows.slice(0, 20);
-      const sampleText = JSON.stringify(sampleData, (k, v) => typeof v === 'bigint' ? Number(v) : v);
+      // ★ 절단 없이 사용할 수 있도록 데이터 크기별 전략 분기.
+      //   - 50행 이하: 전체를 JSON 으로 전달 (절단 없음).
+      //   - 50행 초과: 상위 50행 샘플 + "총 N행 중 상위 50행 샘플" 이라는 명시적 안내를 프롬프트에 포함
+      //     → LLM 이 "결과가 잘렸다" 고 착각하지 않도록.
+      const ROWS_FOR_PROMPT = 50;
+      const isSampled = rows.length > ROWS_FOR_PROMPT;
+      const dataForAnswer = isSampled ? rows.slice(0, ROWS_FOR_PROMPT) : rows;
+      const sampleText = JSON.stringify(dataForAnswer, (k, v) => typeof v === 'bigint' ? Number(v) : v);
 
       // 날짜 컨텍스트 (dateContext가 없으면 폴백)
       const dc = dateContext || await getDataDateContext();
@@ -7468,6 +7632,21 @@ ${sqlValidation.reason}
   ✗ 금지: "202,601" / ✓ 권장: "**2026년 1월**" (한국어 년월이 최우선) 또는 "202601"
 - 음수는 마이너스(-) 뒤에 콤마 적용 (예: -224,513,132).`;
 
+      // ★ [Task E] 행 수 컨텍스트: LLM 이 "결과가 잘렸다" 는 착각을 하지 않도록 명시.
+      const rowCountContext = [
+        `[행 수 정보 — 반드시 준수]`,
+        `- 조회 결과 총 행 수: ${rowStats.total}행`,
+      ];
+      if (rowStats.hasDivisionBreakdown) {
+        rowCountContext.push(`- 사업부별 행 수: ${rowStats.divisionSummary}`);
+      }
+      if (isSampled) {
+        rowCountContext.push(`- 아래 결과 JSON 은 상위 ${ROWS_FOR_PROMPT}행 샘플 (전체 ${rowStats.total}행 중). 데이터는 정상 조회되었으며, "결과가 끊겼다" 는 표현은 절대 사용 금지.`);
+      } else {
+        rowCountContext.push(`- 아래 결과 JSON 은 전체 ${rowStats.total}행 (절단 없음). 데이터는 완전하며, "결과가 끊겼다"/"확인할 수 없다" 는 표현은 절대 사용 금지.`);
+      }
+      const rowCountHint = rowCountContext.join('\n');
+
       setRequestStage('llm_answer_generate');
       const answerCompletion = await openai.chat.completions.create({
         model: GPT_MODEL,
@@ -7477,11 +7656,14 @@ ${sqlValidation.reason}
             content: `아래 데이터 조회 결과를 보고, 질문에 대한 답변을 1~2문장의 자연스러운 한국어로 작성해주세요.
 SQL/컬럼명/기술용어는 쓰지 마세요.
 [PR #252] 금액·수량은 반드시 천 단위 콤마를 붙인 원본 그대로 표기하세요. "억/만 단위 축약" 금지 — 반드시 "21,421,856,292원" 처럼 완전한 숫자를 출력하세요.
+[PR #346] 조회 결과의 세부 값(자재/SKU명/금액)을 모두 답변에 나열할 필요는 없습니다. 표에서 이미 볼 수 있으므로, 답변은 "무엇을 몇 행 조회했는지" 요약 위주로 작성하세요.
+[PR #346] 사용자의 질문에 여러 사업부(PS, HL)가 포함된 경우, 각 사업부의 행 수를 반드시 답변에 명시하세요. 예: "PS 5개, HL 5개로 총 10개 SKU가 포함되었습니다."
 ${dateHint}
+${rowCountHint}
 ${formatRule}
 
 질문: ${query}
-결과 (${rows.length}행): ${sampleText.substring(0, 600)}`
+결과 JSON: ${sampleText}`
           }
         ],
         temperature: 0.3,
@@ -7492,11 +7674,38 @@ ${formatRule}
       if (rawAnswer && rawAnswer.trim()) {
         answer = rawAnswer.trim();
       }
+
+      // ★ [Task E] 사후 검증: hallucination 감지 시 fallback 요약으로 대체.
+      //   - 데이터가 완전(총행수 > 0)한데 "결과가 끊겼다"/"확인할 수 없다" 문구가 있으면 이는 hallucination.
+      //   - 검증된 고정 요약으로 대체.
+      if (rowStats.total > 0 && detectAnswerTruncationHallucination(answer)) {
+        const fallback = buildFallbackAnswer(rowStats, dc, query);
+        console.warn(`[NLQ] Answer hallucination 감지 (데이터 완전한데 '끊겼다' 문구 존재) — fallback 요약으로 대체.`);
+        console.warn(`[NLQ]   원본 답변: "${answer}"`);
+        console.warn(`[NLQ]   fallback: "${fallback}"`);
+        answer = fallback;
+      }
+
+      // ★ [Task E] 글자수 초과 시 문장/항목 단위 truncate + '...' (기본 500자 상한)
+      const ANSWER_MAX_CHARS = 500;
+      if (answer && answer.length > ANSWER_MAX_CHARS) {
+        const truncated = truncateAnswerAtSentenceBoundary(answer, ANSWER_MAX_CHARS);
+        console.log(`[NLQ] Answer 글자수 초과 (${answer.length}자 > ${ANSWER_MAX_CHARS}자) — 문장 경계에서 truncate.`);
+        answer = truncated;
+      }
+
       // ★ 후처리: 년월 굵게 (LLM이 빠뜨려도 보장)
       answer = boldYearMonth(answer);
       console.log(`[NLQ] Answer 최종: "${answer}"`);
     } catch (ansErr) {
       console.error('[NLQ] Answer 생성 실패:', ansErr.message);
+      // ★ [Task E] LLM 답변 생성 자체가 실패한 경우, 검증된 fallback 요약으로 대체.
+      //   빈 answer 로 두면 사용자에게 "" 이 표시되므로 최소한의 요약이라도 제공.
+      if (rowStats.total > 0 && (!answer || !answer.trim())) {
+        const dc = dateContext || null;
+        answer = buildFallbackAnswer(rowStats, dc, query);
+        console.log(`[NLQ] Answer fallback 사용: "${answer}"`);
+      }
     }
 
     // 4-B. 분석형 질문이면 2단계: GPT 텍스트 분석 답변 생성 (결과 0행이어도 생성)
