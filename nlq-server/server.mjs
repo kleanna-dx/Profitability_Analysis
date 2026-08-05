@@ -2062,9 +2062,36 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
   ✗ DIVISION_NM LIKE '%홈앤라이프%'
   ✗ DIVISION_NM LIKE '%페이퍼솔루션%'
 
-■ 정답 패턴:
+■ 정답 패턴 (단일 사업부):
   ✓ WHERE DIVISION = '10'  ← "PS", "페이퍼솔루션", "페이퍼솔루션 사업부"
   ✓ WHERE DIVISION = '20'  ← "HL", "홈앤라이프", "홈앤라이프 사업부"
+
+■ 복수 사업부 규칙 (2026-08-05 추가) — 매우 중요:
+  질문에 두 사업부가 모두 언급되면 반드시 IN 조건으로 두 코드를 모두 포함해야 합니다.
+  첫 번째로 발견된 사업부만 선택하거나 단일 = 조건으로 덮어쓰지 마세요.
+
+  ✓ 정답 패턴:
+    - "PS만" 언급         → WHERE DIVISION = '10'
+    - "HL만" 언급         → WHERE DIVISION = '20'
+    - "PS, HL" 함께 언급  → WHERE DIVISION IN ('10', '20')
+    - "PS 와 HL"          → WHERE DIVISION IN ('10', '20')
+    - "페이퍼솔루션과 홈앤라이프" → WHERE DIVISION IN ('10', '20')
+
+  ✗ 절대 금지:
+    ✗ "PS, HL" 이라 했는데 WHERE DIVISION = '10' 하나만 넣기
+    ✗ "PS와 HL" 을 DIVISION_NM IN ('PS','HL') 로 작성 (컬럼도, 값 형태도 잘못)
+
+  ■ 사업부별 TOP N / 순위 질문:
+    복수 사업부에서 "각 사업부별 TOP 5" 형태의 질의는 ROW_NUMBER() 로 파티션 처리하세요.
+    예) "PS, HL SKU별 매출 TOP 5"
+        SELECT * FROM (
+          SELECT MATERIAL, MATERIAL_NM, DIVISION, SUM(...) AS 매출,
+                 ROW_NUMBER() OVER (PARTITION BY DIVISION ORDER BY SUM(...) DESC) AS rn
+          FROM bw_profitability_data
+          WHERE DIVISION IN ('10', '20') AND ...
+          GROUP BY MATERIAL, MATERIAL_NM, DIVISION
+        ) t
+        WHERE rn <= 5;
 
 ■ 이유:
   DIVISION_NM 은 배포 환경/시점에 따라 저장 값이 다를 수 있음 (예: 'HL' vs '홈앤라이프').
@@ -5664,13 +5691,34 @@ function scrubDivisionFilter(inputSql) {
   return s;
 }
 
-function applyDomainFilter(inputSql, domainCode) {
+/**
+ * SQL 에 도메인 필터 (DIVISION 조건) 를 자동 주입.
+ *
+ * @param {string} inputSql
+ * @param {string|string[]} domainCodeOrCodes
+ *   - 문자열 'PS'/'HL' → 단일: DIVISION = '10' 또는 = '20'
+ *   - 배열 ['PS','HL']  → 복수: DIVISION IN ('10','20')   (2026-08-05 확장)
+ *   - 문자열 'MGMT'/기타/null → no-op
+ *   - 배열이지만 요소 1개 → 단일 조건으로 축약
+ *   - 배열이지만 유효 요소 없음 → no-op
+ */
+function applyDomainFilter(inputSql, domainCodeOrCodes) {
   if (!inputSql) return inputSql;
-  const dc = (domainCode || '').toUpperCase();
-  // PS, HL 외의 도메인(MGMT, null 등)은 강제 필터 적용 안 함
+
+  // 입력 정규화: 문자열이든 배열이든 최종적으로 유효 코드 배열로 통일
+  //   중복 제거, 순서 보존, PS/HL 만 유효
+  const rawList = Array.isArray(domainCodeOrCodes) ? domainCodeOrCodes : [domainCodeOrCodes];
   const divisionMap = { PS: '10', HL: '20' };
-  const targetDivision = divisionMap[dc];
-  if (!targetDivision) return inputSql;
+  const codes = [];
+  const divisions = [];
+  for (const raw of rawList) {
+    const dc = (raw || '').toString().toUpperCase();
+    const div = divisionMap[dc];
+    if (!div) continue;                 // MGMT/null/기타는 skip
+    if (codes.includes(dc)) continue;   // 중복 제거
+    codes.push(dc); divisions.push(div);
+  }
+  if (codes.length === 0) return inputSql;
 
   // 대상 테이블을 참조하지 않으면 적용 안 함
   if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
@@ -5682,6 +5730,15 @@ function applyDomainFilter(inputSql, domainCode) {
   if (/\bDIVISION\b\s*(=|<>|!=|<|>|\sIN\b|\sLIKE\b|\sBETWEEN\b)/i.test(inputSql)) {
     return inputSql;
   }
+
+  // 주입할 조건 문자열 생성
+  //   - 1개: DIVISION = '10'
+  //   - 2개 이상: DIVISION IN ('10','20')
+  const dc = codes[0]; // 로그용 (단일 케이스와 하위호환 문구)
+  const targetDivision = divisions[0]; // 단일 케이스용
+  const divisionClause = divisions.length === 1
+    ? `DIVISION = '${targetDivision}'`
+    : `DIVISION IN (${divisions.map(d => `'${d}'`).join(',')})`;
 
   // WHERE 절이 있는지 검사. 첫 번째 WHERE의 기존 조건을 괄호로 감싸고
   // 앞에 DIVISION = '<val>' AND 를 삽입.
@@ -5741,7 +5798,7 @@ function applyDomainFilter(inputSql, domainCode) {
       tail = '';
     }
     // 빈 WHERE가 들어오는 경우는 거의 없지만 안전 처리
-    const wrapped = cond ? `DIVISION = '${targetDivision}' AND (${cond})` : `DIVISION = '${targetDivision}'`;
+    const wrapped = cond ? `${divisionClause} AND (${cond})` : divisionClause;
     // 종료 토큰 앞에 공백 보장
     const sep = tail && !tail.startsWith(' ') && !tail.startsWith(';') && !tail.startsWith(')') ? ' ' : '';
     result = `${before}${wrapped}${sep}${tail}`;
@@ -5767,17 +5824,21 @@ function applyDomainFilter(inputSql, domainCode) {
     if (endIdx > 0) {
       const head = rest.slice(0, endIdx);
       const tail = rest.slice(endIdx);
-      result = `${before}${head} WHERE DIVISION = '${targetDivision}' ${tail}`;
+      result = `${before}${head} WHERE ${divisionClause} ${tail}`;
     } else if (endIdx === 0) {
       // 바로 다음에 절이 오는 경우 (예: FROM bw_profitability_data ORDER BY ...)
-      result = `${before} WHERE DIVISION = '${targetDivision}' ${rest}`;
+      result = `${before} WHERE ${divisionClause} ${rest}`;
     } else {
-      result = `${before} WHERE DIVISION = '${targetDivision}'${rest}`;
+      result = `${before} WHERE ${divisionClause}${rest}`;
     }
   }
 
   if (result !== inputSql) {
-    console.log(`[NLQ] 도메인 필터 자동 주입 (${dc} → DIVISION='${targetDivision}')`);
+    if (divisions.length === 1) {
+      console.log(`[NLQ] 도메인 필터 자동 주입 (${dc} → DIVISION='${targetDivision}')`);
+    } else {
+      console.log(`[NLQ] 도메인 필터 자동 주입 (${codes.join(',')} → DIVISION IN (${divisions.map(d=>`'${d}'`).join(',')}))`);
+    }
   }
   return result;
 }
@@ -5794,7 +5855,7 @@ function applyDomainFilter(inputSql, domainCode) {
 // ============================================================
 
 /**
- * 사용자 질의에서 HL/PS 사업부 언급을 감지.
+ * 사용자 질의에서 HL/PS 사업부 언급을 감지 (복수 지원).
  *   포괄 표현 - 지원되는 별칭:
  *     PS 계열: 'PS', 'ps', 'PS사업부', 'PS 사업부', '페이퍼솔루션', '페이퍼솔루션 사업부'
  *     HL 계열: 'HL', 'hl', 'HL사업부', 'HL 사업부', '홈앤라이프', '홈앤라이프 사업부'
@@ -5804,13 +5865,34 @@ function applyDomainFilter(inputSql, domainCode) {
  *       (예: "APS" / "HELP" / "psi" 는 매칭 안 됨)
  *     - '페이퍼솔루션'/'홈앤라이프' 는 한글이므로 앞뒤 한글 아닐 때만 (여기선 완전 별칭)
  *
+ *   [2026-08-05 확장] 복수 사업부 감지:
+ *     - PS 만 언급         → divisions=['10'],           divisionCodes=['PS']
+ *     - HL 만 언급         → divisions=['20'],           divisionCodes=['HL']
+ *     - PS 와 HL 모두 언급 → divisions=['10','20'],      divisionCodes=['PS','HL']  (등장 순서 유지)
+ *     - 언급 없음         → divisions=[],                divisionCodes=[]
+ *
+ *   ★ 하위호환:
+ *     - 기존 반환 필드 { division, divisionCode, matchedText } 는 "첫 번째 매치 기준" 으로 유지.
+ *       (단일 사업부 케이스에서는 기존 동작과 완전히 동일)
+ *     - 신규 필드 { divisions, divisionCodes, matches, isMulti } 를 추가로 제공.
+ *
  * @param {string} query 자연어 질의
- * @returns {{division: '10'|'20'|null, divisionCode: 'PS'|'HL'|null, matchedText: string|null}}
+ * @returns {{
+ *   division: '10'|'20'|null,
+ *   divisionCode: 'PS'|'HL'|null,
+ *   matchedText: string|null,
+ *   divisions: Array<'10'|'20'>,
+ *   divisionCodes: Array<'PS'|'HL'>,
+ *   matches: Array<{code:'PS'|'HL', division:'10'|'20', text:string, index:number}>,
+ *   isMulti: boolean
+ * }}
  */
 function detectDivisionInQuery(query) {
-  if (!query || typeof query !== 'string') {
-    return { division: null, divisionCode: null, matchedText: null };
-  }
+  const empty = {
+    division: null, divisionCode: null, matchedText: null,
+    divisions: [], divisionCodes: [], matches: [], isMulti: false,
+  };
+  if (!query || typeof query !== 'string') return empty;
 
   // 한글 포괄 표현 (가장 명확)
   //   앞: 한글이 아니거나 문자열 시작
@@ -5825,19 +5907,29 @@ function detectDivisionInQuery(query) {
   const HL_ENG = /(?<![가-힣A-Za-z0-9])HL(?:\s*사업부)?(?![A-Za-z0-9])/i;
   const PS_ENG = /(?<![가-힣A-Za-z0-9])PS(?:\s*사업부)?(?![A-Za-z0-9])/i;
 
-  let hlMatch = HL_KOR.exec(query) || HL_ENG.exec(query);
-  let psMatch = PS_KOR.exec(query) || PS_ENG.exec(query);
+  const hlMatch = HL_KOR.exec(query) || HL_ENG.exec(query);
+  const psMatch = PS_KOR.exec(query) || PS_ENG.exec(query);
 
-  // 둘 다 매칭되면 정책상 "먼저 나온 것" 우선 (일반적으로 사용자가 초점 두는 사업부)
-  //   실제로는 두 개가 동시에 등장하는 케이스는 드물지만, 이런 경우 명확한 우선순위 필요.
-  if (hlMatch && psMatch) {
-    return hlMatch.index < psMatch.index
-      ? { division: '20', divisionCode: 'HL', matchedText: hlMatch[0] }
-      : { division: '10', divisionCode: 'PS', matchedText: psMatch[0] };
-  }
-  if (hlMatch) return { division: '20', divisionCode: 'HL', matchedText: hlMatch[0] };
-  if (psMatch) return { division: '10', divisionCode: 'PS', matchedText: psMatch[0] };
-  return { division: null, divisionCode: null, matchedText: null };
+  // 등장 순서로 정렬 (사용자가 먼저 언급한 순서를 보존 — 예: "PS, HL" vs "HL, PS")
+  const found = [];
+  if (hlMatch) found.push({ code: 'HL', division: '20', text: hlMatch[0], index: hlMatch.index });
+  if (psMatch) found.push({ code: 'PS', division: '10', text: psMatch[0], index: psMatch.index });
+  found.sort((a, b) => a.index - b.index);
+
+  if (found.length === 0) return empty;
+
+  const first = found[0];
+  return {
+    // 하위호환: 첫 번째 매치를 그대로 노출
+    division: first.division,
+    divisionCode: first.code,
+    matchedText: first.text,
+    // 확장 필드
+    divisions: found.map(f => f.division),
+    divisionCodes: found.map(f => f.code),
+    matches: found,
+    isMulti: found.length >= 2,
+  };
 }
 
 /**
@@ -5904,8 +5996,39 @@ function normalizeDivisionFilter(inputSql) {
     });
   }
 
-  // 3) IN 매칭: DIVISION_NM IN ('HL','PS',...) → 원소 하나짜리이거나 명확한 케이스만 처리.
-  //    복수 IN 은 정책 결정이 애매하므로 여기서는 건드리지 않음 (안전 우선).
+  // 3) IN 매칭: DIVISION_NM IN ('HL','PS',...) → DIVISION IN ('20','10',...) 로 교정
+  //    [2026-08-05 확장] 복수 사업부 IN 조건도 명시적으로 교정
+  //    - 모든 원소가 알려진 별칭이면 IN 코드 조건으로 변환
+  //    - 하나라도 미지의 값 (예: '생활용품') 이 섞이면 안전을 위해 건드리지 않음
+  //    - NOT IN 은 부정 의미가 반전될 수 있어 건드리지 않음
+  const inRe = /\bDIVISION_NM\s+IN\s*\(([^)]+)\)/gi;
+  s = s.replace(inRe, (m, listStr) => {
+    // 리스트 파싱: '값1','값2',...  또는  "값1","값2",...
+    const items = [];
+    const itemRe = /['"]([^'"]*)['"]/g;
+    let im;
+    while ((im = itemRe.exec(listStr)) !== null) items.push(im[1]);
+    if (items.length === 0) return m;
+
+    // 모두 별칭 매핑 가능한지 확인
+    const codes = [];
+    for (const it of items) {
+      const key = it.trim();
+      // EQ_MAP 은 대소문자 구분 있음 (HL/hl 둘 다 등록) — 공백 포함 별칭도 처리
+      const keyNoSpace = key.replace(/\s+/g, '');
+      const c = EQ_MAP[key] || EQ_MAP[keyNoSpace];
+      if (!c) return m;  // 하나라도 미지값이면 원문 유지
+      codes.push(c);
+    }
+    // 중복 제거 (순서 유지)
+    const uniq = [];
+    for (const c of codes) if (!uniq.includes(c)) uniq.push(c);
+    const clause = uniq.length === 1
+      ? `DIVISION = '${uniq[0]}'`
+      : `DIVISION IN (${uniq.map(d => `'${d}'`).join(',')})`;
+    rewrites.push(`${m} → ${clause}`);
+    return clause;
+  });
 
   if (rewrites.length > 0) {
     console.log(`[NLQ] DIVISION_NM 조건 자동 교정: ${rewrites.join(' | ')}`);
@@ -5923,7 +6046,14 @@ function escapeRegex(str) {
  *   - MGMT 도메인이라도 질문에 "HL 영업이익" 같은 표현이 있으면 DIVISION='20' 을 강제 주입
  *   - PS/HL 도메인이면서 질문에 반대 사업부가 명시된 경우는 사용자 의도가 명확하므로
  *     질문 언급을 우선 (applyDomainFilter 의 도메인 조건은 scrubDivisionFilter 로 미리 제거된 후 실행되어야 안전)
- *   - 이미 SQL 에 DIVISION 조건이 있으면 건드리지 않음
+ *
+ * [2026-08-05 확장] 복수 사업부 지원
+ *   - 질문에 PS/HL 이 모두 언급되면 DIVISION IN ('10','20') 로 주입
+ *   - ★ 이미 SQL 에 단일 DIVISION 조건(예: applyDomainFilter 가 앞서 주입한 DIVISION='10')이 있어도,
+ *     질의문에 복수 사업부가 명시된 경우 그 조건을 지우고 IN 조건으로 재주입한다.
+ *     (사용자 의도 우선 원칙 — "PS, HL SKU별 매출 TOP 5" 같은 질의에서 첫 번째로 발견된 사업부만
+ *      선택되어 다른 사업부가 누락되는 것을 방지)
+ *   - 단일 사업부 감지 케이스에서는 기존 동작과 동일 (조건 이미 있으면 skip)
  *
  * @param {string} inputSql
  * @param {string} query 원본 자연어 질의
@@ -5932,18 +6062,49 @@ function escapeRegex(str) {
 function applyDivisionFromQuery(inputSql, query) {
   if (!inputSql || typeof inputSql !== 'string') return inputSql;
   const det = detectDivisionInQuery(query);
-  if (!det.division) return inputSql;
+  if (!det.divisions || det.divisions.length === 0) return inputSql;
   // bw_profitability_data 참조하지 않으면 건드리지 않음
   if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
-  // 이미 DIVISION 조건 있으면 skip (applyDomainFilter 와 동일 정책)
-  if (/\bDIVISION\b\s*(=|<>|!=|<|>|\sIN\b|\sLIKE\b|\sBETWEEN\b)/i.test(inputSql)) {
+
+  const hasExistingDivision = /\bDIVISION\b\s*(=|<>|!=|<|>|\sIN\b|\sLIKE\b|\sBETWEEN\b)/i.test(inputSql);
+
+  if (det.isMulti) {
+    // [복수 사업부 케이스] 질문 의도가 명확하므로 기존 단일 조건이 있으면 덮어써야 함
+    //   1) 이미 존재하는 DIVISION 조건 (단일이든 IN 이든) 을 scrub 로 제거
+    //   2) 그 뒤 applyDomainFilter 를 배열로 호출하여 IN 조건 재주입
+    //
+    //   ★ 예외: 이미 정확히 원하는 IN 조건이 걸려 있으면 재작업 skip (idempotent).
+    //     "정확히" 판단은 완벽하지 않으므로 안전하게: 감지된 모든 코드가 SQL 안에 모두 등장하면 skip
+    if (hasExistingDivision) {
+      const allPresent = det.divisions.every(d => new RegExp(`\\bDIVISION\\b[^)]*['"]${d}['"]`, 'i').test(inputSql));
+      if (allPresent) {
+        // 이미 원하는 사업부가 모두 조건에 포함되어 있음 → 그대로 유지
+        // (LLM 이 DIVISION IN ('10','20') 를 직접 잘 만든 케이스)
+        return inputSql;
+      }
+      // 그렇지 않으면 기존 조건을 지우고 재주입
+      console.log(`[NLQ] 복수 사업부 질의 감지 → 기존 DIVISION 조건 제거 후 IN 재주입 (${det.divisionCodes.join(',')})`);
+      const scrubbed = scrubDivisionFilter(inputSql);
+      const injected = applyDomainFilter(scrubbed, det.divisionCodes);
+      if (injected !== scrubbed) {
+        console.log(`[NLQ] 질의 텍스트 기반 DIVISION IN 강제 주입: [${det.matches.map(m=>`"${m.text}"`).join(',')}] → DIVISION IN (${det.divisions.map(d=>`'${d}'`).join(',')})`);
+      }
+      return injected;
+    }
+    // 기존 조건 없음 → 그냥 IN 으로 주입
+    const injected = applyDomainFilter(inputSql, det.divisionCodes);
+    if (injected !== inputSql) {
+      console.log(`[NLQ] 질의 텍스트 기반 DIVISION IN 강제 주입: [${det.matches.map(m=>`"${m.text}"`).join(',')}] → DIVISION IN (${det.divisions.map(d=>`'${d}'`).join(',')})`);
+    }
+    return injected;
+  }
+
+  // [단일 사업부 케이스] 기존 동작과 동일 — 이미 조건 있으면 skip
+  if (hasExistingDivision) {
     return inputSql;
   }
-  // 없으면 applyDomainFilter 와 동일 로직으로 주입
-  // → 임시 도메인 코드를 만들어 applyDomainFilter 를 재사용
-  const before = inputSql;
   const injected = applyDomainFilter(inputSql, det.divisionCode);
-  if (injected !== before) {
+  if (injected !== inputSql) {
     console.log(`[NLQ] 질의 텍스트 기반 DIVISION 강제 주입: "${det.matchedText}" → DIVISION='${det.division}'`);
   }
   return injected;
