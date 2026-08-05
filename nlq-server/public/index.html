@@ -1540,6 +1540,17 @@ async function initDomainAndRole() {
         renderDomainSelectorBar();
         updateDomainInfoBanner();
 
+        // [FIX / 2026-08-05] 튜토리얼 자동 표시 재트리거 (재진입 사용자 케이스).
+        //   - window.load 시점에는 /api/domains fetch 가 아직 안 끝나 #domainSelectorBar 가
+        //     display:none 상태였을 수 있음. 그 경우 coachWaitForStep1Ready 가 layout
+        //     안 잡혔다고 판단하여 auto 트리거가 폴백 종료됨.
+        //   - 여기(도메인/도메인바 렌더 완료 직후)에서 한 번 더 시도하면 layout 이 확실히
+        //     잡힌 상태라 정상 진입.
+        //   - localStorage[COACH_LS_KEY]='1'(다시 보지 않기) 이면 maybeAutoStartCoachMark
+        //     내부에서 스킵. 이미 튜토리얼이 실행 중이어도 startCoachMark 의
+        //     coachState.active 중복 방지로 무해.
+        try { if (typeof maybeAutoStartCoachMark === 'function' && userDefaultDomain) maybeAutoStartCoachMark(); } catch(_) {}
+
         const params = new URLSearchParams(window.location.search);
         if (params.get('denied') === '1') { window.history.replaceState({}, '', '/'); setTimeout(() => alert('접근 권한이 없습니다.'), 300); }
     } catch(e) { console.error('[Domain] init 실패:', e); }
@@ -1612,6 +1623,15 @@ async function selectForceDomain(dc) {
     renderDomainSelectorBar();
     updateDomainInfoBanner();
     renderSuggestionChips();
+
+    // [FIX / 2026-08-05] 튜토리얼 자동 표시 재트리거 (첫 진입 사용자 케이스).
+    //   - window.load 시점의 auto 트리거는 도메인 강제 선택 모달이 떠 있어 조용히 스킵됨
+    //     (startCoachMark 내부 domainForceOverlay 체크). 이후 재트리거가 없어서 사용자가
+    //     사이드 메뉴의 [사용법] 버튼을 눌러야만 튜토리얼을 볼 수 있는 리그레션이 있었음.
+    //   - 여기(사용자가 도메인 골라서 방금 모달 닫힌 직후)에 재트리거하면 원래 의도대로
+    //     '첫 진입 사용자에게 바로 가이드' 동작이 복원됨.
+    //   - localStorage[COACH_LS_KEY]='1' 이면 스킵 (다시 보지 않기 존중).
+    try { if (typeof maybeAutoStartCoachMark === 'function') maybeAutoStartCoachMark(); } catch(_) {}
 }
 
 async function onDomainBtnClick(dc) {
