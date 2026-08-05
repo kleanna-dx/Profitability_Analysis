@@ -5665,9 +5665,16 @@ function startNewChat() {
 //   - COACH_LS_KEY 상수는 legacy 키를 삭제(cleanup) 하기 위해서만 유지되며,
 //     자동 표시 여부 판단에는 더 이상 사용하지 않는다.
 const COACH_LS_KEY = 'nlqCoachMarkSeen_v1';   // (deprecated) 하위호환/청소 목적으로만 참조
-// 서버 로드 전 기본값 (fail-open: 신규 사용자에게 튜토리얼 노출)
-// initDomainAndRole() 이 /api/me/nlq-guide-hidden 응답을 받은 뒤 이 값을 덮어씀
-if (typeof window.__nlqGuideHidden === 'undefined') window.__nlqGuideHidden = false;
+// 서버 로드 전 기본값 = null (= '아직 모름' 센티널)
+//   [FIX / 2026-08-05] 초기값을 false 로 두면 window.load 리스너(하단)가
+//     initDomainAndRole() 의 fetch('/api/me/nlq-guide-hidden') 완료 전에 먼저 발화되어
+//     '숨김 해제 상태' 로 오인해 튜토리얼을 표시하는 레이스가 발생.
+//     (증상: 새로고침은 fetch 캐시로 빠르게 끝나 정상, 새 페이지 접속은 느려 재현.)
+//   → 로드 완료 여부를 3-state (null=미로드 / false=노출 / true=숨김) 로 구분.
+//     maybeAutoStartCoachMark() 는 null 이면 skip 하고,
+//     initDomainAndRole() 이 fetch 응답을 받아 값(true/false)을 세팅한 뒤 명시적으로
+//     다시 호출한다 (L1575).
+if (typeof window.__nlqGuideHidden === 'undefined') window.__nlqGuideHidden = null;
 let coachState = { active:false, stepIdx:0, elems:null, onResize:null, onKey:null, _retriedStep:null };
 
 // 스텝 정의: target 은 CSS selector, content 는 툴팁에 표시할 HTML
@@ -6306,20 +6313,30 @@ function renderCoachStep() {
 //   [PR #343 / 2026-08-05] 스킵 조건 변경
 //   - 이전: localStorage[COACH_LS_KEY]='1' (브라우저 공유 시 사용자간 상호 영향 버그)
 //   - 이후: 사용자별 DB 캐시 window.__nlqGuideHidden === true 이면 스킵
-//   - fail-open: 서버 로드 실패 시에는 캐시 기본값이 false 이므로 정상 노출.
 //   - 로그아웃 상태(=/api/me/nlq-guide-hidden 이 401) 라면 로그인 페이지로
 //     리다이렉트되므로 이 함수까지 오지 않음.
 //   - 사이드바 [사용법] 버튼 → startCoachMark('manual') 은 이 함수를 거치지 않아
 //     nlq_guide_hidden=1 이어도 항상 정상 실행됨.
 //   - 도메인 강제 선택 모달이 열려 있으면 자동 스킵 (사용자가 [사용법] 버튼으로 재실행 가능)
+//
+//   [FIX / 2026-08-05] 새 페이지 접속 시 튜토리얼 재노출 레이스 해결
+//   - window.__nlqGuideHidden 값이 아직 로드되지 않았다면 (null) 이 트리거는 skip.
+//     initDomainAndRole() 이 fetch 로 값을 받아 세팅한 뒤 명시적으로 다시 호출한다.
+//   - true → 숨김. false → 노출.
 function maybeAutoStartCoachMark() {
     try {
+        // 아직 서버로부터 사용자별 값(users.nlq_guide_hidden)을 받지 못한 상태 → defer
+        // (initDomainAndRole() fetch 응답 이후 재호출됨)
+        if (window.__nlqGuideHidden === null || typeof window.__nlqGuideHidden === 'undefined') return;
         if (window.__nlqGuideHidden === true) return;
     } catch(_) {}
     // 다른 로직들(사이드바 메뉴, 도메인 셀렉터 바 렌더 등)이 끝난 뒤 실행되도록 살짝 지연
     setTimeout(() => startCoachMark('auto'), 800);
 }
 // initUser() 등 초기화 파이프라인이 대개 window load 이후 도착하므로 load 이벤트에서 트리거
+//   ※ 이 리스너는 fetch 완료 여부와 무관하게 발화되므로, 위의 null-guard 로
+//     '아직 모름' 상태에서는 아무 것도 하지 않고 조용히 리턴한다.
+//     (실제 트리거는 initDomainAndRole() L1575 의 명시적 호출이 담당.)
 window.addEventListener('load', () => {
     // /learning /builder 등 다른 페이지에는 이 스크립트가 실려도 대상 요소가 없어 자동 스킵됨
     // (renderCoachStep 이 target not found → coachNext 로 연쇄 진행되지만 자동 트리거 자체는
