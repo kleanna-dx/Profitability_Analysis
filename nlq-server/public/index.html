@@ -1362,6 +1362,12 @@
                 현재 데이터 기준월은 <strong id="welcomeLatestLabel"></strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
                 <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
             </div>
+            <!-- [데이터 기준 안내 박스] 주황색 박스와 동일 형태, 색상만 부드러운 초록색(깨끗한나라 로고 계열) -->
+            <div id="welcomeDataBasisInfo" style="margin-top:10px;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;">
+                <i class="fas fa-info-circle" style="color:#16a34a;margin-right:6px;"></i>
+                <strong>※ 데이터 기준 안내</strong><br>
+                <span style="margin-left:22px;"><strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>"조정 전" 기준값</strong>입니다.</span>
+            </div>
         </div>
     </div>
 
@@ -5633,6 +5639,11 @@ function startNewChat() {
                 <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
                 현재 데이터 기준월은 <strong>${dataDateContext.latestLabel}</strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
                 <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
+               </div>
+               <div style="margin-top:10px;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;">
+                <i class="fas fa-info-circle" style="color:#16a34a;margin-right:6px;"></i>
+                <strong>※ 데이터 기준 안내</strong><br>
+                <span style="margin-left:22px;"><strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>&quot;조정 전&quot; 기준값</strong>입니다.</span>
                </div>` : '';
         chatArea.innerHTML = `<div id="welcomeSection" class="welcome-section">
             <div class="welcome-icon"><i class="fas fa-robot"></i></div>
