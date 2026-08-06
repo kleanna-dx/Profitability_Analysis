@@ -1357,16 +1357,22 @@
             <h2 class="text-xl font-bold text-gray-800 mb-2" style="font-size:21px;">무엇이든 물어보세요</h2>
             <p class="text-sm text-gray-500 mb-1" style="font-size:15px;">AI가 자사 수익성 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
             <p class="text-sm text-gray-400" style="font-size:15px;">질문을 입력하면 분석부터 SQL 생성, 시각화까지 자동으로 처리합니다.</p>
-            <div id="welcomeDateInfo" style="margin-top:16px;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;display:none;line-height:1.7;">
-                <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
-                현재 데이터 기준월은 <strong id="welcomeLatestLabel"></strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
-                <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
-            </div>
-            <!-- [데이터 기준 안내 박스] 주황색 박스와 동일 형태, 색상만 부드러운 초록색(깨끗한나라 로고 계열) -->
-            <div id="welcomeDataBasisInfo" style="margin-top:10px;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;">
-                <i class="fas fa-info-circle" style="color:#16a34a;margin-right:6px;"></i>
-                <strong>※ 데이터 기준 안내</strong><br>
-                <span style="margin-left:22px;"><strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>"조정 전" 기준값</strong>입니다.</span>
+            <!-- [안내 박스 그룹] 주황색 박스와 초록색 박스를 같은 너비로 묶는 래퍼.
+                 부모 .welcome-section 이 align-items:center 이라 자식 폭이 컨텐츠 크기로 달라지는 문제를
+                 이 wrapper 하나가 동일 max-width 로 잡아 해결. 두 박스에는 width:100% + box-sizing:border-box
+                 를 걸어 안쪽 여백까지 일치시키고 text-align:left 로 좌측 정렬. -->
+            <div id="welcomeNoticeGroup" style="width:100%;max-width:720px;margin-top:16px;display:flex;flex-direction:column;gap:10px;">
+                <div id="welcomeDateInfo" style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;display:none;line-height:1.7;text-align:left;">
+                    <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
+                    현재 데이터 기준월은 <strong id="welcomeLatestLabel"></strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
+                    <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
+                </div>
+                <!-- [데이터 기준 안내 박스] 주황색 박스와 완전 동일한 크기/패딩/좌측정렬, 색상만 초록색.
+                     아이콘 제거 요구사항에 따라 i 태그 삭제. -->
+                <div id="welcomeDataBasisInfo" style="width:100%;box-sizing:border-box;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;text-align:left;">
+                    <strong>※ 데이터 기준 안내</strong><br>
+                    <strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>"조정 전" 기준값</strong>입니다.
+                </div>
             </div>
         </div>
     </div>
@@ -5634,16 +5640,21 @@ function startNewChat() {
         welcome.style.display = '';
         chatArea.appendChild(welcome);
     } else {
+        // [안내 박스 그룹] 재렌더링(startNewChat) 경로에서도 정적 HTML(L1360~)과 동일한 wrapper 구조 사용.
+        //   - width:100% + max-width:720px 로 두 박스 폭 동기화
+        //   - text-align:left + box-sizing:border-box 로 좌측 정렬·패딩 일치
+        //   - 초록색 박스는 i 아이콘 제거, 문구 시작 위치는 padding-left(20px) 부터
         const dateInfoHtml = dataDateContext
-            ? `<div style="margin-top:16px;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;">
-                <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
-                현재 데이터 기준월은 <strong>${dataDateContext.latestLabel}</strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
-                <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
-               </div>
-               <div style="margin-top:10px;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;">
-                <i class="fas fa-info-circle" style="color:#16a34a;margin-right:6px;"></i>
-                <strong>※ 데이터 기준 안내</strong><br>
-                <span style="margin-left:22px;"><strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>&quot;조정 전&quot; 기준값</strong>입니다.</span>
+            ? `<div style="width:100%;max-width:720px;margin-top:16px;display:flex;flex-direction:column;gap:10px;">
+                 <div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:left;">
+                   <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
+                   현재 데이터 기준월은 <strong>${dataDateContext.latestLabel}</strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
+                   <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
+                 </div>
+                 <div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;text-align:left;">
+                   <strong>※ 데이터 기준 안내</strong><br>
+                   <strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>&quot;조정 전&quot; 기준값</strong>입니다.
+                 </div>
                </div>` : '';
         chatArea.innerHTML = `<div id="welcomeSection" class="welcome-section">
             <div class="welcome-icon"><i class="fas fa-robot"></i></div>
