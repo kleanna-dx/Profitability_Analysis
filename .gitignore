@@ -35,6 +35,14 @@ __pycache__/
 *.pyc
 uploads/
 
+# core dumps (Linux 프로세스 크래시 시 커널이 남기는 코어 덤프 파일)
+#   - 파일 이름: `core`, `core.12345` (PID 접미사), `foo.core` 등 다양한 형태 대응
+#   - 배포 스크립트에서 `git status --porcelain` 검사를 통과하려면 반드시 무시해야 함
+#   - 실제 디버깅이 필요하면 저장소 밖 경로(/home/user/nlq-core-dumps/ 등)로 이동해 보관
+core
+core.*
+*.core
+
 # data files
 *.xlsx
 *.csv
