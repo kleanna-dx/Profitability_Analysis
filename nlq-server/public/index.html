@@ -1362,10 +1362,17 @@
                  이 wrapper 하나가 동일 max-width 로 잡아 해결. 두 박스에는 width:100% + box-sizing:border-box
                  를 걸어 안쪽 여백까지 일치시키고 text-align:left 로 좌측 정렬. -->
             <div id="welcomeNoticeGroup" style="width:100%;max-width:720px;margin-top:16px;display:flex;flex-direction:column;gap:10px;">
-                <div id="welcomeDateInfo" style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;display:none;line-height:1.7;text-align:left;">
-                    <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
-                    현재 데이터 기준월은 <strong id="welcomeLatestLabel"></strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
-                    <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
+                <!-- [주황색 박스: 최신 기준월 안내]
+                     레이아웃 안정성을 위해 초기부터 display:block 으로 렌더링(초록색 박스가 아래로 밀리지 않음).
+                     최신월 조회 완료 전에는 skeleton 상태(로딩 문구)로 자리 확보,
+                     조회 성공 시 문구만 교체, 실패 시 오류 안내로 교체.
+                     ※ data-state 값: 'loading' | 'ready' | 'error' -->
+                <div id="welcomeDateInfo" data-state="loading" style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:left;">
+                    <span id="welcomeDateInfoContent">
+                        <i class="fas fa-spinner fa-spin" style="color:#f59e0b;margin-right:6px;"></i>
+                        <span style="opacity:0.75;">데이터 기준월 확인 중...</span><br>
+                        <span style="margin-left:22px;opacity:0.6;">잠시만 기다려 주세요.</span>
+                    </span>
                 </div>
                 <!-- [데이터 기준 안내 박스] 주황색 박스와 완전 동일한 크기/패딩/좌측정렬, 색상만 초록색.
                      아이콘 제거 요구사항에 따라 i 태그 삭제. -->
@@ -2148,18 +2155,26 @@ window.addEventListener('DOMContentLoaded', async () => {
     // 도메인/역할 초기화
     await initDomainAndRole();
 
-    // Status check
-    try {
-        const res = await fetch('/api/status');
-        const d = await res.json();
-        // Top bar
+    // ─────────────────────────────────────────────────────────────────
+    // [초기 데이터 로딩] Status + 최신 기준월(DateContext) 를 병렬 호출.
+    //   기존에는 status 를 await 한 후에 date-context 를 await 하여
+    //   두 API 지연시간이 직렬로 누적됐고, date-context 완료 전까지 주황색 박스가
+    //   display:none 이라 초록색 박스가 위로 붙어 보이는 문제가 있었음.
+    //   → Promise.all 로 병렬화하여 총 대기시간을 max(A, B) 로 단축.
+    //   → 주황색 박스는 정적 HTML 에서 이미 skeleton 상태로 자리를 잡고 있으므로
+    //     레이아웃 흔들림 없음. 완료 후 innerHTML 만 교체.
+    // ─────────────────────────────────────────────────────────────────
+    const statusPromise      = fetch('/api/status').then(r => r.ok ? r.json() : Promise.reject(new Error('status ' + r.status)));
+    const dateContextPromise = fetch('/api/data-date-context').then(r => r.ok ? r.json() : Promise.reject(new Error('date-context ' + r.status)));
+
+    // Status 응답 처리 (상단바)
+    statusPromise.then(d => {
         document.getElementById('topDbDot').classList.add('green');
         document.getElementById('topDbLabel').textContent = 'DB 연결';
         document.getElementById('topAiDot').classList.add('green');
         document.getElementById('topAiLabel').textContent = d.ai;
         const topDataEl = document.getElementById('topDataLabel');
         if (topDataEl) topDataEl.textContent = '데이터: ' + Number(d.totalRows).toLocaleString() + '행';
-        // RAG 상태 표시 (상단바)
         if (d.rag) {
             const ragPill = document.getElementById('topRagPill');
             const ragDot = document.getElementById('topRagDot');
@@ -2174,26 +2189,54 @@ window.addEventListener('DOMContentLoaded', async () => {
                 }
             }
         }
-    } catch(e) {
-        document.getElementById('topDbLabel').textContent = 'DB 오류';
-    }
+    }).catch(e => {
+        console.warn('[Status] 조회 실패:', e && e.message);
+        const dbLabel = document.getElementById('topDbLabel');
+        if (dbLabel) dbLabel.textContent = 'DB 오류';
+    });
 
-    // 기준월 컨텍스트 조회 (마감 완료 최신월)
-    try {
-        const dcRes = await fetch('/api/data-date-context');
-        if (dcRes.ok) {
-            dataDateContext = await dcRes.json();
-            // Welcome 영역에 기준월 표시
-            const welcomeDateInfo = document.getElementById('welcomeDateInfo');
-            const welcomeLabel = document.getElementById('welcomeLatestLabel');
-            if (welcomeDateInfo && welcomeLabel) {
-                welcomeLabel.textContent = dataDateContext.latestLabel;
-                welcomeDateInfo.style.display = 'block';
-            }
-        }
-    } catch(e) {
-        console.warn('[DateCtx] 기준월 조회 실패:', e.message);
-    }
+    // DateContext 응답 처리 (주황색 안내 박스)
+    //   ※ 박스 자체는 정적 HTML(L1364~1376) 에 이미 skeleton 상태로 렌더링되어 있으므로
+    //     여기서는 innerHTML 만 교체하여 레이아웃 변동을 완전히 차단.
+    dateContextPromise.then(ctx => {
+        dataDateContext = ctx;
+        const box = document.getElementById('welcomeDateInfo');
+        const content = document.getElementById('welcomeDateInfoContent');
+        if (!box || !content) return;
+        // XSS 방지: latestLabel 은 서버에서 오는 문자열이지만 escape 처리.
+        const safeLabel = String(ctx.latestLabel == null ? '' : ctx.latestLabel)
+            .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        content.innerHTML =
+            '<i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>' +
+            '현재 데이터 기준월은 <strong id="welcomeLatestLabel">' + safeLabel + '</strong>입니다. ' +
+            '"당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>' +
+            '<span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>';
+        box.setAttribute('data-state', 'ready');
+    }).catch(e => {
+        console.warn('[DateCtx] 기준월 조회 실패:', e && e.message);
+        // 요구사항: 조회 실패 시 임의 값(현재월 등) 으로 대체하지 말고 오류 안내.
+        //   주황색 박스를 숨기지 않고 그대로 유지하되 문구만 오류 안내로 교체.
+        //   또한 dataDateContext.__error 플래그를 세팅하여 startNewChat 재렌더링 경로에서도
+        //   동일한 오류 안내가 표시되도록 상태 전파.
+        dataDateContext = { __error: true, message: e && e.message };
+        const box = document.getElementById('welcomeDateInfo');
+        const content = document.getElementById('welcomeDateInfoContent');
+        if (!box || !content) return;
+        content.innerHTML =
+            '<i class="fas fa-exclamation-triangle" style="color:#dc2626;margin-right:6px;"></i>' +
+            '<strong style="color:#991b1b;">데이터 기준월을 불러오지 못했습니다.</strong><br>' +
+            '<span style="margin-left:22px;color:#991b1b;">잠시 후 페이지를 새로고침해 주세요.</span>';
+        box.setAttribute('data-state', 'error');
+        // 배경/테두리도 옅은 빨강으로 전환하여 시각적 오류 신호.
+        box.style.background = '#fef2f2';
+        box.style.border = '1px solid #fca5a5';
+        box.style.color = '#991b1b';
+    });
+
+    // status/dateContext 두 병렬 요청이 완료(또는 실패)될 때까지 대기.
+    //   이후의 로직(제안 칩 등) 이 status 값에 의존할 수 있어 최소 동기점 확보.
+    //   allSettled 를 써서 하나가 실패해도 나머지 로직은 진행하도록 함.
+    await Promise.allSettled([statusPromise, dateContextPromise]);
 
     // Suggestion chips - fixed bar (always visible above input)
     renderSuggestionChips();
@@ -5640,22 +5683,51 @@ function startNewChat() {
         welcome.style.display = '';
         chatArea.appendChild(welcome);
     } else {
-        // [안내 박스 그룹] 재렌더링(startNewChat) 경로에서도 정적 HTML(L1360~)과 동일한 wrapper 구조 사용.
+        // [안내 박스 그룹] 재렌더링(startNewChat) 경로에서도 정적 HTML(L1364~)과 동일한 구조 유지.
         //   - width:100% + max-width:720px 로 두 박스 폭 동기화
         //   - text-align:left + box-sizing:border-box 로 좌측 정렬·패딩 일치
-        //   - 초록색 박스는 i 아이콘 제거, 문구 시작 위치는 padding-left(20px) 부터
-        const dateInfoHtml = dataDateContext
-            ? `<div style="width:100%;max-width:720px;margin-top:16px;display:flex;flex-direction:column;gap:10px;">
-                 <div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:left;">
+        //   - 초록색 박스는 i 아이콘 없음, 문구 시작 위치는 padding-left(20px) 부터
+        //   - 주황색 박스는 dataDateContext 상태에 따라 3가지 상태를 지원:
+        //       (a) 정상 로드됨(dataDateContext.latestLabel 있음)  → 기준월 표시
+        //       (b) 아직 로딩 중(dataDateContext == null)         → 스켈레톤(로딩중) 표시
+        //       (c) 로딩 실패(dataDateContext.__error === true)  → 오류 안내 표시
+        //     초록색 박스는 상태와 무관하게 항상 렌더링(정적 콘텐츠).
+        let orangeHtml;
+        if (dataDateContext && dataDateContext.latestLabel) {
+            // (a) 정상
+            const safeLabel = String(dataDateContext.latestLabel)
+                .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            orangeHtml =
+                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:left;">
                    <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
-                   현재 데이터 기준월은 <strong>${dataDateContext.latestLabel}</strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
+                   현재 데이터 기준월은 <strong>${safeLabel}</strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
                    <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
-                 </div>
-                 <div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;text-align:left;">
-                   <strong>※ 데이터 기준 안내</strong><br>
-                   <strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>&quot;조정 전&quot; 기준값</strong>입니다.
-                 </div>
-               </div>` : '';
+                 </div>`;
+        } else if (dataDateContext && dataDateContext.__error) {
+            // (c) 오류
+            orangeHtml =
+                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;font-size:14px;color:#991b1b;line-height:1.7;text-align:left;">
+                   <i class="fas fa-exclamation-triangle" style="color:#dc2626;margin-right:6px;"></i>
+                   <strong>데이터 기준월을 불러오지 못했습니다.</strong><br>
+                   <span style="margin-left:22px;">잠시 후 페이지를 새로고침해 주세요.</span>
+                 </div>`;
+        } else {
+            // (b) 로딩 중
+            orangeHtml =
+                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:left;">
+                   <i class="fas fa-spinner fa-spin" style="color:#f59e0b;margin-right:6px;"></i>
+                   <span style="opacity:0.75;">데이터 기준월 확인 중...</span><br>
+                   <span style="margin-left:22px;opacity:0.6;">잠시만 기다려 주세요.</span>
+                 </div>`;
+        }
+        const dateInfoHtml =
+            `<div style="width:100%;max-width:720px;margin-top:16px;display:flex;flex-direction:column;gap:10px;">
+               ${orangeHtml}
+               <div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;text-align:left;">
+                 <strong>※ 데이터 기준 안내</strong><br>
+                 <strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>&quot;조정 전&quot; 기준값</strong>입니다.
+               </div>
+             </div>`;
         chatArea.innerHTML = `<div id="welcomeSection" class="welcome-section">
             <div class="welcome-icon"><i class="fas fa-robot"></i></div>
             <h2 style="margin:0 0 8px;font-size:21px;">무엇이든 물어보세요</h2>
