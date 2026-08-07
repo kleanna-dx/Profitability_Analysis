@@ -4134,6 +4134,42 @@ async function runAnalysisSqls(safeQueries) {
 async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationContext, options = {}) {
   const dc = activeDomain || 'PS';
 
+  // ── [2026-08-07] 사업부 표현 결정적 감지 (aggregate 모드와 동일 정책 이식)
+  //   배경: 분석질문 파이프라인은 그동안 사업부 표현(HL/HL사업부/홈앤라이프 등)
+  //         정규화 규칙을 아예 갖고 있지 않아서, "HL SKU별 TOP5" 는 성공하고
+  //         "HL사업부 SKU별 TOP5" 는 0건이 나오는 표현 종속 버그가 있었음.
+  //   해결: 기존 aggregate 모드가 쓰는 detectDivisionInQuery() 정규식으로
+  //         사용자 질의에서 사업부 언급을 결정적으로 감지 → 프롬프트에
+  //         [사업부 확정 매핑] 블록을 주입하여 LLM 판단 편차를 제거하고,
+  //         plan 생성 후에는 plan.domain.value 를 감지값으로 강제 재작성.
+  //
+  //   감지된 사업부 문자열들은 LLM 프롬프트에서 "이 표현은 모두 동일 코드로
+  //   해석하라" 는 규칙과 함께 노출하므로, 향후 표현이 늘어나더라도
+  //   detectDivisionInQuery 정규식만 확장하면 자동 반영됨 (하드코딩 최소화).
+  const divisionDetection = detectDivisionInQuery(query || '');
+  let divisionDirective = '';
+  if (divisionDetection && divisionDetection.matches && divisionDetection.matches.length > 0) {
+    const matchLines = divisionDetection.matches.map(m =>
+      `  - 감지된 표현: "${m.text}" → 사업부 코드 ${m.code} → DIVISION = '${m.division}'`
+    ).join('\n');
+    const codes = divisionDetection.divisionCodes.join(', ');
+    const divs = divisionDetection.divisions.map(d => `'${d}'`).join(', ');
+    divisionDirective = `\n[★★★★★ 사업부 확정 매핑 — 사용자 질의에서 이미 감지됨 (최상위 우선순위) ★★★★★]\n` +
+      `사용자 질의에서 아래 사업부 표현이 감지되었습니다. 이 매핑은 결정적이며 절대 무시하지 마세요.\n${matchLines}\n\n` +
+      `[반드시 지켜야 할 규칙]\n` +
+      `  1. plan.domain.value 는 "${divisionDetection.divisionCodes[0]}" 로 채우세요 ` +
+      `(감지된 사업부가 여러 개면 첫 번째: ${divisionDetection.divisionCodes[0]}). ` +
+      `activeDomain(UI 필터: ${dc}) 이 다르더라도 사용자 질의 언급을 우선합니다.\n` +
+      `  2. plan.filters 에 DIVISION 또는 DIVISION_NM 조건을 **절대 추가하지 마세요**. ` +
+      `백엔드가 자동으로 DIVISION IN (${divs}) 를 주입합니다.\n` +
+      `  3. 다음 표현은 모두 동일한 사업부입니다:\n` +
+      `     - HL / hl / HL사업부 / HL 사업부 / 홈앤라이프 / 홈앤라이프 사업부 / 홈앤라이프사업부 → HL (DIVISION='20')\n` +
+      `     - PS / ps / PS사업부 / PS 사업부 / 페이퍼솔루션 / 페이퍼솔루션 사업부 → PS (DIVISION='10')\n` +
+      `     즉, "HL사업부 SKU별 매출 TOP5" 와 "HL SKU별 매출 TOP5" 는 완전히 동일한 질문입니다.\n` +
+      `  4. dimensions 에도 DIVISION 축을 넣지 마세요 (사용자가 "사업부별" 이라고 명시하지 않은 한).\n` +
+      `\n[감지된 사업부 코드 요약] ${codes} (division=${divisionDetection.divisions.join(',')})\n`;
+  }
+
   // ── metric 카탈로그 (설명 + 산식)
   let metricCatalog = '';
   let metricSqlMap = {};
@@ -4513,7 +4549,7 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 - 당월: ${cmLabel} (CALMONTH='${cm}')
 - 전월: ${prevLabel} (CALMONTH='${prevCm}')
 - 활성 도메인 (UI 필터): ${dc}
-${synonymDirective}
+${divisionDirective}${synonymDirective}
 [★ 학습관리 등록 지표 (지표성 컬럼은 반드시 이 산식 사용)]
 ${metricCatalog || '(없음)'}
 
@@ -4612,6 +4648,54 @@ ${convCtx}${retryHint}
   plan.period = plan.period || { from: cm, to: cm, source: 'UI_FILTER' };
   if (!plan.period.from) plan.period.from = cm;
   if (!plan.period.to) plan.period.to = plan.period.from;
+
+  // ── [2026-08-07] 사업부 감지 결과로 plan 강제 정규화 (aggregate 정책 이식)
+  //   위에서 detectDivisionInQuery() 로 결정된 사업부가 있으면:
+  //     (a) plan.domain.value 를 감지된 첫 번째 사업부 코드로 강제 재작성.
+  //         LLM 이 activeDomain 을 존중해 다른 값(예: 활성=MGMT 인데 질의는 HL)
+  //         을 넣었더라도 결정적 감지가 우선.
+  //     (b) plan.filters 에 잘못 들어간 DIVISION / DIVISION_NM 조건을 제거.
+  //         (executeAnalysisPlan 이 applyDomainFilter 로 자동 주입하므로
+  //          중복·모순 방지)
+  //     (c) plan.dimensions 에 사용자가 명시하지 않은 DIVISION 축이 들어있으면 제거.
+  //         (사용자가 "사업부별" 이라 명시한 경우만 dimension 유지)
+  //   → 표현 종속 편차를 원천 차단.
+  if (divisionDetection && divisionDetection.divisions.length > 0) {
+    const canonicalCode = divisionDetection.divisionCodes[0];  // 'HL' 또는 'PS'
+    const prevDomain = plan.domain.value;
+    if (prevDomain !== canonicalCode) {
+      plan.domain = { value: canonicalCode, source: 'USER_QUERY' };
+      console.log(`[AnalysisPlan] 사업부 감지 결과로 domain 재작성: "${prevDomain}" → "${canonicalCode}" (감지 표현: "${divisionDetection.matchedText}")`);
+    } else {
+      plan.domain.source = 'USER_QUERY';
+    }
+    // 잘못된 DIVISION/DIVISION_NM filter 제거
+    if (Array.isArray(plan.filters)) {
+      const beforeLen = plan.filters.length;
+      plan.filters = plan.filters.filter(f => {
+        const col = String(f?.column || '').toUpperCase();
+        return col !== 'DIVISION' && col !== 'DIVISION_NM';
+      });
+      if (plan.filters.length < beforeLen) {
+        console.log(`[AnalysisPlan] LLM 이 만든 DIVISION/DIVISION_NM filter ${beforeLen - plan.filters.length}개 제거 (자동 주입 위임)`);
+      }
+    }
+    // 사용자가 "사업부별" 등을 명시하지 않았는데 DIVISION dimension 이 들어간 경우 제거
+    //   판단: 질의 원문에 "사업부별" / "사업부 별" / "각 사업부" 등이 없으면 사업부는 필터일 뿐 축이 아님
+    const asksByDivision = /사업부\s*별|각\s*사업부|사업부\s*단위/.test(query || '');
+    if (!asksByDivision && Array.isArray(plan.dimensions)) {
+      const beforeLen = plan.dimensions.length;
+      plan.dimensions = plan.dimensions.filter(d => {
+        const cols = Array.isArray(d?.columns) ? d.columns.map(c => String(c).toUpperCase()) : [];
+        // columns 에 DIVISION 만 있거나 DIVISION+DIVISION_NM 조합이면 제거
+        const onlyDivision = cols.length > 0 && cols.every(c => c === 'DIVISION' || c === 'DIVISION_NM');
+        return !onlyDivision;
+      });
+      if (plan.dimensions.length < beforeLen) {
+        console.log(`[AnalysisPlan] 사용자가 "사업부별" 요청 안 했으므로 DIVISION dimension ${beforeLen - plan.dimensions.length}개 제거`);
+      }
+    }
+  }
 
   return plan;
 }
@@ -5205,7 +5289,7 @@ function runPostOperations(plan, baseRows) {
 // ────────────────────────────────────────────────────────────
 // [2-c] executeAnalysisPlan — plan 을 실제 DB 로 실행
 // ────────────────────────────────────────────────────────────
-async function executeAnalysisPlan(plan, activeDomain) {
+async function executeAnalysisPlan(plan, activeDomain, query = '') {
   const domain = (plan.domain && plan.domain.value) || activeDomain || 'PS';
   const calmonth = (plan.period && plan.period.from) || '';
   const calmonthTo = (plan.period && plan.period.to) || calmonth;
@@ -5224,7 +5308,24 @@ async function executeAnalysisPlan(plan, activeDomain) {
 
   // ── base SQL 생성 및 실행
   const built = buildAggregationSqlFromPlan(plan, calmonth, calmonthTo);
-  let baseSql = applyDomainFilter(built.sql, domain);
+  // ── [2026-08-07] 사업부 필터 3중 방어 (aggregate 모드와 동일 정책 이식)
+  //   기존: applyDomainFilter 만 호출 → plan.domain.value 만 참조하므로
+  //         LLM 이 filter 에 DIVISION_NM='HL사업부' 같은 잘못된 조건을
+  //         넣으면 그대로 SQL 에 흘러 들어가서 0건 결과 발생.
+  //   보강: 아래 순서로 3단계 방어를 적용.
+  //     1) normalizeDivisionFilter: LLM 이 만든 잘못된 DIVISION_NM 조건을
+  //        DIVISION 코드 조건으로 자동 교정
+  //     2) applyDomainFilter: plan.domain.value 기준 DIVISION 자동 주입
+  //        (이미 조건이 있으면 no-op)
+  //     3) applyDivisionFromQuery: 사용자 질의 텍스트에서 감지된 사업부를
+  //        기준으로 최종 재보정 (활성 도메인=MGMT 상황에서도 정상 동작)
+  //   ※ plan 생성 단계에서 이미 domain 이 감지값으로 재작성되었지만,
+  //     이 3중 방어는 aggregate 모드와 동일한 안전망을 제공하여
+  //     "표현이 달라도 결과가 같음" 을 보장.
+  let baseSql = built.sql;
+  baseSql = normalizeDivisionFilter(baseSql);
+  baseSql = applyDomainFilter(baseSql, domain);
+  baseSql = applyDivisionFromQuery(baseSql, query || '');
   execRecord.baseSql = baseSql;
   // [2026-08-07] (Task 6) TOP N 진단 정보 노출: DB 단 ORDER BY LIMIT 적용 여부 등
   //   - built.rankInfo:  partitionBy 있는 CTE 경로 (기존)
@@ -5274,7 +5375,11 @@ async function executeAnalysisPlan(plan, activeDomain) {
   if (cmpOp && cmpOp.prior) {
     const priorPlan = { ...plan, period: { ...plan.period, from: cmpOp.prior, to: cmpOp.prior } };
     const priorBuilt = buildAggregationSqlFromPlan(priorPlan, cmpOp.prior);
-    const priorSql = applyDomainFilter(priorBuilt.sql, domain);
+    // [2026-08-07] prior SQL 에도 base SQL 과 동일한 3중 방어 적용
+    let priorSql = priorBuilt.sql;
+    priorSql = normalizeDivisionFilter(priorSql);
+    priorSql = applyDomainFilter(priorSql, domain);
+    priorSql = applyDivisionFromQuery(priorSql, query || '');
     execRecord.priorSql = priorSql;
     try {
       // [2026-07-22 PR #247] prior 기간 SQL 도 동일 statement timeout 적용
@@ -7129,7 +7234,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 
         // ── [3] 결과 요청 경로: executeAnalysisPlan
         setRequestStage('analysis_execute');
-        let execRecord = await executeAnalysisPlan(plan, activeDomain);
+        // [2026-08-07] query 전달: executeAnalysisPlan 내부 3중 방어
+        //   (normalizeDivisionFilter + applyDivisionFromQuery) 를 위해 필요
+        let execRecord = await executeAnalysisPlan(plan, activeDomain, query);
         console.log(`[AnalysisPlan] 1차 실행: baseRows=${execRecord.baseRowCount}, ` +
           `err=${execRecord.baseError || '-'}, ops_diag=${execRecord.diagnostics.length}`);
 
@@ -7153,7 +7260,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
               retryReason: reason,
               previousPlan: plan,
             });
-            execRecord = await executeAnalysisPlan(plan, activeDomain);
+            execRecord = await executeAnalysisPlan(plan, activeDomain, query);
             validation = validateAnalysisResults(plan, execRecord);
             console.log(`[AnalysisPlan] 2차 실행: baseRows=${execRecord.baseRowCount}, err=${execRecord.baseError || '-'}, validation.ok=${validation.ok}`);
           } catch (retryErr) {
