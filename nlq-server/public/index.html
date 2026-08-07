@@ -2907,10 +2907,13 @@ function appendDomainMismatchNotice(selectedDomain, questionDivision) {
     // welcomeSection 숨김 (일반 대화 흐름과 동일)
     const welcome = document.getElementById('welcomeSection');
     if (welcome) welcome.style.display = 'none';
-    // 안내 메시지: 요구사항 문구를 그대로 사용
+    // 안내 메시지: 요구사항 문구를 그대로 사용.
+    //   두 번째 문장의 [${questionDivision}] 과 [통합] 만 <strong> 으로 강조 (2026-08-07 요구사항).
+    //   첫 번째 문장의 [${selectedDomain}] 은 강조하지 않음.
+    //   selectedDomain / questionDivision 은 항상 'PS' 또는 'HL' (사전 검증됨) → XSS 안전.
     const msg = '현재 [' + selectedDomain + '] 영역에서는 ' + questionDivision +
-                ' 데이터를 조회할 수 없습니다. 상단에서 [' + questionDivision +
-                '] 또는 [통합]을 선택한 후 다시 질문해 주세요.';
+                ' 데이터를 조회할 수 없습니다. 상단에서 <strong>[' + questionDivision +
+                ']</strong> 또는 <strong>[통합]</strong>을 선택한 후 다시 질문해 주세요.';
     const el = document.createElement('div');
     el.className = 'msg-bot fade-in';
     el.innerHTML = `
