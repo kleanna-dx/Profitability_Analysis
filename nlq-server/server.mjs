@@ -466,6 +466,43 @@ function verifyApiKey(req, res, next) {
 // 인증 라우트 (로그인 페이지 / API) — static 미들웨어보다 먼저 등록
 // ============================================================
 
+// ------------------------------------------------------------
+// [로그인 이력] 클라이언트 IP 추출 헬퍼
+//   - Nginx 등 리버스 프록시 뒤에서 동작 시 X-Forwarded-For 우선
+//   - IPv6 주소도 그대로 저장 (컬럼 VARCHAR(45))
+// ------------------------------------------------------------
+function getClientIp(req) {
+  try {
+    const xff = req.headers && req.headers['x-forwarded-for'];
+    if (xff) {
+      // 여러 프록시 경유 시 쉼표 구분 → 최초(원본 클라이언트) IP 사용
+      const first = String(xff).split(',')[0].trim();
+      if (first) return first.slice(0, 45);
+    }
+    const ip = (req.ip || (req.connection && req.connection.remoteAddress) || '').toString();
+    return ip ? ip.slice(0, 45) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------
+// [로그인 이력] sys_aimd_login_log INSERT
+//   - 로그인 성공 시 1건 기록 (일반 로그인 + SSO 로그인 공용)
+//   - 이력 기록 실패는 로그인 자체를 막지 않음 (best-effort)
+// ------------------------------------------------------------
+async function recordLoginHistory(userId, ipAddr) {
+  try {
+    await pool.query(
+      'INSERT INTO sys_aimd_login_log (user_id, ip_addr, login_dt) VALUES (?, ?, NOW())',
+      [userId, ipAddr]
+    );
+  } catch (e) {
+    // 이력 기록 실패는 로그인 흐름을 막지 않음 — 원인만 로그로 남김
+    console.error('[LoginLog] sys_aimd_login_log INSERT 실패:', e.message);
+  }
+}
+
 // 로그인 페이지 서빙
 app.get('/login', (req, res) => {
   if (req.session && req.session.user) return res.redirect('/');
@@ -531,6 +568,8 @@ app.post('/api/login', async (req, res) => {
       active_domain: domainCode,
       loginAt: new Date().toISOString(),
     };
+    // [로그인 이력] 일반 로그인 성공 → sys_aimd_login_log INSERT (best-effort)
+    await recordLoginHistory(user.user_id, getClientIp(req));
     return res.json({ success: true, user: user.user_id, name: user.name, role: user.role_code, domain_code: domainCode });
   } catch (err) {
     console.error('[Login] DB 조회 오류:', err.message);
@@ -642,6 +681,10 @@ app.post('/api/login/sendEncData', async (req, res) => {
     };
 
     console.log(`[SSO] ✅ 로그인 성공: ${userId} (${ssoUser.name})`);
+
+    // [로그인 이력] SSO 로그인 성공 → sys_aimd_login_log INSERT (best-effort)
+    //   - SSO 신규 사용자 자동 생성 케이스도 이 지점을 반드시 통과하므로 동일하게 기록됨
+    await recordLoginHistory(userId, getClientIp(req));
 
     // 성공 HTML 반환 → 메인페이지로 이동
     return res.status(200).type('html').send(buildSsoSuccessHtml(userId));
