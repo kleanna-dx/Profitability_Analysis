@@ -4413,6 +4413,37 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
    질의에 명시된 경우. 단일 축 TOP N ("올해 매출 TOP10 거래처") 은
    partitionBy 없이 그대로.
 
+3-0-A. **★★★ 단일 축 TOP N — 반드시 by/order 명시 (매우 중요) ★★★**
+   사용자가 "TOP N", "상위 N개", "매출 상위 N개", "○○ TOP N" 처럼
+   **단일 축 순위** 를 요구하면 반드시 TOP_N op 에 다음 필드를 모두 채우세요:
+
+   - "type": "TOP_N"
+   - "n":  숫자 (5, 10 등)
+   - "by": 정렬 기준 metric 표시명 (사용자가 언급한 지표. 예: "순매출", "영업이익")
+   - "order": "DESC" (상위 = 큰 값. "하위 N", "적은 N" 은 "ASC")
+   - partitionBy: 지정하지 않음 (단일 축)
+
+   예) "HL 사업부 SKU별 매출 TOP5"
+   {
+     "dimensions": [ { "name":"SKU", "columns":["MATERIAL","MATERIAL_NM"] } ],
+     "metrics":    [ { "name":"순매출", "formula":"SUM(...)" } ],
+     "operations": [
+       { "type":"GROUP_BY", "dimensions":["SKU"] },
+       { "type":"CALCULATE_METRICS", "metrics":["순매출"] },
+       { "type":"TOP_N", "n":5, "by":"순매출", "order":"DESC" }
+     ]
+   }
+
+   ✗ 금지 패턴 (실제 발생한 버그):
+     - by 없이 { "type":"TOP_N", "n":5 } 만 → 정렬 기준이 없어 임의 5행이 상위로 잘못 노출
+     - order 없이 by 만 → 오름차순으로 착각할 위험 (기본은 DESC 로 처리하지만 명시 권장)
+   → by 는 metric 표시명(예: "순매출") 을 그대로, order 는 대문자로 채우세요.
+
+   ※ 백엔드는 TOP_N.by 를 사용해 DB 단 ORDER BY 로 전체 집계 결과를 정렬한 후
+     상위 N 개만 잘라내고, 애플리케이션 후처리에서 한 번 더 정렬·NULL dummy
+     제거를 수행합니다. 따라서 별도의 SORT op 를 추가할 필요 없이
+     TOP_N.by 만 정확히 채우면 됩니다.
+
 3-1. **★ 파생 지표(비율/원단위)의 재료 metric도 반드시 함께 포함 (매우 중요)**
    비율·원단위 등 파생 지표 (예: 영업이익률 = 영업이익/순매출, 지급수수료 원단위 = 지급수수료/판매중량)는
    사용자에게 결과표로 보여줄 때 파생값만 있으면 검증이 어렵습니다.
@@ -4784,6 +4815,39 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   }
 
   // ────────────────────────────────────────────────────────
+  // [2026-08-07] (Task 6) 단일 축 TOP_N 도 DB 단에서 정렬.
+  //
+  // 배경: partitionBy 가 없는 TOP_N (예: "SKU별 매출 TOP5") 은 지금까지
+  //   base SQL 에 ORDER BY 없이 GROUP BY 만 나가서 baseRows 가 임의 순서.
+  //   → runPostOperations 도 정렬 없이 slice(0,n) → 임의 5행이 topN 으로 노출.
+  //
+  // 해결: partitionBy 없는 TOP_N 이 있고 by(또는 metrics[0]) 가 정해지면
+  //   base SQL 에 ORDER BY {by} {order} LIMIT {n + buffer} 를 붙여
+  //   전체 집계 결과 기준 정렬을 DB 에서 처리.
+  //
+  //   buffer: NULL 코드/명 dummy 행이 상위에 낄 수 있으므로 n + 여유분(20).
+  //           GROUP BY 결과에서 NULL dummy 는 보통 1~수 행이므로 20 이면 충분.
+  //   상한: n+buffer 가 50000 을 넘지 않도록 clamp (기존 안전상한과 동일).
+  // ────────────────────────────────────────────────────────
+  if (!useCte && topOp && topN !== null && !partitionColSql && orderColAlias && groupByParts.length > 0) {
+    const buffer = 20;
+    const dbLimit = Math.min(50000, topN + buffer);
+    const sql = `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause} ORDER BY ${orderColAlias} ${orderDirSql} LIMIT ${dbLimit}`;
+    return {
+      sql,
+      dimAliasByName,
+      metricAliasByName,
+      topNInfo: {
+        n: topN,
+        orderBy: orderColAlias.replace(/`/g, ''),
+        orderDir: orderDirSql,
+        dbLimit,
+        buffered: true,
+      },
+    };
+  }
+
+  // ────────────────────────────────────────────────────────
   // 일반 경로: LIMIT 안전상한 (dimension 있으면 50000, 없으면 1).
   // [2026-07-21] 5000 → 50000 상향: 장기간 · 다차원 집계 시 임의 절단 방지.
   //   최종 사용자에게 노출되는 결과는 후처리 TOP_N / summary 슬라이스로
@@ -4830,6 +4894,124 @@ function interpretCorrelation(r) {
   return `${dir} ${strength} 상관관계`;
 }
 
+// ────────────────────────────────────────────────────────────
+// [2026-08-07] TOP N 정확성을 위한 헬퍼들 (Task 6 대응)
+//
+// 배경(스크린샷 버그):
+//   "HL사업부 SKU별 매출 TOP5" 요청 시 답변 본문 표에 정렬되지 않은
+//   임의 5행이 노출되고, SKU/명이 NULL인 더미 행이 1위로 나타남.
+//
+// 원인:
+//   ① TOP_N op에 by/order가 있어도 runPostOperations 는 정렬 없이
+//      workingRows.slice(0, n) 만 수행 (정렬은 별도 SORT op가 있어야 함).
+//   ② partitionBy 없는 단일 축 TOP N 은 DB 단 ORDER BY도 없이 GROUP BY만 실행.
+//   ③ NULL 코드/명 dummy 행이 필터되지 않음.
+//
+// 해결(3중 방어):
+//   (a) buildAggregationSqlFromPlan: 단일 축 TOP_N도 DB 단에서
+//       ORDER BY {by} {DESC} LIMIT {n+buffer} 강제 → 전체 집계 결과 기준 정렬.
+//   (b) runPostOperations: TOP_N op를 SORT+FILTER+SLICE로 확장 실행.
+//   (c) filterNullCodeNameDummyRows: dimension 의 코드/명 컬럼이 모두 NULL 인
+//       dummy 행 제거 (기본 ON, 사용자 명시적 요청 시에만 유지).
+// ────────────────────────────────────────────────────────────
+
+// dimension columns 배열에서 (코드컬럼, 명컬럼) 튜플을 추론.
+// - buildAggregationSqlFromPlan 와 동일 규칙:
+//   · columns.length===1  → codeCol=cols[0], nameCol=null
+//   · 그 외              → codeCol=첫 non-name-like 컬럼, nameCol=나머지 중 첫 name-like
+function extractCodeNameCols(dim) {
+  if (!dim || !Array.isArray(dim.columns) || dim.columns.length === 0) return { codeCol: null, nameCol: null };
+  const cols = dim.columns.filter(c => c && typeof c === 'string');
+  if (cols.length === 0) return { codeCol: null, nameCol: null };
+  const isNameLike = (col) => /(_NM|_NAME|_KO|_KOR|_KR|NAME_KO|_TEXT|_TXT|_DESC)$/i.test(String(col));
+  if (dim.groupByAll === true || cols.length === 1) {
+    return { codeCol: cols[0], nameCol: cols.find((c, i) => i > 0 && isNameLike(c)) || null };
+  }
+  const codeCol = cols.find(c => !isNameLike(c)) || cols[0];
+  const nameCol = cols.find(c => c !== codeCol && isNameLike(c))
+                || cols.find(c => c !== codeCol)
+                || null;
+  return { codeCol, nameCol };
+}
+
+// dimensions[0] 의 코드/명 컬럼이 모두 NULL/공백인 dummy 행 제거.
+// - 사용자가 명시적으로 "NULL 포함", "NULL 도 보여줘" 요청한 경우 예외.
+// - dimensions 가 없거나 코드컬럼이 없으면 필터 스킵.
+// - CALMONTH 같은 시간축은 NULL 이 정상 값이 아니라 데이터 오류이므로 동일하게 제외.
+function filterNullCodeNameDummyRows(rows, plan) {
+  if (!Array.isArray(rows) || rows.length === 0) return { rows, excluded: 0, applied: false };
+  const dims = Array.isArray(plan.dimensions) ? plan.dimensions : [];
+  if (dims.length === 0) return { rows, excluded: 0, applied: false };
+
+  // 사용자가 원문에서 명시적으로 NULL 유지 요청했는지 감지 (보수적 매칭)
+  //   plan.notes 나 원문 질의에는 접근이 없으므로 plan.includeNullCodes 플래그로만 스킵 허용.
+  //   AnalysisPlan LLM 이 명시적으로 이 플래그를 세팅한 경우에만 우회.
+  if (plan.includeNullCodes === true) return { rows, excluded: 0, applied: false };
+
+  // 첫 dimension 만 검사 (대부분의 TOP N 은 단일 코드 축)
+  const primary = dims[0];
+  const { codeCol, nameCol } = extractCodeNameCols(primary);
+  if (!codeCol) return { rows, excluded: 0, applied: false };
+
+  const isEmpty = (v) => (v === null || v === undefined || (typeof v === 'string' && v.trim() === ''));
+  const kept = [];
+  let excluded = 0;
+  for (const r of rows) {
+    const codeEmpty = isEmpty(r[codeCol]);
+    // nameCol 이 없으면 codeCol 만으로 판정. nameCol 이 있으면 둘 다 empty 일 때만 제외.
+    const bothEmpty = nameCol ? (codeEmpty && isEmpty(r[nameCol])) : codeEmpty;
+    if (bothEmpty) { excluded++; continue; }
+    kept.push(r);
+  }
+  return { rows: kept, excluded, applied: true, codeCol, nameCol };
+}
+
+// TOP_N op에 대해 rows를 정렬(선택적)하고 상위 N개를 반환.
+// - byName: metric 표시명(한글). 없으면 첫 metric alias 로 fallback.
+// - order: 'ASC' | 'DESC' (기본 DESC).
+// - alreadySorted=true 이면 재정렬 없이 slice 만.
+function sortAndSliceForTopN(rows, plan, topOp, alreadySorted = false) {
+  const n = Math.max(1, Math.min(1000, parseInt(topOp?.n, 10) || 10));
+  const metrics = Array.isArray(plan.metrics) ? plan.metrics : [];
+  const byRaw = topOp?.by || (metrics[0] && metrics[0].name) || null;
+  const orderRaw = String(topOp?.order || 'DESC').toUpperCase();
+  const dir = orderRaw === 'ASC' ? 1 : -1;
+
+  let working = Array.isArray(rows) ? rows.slice() : [];
+
+  // 정렬은 by가 실제 rows[0] 에 존재하는 key 일 때만 수행
+  let effectiveBy = byRaw;
+  if (!alreadySorted && working.length > 0 && effectiveBy) {
+    if (!(effectiveBy in working[0])) {
+      // 학습관리 표시명이 정확히 안 맞을 수 있으므로 대소문자·공백 무시 매칭 시도
+      const keys = Object.keys(working[0]);
+      const alt = keys.find(k => k.replace(/\s+/g, '').toLowerCase() === String(effectiveBy).replace(/\s+/g, '').toLowerCase());
+      if (alt) effectiveBy = alt;
+    }
+    if (effectiveBy in (working[0] || {})) {
+      working.sort((a, b) => {
+        const va = Number(a[effectiveBy]);
+        const vb = Number(b[effectiveBy]);
+        const aFin = Number.isFinite(va);
+        const bFin = Number.isFinite(vb);
+        // 비수치는 항상 뒤로 (DESC/ASC 모두)
+        if (!aFin && !bFin) return 0;
+        if (!aFin) return 1;
+        if (!bFin) return -1;
+        return (va - vb) * dir;
+      });
+    }
+  }
+
+  return {
+    n,
+    rows: working.slice(0, n),
+    orderBy: effectiveBy,
+    orderDir: dir === 1 ? 'ASC' : 'DESC',
+    sortedInApp: !alreadySorted,
+  };
+}
+
 function runPostOperations(plan, baseRows) {
   const results = {
     baseRows: baseRows,
@@ -4864,21 +5046,56 @@ function runPostOperations(plan, baseRows) {
       }
 
       if (type === 'TOP_N') {
-        const n = Math.max(1, Math.min(1000, parseInt(op.n) || 10));
         // [2026-07-21] partitionBy 지정 시 DB 단(CTE + ROW_NUMBER)에서 이미
         //   partition 별 상위 N 개만 반환됨 → 여기서 slice(0,n) 를 하면
         //   첫 partition 만 잘려나오므로 우회. rows 는 partition × N 그대로 유지.
+        // [2026-08-07] (Task 6) 단일 축 TOP_N 도 반드시 정렬 후 slice.
+        //   - 애플리케이션 단 SORT op가 없거나 by 가 누락되어도, TOP_N.by 또는
+        //     metrics[0].name 을 기본 정렬 기준으로 사용.
+        //   - buildAggregationSqlFromPlan 이 DB 단 ORDER BY LIMIT 를 이미 붙였으면
+        //     추가 정렬은 no-op 에 가깝지만, 방어적으로 재정렬을 수행 (일관성 우선).
+        //   - 코드/명 이 모두 NULL 인 dummy 행은 제외 (기본 ON).
         const isPartitioned = !!(op.partitionBy || op.partition_by);
+
         if (isPartitioned) {
+          // partition 케이스: DB 단에서 이미 partition 별 상위 N 순으로 반환.
+          //   NULL dummy 행 제거는 partition 마다 개별 판단이 필요하나,
+          //   기본 dimensions[0] 이 partition 축(예: 달력연월) 이 아닌
+          //   서브 축(예: 자재)인 경우가 대부분이므로 dimensions[0] 기준 필터 적용.
+          const nRawP = Math.max(1, Math.min(1000, parseInt(op.n) || 10));
+          const filteredP = filterNullCodeNameDummyRows(workingRows, plan);
+          if (filteredP.applied && filteredP.excluded > 0) {
+            results.diagnostics.push(`TOP_N(partitioned): 코드/명 모두 NULL 인 ${filteredP.excluded}행 제외 (dim=${filteredP.codeCol}${filteredP.nameCol ? `,${filteredP.nameCol}` : ''})`);
+          }
+          workingRows = filteredP.rows;
           results.computed.topN = {
-            n,
+            n: nRawP,
             rows: workingRows,
             partitioned: true,
             partitionBy: op.partitionBy || op.partition_by,
+            // 진단 필드
+            nullDummyExcluded: filteredP.applied ? filteredP.excluded : 0,
           };
         } else {
-          workingRows = workingRows.slice(0, n);
-          results.computed.topN = { n, rows: workingRows, partitioned: false };
+          // 단일 축 TOP_N: DB 단 ORDER BY 가 있어도 방어적으로 재정렬 후 slice.
+          const filtered = filterNullCodeNameDummyRows(workingRows, plan);
+          if (filtered.applied && filtered.excluded > 0) {
+            results.diagnostics.push(`TOP_N: 코드/명 모두 NULL 인 ${filtered.excluded}행 제외 (dim=${filtered.codeCol}${filtered.nameCol ? `,${filtered.nameCol}` : ''})`);
+          }
+          // buildAggregationSqlFromPlan 이 DB 단 ORDER BY LIMIT 를 붙였는지는
+          //   base SQL 을 파싱해야 알 수 있음. 여기서는 안전하게 항상 재정렬.
+          //   재정렬 비용은 O(N log N) 이며 GROUP BY 결과 크기(수백~수만행) 에서 무시할 수준.
+          const sliced = sortAndSliceForTopN(filtered.rows, plan, op, false);
+          workingRows = sliced.rows;
+          results.computed.topN = {
+            n: sliced.n,
+            rows: workingRows,
+            partitioned: false,
+            orderBy: sliced.orderBy,
+            orderDir: sliced.orderDir,
+            sortedInApp: sliced.sortedInApp,
+            nullDummyExcluded: filtered.applied ? filtered.excluded : 0,
+          };
         }
         continue;
       }
@@ -5009,6 +5226,16 @@ async function executeAnalysisPlan(plan, activeDomain) {
   const built = buildAggregationSqlFromPlan(plan, calmonth, calmonthTo);
   let baseSql = applyDomainFilter(built.sql, domain);
   execRecord.baseSql = baseSql;
+  // [2026-08-07] (Task 6) TOP N 진단 정보 노출: DB 단 ORDER BY LIMIT 적용 여부 등
+  //   - built.rankInfo:  partitionBy 있는 CTE 경로 (기존)
+  //   - built.topNInfo:  partitionBy 없는 단일 축 TOP_N DB 단 정렬 경로 (신규)
+  //   진단 로그로만 사용. summary/응답에는 노출하지 않음.
+  if (built.rankInfo) {
+    execRecord.diagnostics.push(`TOP_N(partitioned) DB 경로: ${JSON.stringify(built.rankInfo)}`);
+  }
+  if (built.topNInfo) {
+    execRecord.diagnostics.push(`TOP_N(single-axis) DB 정렬 경로: ${JSON.stringify(built.topNInfo)}`);
+  }
 
   // 사전검증
   const v = validateSqlPreExecution(baseSql);
@@ -5282,14 +5509,22 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
     // [2026-07-21] partition-topN 인 경우 rows 는 이미 partition × N 개로
     //   DB 단에서 구성됨. 여기서 slice(0,n) 을 하면 첫 partition 만 남고
     //   나머지 partition (예: 4월·5월·6월) 이 사라짐 → 전체 유지.
+    // [2026-08-07] (Task 6) 단일 축 TOP_N 은 runPostOperations 에서 이미
+    //   정렬 + NULL dummy 제외 + slice(0,n) 완료. 여기서는 그대로 노출.
+    //   프론트 답변 본문 표는 반드시 이 rows 만 사용해야 함 (규칙 15-A 참조).
     const isPartitioned = !!computed.topN.partitioned;
     const rowsForSummary = isPartitioned
       ? computed.topN.rows
-      : computed.topN.rows.slice(0, computed.topN.n);
+      : computed.topN.rows.slice(0, computed.topN.n);  // 이미 잘려있지만 방어적 slice
     summary.topN = {
       n: computed.topN.n,
       partitioned: isPartitioned,
       partitionBy: computed.topN.partitionBy || null,
+      // ── 정렬·필터 진단 필드 (LLM 이 rows 를 재정렬하지 않도록 명시)
+      orderBy: computed.topN.orderBy || null,
+      orderDir: computed.topN.orderDir || null,
+      sortedInApp: !!computed.topN.sortedInApp,
+      nullDummyExcluded: computed.topN.nullDummyExcluded || 0,
       // 사용자 친화 표현: partition 이면 "월별 상위 5개 자재", 아니면 "상위 5개 자재"
       titlePhrase: isPartitioned
         ? `${computed.topN.partitionBy || '그룹'}별 상위 ${computed.topN.n}${unit.unitCounter} ${unit.unitLabel}`
@@ -5419,6 +5654,23 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
     - ✓ 권장: 답변은 요약 텍스트만 (상관계수, 해석, 분석 대상 수).
     특정 거래처를 언급하려면 문장으로 서술 (예: "매출액이 가장 큰 거래처는 A입니다").
     단, TOP-N 결과의 순위표는 op 특성상 표시 가치가 있으므로 6행 이하일 때만 허용.
+
+15-A. **★★★ TOP-N 결과 표 작성 규칙 (매우 중요) ★★★**
+    답변에 TOP-N 순위표를 그릴 때는 **반드시 \`summary.topN.rows\` 안의 행만, 주어진 순서 그대로** 사용하세요.
+    - \`summary.topN.rows\` 는 이미 백엔드가 [실제 실행 결과] 의 전체 집계에서
+      \`orderBy\` 기준 \`orderDir\` 순으로 정렬하고 상위 N 개만 잘라낸 최종 결과입니다.
+    - **금지 사항** (하나라도 어기면 사용자에게 잘못된 순위가 전달됩니다):
+      · ✗ resultSample / baseRows / 다른 필드에서 임의 행을 꺼내와 TOP-N 표에 넣기
+      · ✗ rows 를 재정렬하거나 순위를 뒤바꾸기
+      · ✗ 표에 없는 임의 행을 새로 만들어 넣기 (특히 코드/명이 NULL 인 dummy 행)
+      · ✗ N 개보다 많거나 적은 행을 표에 넣기 (정확히 topN.rows.length 개)
+    - **필수 사항**:
+      · ✓ 순위 번호는 rows 배열 순서 그대로 1, 2, 3, ... N
+      · ✓ 각 행의 컬럼 값은 rows 안의 값 그대로 (숫자는 규칙 10-1 콤마 형식 적용)
+      · ✓ 코드 컬럼과 명 컬럼이 함께 있으면 두 컬럼 모두 표에 노출
+      · ✓ \`nullDummyExcluded\` > 0 이면 답변에 "코드·명 미기재 항목 N건은 상위 목록에서 제외" 한 문장 첨부 (선택)
+    - **답변 본문에서 특정 순위를 언급할 때도** \`summary.topN.rows\` 안의 값만 인용.
+      "1위는 X 로 순매출 Y 원" 같은 서술도 반드시 rows[0] 의 실제 값과 일치해야 합니다.
 
 16. **답변은 다음 순서로 구성**:
     (1) 전체 분석 결과 요약 (예: 상관계수 값 + 해석 문장)
