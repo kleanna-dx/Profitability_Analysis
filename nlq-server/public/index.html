@@ -2829,8 +2829,135 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     }
 }
 
+// ============================================================
+// [2026-08-07] 선택 도메인과 질문 사업부 불일치 사전 검증
+//   목적: 상단에서 선택된 도메인(PS/HL/MGMT)과 질문에 명시된 사업부(PS/HL)가
+//         불일치하면 SQL 생성/DB 조회를 실행하지 않고 사용자에게 안내.
+//   판정 정책:
+//     - 상단 = 'MGMT'(통합)  → 검증 통과 (통합은 모든 사업부 허용)
+//     - 상단 = 'PS' + 질문에 HL 만 명시(PS 미명시) → 차단 + PS 안내
+//     - 상단 = 'HL' + 질문에 PS 만 명시(HL 미명시) → 차단 + HL 안내
+//     - 그 외 (사업부 미명시, 현재 도메인 사업부 명시, 복수 명시) → 통과
+//       ※ 복수 명시(예: "PS 와 HL 매출 비교") 는 현재 도메인 관련도가 있으므로 통과.
+//         PS 선택 + PS/HL 복수 명시 케이스는 백엔드가 기존 필터로 처리.
+//   구현 위치: sendQuery() 진입부. 백엔드/SQL 생성 이전에 완전히 차단.
+//   영향 범위: 프론트 전용. 백엔드 라우팅/SQL 필터 로직은 미변경.
+//   MGMT 도메인 동작에는 영향 없음 (분기 즉시 통과).
+// ============================================================
+
+// 질문 문자열에서 어떤 사업부가 명시적으로 언급되었는지 검출.
+//   반환: Set('PS'?, 'HL'?)  — 명시적으로 매칭된 사업부만 포함.
+// 매칭 규칙 (요구사항 기준):
+//   PS: 'PS', 'PS사업부', 'PS 사업부', '페이퍼솔루션'
+//   HL: 'HL', 'HL사업부', 'HL 사업부', '홈앤라이프'
+// 영문 약어(PS/HL) 는 단어 경계 처리로 오탐 방지:
+//   - 앞뒤가 영숫자면 매칭 배제 (예: "PSY", "HLL", "APS", "SHL" 은 매칭 안 됨)
+//   - 앞뒤가 한글/공백/구두점/문자열 경계면 매칭 성립
+//   - 대소문자 구분 없음 (ps, Ps 도 매칭)
+function detectQuestionDivisions(query) {
+    const result = new Set();
+    if (!query || typeof query !== 'string') return result;
+    // 정규화: 전각 공백 → 반각. 대소문자 통일은 정규식 i 플래그로 처리.
+    const q = query.replace(/\u3000/g, ' ');
+
+    // 한글 확장 키워드 (단독 등장만으로 매칭 성립 — 오탐 위험 없음)
+    if (/페이퍼솔루션/.test(q)) result.add('PS');
+    if (/홈앤라이프/.test(q))   result.add('HL');
+    // 한글 조합 '사업부' 표현
+    if (/PS\s?사업부/i.test(q)) result.add('PS');
+    if (/HL\s?사업부/i.test(q)) result.add('HL');
+    // 영문 약어 PS / HL — 단어 경계 처리
+    //   앞: 문자열 시작 | 비영숫자 (한글 포함)
+    //   뒤: 문자열 끝   | 비영숫자
+    //   [A-Za-z0-9] 대신 라틴 문자만으로 경계를 잡아 한글은 경계로 인정.
+    if (/(^|[^A-Za-z0-9])PS(?![A-Za-z0-9])/i.test(q)) result.add('PS');
+    if (/(^|[^A-Za-z0-9])HL(?![A-Za-z0-9])/i.test(q)) result.add('HL');
+    return result;
+}
+
+// 도메인 vs 질문 사업부 불일치 판정.
+//   반환:
+//     null                                    → 통과 (정상 진행)
+//     { selectedDomain, questionDivision }    → 차단 (안내 표시 대상)
+function checkDomainDivisionMismatch(query, selectedDomain) {
+    // MGMT(통합)은 모든 사업부 허용 → 항상 통과.
+    if (selectedDomain === 'MGMT') return null;
+    // PS/HL 이외의 알 수 없는 도메인은 검증하지 않음 (기존 로직 유지)
+    if (selectedDomain !== 'PS' && selectedDomain !== 'HL') return null;
+    const divs = detectQuestionDivisions(query);
+    // 질문에 사업부가 아예 명시되지 않았으면 통과 (기존 도메인 필터가 처리)
+    if (divs.size === 0) return null;
+    // 현재 도메인 사업부가 질문에 이미 포함되어 있으면 통과 (복수 명시 케이스 포함)
+    if (divs.has(selectedDomain)) return null;
+    // 여기 도달 = 다른 사업부만 명시됨 → 차단
+    const other = selectedDomain === 'PS' ? 'HL' : 'PS';
+    // 질문에 명시된 다른 사업부가 실제로 있는지 재확인 (안전 가드)
+    if (!divs.has(other)) return null;
+    return { selectedDomain, questionDivision: other };
+}
+
+// 도메인 불일치 안내 카드 렌더 — 보라색 중립 안내 (시스템 오류 UI 아님).
+//   - 빨간색 카드 아님 (요구사항)
+//   - requestId / 오류 상세보기 / 기술 오류 문구 없음 (요구사항)
+//   - 새 채팅 버튼 제공 (사용자가 도메인 변경 후 재시도할 수 있게)
+//   - 입력창(queryInput) 값은 클리어하지 않음 (요구사항: 입력 내용 유지)
+function appendDomainMismatchNotice(selectedDomain, questionDivision) {
+    const chatArea = document.getElementById('chatArea');
+    if (!chatArea) return;
+    // welcomeSection 숨김 (일반 대화 흐름과 동일)
+    const welcome = document.getElementById('welcomeSection');
+    if (welcome) welcome.style.display = 'none';
+    // 안내 메시지: 요구사항 문구를 그대로 사용.
+    //   두 번째 문장의 [${questionDivision}] 과 [통합] 만 <strong> 으로 강조 (2026-08-07 요구사항).
+    //   첫 번째 문장의 [${selectedDomain}] 은 강조하지 않음.
+    //   selectedDomain / questionDivision 은 항상 'PS' 또는 'HL' (사전 검증됨) → XSS 안전.
+    const msg = '현재 [' + selectedDomain + '] 영역에서는 ' + questionDivision +
+                ' 데이터를 조회할 수 없습니다. 상단에서 <strong>[' + questionDivision +
+                ']</strong> 또는 <strong>[통합]</strong>을 선택한 후 다시 질문해 주세요.';
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#818cf8,#6366f1);">
+                <i class="fas fa-info-circle" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#eef2ff;border:1px solid #c7d2fe;padding:14px 16px;border-radius:12px;flex:1;">
+                <div style="font-size:12px;font-weight:700;color:#4338ca;margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+                    <i class="fas fa-layer-group" style="font-size:11px;"></i>
+                    선택 영역 안내
+                </div>
+                <p style="color:#3730a3;font-size:13px;line-height:1.65;margin:0;">${msg}</p>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+    scrollToBottom && scrollToBottom();
+}
+
 async function sendQuery(query) {
     if (isLoading) return;
+
+    // ============================================================
+    // [2026-08-07] 선택 도메인 vs 질문 사업부 불일치 사전 검증
+    //   isLoading 을 true 로 세팅하기 전에 판정 — 차단 시 이후 로직 전부 스킵.
+    //   차단 시:
+    //     - 안내 카드 표시 (보라색 중립 UI)
+    //     - queryInput 값은 클리어하지 않음 (요구사항: 사용자가 도메인 변경 후 재시도)
+    //     - 백엔드 /api/nlq/async 호출 없음 → SQL 생성 및 DB 조회 원천 차단
+    //   MGMT(통합) 선택 시 checkDomainDivisionMismatch 가 즉시 null 반환 → 통과.
+    // ============================================================
+    const _mismatch = checkDomainDivisionMismatch(query, currentDomain);
+    if (_mismatch) {
+        // 사용자 말풍선은 표시하되(질문한 사실은 남김), 백엔드는 호출하지 않음.
+        // welcomeSection 숨김 및 안내 카드는 appendDomainMismatchNotice 내부에서 처리.
+        const chatArea = document.getElementById('chatArea');
+        if (chatArea && typeof buildUserMessageRow === 'function') {
+            chatArea.appendChild(buildUserMessageRow(query, queryMode, currentDomain));
+        }
+        appendDomainMismatchNotice(_mismatch.selectedDomain, _mismatch.questionDivision);
+        // 입력창 값 유지 (queryInput.value 를 지우지 않음) — 사용자가 도메인 변경 후 그대로 재전송 가능.
+        return;
+    }
+
     isLoading = true;
 
     // 첫 질문 시 도메인 고정 — 같은 세션 안에서 도메인 변경 차단
