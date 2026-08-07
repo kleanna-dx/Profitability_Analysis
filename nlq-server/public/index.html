@@ -1367,11 +1367,11 @@
                      최신월 조회 완료 전에는 skeleton 상태(로딩 문구)로 자리 확보,
                      조회 성공 시 문구만 교체, 실패 시 오류 안내로 교체.
                      ※ data-state 값: 'loading' | 'ready' | 'error' -->
-                <div id="welcomeDateInfo" data-state="loading" style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:left;">
+                <div id="welcomeDateInfo" data-state="loading" style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:center;">
                     <span id="welcomeDateInfoContent">
                         <i class="fas fa-spinner fa-spin" style="color:#f59e0b;margin-right:6px;"></i>
                         <span style="opacity:0.75;">데이터 기준월 확인 중...</span><br>
-                        <span style="margin-left:22px;opacity:0.6;">잠시만 기다려 주세요.</span>
+                        <span style="opacity:0.6;">잠시만 기다려 주세요.</span>
                     </span>
                 </div>
                 <!-- [데이터 기준 안내 박스] 주황색 박스와 완전 동일한 크기/패딩/좌측정렬, 색상만 초록색.
@@ -2210,7 +2210,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             '<i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>' +
             '현재 데이터 기준월은 <strong id="welcomeLatestLabel">' + safeLabel + '</strong>입니다. ' +
             '"당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>' +
-            '<span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>';
+            '<span>특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>';
         box.setAttribute('data-state', 'ready');
     }).catch(e => {
         console.warn('[DateCtx] 기준월 조회 실패:', e && e.message);
@@ -2225,7 +2225,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         content.innerHTML =
             '<i class="fas fa-exclamation-triangle" style="color:#dc2626;margin-right:6px;"></i>' +
             '<strong style="color:#991b1b;">데이터 기준월을 불러오지 못했습니다.</strong><br>' +
-            '<span style="margin-left:22px;color:#991b1b;">잠시 후 페이지를 새로고침해 주세요.</span>';
+            '<span style="color:#991b1b;">잠시 후 페이지를 새로고침해 주세요.</span>';
         box.setAttribute('data-state', 'error');
         // 배경/테두리도 옅은 빨강으로 전환하여 시각적 오류 신호.
         box.style.background = '#fef2f2';
@@ -5698,26 +5698,26 @@ function startNewChat() {
             const safeLabel = String(dataDateContext.latestLabel)
                 .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
             orangeHtml =
-                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:left;">
+                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:center;">
                    <i class="fas fa-calendar-check" style="color:#f59e0b;margin-right:6px;"></i>
                    현재 데이터 기준월은 <strong>${safeLabel}</strong>입니다. "당월"은 <strong>마감 완료된 최신월 기준</strong>으로 해석됩니다.<br>
-                   <span style="margin-left:22px;">특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
+                   <span>특정 월을 조회하려면 <strong>질문에 년월을 함께 입력</strong>하세요.</span>
                  </div>`;
         } else if (dataDateContext && dataDateContext.__error) {
             // (c) 오류
             orangeHtml =
-                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;font-size:14px;color:#991b1b;line-height:1.7;text-align:left;">
+                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;font-size:14px;color:#991b1b;line-height:1.7;text-align:center;">
                    <i class="fas fa-exclamation-triangle" style="color:#dc2626;margin-right:6px;"></i>
                    <strong>데이터 기준월을 불러오지 못했습니다.</strong><br>
-                   <span style="margin-left:22px;">잠시 후 페이지를 새로고침해 주세요.</span>
+                   <span>잠시 후 페이지를 새로고침해 주세요.</span>
                  </div>`;
         } else {
             // (b) 로딩 중
             orangeHtml =
-                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:left;">
+                `<div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;font-size:14px;color:#92400e;line-height:1.7;text-align:center;">
                    <i class="fas fa-spinner fa-spin" style="color:#f59e0b;margin-right:6px;"></i>
                    <span style="opacity:0.75;">데이터 기준월 확인 중...</span><br>
-                   <span style="margin-left:22px;opacity:0.6;">잠시만 기다려 주세요.</span>
+                   <span style="opacity:0.6;">잠시만 기다려 주세요.</span>
                  </div>`;
         }
         const dateInfoHtml =
