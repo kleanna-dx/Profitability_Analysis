@@ -14928,10 +14928,12 @@ app.post('/api/batch/execute', requireAdmin, async (req, res) => {
  * (/profit-api/sap-rfc/execute) 를 호출합니다.
  *
  * 실행 경로 (execution route):
- *   - NLP_RFC_001 (수익성분석 / Z_BI_WEB_EX_BL   / bw_profitability_data)
+ *   - NLP_RFC_001 (수익성분석   / Z_BI_WEB_EX_BL   / bw_profitability_data)
  *       → Spring Boot API (JCo) 호출
- *   - NLP_RFC_002 (제조원가   / Z_BI_WEB_EX_BL_4 / sys_aimd_cot015)
+ *   - NLP_RFC_002 (제조원가     / Z_BI_WEB_EX_BL_4 / sys_aimd_cot015)
  *       → Spring Boot API (JCo) 호출  ← [PR #332] Node.js/python3 우회 경로 폐지
+ *   - NLP_RFC_003 (제조원가 RFC 2 / Z_BI_WEB_EX_BL_5 / sys_aimd_cot043)
+ *       → Spring Boot API (JCo) 호출  (Spring Boot SapRfcSyncService 매핑 추가 필요)
  *   - 그 외 : INTERFACE_CONFIG_ERROR 로 실패 처리
  *
  * [PR #332] 왜 Python 우회 경로를 제거했나:
@@ -14962,6 +14964,7 @@ app.post('/api/batch/execute', requireAdmin, async (req, res) => {
 const EXPECTED_INTERFACE_MAPPING = {
   'NLP_RFC_001': { rfc_name: 'Z_BI_WEB_EX_BL',   target_table: 'bw_profitability_data' },
   'NLP_RFC_002': { rfc_name: 'Z_BI_WEB_EX_BL_4', target_table: 'sys_aimd_cot015'       },
+  'NLP_RFC_003': { rfc_name: 'Z_BI_WEB_EX_BL_5', target_table: 'sys_aimd_cot043'       },
 };
 
 /**

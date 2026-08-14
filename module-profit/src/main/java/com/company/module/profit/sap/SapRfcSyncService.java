@@ -20,8 +20,9 @@ import java.util.*;
  *
  * <p>[PR #332] 두 인터페이스 통합 실행:</p>
  * <ul>
- *   <li>수익성분석 (NLP_RFC_001) - Z_BI_WEB_EX_BL   → bw_profitability_data</li>
- *   <li>제조원가   (NLP_RFC_002) - Z_BI_WEB_EX_BL_4 → sys_aimd_cot015</li>
+ *   <li>수익성분석    (NLP_RFC_001) - Z_BI_WEB_EX_BL   → bw_profitability_data</li>
+ *   <li>제조원가      (NLP_RFC_002) - Z_BI_WEB_EX_BL_4 → sys_aimd_cot015</li>
+ *   <li>제조원가 RFC 2 (NLP_RFC_003) - Z_BI_WEB_EX_BL_5 → sys_aimd_cot043 (신규)</li>
  * </ul>
  *
  * <p>동일한 JCo(module-profit.jar) 를 사용하여 두 RFC 를 호출하고, 요청 body 로
@@ -223,6 +224,57 @@ public class SapRfcSyncService {
     );
 
     // ================================================================
+    // 매핑 (3) 제조원가 RFC 2 — sys_aimd_cot043 (PR #363/#364/#365 신규)
+    //   ※ 047_create_sys_aimd_cot043.sql 스키마 (seq 제외 9 컬럼) 와 정확히 일치.
+    //   ※ interface_id: NLP_RFC_003, rfc_name: Z_BI_WEB_EX_BL_5
+    //
+    //   컬럼 타입 요약 (047 마이그레이션 기준):
+    //     CALMONTH        VARCHAR(6)   — SAP NUMC 6  → VARCHAR (앞자리 0 보존)
+    //     ZCOSTCOMP       VARCHAR(3)   — SAP NUMC 3  → VARCHAR
+    //     ZCOSTCOMP_NM    VARCHAR(40)  — SAP CHAR 40 → VARCHAR
+    //     COSTELMNT       VARCHAR(10)  — SAP CHAR 10 → VARCHAR
+    //     COSTELMNT_NM    VARCHAR(40)  — SAP CHAR 40 → VARCHAR
+    //     COSTCENTER      VARCHAR(10)  — SAP CHAR 10 → VARCHAR
+    //     COSTCENTER_NM   VARCHAR(20)  — SAP CHAR 20 → VARCHAR
+    //     CURRENCY        VARCHAR(5)   — SAP CUKY 5  → VARCHAR
+    //     AMOUNT          BIGINT       — SAP CURR 17,2 → BIGINT (원단위 정수)
+    // ================================================================
+
+    /** sys_aimd_cot043 컬럼 목록 (seq 제외, INSERT 순서). 총 9 컬럼. */
+    private static final List<String> DB_COLUMNS_COT043 = List.of(
+            "CALMONTH",
+            "ZCOSTCOMP", "ZCOSTCOMP_NM",
+            "COSTELMNT", "COSTELMNT_NM",
+            "COSTCENTER", "COSTCENTER_NM",
+            "CURRENCY",
+            "AMOUNT"
+    );
+
+    /**
+     * 제조원가 RFC 2 는 SAP 필드명이 그대로 DB 컬럼명과 일치하며 /BIC/ prefix 도
+     * 없으므로 별도 이름 매핑이 필요없음. ({@link #normalizeSapFieldName} 의 대문자화만으로 충분)
+     */
+    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_COT043 = Map.of();
+
+    /**
+     * 제조원가 RFC 2 소수 유지 컬럼: 없음.
+     * AMOUNT 는 BIGINT(원단위 정수) 로 저장하므로 소수 유지 대상이 아님.
+     */
+    private static final Set<String> DECIMAL_COLUMNS_COT043 = Set.of();
+
+    /** 제조원가 RFC 2 숫자형 컬럼 = AMOUNT (BIGINT). */
+    private static final Set<String> NUMERIC_COLUMNS_COT043 = Set.of("AMOUNT");
+
+    /** 제조원가 RFC 2 매핑 인스턴스. */
+    static final TableMapping MFG_COST_COT043_MAPPING = new TableMapping(
+            "sys_aimd_cot043",
+            DB_COLUMNS_COT043,
+            SAP_FIELD_TO_DB_COLUMN_COT043,
+            NUMERIC_COLUMNS_COT043,
+            DECIMAL_COLUMNS_COT043
+    );
+
+    // ================================================================
     // 매핑 선택 / SAP 필드명 정규화
     // ================================================================
 
@@ -238,10 +290,11 @@ public class SapRfcSyncService {
         switch (targetTable) {
             case "bw_profitability_data": return PROFITABILITY_MAPPING;
             case "sys_aimd_cot015":       return MFG_COST_COT015_MAPPING;
+            case "sys_aimd_cot043":       return MFG_COST_COT043_MAPPING;
             default:
                 throw new IllegalArgumentException(
                         "지원하지 않는 target_table 입니다: '" + targetTable + "'"
-                        + " (허용: bw_profitability_data, sys_aimd_cot015)");
+                        + " (허용: bw_profitability_data, sys_aimd_cot015, sys_aimd_cot043)");
         }
     }
 
