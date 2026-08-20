@@ -3215,9 +3215,6 @@ function appendBotMessage(data) {
     if (data.data && data.data.length > 0) {
         const cols = Object.keys(data.data[0]);
         const colLabels = data.columnLabels || {};
-        // [PR #369] columnMeta — 서버가 계산한 lineage/semanticRole 메타.
-        //   최초 실행: data.columnMeta, 이력 재열람: 없을 수 있음 → 프론트 fallback.
-        const colMeta = (data.columnMeta && typeof data.columnMeta === 'object') ? data.columnMeta : {};
         // truncated 경고 배너 (하드 상한 초과 시)
         const truncNotice = data.truncated
             ? `<div style="padding:8px 12px;background:#fef3c7;border-bottom:1px solid #fcd34d;color:#92400e;font-size:12px;">
@@ -3236,7 +3233,7 @@ function appendBotMessage(data) {
         // [2026-07-31] periodInfo 전달 — 표 제목 옆 '· 2026년 6월' 형태로 실제 조회 기간 표시
         const fromHistory = !!data.fromHistory;
         tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo);
-        _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory, columnMeta: colMeta };
+        _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory };
     }
 
     // Analysis HTML (분석 답변 패널)
@@ -3357,8 +3354,7 @@ function appendBotMessage(data) {
             _aggDetailInitCtx.rows,
             _aggDetailInitCtx.cols,
             _aggDetailInitCtx.colLabels,
-            _aggDetailInitCtx.fromHistory,
-            _aggDetailInitCtx.columnMeta  // [PR #369] lineage/semanticRole meta
+            _aggDetailInitCtx.fromHistory
         );
     }
 
@@ -3959,13 +3955,12 @@ function appendAnalysisOnlyMessage(dataOrText) {
     el.className = 'msg-bot fade-in';
 
     // 파라미터 정규화
-    let analysisText, rows, columnLabels, columnMeta, columnOrder, sql, rowCount, fromHistory, periodInfo;
+    let analysisText, rows, columnLabels, columnOrder, sql, rowCount, fromHistory, periodInfo;
     if (typeof dataOrText === 'string') {
         analysisText = dataOrText;
         rows = null;
         fromHistory = false;
         periodInfo = null;
-        columnMeta = {};
     } else {
         const d = dataOrText || {};
         analysisText = d.answer || d.analysis || d.explanation || '분석 답변을 생성하지 못했습니다.';
@@ -3973,10 +3968,6 @@ function appendAnalysisOnlyMessage(dataOrText) {
              : Array.isArray(d.data) ? d.data
              : null;
         columnLabels = d.columnLabels || {};
-        // [PR #369] columnMeta — 서버가 계산한 lineage/semanticRole 메타데이터
-        //   최초 실행: data.columnMeta, 이력 재열람: chart_config.columnMeta → restoreSession
-        //   없어도 정상: 프론트는 fallback (이름 기반 함수) 로 처리
-        columnMeta = (d.columnMeta && typeof d.columnMeta === 'object') ? d.columnMeta : {};
         columnOrder = Array.isArray(d.columnOrder) && d.columnOrder.length > 0
             ? d.columnOrder
             : (rows && rows.length > 0 ? Object.keys(rows[0]) : []);
@@ -4018,7 +4009,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
 
     // 표 인터랙션 바인딩 (검색·정렬·페이지네이션)
     if (hasTable) {
-        initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory, columnMeta);
+        initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory);
     }
 
     scrollToBottom();
@@ -4121,12 +4112,11 @@ const analysisTableState = {};
 //   - 초기 렌더
 //   - 검색어 변경 / 페이지 크기 변경 시 재렌더
 // ============================================================
-function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory, columnMeta) {
+function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory) {
     analysisTableState[tableId] = {
         rows: rows,
         columnOrder: columnOrder,
         columnLabels: columnLabels || {},
-        columnMeta: (columnMeta && typeof columnMeta === 'object') ? columnMeta : {},  // [PR #369] lineage/semanticRole 메타
         page: 1,
         pageSize: 20,
         search: '',
@@ -4285,65 +4275,36 @@ function isMoneyColumn(col, label) {
 }
 
 // ============================================================
-// [PR #369 / 2026-08-20] 컬럼 타입 기반 값 포맷팅 (공용 헬퍼)
+// [2026-07-21 / PR #252 / PR #253 hotfix] 컬럼 타입 기반 값 포맷팅 (공용 헬퍼)
 // ------------------------------------------------------------
-// 정책 변경 (사용자 지시):
-//   기존: 컬럼명/라벨 이름 기반 휴리스틱 + PR #368 값 형태 기반 휴리스틱
-//   변경: 백엔드가 lineage + semanticRole 을 계산해 columnMeta 로 내려주고,
-//         프론트는 이 columnMeta 를 최우선으로 사용.
+// 규칙 (판별 우선순위 순):
+//   1) 비율   (isRatioColumn)    → 콤마 없이, 소수 4자리 (예: 0.0824, 15.23%)
+//   2) 코드성 (isCodeColumn)     → 콤마 없이 raw (예: 사업부코드 100, BUKRS)
+//   3) 금액   (isMoneyColumn)    → 반드시 천 단위 콤마 ★사용자 최우선 요구★
+//                                   라벨에 (원)/(금액) 접미사가 있으면 시간축/기타 판단
+//                                   보다 우선함 (PR #253 hotfix).
+//   4) 시간축 (isCalendarColumn) → 콤마 없이 raw (예: 202601, "2026년 1월")
+//   5) 그 외 정수/소수            → 안전하게 콤마 (레거시 호환)
+//   6) 문자열                    → esc(String(v))
 //
-// 우선순위:
-//   (A) meta 가 있으면 meta.semanticRole 로 결정 — 값 형태/컬럼명 추측 금지.
-//         · measure       → 천 단위 콤마
-//         · ratio         → 콤마 없이 소수 4자리
-//         · period        → 원본값 유지 (예: 202601)
-//         · dimension     → 원본값 유지 (문자값), 숫자 문자열도 콤마 금지
-//         · code          → 원본값 유지 (앞자리 0 포함 문자열도 손상 없이)
-//         · identifier    → 원본값 유지
-//         · text / literal → 원본값 유지
-//         · unknown       → 아래 (B) fallback
-//   (B) meta 가 없거나 unknown 이면 기존 이름 기반 함수 fallback
-//       (구 캐시/이력 재열람 호환용)
+// [PR #253 hotfix 배경]
+//   기존 순서 (시간축 → 코드 → 비율 → 금액) 는 금액 컬럼 라벨이
+//   "2026년 상반기(2026년 1월~6월) 총매출 합계(원)" 처럼 "2026년" 으로 시작할 때
+//   isCalendarColumn 의 /^\d{4}년/ 규칙에 걸려 금액 컬럼이 raw 로 표시되는 버그.
+//   → 금액을 시간축 앞으로 옮기고, isCalendarColumn 은 라벨에 "(원)/매출/이익" 등
+//     금액 시그널이 있으면 즉시 false 반환하도록 hotfix.
 //
-// 예:
-//   ("202601", "구분",  "구분",  {semanticRole:'period'})    → "202601"
-//   ("합계",   "구분",  "구분",  {semanticRole:'period'})    → "합계"
-//   ("001",    "BUKRS", "회사코드", {semanticRole:'code'})   → "001"
-//   (2133627112, "매출", "총매출 합계(원)", {semanticRole:'measure'}) → "2,133,627,112"
+// 사용자 요구 (PR #252):
+//   "금액·원화 지표는 반드시 천 단위 콤마"
+//   "연월, 코드, 비율 등에는 콤마를 적용하지 않기"
+//   "모든 숫자에 일괄 적용하지 말고 컬럼의 의미와 데이터 유형을 기준으로 판단"
 // ============================================================
-function formatCellValue(v, col, label, meta) {
+function formatCellValue(v, col, label) {
     if (v === null || v === undefined || v === '') return '-';
 
     const num = _parseNumericLoose(v);
-    const role = (meta && typeof meta === 'object') ? String(meta.semanticRole || '').toLowerCase() : '';
 
-    // (A) columnMeta 최우선
-    if (role && role !== 'unknown') {
-        if (role === 'measure') {
-            // isNumericFormat 이 명시적으로 false 인 경우는 원본 유지 (안전 스위치)
-            if (meta && meta.isNumericFormat === false) return esc(String(v));
-            if (num !== null && typeof v !== 'boolean') {
-                if (Number.isInteger(num)) return esc(num.toLocaleString('ko-KR'));
-                return esc(num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 4 }));
-            }
-            return esc(String(v));
-        }
-        if (role === 'ratio') {
-            if (num !== null && typeof v !== 'boolean') {
-                if (Number.isInteger(num)) return esc(String(num));
-                return esc(num.toLocaleString('ko-KR', { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: 4 }));
-            }
-            return esc(String(v));
-        }
-        // period / dimension / code / identifier / text / literal → 원본값 유지 (콤마 금지)
-        if (role === 'period' || role === 'dimension' || role === 'code' || role === 'identifier' || role === 'text' || role === 'literal') {
-            return esc(String(v));
-        }
-        // 정의되지 않은 role 은 fallback 으로 흘려보냄
-    }
-
-    // (B) meta 없거나 unknown → 기존 이름 기반 fallback (구 캐시/이력 호환)
-    //   1) 비율 → 콤마 없음
+    // 1) 비율 → 콤마 없음 (율/률/%)
     if (isRatioColumn(col, label)) {
         if (num !== null && typeof v !== 'boolean') {
             if (Number.isInteger(num)) return esc(String(num));
@@ -4351,11 +4312,11 @@ function formatCellValue(v, col, label, meta) {
         }
         return esc(String(v));
     }
-    //   2) 코드성 → 원본값 유지
+    // 2) 코드성 → 콤마 없이 raw
     if (isCodeColumn(col, label)) {
         return esc(String(v));
     }
-    //   3) 금액 → 콤마 (시간축보다 우선 — PR #253 hotfix 정책 유지)
+    // 3) 금액 → 반드시 콤마 (isCalendarColumn 보다 우선 판단)
     if (isMoneyColumn(col, label)) {
         if (num !== null && typeof v !== 'boolean') {
             if (Number.isInteger(num)) return esc(num.toLocaleString('ko-KR'));
@@ -4363,16 +4324,16 @@ function formatCellValue(v, col, label, meta) {
         }
         return esc(String(v));
     }
-    //   4) 시간축 → 원본값 유지
+    // 4) 시간축 → 콤마 없이 raw
     if (isCalendarColumn(col, label)) {
         return esc(String(v));
     }
-    //   5) 기타 숫자 (fallback) — 컬럼 힌트 부족 & meta 도 없음 → 안전하게 콤마 (레거시)
+    // 5) 기타 숫자 (컬럼 힌트 부족) — 안전하게 콤마 (레거시 호환)
     if (num !== null && typeof v !== 'boolean') {
         if (Number.isInteger(num)) return esc(num.toLocaleString('ko-KR'));
         return esc(num.toLocaleString('ko-KR', { minimumFractionDigits: 0, maximumFractionDigits: 4 }));
     }
-    //   6) 문자열
+    // 6) 문자열
     return esc(String(v));
 }
 
@@ -4486,32 +4447,18 @@ function renderAnalysisTable(tableId) {
             const cells = st.columnOrder.map(c => {
                 const v = row[c];
                 if (v === null || v === undefined) return `<td style="${cellStyle}color:#9ca3af;">-</td>`;
-                // [PR #369] 컬럼 타입 기반 포맷 (columnMeta 최우선 → 이름 기반 fallback)
-                //   meta.semanticRole:
-                //     · measure  → 천 단위 콤마 (2,133,627,112)
-                //     · ratio    → 콤마 없이 소수 4자리 (0.0824)
-                //     · period/dimension/code/identifier/text → 원본값 유지 (202601, "001", "합계")
+                // [2026-07-21] 컬럼 타입 기반 포맷 (formatCellValue)
+                //   - CALMONTH 같은 시간축 컬럼은 콤마 없이 raw 문자열 (202601)
+                //   - 금액·수량은 천 단위 콤마 (-2,063,050,449)
+                //   - 소수(비율/이율)는 소수 4자리 (0.0824)
                 const label = (st.columnLabels && st.columnLabels[c]) || c;
-                const meta = (st.columnMeta && st.columnMeta[c]) || null;
-                const role = (meta && typeof meta === 'object') ? String(meta.semanticRole || '').toLowerCase() : '';
-                // 시각적 정렬 결정: measure/ratio → 우측 (숫자 형식), 그 외는 label 기반 fallback
-                const isCalByLabel = isCalendarColumn(c, label);
-                const isPeriodLike = (role === 'period') || (!role && isCalByLabel);
+                const isCal = isCalendarColumn(c, label);
                 const num = _parseNumericLoose(v);
-                const shown = formatCellValue(v, c, label, meta);
-                // period 컬럼(202601 등)은 값이 숫자여도 monospace/우측 정렬 (코드성)
-                if (isPeriodLike) {
+                const shown = formatCellValue(v, c, label);
+                // 시간축 컬럼은 값이 숫자여도 좌측정렬(코드성) — 금액과 시각적으로 구분
+                if (isCal) {
                     return `<td style="${cellStyle}color:#111827;font-family:'JetBrains Mono','Consolas',monospace;text-align:right;">${shown}</td>`;
                 }
-                // measure / ratio / (fallback) 숫자 → 우측 정렬
-                if (role === 'measure' || role === 'ratio') {
-                    return `<td style="${numStyle}">${shown}</td>`;
-                }
-                // code/identifier/dimension/text 는 좌측(기본) 정렬로 시각 구분
-                if (role === 'code' || role === 'identifier' || role === 'dimension' || role === 'text' || role === 'literal') {
-                    return `<td style="${cellStyle}color:#111827;">${shown}</td>`;
-                }
-                // meta 없음 → 기존 로직 유지 (숫자면 우측, 아니면 좌측)
                 if (num !== null && typeof v !== 'boolean') {
                     return `<td style="${numStyle}">${shown}</td>`;
                 }
@@ -5761,9 +5708,6 @@ async function restoreSession(sessionKey, hintDomain) {
                             data: rows,
                             columnOrder: Array.isArray(cfg.columnOrder) ? cfg.columnOrder : [],
                             columnLabels: (cfg.columnLabels && typeof cfg.columnLabels === 'object') ? cfg.columnLabels : {},
-                            // [PR #369] 이력에 columnMeta 가 저장돼 있으면 재사용 (신규 이력만 존재)
-                            //   구 이력에는 없어도 프론트가 fallback (이름 기반) 으로 처리하므로 하위 호환 유지.
-                            columnMeta: (cfg.columnMeta && typeof cfg.columnMeta === 'object') ? cfg.columnMeta : {},
                             sql: item.generated_sql || '',
                             rowCount: typeof item.row_count === 'number' ? item.row_count : rows.length,
                             isAnalysisAnswer: true,

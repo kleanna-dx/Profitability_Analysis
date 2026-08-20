@@ -6815,27 +6815,10 @@ function boldYearMonth(text) {
 // SQL에서 FROM/JOIN 으로 참조되는 테이블 후보를 추출하여 매핑 사전 구성
 // ============================================================
 async function resolveColumnLabels(rows, sql, domainCode) {
-  const { labels } = await _resolveColumnLabelsInternal(rows, sql, domainCode);
-  return labels;
-}
-
-// [PR #369 / 2026-08-20] resolveColumnMeta 와 조회 결과를 공유하기 위한 내부 함수.
-//   - 기존 resolveColumnLabels 와 동일한 DB 조회를 수행하되,
-//     COLUMN_COMMENT / ontology_column 조회 결과(commentMap, ontoMap, ontoRawMap,
-//     colDataTypeMap, tables) 를 함께 반환하여 상위 호출자가
-//     추가 DB 조회 없이 semantic role 판단에 재사용할 수 있게 함.
-//   - 원칙: DB 추가 조회 금지. 기존 결과 재사용.
-async function _resolveColumnLabelsInternal(rows, sql, domainCode) {
   const labels = {};
-  const commentMap = {};       // upperColumnName → comment
-  const ontoMap = {};          // upperColumnName → description
-  const ontoRawMap = {};       // upperColumnName → { column_name, description, data_type, type }
-  const colDataTypeMap = {};   // upperColumnName → INFORMATION_SCHEMA.DATA_TYPE (varchar/int/decimal 등)
-  const emptyResult = { labels, commentMap, ontoMap, ontoRawMap, colDataTypeMap, tables: [], englishKeys: [] };
-
-  if (!rows || rows.length === 0) return emptyResult;
+  if (!rows || rows.length === 0) return labels;
   const keys = Object.keys(rows[0]);
-  if (keys.length === 0) return emptyResult;
+  if (keys.length === 0) return labels;
 
   // 결과 키에 한글이 포함되어 있는지 판별 (이미 AS 별칭으로 한국어 지정된 경우)
   const hasKorean = (s) => /[\uAC00-\uD7AF]/.test(s);
@@ -6849,9 +6832,7 @@ async function _resolveColumnLabelsInternal(rows, sql, domainCode) {
       englishKeys.push(k);
     }
   }
-  if (englishKeys.length === 0) {
-    return { labels, commentMap, ontoMap, ontoRawMap, colDataTypeMap, tables: [], englishKeys: [] };
-  }
+  if (englishKeys.length === 0) return labels;
 
   // SQL에서 참조 테이블명 추출 (FROM / JOIN 뒤의 식별자)
   // 보통 bw_profitability_data 하나지만, 안전하게 다중 테이블 지원
@@ -6865,12 +6846,13 @@ async function _resolveColumnLabelsInternal(rows, sql, domainCode) {
 
   const tables = [...tableSet];
 
-  // 2순위) DB COLUMN_COMMENT 일괄 조회 (DATA_TYPE 도 함께 수집 — semantic role 최후 보조 판단용)
+  // 2순위) DB COLUMN_COMMENT 일괄 조회
+  const commentMap = {}; // upperColumnName → comment
   try {
     const placeholders = tables.map(() => '?').join(',');
     const colPlaceholders = englishKeys.map(() => '?').join(',');
     const [rowsC] = await pool.query(
-      `SELECT COLUMN_NAME, COLUMN_COMMENT, DATA_TYPE
+      `SELECT COLUMN_NAME, COLUMN_COMMENT
          FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
           AND TABLE_NAME IN (${placeholders})
@@ -6878,37 +6860,28 @@ async function _resolveColumnLabelsInternal(rows, sql, domainCode) {
       [...tables, ...englishKeys]
     );
     for (const r of rowsC) {
-      const upper = r.COLUMN_NAME.toUpperCase();
       const cmt = (r.COLUMN_COMMENT || '').trim();
-      if (cmt) commentMap[upper] = cmt;
-      const dt = (r.DATA_TYPE || '').trim().toLowerCase();
-      if (dt && !colDataTypeMap[upper]) colDataTypeMap[upper] = dt;
+      if (cmt) commentMap[r.COLUMN_NAME.toUpperCase()] = cmt;
     }
   } catch (e) {
     console.error('[NLQ] COLUMN_COMMENT 조회 실패 (무시):', e.message);
   }
 
   // 3순위) ontology_column.description (도메인 필터)
+  const ontoMap = {}; // upperColumnName → description
   try {
     const dc = domainCode || 'PS';
     const colPlaceholders = englishKeys.map(() => '?').join(',');
     const [rowsO] = await pool.query(
-      `SELECT column_name, description, data_type, type
+      `SELECT column_name, description
          FROM ontology_column
         WHERE domain_code = ?
           AND column_name IN (${colPlaceholders})`,
       [dc, ...englishKeys]
     );
     for (const r of rowsO) {
-      const upper = r.column_name.toUpperCase();
       const desc = (r.description || '').trim();
-      if (desc) ontoMap[upper] = desc;
-      ontoRawMap[upper] = {
-        column_name: r.column_name,
-        description: desc,
-        data_type: (r.data_type || '').trim().toLowerCase(),
-        type: (r.type || '').trim()
-      };
+      if (desc) ontoMap[r.column_name.toUpperCase()] = desc;
     }
   } catch (e) {
     console.error('[NLQ] ontology_column 조회 실패 (무시):', e.message);
@@ -6920,634 +6893,7 @@ async function _resolveColumnLabelsInternal(rows, sql, domainCode) {
     labels[k] = commentMap[upper] || ontoMap[upper] || k;
   }
 
-  return { labels, commentMap, ontoMap, ontoRawMap, colDataTypeMap, tables, englishKeys };
-}
-
-// ============================================================
-// [PR #369 / 2026-08-20] resolveColumnMeta — 최종 출력 컬럼의
-//   원본 컬럼 lineage 및 semantic role 판단.
-// ------------------------------------------------------------
-// 원칙 (사용자 지시):
-//   - LLM 추가 호출 금지
-//   - DB 추가 조회 금지 (_resolveColumnLabelsInternal 결과 재사용)
-//   - SQL 재생성 금지
-//   - AnalysisPlan / Ontology 정보를 최우선 재사용
-//   - 값 형태 기반 휴리스틱 (예: "202601" → YYYYMM) 사용 금지
-//   - metadata 판단 실패 시 fallback 만 반환하여 조회 자체가 실패하지 않도록
-//
-// 반환 형식:
-//   {
-//     "구분": {
-//       outputColumn: "구분",
-//       sourceColumns: ["CALMONTH"],
-//       semanticRole: "period",       // dimension | period | code | identifier | measure | ratio | text | unknown
-//       expressionType: "column",     // column | aggregate | formula | ratio | literal | unknown
-//       dataType: "int",              // ontology or DB (varchar/int/decimal/…)
-//       isNumericFormat: false,
-//       ontoType: null                // '원가' | '비용' | null (원가/비용 그룹 메타)
-//     },
-//     ...
-//   }
-//
-// Source lineage 판단 우선순위:
-//   1) AnalysisPlan.dimensions / plan.metrics (analysis 모드) — 100% 정확
-//   2) SQL SELECT expression 파싱 (aggregate 모드)
-//        - "<expr> AS <alias>" 형식에서 <expr> 을 분석하여 source columns 및 expressionType 추출
-//        - UNION ALL 은 첫 번째 branch 를 canonical 로 사용 (semantic compatibility 체크)
-//   3) DB data_type 은 최후 보조 (int/decimal → measure 강제 금지)
-//
-// semantic role 결정 규칙:
-//   - expressionType='aggregate' (SUM/AVG/COUNT/MIN/MAX 등) → measure
-//   - expressionType='ratio' (division 이 포함되고 결과가 비율성) → ratio
-//   - expressionType='formula' → measure (사칙연산 결과)
-//   - expressionType='literal' → text (원본값 유지)
-//   - expressionType='column':
-//       · sourceColumns 중 하나라도 CALMONTH/CALDAY/CALYEAR/CALQUARTER/CALWEEK/
-//         FISC_YEAR/FISC_PERIOD/FISCPER 계열 → period
-//       · Ontology.description 에 "율|률|%" 포함 → ratio
-//       · Ontology.type 이 '원가' 또는 '비용' → measure (원가·비용 그룹)
-//       · Ontology.data_type 이 int/decimal/numeric/float/double 이고
-//         컬럼명이 identifier 패턴 (BUKRS/WERKS/MATNR/... ) 이 아니면 → measure
-//       · 그 외 코드/식별자 패턴 → code
-//       · 그 외 → dimension
-// ============================================================
-
-// SAP identifier 패턴 (프론트 isCodeColumn 과 동일 규칙을 서버로 이관)
-const _SAP_IDENTIFIER_EXACT = /^(BUKRS|WERKS|MATNR|KUNNR|LIFNR|VKORG|VTWEG|SPART|MATERIAL|PRODUCT|COSTELMNT|COSTCENTER|PROFIT_CTR|SALES_OFF|DIVISION|PLANT|ZCOSTCOMP|CO_AREA)$/;
-const _SAP_IDENTIFIER_PREFIX = /^(PRODH[1-9]|MATL_TYPE|MATL_GROUP|DISTR_CHAN|BILL_TYPE|INCOTERMS|CUST_GROUP|CUST_GRP\d*|COUNTRY)$/;
-const _SAP_IDENTIFIER_BIC = /^BIC_Z(DISTCHAN|ORG_TEAM|JPCODE|BRAND|SBRAND|KUNN2|BOXUNIT|BAGUNIT|UNIT)$/;
-const _SAP_IDENTIFIER_SUFFIX = /(^|_)(CODE|CD|ID|NO|NUM|NBR|NUMBER|KEY)$/;
-const _PERIOD_COLUMN_PATTERN = /^(CAL(MONTH|DAY|YEAR|QUARTER|WEEK)|FISC(_?)YEAR|FISC(_?)PERIOD|FISCPER|YYYYMM|YYYYMMDD|YEARMONTH)$/;
-const _NAME_COLUMN_PATTERN = /(_NM|_NAME|_KO|_KOR|_KR|NAME_KO|_TEXT|_TXT|_DESC)$/;
-
-function _isSapIdentifierColumn(colUpper) {
-  if (!colUpper) return false;
-  if (_SAP_IDENTIFIER_EXACT.test(colUpper)) return true;
-  if (_SAP_IDENTIFIER_PREFIX.test(colUpper)) return true;
-  if (_SAP_IDENTIFIER_BIC.test(colUpper)) return true;
-  if (_SAP_IDENTIFIER_SUFFIX.test(colUpper)) return true;
-  return false;
-}
-
-function _isPeriodColumn(colUpper) {
-  if (!colUpper) return false;
-  return _PERIOD_COLUMN_PATTERN.test(colUpper);
-}
-
-function _isNameLikeColumn(colUpper) {
-  if (!colUpper) return false;
-  return _NAME_COLUMN_PATTERN.test(colUpper);
-}
-
-// SELECT expression 하나를 분석하여 source columns 및 expression type 추출.
-// - 정규식 기반 경량 분석 (SQL parser 라이브러리 없음 & 프로젝트 정책상 추가 도입 안 함)
-// - 완벽한 파싱을 목표로 하지 않음. 인식 불가능하면 unknown 으로 두어 fallback 유도.
-function _analyzeSelectExpression(expr) {
-  const out = { sourceColumns: [], expressionType: 'unknown' };
-  if (!expr || typeof expr !== 'string') return out;
-  let e = expr.trim();
-
-  // literal: '...' 또는 "..." 또는 순수 숫자
-  if (/^'[^']*'$/.test(e) || /^"[^"]*"$/.test(e)) {
-    out.expressionType = 'literal';
-    return out;
-  }
-  if (/^-?\d+(\.\d+)?$/.test(e)) {
-    out.expressionType = 'literal';
-    return out;
-  }
-  // NULL literal
-  if (/^NULL$/i.test(e)) {
-    out.expressionType = 'literal';
-    return out;
-  }
-
-  // 산식 판단: 최상위 (괄호 밖) 사칙연산자 존재 여부.
-  //   방식: 문자열 리터럴을 마스킹한 뒤 괄호 depth=0 위치에서 + - * / 검사.
-  //   이유: SUM(A+B) 는 aggregate 하나, SUM(A)+SUM(B) 는 formula (두 aggregate 합).
-  const masked = e.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
-  let topLevelHasArith = false;
-  let topLevelHasDivision = false;
-  {
-    let depth = 0;
-    for (let i = 0; i < masked.length; i++) {
-      const ch = masked[i];
-      if (ch === '(') depth++;
-      else if (ch === ')') depth--;
-      else if (depth === 0 && (ch === '+' || ch === '-' || ch === '*' || ch === '/')) {
-        // 앞이 알파벳/닫는괄호/숫자/백틱/쌍따옴표/공백 뒤 아닌 경우 (예: 단항 - '-1')
-        //   보수적으로 최상위 산술연산자로 간주.
-        //   단, 문자열 첫 글자가 -/+ 인 경우(단항)는 제외 (예: '-1', '+2').
-        if (i === 0) continue;
-        topLevelHasArith = true;
-        if (ch === '/') topLevelHasDivision = true;
-      }
-    }
-  }
-
-  // aggregate 함수: SUM/AVG/COUNT/MIN/MAX/GROUP_CONCAT/STDDEV/VARIANCE 등
-  //   단, "aggregate" 판정은 최상위에 산술연산자가 없을 때만.
-  //   SUM(A)+SUM(B) 같은 산식은 formula 로 분류 (measure 결과는 동일).
-  const AGG_FUNCS = /^(SUM|AVG|COUNT|MIN|MAX|GROUP_CONCAT|STDDEV|VARIANCE|VAR_POP|VAR_SAMP)\s*\(/i;
-  const isAggregate = AGG_FUNCS.test(e) && !topLevelHasArith;
-  const hasArithmetic = topLevelHasArith;
-  const hasDivision = topLevelHasDivision;
-
-  // source columns 추출: 백틱/따옴표 제거된 식별자 후보를 모두 추출
-  //   SQL 키워드/함수명/AS 등은 제외.
-  const RESERVED = new Set([
-    'SUM','AVG','COUNT','MIN','MAX','GROUP_CONCAT','STDDEV','VARIANCE','VAR_POP','VAR_SAMP',
-    'CASE','WHEN','THEN','ELSE','END','AND','OR','NOT','NULL','IS','IN','LIKE','BETWEEN',
-    'AS','DISTINCT','ALL','TRUE','FALSE','IF','IFNULL','NULLIF','COALESCE','CAST','CONVERT',
-    'DATE','YEAR','MONTH','DAY','SUBSTRING','SUBSTR','LEFT','RIGHT','LENGTH','TRIM',
-    'CONCAT','FORMAT','ROUND','FLOOR','CEIL','CEILING','ABS','POWER','MOD','DIV',
-    'CURRENT_DATE','CURRENT_TIMESTAMP','NOW','FROM','WHERE','GROUP','ORDER','BY','HAVING',
-    'UNSIGNED','SIGNED','CHAR','VARCHAR','INTEGER','INT','DECIMAL','NUMERIC','BIGINT'
-  ]);
-  const identRegex = /`([^`]+)`|"([^"]+)"|\[([^\]]+)\]|(\b[A-Za-z_][A-Za-z0-9_]*\b)/g;
-  const found = new Set();
-  let m;
-  while ((m = identRegex.exec(masked)) !== null) {
-    const id = m[1] || m[2] || m[3] || m[4];
-    if (!id) continue;
-    const upper = id.toUpperCase();
-    if (RESERVED.has(upper)) continue;
-    // 숫자로만 이루어져 있으면 스킵 (리터럴)
-    if (/^\d+$/.test(upper)) continue;
-    found.add(id);
-  }
-  out.sourceColumns = [...found];
-
-  // expression type 최종 결정
-  if (isAggregate) {
-    out.expressionType = 'aggregate';
-  } else if (hasArithmetic) {
-    // 나눗셈만 있으면 ratio (예: SUM(A)/NULLIF(SUM(B),0)*100)
-    // 하지만 하위 표현식이 aggregate 를 포함하면 formula/ratio 둘 다 measure 계열
-    out.expressionType = hasDivision ? 'ratio' : 'formula';
-    // aggregate 를 안에 포함해도 결과가 산식이므로 aggregate 로 승격시키지 않음
-    // (사용자 정의: aggregate / formula / ratio 는 모두 measure 계열)
-  } else if (out.sourceColumns.length === 1) {
-    // 단순 컬럼 참조
-    out.expressionType = 'column';
-  } else if (out.sourceColumns.length > 1) {
-    // 컬럼이 여러 개인데 연산자가 없는 경우 (CASE WHEN 등)
-    out.expressionType = 'formula';
-  }
-  // 인식 불가 → unknown 유지
-
-  return out;
-}
-
-// aggregate 모드 SQL 의 SELECT 절을 output alias → { sourceColumns, expressionType } 매핑으로 파싱.
-// - UNION ALL 이 있으면 branch 별로 분석 후 첫 번째 branch 를 canonical 로 채택.
-// - 정규식 기반 경량 분석 (프로젝트 정책상 SQL parser 라이브러리 추가 안 함).
-// - 실패 시 빈 객체를 반환하여 상위 호출자가 fallback (Ontology 기반) 을 사용하도록 함.
-function _parseSelectAliasMapping(sql) {
-  const emptyResult = { aliasMap: {}, branches: [] };
-  if (!sql || typeof sql !== 'string') return emptyResult;
-
-  // 주석 제거 (--...\n, /* ... */)
-  let s = sql.replace(/--[^\n]*\n?/g, '\n').replace(/\/\*[\s\S]*?\*\//g, ' ');
-
-  // 문자열 리터럴 보호: '...' 를 임시 토큰으로 치환
-  const literals = [];
-  s = s.replace(/'(?:[^']|'')*'/g, (m) => {
-    literals.push(m);
-    return `__LIT${literals.length - 1}__`;
-  });
-
-  // WITH ... 처리: WITH 절이 있으면 마지막 SELECT 만 대상으로 함 (간략화).
-  //   완벽 처리는 아니지만 정책상 heavy parser 도입 없이 최선 노력.
-  //   CTE 이름을 alias 로 오인하지 않도록 대략적으로 마지막 SELECT ~ FROM 만 추출.
-
-  // 여러 SELECT 문 지원 (UNION ALL / UNION)
-  // 대략적: 소문자로 정규화하여 union 지점을 찾음
-  const upper = s.toUpperCase();
-  const branchRanges = [];
-  {
-    // SELECT 시작 지점을 모두 찾은 뒤, 각 SELECT ~ 다음 UNION 또는 문장 끝 사이를 branch 로 잘라냄
-    const selectPositions = [];
-    const selectRe = /\bSELECT\b/g;
-    let mm;
-    while ((mm = selectRe.exec(upper)) !== null) selectPositions.push(mm.index);
-
-    if (selectPositions.length === 0) return emptyResult;
-
-    // subquery/CTE 내부의 SELECT 도 모두 포함되므로,
-    // 여기서는 top-level SELECT 만 대상으로 하기 어려움.
-    // 실용적 접근: 가장 바깥 SELECT ~ FROM 절만 대상으로 하되,
-    // UNION ALL 존재 시 UNION ALL 로 분리된 top-level SELECT 들을 모두 대상으로 함.
-
-    // top-level UNION 위치 탐색: 괄호 밸런스가 0 인 지점의 UNION 만 인정
-    const unionPositions = [];
-    {
-      let depth = 0;
-      for (let i = 0; i < upper.length; i++) {
-        const ch = upper[i];
-        if (ch === '(') depth++;
-        else if (ch === ')') depth--;
-        else if (depth === 0 && upper.startsWith('UNION', i)) {
-          // UNION ALL 또는 UNION 인지 확인
-          const rest = upper.slice(i);
-          const um = rest.match(/^UNION(\s+ALL)?\b/);
-          if (um) {
-            unionPositions.push({ start: i, len: um[0].length });
-            i += um[0].length - 1;
-          }
-        }
-      }
-    }
-
-    // top-level SELECT 를 branch 시작점으로 사용
-    // (실용적으로 UNION 앞뒤가 각각 branch 시작이라고 봄)
-    const branchStarts = [];
-    // 첫 번째 top-level SELECT
-    {
-      let depth = 0;
-      for (let i = 0; i < upper.length; i++) {
-        const ch = upper[i];
-        if (ch === '(') depth++;
-        else if (ch === ')') depth--;
-        else if (depth === 0 && upper.startsWith('SELECT', i) &&
-                 /[\s(]/.test(upper[i - 1] || ' ') && /[\s(]/.test(upper[i + 6] || ' ')) {
-          branchStarts.push(i);
-          i += 5;
-          break;
-        }
-      }
-    }
-    for (const u of unionPositions) {
-      // UNION 이후 첫 top-level SELECT
-      let depth = 0;
-      for (let i = u.start + u.len; i < upper.length; i++) {
-        const ch = upper[i];
-        if (ch === '(') depth++;
-        else if (ch === ')') depth--;
-        else if (depth === 0 && upper.startsWith('SELECT', i)) {
-          branchStarts.push(i);
-          break;
-        }
-      }
-    }
-
-    for (let i = 0; i < branchStarts.length; i++) {
-      const start = branchStarts[i];
-      // 이 branch 의 끝: 다음 UNION 시작 or 문장 끝
-      let end = s.length;
-      for (const u of unionPositions) {
-        if (u.start > start) { end = u.start; break; }
-      }
-      branchRanges.push({ start, end });
-    }
-  }
-
-  if (branchRanges.length === 0) return emptyResult;
-
-  // branch 별 SELECT 절 (SELECT ~ FROM 사이) 추출
-  const branches = [];
-  for (const br of branchRanges) {
-    const seg = s.slice(br.start, br.end);
-    // SELECT 뒤 ~ 첫 top-level FROM 사이
-    const startIdx = seg.toUpperCase().indexOf('SELECT');
-    if (startIdx < 0) continue;
-    let afterSelect = seg.slice(startIdx + 6);
-
-    // top-level FROM 위치
-    let fromIdx = -1;
-    {
-      let depth = 0;
-      const upperSeg = afterSelect.toUpperCase();
-      for (let i = 0; i < upperSeg.length; i++) {
-        const ch = upperSeg[i];
-        if (ch === '(') depth++;
-        else if (ch === ')') depth--;
-        else if (depth === 0 && upperSeg.startsWith('FROM', i) &&
-                 /\s/.test(upperSeg[i - 1] || ' ') && /\s/.test(upperSeg[i + 4] || ' ')) {
-          fromIdx = i;
-          break;
-        }
-      }
-    }
-    if (fromIdx < 0) continue;
-    const selectList = afterSelect.slice(0, fromIdx).trim();
-    if (!selectList) continue;
-
-    // 콤마 분리 — top-level 콤마만
-    const items = [];
-    {
-      let depth = 0;
-      let last = 0;
-      for (let i = 0; i < selectList.length; i++) {
-        const ch = selectList[i];
-        if (ch === '(') depth++;
-        else if (ch === ')') depth--;
-        else if (ch === ',' && depth === 0) {
-          items.push(selectList.slice(last, i));
-          last = i + 1;
-        }
-      }
-      items.push(selectList.slice(last));
-    }
-
-    const branchMap = {};
-    for (let raw of items) {
-      raw = raw.trim();
-      if (!raw) continue;
-      // alias 추출: ... AS `alias` | ... AS "alias" | ... AS alias | ... alias
-      let alias = null;
-      let exprPart = raw;
-      const asMatch = raw.match(/\s+AS\s+(?:`([^`]+)`|"([^"]+)"|\[([^\]]+)\]|([A-Za-z_\uAC00-\uD7AF][A-Za-z0-9_\uAC00-\uD7AF]*))\s*$/i);
-      if (asMatch) {
-        alias = asMatch[1] || asMatch[2] || asMatch[3] || asMatch[4];
-        exprPart = raw.slice(0, raw.length - asMatch[0].length).trim();
-      } else {
-        // 뒤에 공백 + 백틱 alias / 한글 alias 만 있는 경우 (AS 생략)
-        const tailMatch = raw.match(/\s+(?:`([^`]+)`|"([^"]+)"|([A-Za-z_\uAC00-\uD7AF][A-Za-z0-9_\uAC00-\uD7AF]*))\s*$/);
-        if (tailMatch) {
-          const cand = tailMatch[1] || tailMatch[2] || tailMatch[3];
-          // 단, exprPart 가 순수 컬럼 참조라면 tail 이 그 자체일 가능성 → 그 경우 alias 없음.
-          const before = raw.slice(0, raw.length - tailMatch[0].length).trim();
-          if (before && /[)`\w\]"]$/.test(before)) {
-            alias = cand;
-            exprPart = before;
-          }
-        }
-      }
-
-      // exprPart 안의 __LIT0__ 등을 원래 리터럴로 복원 (분석에 필요)
-      exprPart = exprPart.replace(/__LIT(\d+)__/g, (_, n) => literals[parseInt(n, 10)] || "''");
-
-      // alias 가 없으면 exprPart 자체를 alias 로 (단순 컬럼 참조 케이스: SELECT CALMONTH FROM ...)
-      if (!alias) {
-        const simple = exprPart.match(/^`([^`]+)`$|^"([^"]+)"$|^([A-Za-z_][A-Za-z0-9_]*)$/);
-        if (simple) {
-          alias = simple[1] || simple[2] || simple[3];
-        }
-      }
-      if (!alias) continue;
-
-      const analyzed = _analyzeSelectExpression(exprPart);
-      branchMap[alias] = analyzed;
-    }
-    branches.push(branchMap);
-  }
-
-  if (branches.length === 0) return emptyResult;
-
-  // canonical: 첫 번째 branch 를 기준으로 함
-  // UNION ALL 의 다른 branch 가 literal 이거나 semantic compatible 이면 첫 branch 유지
-  const canonical = branches[0];
-
-  // semantic compatibility 검사: 다른 branch 의 동일 alias 가 실제로 다른 컬럼을 참조하고,
-  //   literal 이 아닌 경우 → 각 branch source 를 병합
-  const aliasMap = {};
-  for (const alias of Object.keys(canonical)) {
-    const base = canonical[alias];
-    const mergedSources = new Set(base.sourceColumns);
-    let allCompatible = true;
-    for (let i = 1; i < branches.length; i++) {
-      const other = branches[i][alias];
-      if (!other) continue;
-      // literal → 무시 (첫 branch semantic 유지)
-      if (other.expressionType === 'literal') continue;
-      // 완전히 다른 컬럼 참조 && 첫 branch source 와 겹치지 않는 경우 → 병합 후 role 을 첫 branch 로 유지하지 말고 확인 필요
-      if (other.sourceColumns.length > 0) {
-        const overlap = other.sourceColumns.some(c => base.sourceColumns.includes(c));
-        if (!overlap && other.expressionType !== 'literal') {
-          // 다른 의미 → semantic 이 다를 수 있으므로 표시
-          allCompatible = false;
-          for (const c of other.sourceColumns) mergedSources.add(c);
-        } else {
-          for (const c of other.sourceColumns) mergedSources.add(c);
-        }
-      }
-    }
-    aliasMap[alias] = {
-      sourceColumns: [...mergedSources],
-      expressionType: base.expressionType,
-      // canonicalCompatible=false 면 상위 호출자가 semanticRole 결정 시 신중히 처리
-      canonicalCompatible: allCompatible
-    };
-  }
-
-  return { aliasMap, branches };
-}
-
-// Ontology + 기본 규칙 + expressionType 을 조합하여 semantic role 최종 결정.
-// sourceColumns 는 이미 추출됨. expressionType 도 이미 결정됨.
-// 정책:
-//   - expressionType='aggregate'|'formula' → measure
-//   - expressionType='ratio' → ratio
-//   - expressionType='literal' → text
-//   - expressionType='column':
-//       · sourceColumns 중 period 컬럼 → period
-//       · Ontology.description 에 율/률/% → ratio
-//       · Ontology.type = '원가'|'비용' → measure
-//       · 컬럼명이 identifier 패턴 → code
-//       · Ontology.data_type 또는 DB DATA_TYPE 이 numeric 계열 && identifier 패턴 아님 → measure
-//       · 그 외 → dimension
-//   - expressionType='unknown':
-//       · Ontology / DB 정보로 최대한 추론, 안 되면 unknown
-function _deriveSemanticRole(analysis, colUpperList, ontoRawMap, colDataTypeMap) {
-  const expressionType = analysis.expressionType || 'unknown';
-
-  if (expressionType === 'aggregate') {
-    return { semanticRole: 'measure', dataType: 'decimal' };
-  }
-  if (expressionType === 'ratio') {
-    return { semanticRole: 'ratio', dataType: 'decimal' };
-  }
-  if (expressionType === 'formula') {
-    return { semanticRole: 'measure', dataType: 'decimal' };
-  }
-  if (expressionType === 'literal') {
-    return { semanticRole: 'text', dataType: 'varchar' };
-  }
-
-  // column 또는 unknown → sourceColumns 로 판단
-  // period 우선
-  for (const c of colUpperList) {
-    if (_isPeriodColumn(c)) {
-      return { semanticRole: 'period', dataType: (colDataTypeMap[c] || 'int') };
-    }
-  }
-  // Ontology 조회
-  for (const c of colUpperList) {
-    const onto = ontoRawMap[c];
-    if (!onto) continue;
-    const desc = onto.description || '';
-    // 비율 판별
-    if (/율|률|%|퍼센트/.test(desc) || /(RATIO|RATE|PCT|PERCENT|PERC)$/i.test(c)) {
-      return { semanticRole: 'ratio', dataType: onto.data_type || 'decimal' };
-    }
-    // 원가/비용 그룹 → measure
-    if (onto.type === '원가' || onto.type === '비용') {
-      return { semanticRole: 'measure', dataType: onto.data_type || 'decimal', ontoType: onto.type };
-    }
-  }
-  // identifier 패턴 → code
-  for (const c of colUpperList) {
-    if (_isSapIdentifierColumn(c)) {
-      const dt = (ontoRawMap[c] && ontoRawMap[c].data_type) || colDataTypeMap[c] || 'varchar';
-      return { semanticRole: 'code', dataType: dt };
-    }
-  }
-  // name-like → dimension (varchar 명 컬럼)
-  for (const c of colUpperList) {
-    if (_isNameLikeColumn(c)) {
-      const dt = (ontoRawMap[c] && ontoRawMap[c].data_type) || colDataTypeMap[c] || 'varchar';
-      return { semanticRole: 'dimension', dataType: dt };
-    }
-  }
-  // Ontology data_type 또는 DB DATA_TYPE 이 numeric 계열이고 identifier 아니면 measure
-  for (const c of colUpperList) {
-    const dt = ((ontoRawMap[c] && ontoRawMap[c].data_type) || colDataTypeMap[c] || '').toLowerCase();
-    if (/int|decimal|numeric|float|double|bigint|smallint|tinyint/.test(dt)) {
-      return { semanticRole: 'measure', dataType: dt };
-    }
-    if (/varchar|char|text|date|datetime|timestamp|time/.test(dt)) {
-      return { semanticRole: 'dimension', dataType: dt };
-    }
-  }
-  // 아무 정보도 없음
-  return { semanticRole: 'unknown', dataType: 'unknown' };
-}
-
-/**
- * resolveColumnMeta — 최종 결과 컬럼별 semantic metadata 생성
- * @param {Array<Object>} rows
- * @param {string} sql - 실제 실행된 SQL
- * @param {Object|null} plan - AnalysisPlan (analysis 모드에서만 non-null)
- * @param {string} domainCode
- * @returns {Promise<{ columnMeta: Object, elapsedMs: number, source: string }>}
- */
-async function resolveColumnMeta(rows, sql, plan, domainCode) {
-  const t0 = Date.now();
-  const result = { columnMeta: {}, elapsedMs: 0, source: 'none' };
-  try {
-    if (!rows || rows.length === 0) {
-      result.elapsedMs = Date.now() - t0;
-      return result;
-    }
-    const outputKeys = Object.keys(rows[0]);
-    if (outputKeys.length === 0) {
-      result.elapsedMs = Date.now() - t0;
-      return result;
-    }
-
-    // 1) COLUMN_COMMENT / ontology_column 조회 결과를 확보
-    //    - resolveColumnLabels 와 동일한 조회를 공유해야 DB 재조회가 발생하지 않음.
-    //    - 상위 호출자는 이후 resolveColumnLabels 결과를 그대로 사용 가능 (labels 도 함께 반환).
-    let internal;
-    try {
-      internal = await _resolveColumnLabelsInternal(rows, sql, domainCode);
-    } catch (e) {
-      console.warn('[ColumnMeta] _resolveColumnLabelsInternal 실패 (무시):', e.message);
-      internal = { labels: {}, commentMap: {}, ontoMap: {}, ontoRawMap: {}, colDataTypeMap: {}, tables: [], englishKeys: [] };
-    }
-    const { labels, ontoRawMap, colDataTypeMap } = internal;
-
-    // 2) AnalysisPlan (analysis 모드) → alias→sourceColumns 매핑 최우선
-    const planAliasMap = {}; // alias(그대로) → { sourceColumns[], expressionType }
-    if (plan && typeof plan === 'object') {
-      // dimensions: [{ name, columns: [] }]
-      if (Array.isArray(plan.dimensions)) {
-        for (const d of plan.dimensions) {
-          if (!d || !Array.isArray(d.columns)) continue;
-          const cols = d.columns.filter(c => c && typeof c === 'string');
-          if (cols.length === 0) continue;
-          // dimension.name 자체가 output alias 로 사용될 가능성이 있음 (한글 dimension.name)
-          // columns[] 각각도 결과 컬럼에 그대로 있을 수 있으므로 둘 다 매핑
-          if (d.name) {
-            planAliasMap[d.name] = { sourceColumns: [...cols], expressionType: 'column' };
-          }
-          for (const col of cols) {
-            planAliasMap[col] = { sourceColumns: [col], expressionType: 'column' };
-          }
-        }
-      }
-      // metrics: [{ name, formula, ... }] — name 은 output alias, formula 는 산식
-      if (Array.isArray(plan.metrics)) {
-        for (const m of plan.metrics) {
-          if (!m || !m.name) continue;
-          const analyzed = m.formula ? _analyzeSelectExpression(m.formula) : { sourceColumns: [], expressionType: 'aggregate' };
-          // formula 가 있으면 aggregate/formula/ratio 중 하나로 분석됨
-          //   plan.metrics 는 정의상 measure 계열이므로 최소 aggregate 로 fallback
-          if (!analyzed.expressionType || analyzed.expressionType === 'unknown') {
-            analyzed.expressionType = 'aggregate';
-          }
-          planAliasMap[m.name] = analyzed;
-        }
-      }
-    }
-
-    // 3) SQL SELECT 파싱 (aggregate 모드 및 analysis 보완)
-    let sqlAliasMap = {};
-    try {
-      const parsed = _parseSelectAliasMapping(sql || '');
-      sqlAliasMap = parsed.aliasMap || {};
-    } catch (e) {
-      console.warn('[ColumnMeta] SELECT expression 파싱 실패 (무시):', e.message);
-      sqlAliasMap = {};
-    }
-
-    // 4) 각 output 컬럼에 대해 lineage 확정
-    const columnMeta = {};
-    for (const outKey of outputKeys) {
-      // 우선순위: (1) planAliasMap[outKey], (2) sqlAliasMap[outKey], (3) 결과 키 자체가 컬럼명
-      let analysis = null;
-      let source = 'fallback';
-      if (planAliasMap[outKey]) {
-        analysis = planAliasMap[outKey];
-        source = 'plan';
-      } else if (sqlAliasMap[outKey]) {
-        analysis = sqlAliasMap[outKey];
-        source = 'sql';
-      } else {
-        // 결과 키가 원본 컬럼명이면 그대로 사용
-        analysis = { sourceColumns: [outKey], expressionType: 'column' };
-        source = 'self';
-      }
-
-      const upperList = (analysis.sourceColumns || []).map(c => String(c).toUpperCase());
-      const roleInfo = _deriveSemanticRole(analysis, upperList, ontoRawMap, colDataTypeMap);
-
-      // isNumericFormat 최종 판단
-      const semanticRole = roleInfo.semanticRole;
-      let isNumericFormat = false;
-      if (semanticRole === 'measure') isNumericFormat = true;
-      // ratio 는 프론트가 별도 소수 포맷 처리 → 여기서는 콤마 대상이 아니므로 false 유지
-      // period/code/identifier/dimension/text/unknown → false
-
-      columnMeta[outKey] = {
-        outputColumn: outKey,
-        sourceColumns: analysis.sourceColumns || [],
-        semanticRole,
-        expressionType: analysis.expressionType || 'unknown',
-        dataType: roleInfo.dataType || 'unknown',
-        isNumericFormat,
-        lineageSource: source,
-      };
-      if (roleInfo.ontoType) columnMeta[outKey].ontoType = roleInfo.ontoType;
-      if (analysis.canonicalCompatible === false) {
-        columnMeta[outKey].unionCompatible = false;
-      }
-      // 최종 label 도 함께 노출 (호환용)
-      if (labels && labels[outKey]) columnMeta[outKey].label = labels[outKey];
-    }
-
-    result.columnMeta = columnMeta;
-    result.source = (Object.values(columnMeta).some(m => m.lineageSource === 'plan')) ? 'plan+sql'
-                  : (Object.values(columnMeta).some(m => m.lineageSource === 'sql')) ? 'sql'
-                  : 'self';
-  } catch (e) {
-    console.warn('[ColumnMeta] resolveColumnMeta 전체 실패 (무시, fallback):', e.message);
-    result.columnMeta = {};
-    result.source = 'error';
-  }
-  result.elapsedMs = Date.now() - t0;
-  return result;
+  return labels;
 }
 
 // ============================================================
@@ -8072,20 +7418,6 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         } catch (e) {
           console.warn('[AnalysisPlan] columnLabels 해석 실패 (무시):', e.message);
         }
-
-        // [PR #369 / 2026-08-20] analysis 모드 columnMeta — plan (dimensions/metrics) 을 lineage 근거로 최우선 사용
-        let detailColumnMeta = {};
-        let detailColumnMetaElapsedMs = 0;
-        try {
-          const cmr = await resolveColumnMeta(detailRows, execRecord.baseSql || '', plan, activeDomain);
-          detailColumnMeta = cmr.columnMeta;
-          detailColumnMetaElapsedMs = cmr.elapsedMs;
-          console.log(`[AnalysisPlan] columnMeta 생성: source=${cmr.source} keys=${Object.keys(detailColumnMeta).length} elapsedMs=${detailColumnMetaElapsedMs}`);
-        } catch (e) {
-          console.warn('[AnalysisPlan] columnMeta 해석 실패 (무시, fallback):', e.message);
-          detailColumnMeta = {};
-          detailColumnMetaElapsedMs = -1;
-        }
         // 컬럼 순서: dimension 컬럼 먼저, 그다음 metric 컬럼 순 (plan 순서 유지)
         const detailColumnOrder = [];
         const seen = new Set();
@@ -8107,11 +7439,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         const nlqUserIdAnalysis = req.session?.user?.id || null;
         // [2026-07-21] chart_config 에 columnOrder / columnLabels 저장 →
         //   질의 이력에서 재열람할 때도 실행 직후와 동일한 상세표(한글 헤더 + 지정 순서) 복원 가능
-        // [PR #369 / 2026-08-20] columnMeta 도 함께 저장 → 이력 재열람 시에도 lineage 기반 포맷 유지
         const analysisChartConfig = {
           columnOrder: detailColumnOrder,
           columnLabels: detailColumnLabels,
-          columnMeta: detailColumnMeta,
         };
         saveHistory(
           nlqUserIdAnalysis, query, execRecord.baseSql,
@@ -8145,8 +7475,6 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           data: detailRows,                     // 기존 aggregate 응답과 필드명 호환
           rowCount: detailRows.length,
           columnLabels: detailColumnLabels,     // { CUSTOMER: "거래처", ...}
-          columnMeta: detailColumnMeta,         // [PR #369] { alias → { sourceColumns[], semanticRole, isNumericFormat, ... } }
-          columnMetaElapsedMs: detailColumnMetaElapsedMs,  // [PR #369] 성능 관측용
           columnOrder: detailColumnOrder,       // ["CUSTOMER","CUSTOMER_NM","순매출",...]
           sql: execRecord.baseSql,               // ← 실제 실행 SQL 노출 (진단·투명성)
           explanation: null,
@@ -8877,25 +8205,6 @@ ${formatRule}
     //   3순위 ontology_column.description
     const columnLabels = await resolveColumnLabels(rows, sql, activeDomain);
 
-    // [PR #369 / 2026-08-20] columnMeta — output alias → { sourceColumns[], semanticRole, isNumericFormat }
-    //   - LLM 추가 호출 없음, DB 추가 조회 없음 (resolveColumnMeta 내부에서 Ontology 조회는
-    //     resolveColumnLabels 와 동일한 조회를 반복하나 실제로는 상위 캐시 도입 여지 있음.
-    //     단, 정책상 "columnMeta 실패가 조회 실패로 이어지면 안 됨" 이 최우선이므로
-    //     현재는 격리된 try/catch 로만 방어. 성능은 columnMetaElapsedMs 로 관측.)
-    //   - aggregate 경로에서는 plan=null 이므로 SELECT expression 파싱 결과가 lineage 근거.
-    let columnMeta = {};
-    let columnMetaElapsedMs = 0;
-    try {
-      const cmr = await resolveColumnMeta(rows, sql, null, activeDomain);
-      columnMeta = cmr.columnMeta;
-      columnMetaElapsedMs = cmr.elapsedMs;
-      console.log(`[NLQ] columnMeta 생성: source=${cmr.source} keys=${Object.keys(columnMeta).length} elapsedMs=${columnMetaElapsedMs}`);
-    } catch (e) {
-      console.warn('[NLQ] columnMeta 생성 실패 (무시, 프론트 fallback 사용):', e.message);
-      columnMeta = {};
-      columnMetaElapsedMs = -1;
-    }
-
     // [2026-07-31] 사용자 요구: '분석 대상 상세 결과' 옆에 실제 조회 기간 표시.
     //   - 최종 실행된 SQL(sql) 에서 CALMONTH 조건을 파싱하여 프론트로 전달.
     //   - 기간 정보가 없으면 null 로 두어 프론트가 기간 영역을 아예 표시하지 않도록 함.
@@ -8912,8 +8221,6 @@ ${formatRule}
       chartConfig: chartConfig || {},
       data: rows,
       columnLabels,                                    // ← 신규: 컬럼명 한국어 매핑
-      columnMeta,                                      // ← [PR #369] output alias → semantic metadata
-      columnMetaElapsedMs,                             // ← [PR #369] 성능 관측용 (음수=실패)
       rowCount: rows.length,                           // 실제 클라이언트로 전송된 행 수 (하드 상한 적용 후)
       totalRowCount: totalRowsFromDb,                  // [2026-07-22] DB 에서 반환된 원본 전체 행 수
       truncated: truncated,                            // [2026-07-22] 하드 상한으로 잘렸는지 여부
