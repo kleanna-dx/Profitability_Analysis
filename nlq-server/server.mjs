@@ -17,6 +17,11 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { Agent as UndiciAgent, setGlobalDispatcher as setUndiciGlobalDispatcher } from 'undici';
 // [2026-08-21] SQL Read-only Validator (AST 기반) — CTE(WITH ... SELECT) 지원
 import { isReadOnlyQuery } from './lib/sqlReadOnlyValidator.mjs';
+// [2026-08-21] SQL Pre-Execution Validator (AST 기반) — multi-CTE 오탐 수정
+//   기존 validateSqlPreExecution 이 첫 WHERE 이후를 다음 GROUP BY/UNION 까지
+//   묶어 검사하여, multi-CTE 의 후속 CTE SELECT 절 SUM 을 "WHERE 안 SUM" 으로
+//   오탐하던 문제 해결. 각 SELECT 노드의 where 서브트리만 정밀 검사.
+import { validateSqlPreExecution as _validateSqlPreExecutionExternal } from './lib/sqlPreExecutionValidator.mjs';
 
 // ════════════════════════════════════════════════════════════════════
 // [2026-07-21 hotfix] undici 글로벌 dispatcher 헤더/바디 타임아웃 확장
@@ -5913,111 +5918,20 @@ ${metricLines || '(없음)'}
 // - LLM이 만들 수 있는 "Invalid use of group function" 같은 실행 시 오류를
 //   실행 전에 잡아내어 자동 재요청 또는 친절한 에러 메시지로 전환
 // - 검증 통과 시 { valid: true }, 실패 시 { valid: false, reason: '...' }
+//
+// [2026-08-21] AST 기반 재작성 (BUG A 수정) — 로직은 lib/sqlPreExecutionValidator.mjs 로 이동
+//   기존 문제:
+//     - 정규식으로 "첫 WHERE ~ 다음 GROUP BY/HAVING/UNION" 구간을 잘라 검사.
+//     - multi-CTE SQL 에서 첫 CTE 의 WHERE 와 후속 CTE 의 SELECT/UNION 을
+//       하나로 묶어 "WHERE 절 안에 SUM" 이라고 오탐.
+//   신규:
+//     - node-sql-parser AST 로 각 SELECT 노드의 where 서브트리만 검사.
+//     - 서브쿼리(type==='select') 로는 walker 진입 금지 → 정상 케이스 통과.
+//     - 파서 실패 시 CTE 본문 제거 후 정규식 fallback.
+//   외부 모듈로 분리한 이유: 회귀 테스트를 server.mjs 로딩 없이 실행하기 위함.
 // ============================================================
 function validateSqlPreExecution(sql) {
-  if (!sql || typeof sql !== 'string') {
-    return { valid: false, reason: 'SQL이 비어있습니다.' };
-  }
-
-  const sqlUpper = sql.toUpperCase();
-
-  // 검사 1: WHERE 절에 집계함수 사용 검출
-  //   - "WHERE ... SUM(...)" / "WHERE ... AVG(...)" 등은 MariaDB에서 즉시 에러
-  //   - HAVING 절은 허용되므로 WHERE..HAVING 구간만 검사
-  const whereStart = sqlUpper.search(/\bWHERE\b/);
-  if (whereStart >= 0) {
-    // WHERE 절의 종료 지점 찾기: GROUP BY / HAVING / ORDER BY / LIMIT / UNION / 끝
-    const afterWhere = sql.slice(whereStart);
-    const terminatorMatch = afterWhere.match(/\b(GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION)\b/i);
-    const whereEnd = terminatorMatch
-      ? whereStart + terminatorMatch.index
-      : sql.length;
-    const whereClause = sql.slice(whereStart, whereEnd);
-
-    // WHERE 절 안에 집계함수가 (서브쿼리 밖에서) 사용되었는지 검사
-    // 단, 서브쿼리 안의 집계함수는 정상이므로 제외해야 함
-    // 간단한 휴리스틱: 서브쿼리(괄호) 안의 내용은 제거하고 검사
-    let stripped = whereClause;
-    let prev;
-    do {
-      prev = stripped;
-      // 가장 안쪽 괄호부터 제거 (서브쿼리/함수 호출은 일단 제거)
-      stripped = stripped.replace(/\([^()]*\)/g, '');
-    } while (stripped !== prev);
-
-    // 이제 stripped에는 서브쿼리/함수 호출이 제거된 WHERE 절만 남음
-    // 그런데 SUM(...) 같은 형태도 괄호 안이 제거되면서 "SUM" 토큰만 남음
-    // 즉 stripped에 "SUM" "AVG" "COUNT" "MAX" "MIN" 토큰이 보이면 → 그건 WHERE 안 집계함수
-    const aggFnPattern = /\b(SUM|AVG|COUNT|MAX|MIN)\b/i;
-    if (aggFnPattern.test(stripped)) {
-      const matched = stripped.match(aggFnPattern);
-      return {
-        valid: false,
-        reason: `WHERE 절에 집계함수 ${matched[1].toUpperCase()}()가 사용되었습니다. 집계 결과로 필터링하려면 HAVING 절을 사용해야 합니다.`,
-      };
-    }
-  }
-
-  // 검사 2: GROUP BY 없이 집계함수와 일반 컬럼이 SELECT에 함께 있는지 (간이 검사)
-  //   - SELECT 절만 추출
-  const selectMatch = sql.match(/SELECT\s+([\s\S]*?)\s+FROM\s/i);
-  if (selectMatch) {
-    const selectClause = selectMatch[1];
-    // 집계함수 사용 여부
-    const hasAgg = /\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(selectClause);
-    // GROUP BY 존재 여부
-    const hasGroupBy = /\bGROUP\s+BY\b/i.test(sql);
-
-    if (hasAgg && !hasGroupBy) {
-      // 집계 + 일반 컬럼 혼용 검사:
-      //   SELECT 항목을 콤마로 분리하되 괄호 안 콤마는 무시
-      const items = [];
-      let depth = 0, buf = '';
-      for (const ch of selectClause) {
-        if (ch === '(') depth++;
-        else if (ch === ')') depth--;
-        if (ch === ',' && depth === 0) {
-          items.push(buf.trim());
-          buf = '';
-        } else {
-          buf += ch;
-        }
-      }
-      if (buf.trim()) items.push(buf.trim());
-
-      // 각 항목이 집계함수를 포함하는지 검사
-      let plainColumnCount = 0;
-      let aggColumnCount = 0;
-      for (const item of items) {
-        // AS alias / 그냥 표현 모두 검사 대상은 표현부 자체
-        const expr = item.split(/\s+AS\s+/i)[0].trim();
-        if (/\b(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(expr)) {
-          aggColumnCount++;
-        } else if (expr && expr !== '*') {
-          // 상수/표현식은 제외하고 컬럼 참조로 보이는 것만 카운트
-          // 예: '문자열', 123, NOW() 등은 제외
-          if (!/^['"]/.test(expr) && !/^\d+(\.\d+)?$/.test(expr)) {
-            // CASE WHEN, IF 등은 일반 컬럼 아님 → 그냥 패스 (보수적 판단)
-            if (!/\b(CASE|IF|COALESCE|IFNULL|NULLIF)\s*[\(\s]/i.test(expr)) {
-              plainColumnCount++;
-            }
-          }
-        }
-      }
-
-      if (aggColumnCount > 0 && plainColumnCount > 0) {
-        return {
-          valid: false,
-          reason: `GROUP BY 없이 집계함수와 일반 컬럼(${plainColumnCount}개)이 SELECT 절에 혼용되었습니다. GROUP BY 절을 추가하거나 일반 컬럼을 제거해야 합니다.`,
-        };
-      }
-    }
-  }
-
-  // 검사 3: HAVING 절이 GROUP BY 없이 사용되는 경우 (드물지만 가능)
-  //   - 일부 DB는 허용하나 위험 패턴이므로 통과시킴 (false positive 방지)
-
-  return { valid: true };
+  return _validateSqlPreExecutionExternal(sql);
 }
 
 // ============================================================
@@ -7519,6 +7433,15 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       }
     }
 
+    // [2026-08-21] BUG B 수정: systemPrompt 를 if/else 상위 스코프에 선언
+    //   기존: else 블록 내부에 `let systemPrompt = ...` 로 지역 선언되어,
+    //         이후 else 블록 밖의 SQL 재생성 로직(L~8012)에서 참조 시
+    //         `ReferenceError: systemPrompt is not defined` 발생.
+    //   수정: 상위 스코프에 미리 `let systemPrompt = ''` 선언 → else 에서는 재선언 대신 재할당.
+    //         학습 SQL 경로(matchedSql=true)에서는 빈 문자열로 남으므로, 재생성 로직 진입 시
+    //         빈 문자열 체크로 안전 fallback 처리.
+    let systemPrompt = '';
+
     if (matchedSql) {
       setRequestStage('learned_sql');
       // 학습 데이터 매칭 → AI 호출 없이 직접 사용
@@ -7565,7 +7488,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     } else {
       // 1. RAG 기반 SQL 생성 (질문 관련 메타데이터만 검색하여 프롬프트에 주입)
       const buildResult = await buildRAGSystemPrompt(query, activeDomain);
-      let systemPrompt = buildResult.prompt;
+      // [2026-08-21] BUG B 수정: 상위 스코프의 systemPrompt 에 재할당 (재선언 X)
+      //   → else 블록 밖의 SQL 재생성 로직에서도 참조 가능
+      systemPrompt = buildResult.prompt;
       const ragContext = buildResult.ragContext;
       dateContext = buildResult.dateContext;
       // ★ 사용자가 '현황집계' 라디오를 선택한 경우: 시스템 프롬프트에 명시적 지시 추가
@@ -7809,6 +7734,23 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     if (!sqlValidation.valid) {
       console.warn(`[NLQ] SQL 사전 검증 실패: ${sqlValidation.reason}`);
       console.warn(`[NLQ] 문제 SQL: ${sql}`);
+
+      // [2026-08-21] BUG B 관련 안전 가드:
+      //   학습 SQL 경로(matchedSql=true)에서는 systemPrompt 가 빈 문자열이라
+      //   GPT 재생성이 의미가 없다. 이 경우 재생성 대신 즉시 친절한 안내 반환.
+      if (!systemPrompt) {
+        console.warn(`[NLQ] SQL 사전 검증 실패 (학습 SQL 경로) — 재생성 스킵, 친절한 안내 반환`);
+        return res.json({
+          success: false,
+          sql,
+          rows: [],
+          rowCount: 0,
+          answer: '죄송합니다. 학습된 SQL이 현재 데이터/도메인 조건에서 유효하지 않습니다. 질문을 좀 더 구체적으로 다시 말씀해 주세요.',
+          explanation: `SQL 사전 검증 실패: ${sqlValidation.reason}`,
+          error_user_friendly: true,
+        });
+      }
+
       // LLM에게 에러 컨텍스트 추가하여 재요청
       try {
         const fixPrompt = `이전에 생성한 SQL에 문제가 있습니다.
@@ -7868,7 +7810,11 @@ ${sqlValidation.reason}
           console.log(`[NLQ] SQL 자동 복구 성공`);
         }
       } catch (retryErr) {
+        // [2026-08-21] BUG B 재발 방지: ReferenceError 등 예상 못한 오류는 스택도 로깅
         console.error(`[NLQ] SQL 재생성 실패:`, retryErr.message);
+        if (retryErr && retryErr.stack) {
+          console.error(`[NLQ] SQL 재생성 실패 stack:\n${retryErr.stack}`);
+        }
         return res.json({
           success: false,
           sql,
