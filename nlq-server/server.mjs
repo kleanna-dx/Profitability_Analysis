@@ -15,6 +15,8 @@ import expressMySQLSession from 'express-mysql-session';
 import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { Agent as UndiciAgent, setGlobalDispatcher as setUndiciGlobalDispatcher } from 'undici';
+// [2026-08-21] SQL Read-only Validator (AST 기반) — CTE(WITH ... SELECT) 지원
+import { isReadOnlyQuery } from './lib/sqlReadOnlyValidator.mjs';
 
 // ════════════════════════════════════════════════════════════════════
 // [2026-07-21 hotfix] undici 글로벌 dispatcher 헤더/바디 타임아웃 확장
@@ -7771,22 +7773,33 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     sql = normalizeNameSearchFilter(sql);
     // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
-    const sqlUpper = sql.toUpperCase().trim();
-    if (!sqlUpper.startsWith('SELECT')) {
-      // SQL이 아닌 안내 메시지가 sql 필드에 들어온 경우
-      if (sql.includes('등록되어 있지 않') || sql.includes('학습관리') || sql.includes('관리자') || sql.includes('알 수 없')) {
+    // [2026-08-21] SQL Validator 개선 — CTE(WITH ... SELECT) 허용
+    // 기존: sqlUpper.startsWith('SELECT') + forbidden.includes(kw)
+    //   → WITH으로 시작하는 정상 조회 SQL이 무조건 차단되고,
+    //     컬럼명/별칭에 CREATE_DATE 같은 문자열이 들어있으면 오탐 발생.
+    // 신규: isReadOnlyQuery() → node-sql-parser AST 로 root statement type 판별
+    //   → CTE + SELECT / RECURSIVE / UNION / 서브쿼리 등 정상 조회 SQL 통과
+    //   → WITH cte AS (...) UPDATE/DELETE/INSERT ... 는 root type이 update/delete/insert 로 판별되어 차단
+    //
+    // 안내 메시지(SQL이 아닌 자연어 텍스트가 sql 필드로 들어온 경우)는 파서에 넣기 전에 먼저 감지
+    if (sql.includes('등록되어 있지 않') || sql.includes('학습관리') || sql.includes('관리자') || sql.includes('알 수 없')) {
+      // 이 조건에 걸리는 값은 실제 SQL이 아니라 LLM이 반환한 안내 문구
+      const sqlUpperCheck = sql.toUpperCase().trim();
+      if (!sqlUpperCheck.startsWith('SELECT') && !sqlUpperCheck.startsWith('WITH')) {
         return res.json({
           success: true, rows: [], rowCount: 0, sql: null,
           explanation: sql, answer: sql, isUnknownTerm: true,
         });
       }
-      return res.status(400).json({ error: 'SELECT 쿼리만 허용됩니다.', sql });
+      // startsWith('SELECT'/'WITH')이면 정상 SQL로 간주하고 아래 read-only 검증으로 넘어감
     }
-    const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'EXEC', 'GRANT', 'REVOKE'];
-    for (const kw of forbidden) {
-      if (sqlUpper.includes(kw)) {
-        return res.status(400).json({ error: `금지된 키워드: ${kw}`, sql });
-      }
+
+    const roCheck = isReadOnlyQuery(sql);
+    if (!roCheck.ok) {
+      return res.status(400).json({ error: roCheck.reason || 'SELECT 쿼리만 허용됩니다.', sql });
+    }
+    if (roCheck.parserFallback) {
+      console.warn(`[NLQ] SQL AST 파싱 실패 → fallback 통과. parserError=${roCheck.parserError || 'n/a'}`);
     }
 
     // 2-B. SQL 사전 검증 (LLM이 잘못된 SQL을 만들었을 가능성 사전 탐지)
@@ -10281,18 +10294,20 @@ app.post('/api/feedback', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 수정된 SQL 실행 (SELECT만 허용)
+// 수정된 SQL 실행 (SELECT / WITH ... SELECT 만 허용 — read-only)
+// [2026-08-21] SQL Validator 개선 — isReadOnlyQuery() (AST 기반) 로 교체
+//   → CTE(WITH ... SELECT), UNION, 서브쿼리, 윈도우 함수 등 정상 조회 SQL 허용
+//   → WITH cte AS (...) UPDATE/DELETE/INSERT ... 는 root type 으로 차단
 app.post('/api/execute-sql', async (req, res) => {
   const { sql } = req.body;
   if (!sql || !sql.trim()) return res.status(400).json({ error: 'SQL을 입력하세요.' });
 
-  const sqlUpper = sql.toUpperCase().trim();
-  if (!sqlUpper.startsWith('SELECT'))
-    return res.status(400).json({ error: 'SELECT 쿼리만 허용됩니다.' });
-  const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'EXEC', 'GRANT', 'REVOKE'];
-  for (const kw of forbidden) {
-    if (sqlUpper.includes(kw))
-      return res.status(400).json({ error: `금지된 키워드: ${kw}` });
+  const roCheck = isReadOnlyQuery(sql);
+  if (!roCheck.ok) {
+    return res.status(400).json({ error: roCheck.reason || 'SELECT 쿼리만 허용됩니다.' });
+  }
+  if (roCheck.parserFallback) {
+    console.warn(`[execute-sql] SQL AST 파싱 실패 → fallback 통과. parserError=${roCheck.parserError || 'n/a'}`);
   }
 
   try {
