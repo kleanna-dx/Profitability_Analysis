@@ -4458,6 +4458,10 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   "dimensions": [                          // GROUP BY 축 — columns[0]=코드(GROUP BY), columns[1..]=명(MAX 표시)
     { "name": "표시명(한글)", "columns": ["COL_CODE","COL_NAME"] }
     // 명시적 명 기준 그룹핑 필요 시: { "name": "...", "columns": [...], "groupByAll": true }
+    // 명(_NM) 컬럼이 없는 코드에 한글 매핑 필요 시 (예: BIC_ZDISTCHAN):
+    //   { "name": "표시명", "columns": ["BIC_ZDISTCHAN"],
+    //     "caseMap": { "10": "내수", "20": "수출" } }
+    //   → SQL 빌더가 CASE WHEN 표현식으로 자동 생성해 표시명 alias 부여.
   ],
   "metrics": [                             // SELECT 지표
     { "name": "표시명(한글)", "formula": "SUM(...)/NULLIF(SUM(...),0)" }
@@ -4616,6 +4620,39 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
    - 매핑이 없는 용어라면 [사용 가능 실제 컬럼] 에서 가장 명백히 일치하는 컬럼을 선택.
    - **예외**: 사용자가 명시적으로 "동일한 명칭끼리 합쳐줘" 같이 명 기준 그룹핑을 요청한 경우에만
      dimension 에 "groupByAll": true 를 추가해 두면 SQL 빌더가 명 컬럼도 GROUP BY 에 포함합니다.
+
+4-1. **★★★ 유통경로 (내수/수출) — 도메인별 분리 처리 (2026-08-21 개정) ★★★**
+   사용자가 "내수", "수출", "유통경로" 등을 언급하는 경우:
+
+   ▶ PS / HL 도메인: DISTR_CHAN / DISTR_CHAN_NM 사용 (기존 동작 유지)
+     - dimension: { "name":"유통경로", "columns":["DISTR_CHAN","DISTR_CHAN_NM"] }
+     - filter 예: { "column":"DISTR_CHAN", "op":"=", "value":"..." }
+     - BIC_ZDISTCHAN 은 PS/HL 미사용 — 절대 사용 금지.
+
+   ▶ MGMT(통합) 도메인: **BIC_ZDISTCHAN 사용 (독립 코드 규칙)**
+     - 고정 코드 매핑: BIC_ZDISTCHAN='10' → 내수, BIC_ZDISTCHAN='20' → 수출
+     - BIC_ZDISTCHAN 은 **_NM(명칭) 컬럼이 없음**. 반드시 dimension 에 **caseMap** 필드를 사용:
+       ✓ 정답 예 (내수/수출 비교):
+         "dimensions": [
+           { "name":"구분", "columns":["BIC_ZDISTCHAN"],
+             "caseMap": { "10":"내수", "20":"수출" } }
+         ],
+         "filters": [
+           { "column":"BIC_ZDISTCHAN", "op":"IN", "value":["10","20"] }
+         ]
+       → SQL 빌더가 자동으로 다음과 같이 생성:
+         SELECT CASE BIC_ZDISTCHAN WHEN '10' THEN '내수' WHEN '20' THEN '수출'
+                ELSE BIC_ZDISTCHAN END AS 구분, ...
+         GROUP BY BIC_ZDISTCHAN
+     - 특정 축만 필터할 때 (예: "2026년 내수 매출"): dimension 없이 filter 만으로도 충분:
+       ✓ "filters": [ { "column":"BIC_ZDISTCHAN", "op":"=", "value":"10" } ]
+
+     ✗ 금지 패턴 (매우 중요):
+       ✗ dimension 에 caseMap 없이 columns:["BIC_ZDISTCHAN"] 만 → 결과 표에 코드 10/20 만 노출됨 (매핑 실패)
+       ✗ DISTR_CHAN_NM 을 사용해 BIC_ZDISTCHAN 명칭을 간접 매핑 (독립 컬럼 — 값 불일치)
+       ✗ BIC_ZDISTCHAN='10' 을 DISTR_CHAN='10' 과 동일시하여 대체 필터 (서로 다른 마스터)
+       ✗ answerMode 를 CONCEPT_EXPLANATION 으로 바꾸어 "코드 매핑 정보가 필요합니다" 로 답변 회피
+         (위 caseMap 규칙이 있으므로 매핑은 이미 확보되어 있음. RESULT_BASED 로 답변해야 함)
 
 5. period 는 사용자가 명시한 기간 → USER_QUERY.
    명시하지 않으면 UI 기간(당월: ${cmLabel} / CALMONTH='${cm}') 사용 → UI_FILTER.
@@ -4832,6 +4869,18 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   };
   const dimAliasByName = {};
   const dimCodeColByName = {};   // dimension.name → 코드 컬럼 (partitionBy lookup 용)
+
+  // ★ [2026-08-21] caseMap 유효성 검증 헬퍼
+  //   dimension.caseMap 은 { "코드": "표시명", ... } 형태.
+  //   - 키는 SQL 문자열 값으로 그대로 인용 (홑따옴표 이스케이프)
+  //   - 값은 표시용 문자열 (홑따옴표 이스케이프)
+  //   - 컬럼명/dimension 명은 알파벳/숫자/언더스코어/한글만 허용
+  const sqlEscape = (v) => String(v ?? '').replace(/'/g, "''");
+  const isValidCaseMap = (m) =>
+    m && typeof m === 'object' && !Array.isArray(m) &&
+    Object.keys(m).length > 0 &&
+    Object.entries(m).every(([k, v]) => typeof k === 'string' && typeof v === 'string' && k.length > 0);
+
   for (const d of dims) {
     if (!Array.isArray(d.columns) || d.columns.length === 0) continue;
     const cols = d.columns.filter(c => c && typeof c === 'string');
@@ -4849,12 +4898,33 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
       codeCol = cols.find(c => !isNameLikeColumn(c)) || cols[0];
     }
 
+    // ★ [2026-08-21] caseMap 처리:
+    //   dimension 에 caseMap 이 있고 columns 가 단일 코드 컬럼(명 컬럼 없음)인 경우
+    //   → CASE WHEN 표현식으로 SELECT 하여 결과 표에 한글 명칭 노출
+    //   사용 예: BIC_ZDISTCHAN 은 _NM 컬럼이 없어 CASE WHEN 매핑 필요.
+    //   조건:
+    //     - groupByAll 아님 (caseMap 과 groupByAll 은 배타)
+    //     - cols.length === 1 (단일 코드 컬럼)
+    //     - caseMap 유효 (비어있지 않고 key/value 모두 string)
+    //   결과 SQL:
+    //     SELECT CASE `codeCol` WHEN 'k1' THEN 'v1' ... ELSE `codeCol` END AS `d.name`,
+    //     GROUP BY `codeCol`
+    const useCaseMap = !forceAll && cols.length === 1 && isValidCaseMap(d.caseMap);
+
     if (forceAll) {
       // 사용자가 "명칭끼리 합쳐줘" 등 명시적 요청 시 등: 모든 컬럼 GROUP BY
       for (const col of cols) {
         selectParts.push(`\`${col}\``);
         groupByParts.push(`\`${col}\``);
       }
+    } else if (useCaseMap) {
+      // CASE WHEN 매핑: 결과 표에 한글 표시명 노출, GROUP BY 는 원본 코드 컬럼
+      const alias = d.name || codeCol;
+      const whenParts = Object.entries(d.caseMap)
+        .map(([k, v]) => `WHEN '${sqlEscape(k)}' THEN '${sqlEscape(v)}'`)
+        .join(' ');
+      selectParts.push(`CASE \`${codeCol}\` ${whenParts} ELSE \`${codeCol}\` END AS \`${alias}\``);
+      groupByParts.push(`\`${codeCol}\``);
     } else {
       // 코드 컬럼: SELECT + GROUP BY
       selectParts.push(`\`${codeCol}\``);
