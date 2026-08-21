@@ -2250,10 +2250,50 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
   DISTR_CHAN_NAME ✗ → DISTR_CHAN_NM ✓
   SALES_OFFICE ✗ → SALES_OFF ✓
 
-■ 내수/수출 비교 질문 처리법:
-- "내수", "수출", "유통경로" → DISTR_CHAN 또는 DISTR_CHAN_NM 컬럼 사용
-- DISTR_CHAN 값: 10=내수, 20=로칼, 30=직수출
-- 내수 vs 수출 매출 비교 → GROUP BY DISTR_CHAN_NM + SUM(ZAMT001) 사용
+■ 내수/수출 비교 질문 처리법 — 도메인별 분리 적용 (2026-08-21 개정):
+
+  ▶ PS / HL 도메인:
+  - "내수", "수출", "유통경로" → DISTR_CHAN 또는 DISTR_CHAN_NM 컬럼 사용
+  - DISTR_CHAN 값: 10=내수, 20=로칼, 30=직수출
+  - 내수 vs 수출 매출 비교 → GROUP BY DISTR_CHAN + MAX(DISTR_CHAN_NM) + SUM(ZAMT001) 사용
+  - BIC_ZDISTCHAN 은 PS/HL 에서는 학습관리 상 미사용 컬럼이므로 **사용 금지**.
+
+  ▶ MGMT(통합) 도메인 — BIC_ZDISTCHAN 사용 (독립 코드 규칙):
+  - "내수", "수출", "유통경로" → **BIC_ZDISTCHAN 컬럼 사용** (DISTR_CHAN / DISTR_CHAN_NM 아님)
+  - 고정 코드 규칙 (절대 규칙, LLM 이 임의로 추론하지 말 것):
+      · BIC_ZDISTCHAN = '10' → 내수
+      · BIC_ZDISTCHAN = '20' → 수출
+  - BIC_ZDISTCHAN 은 **_NM(명칭) 컬럼이 없음**. 결과 표에 코드만 노출되지 않도록
+    **반드시 CASE WHEN 으로 한글 명칭을 함께 반환**하세요.
+
+  ✓ 정답 패턴 (내수 vs 수출 매출 비교):
+      SELECT
+        CASE BIC_ZDISTCHAN
+          WHEN '10' THEN '내수'
+          WHEN '20' THEN '수출'
+          ELSE BIC_ZDISTCHAN
+        END AS '구분',
+        SUM(ZAMT001) AS '매출 합계(원)'
+      FROM bw_profitability_data
+      WHERE BIC_ZDISTCHAN IN ('10','20') AND <기간조건>
+      GROUP BY BIC_ZDISTCHAN
+      ORDER BY BIC_ZDISTCHAN ASC
+
+  ✓ 필터 예시:
+      · "내수 매출"    → WHERE BIC_ZDISTCHAN = '10'
+      · "수출 매출"    → WHERE BIC_ZDISTCHAN = '20'
+      · "내수와 수출"  → WHERE BIC_ZDISTCHAN IN ('10','20')
+
+  ✗ 절대 금지 패턴 (MGMT 도메인 한정):
+      ✗ SELECT BIC_ZDISTCHAN, SUM(...) ... GROUP BY BIC_ZDISTCHAN
+         (코드값 10/20 만 노출됨 — 명칭 표시 필수)
+      ✗ DISTR_CHAN_NM 을 사용해 BIC_ZDISTCHAN 명칭을 간접 매핑
+         (BIC_ZDISTCHAN 과 DISTR_CHAN 은 값이 일치하지 않는 독립 컬럼 — 절대 금지)
+      ✗ BIC_ZDISTCHAN = '10' 을 DISTR_CHAN = '10' 과 동일시하여 대체 필터
+         (독립 코드 규칙 — 서로 다른 마스터 데이터)
+      ✗ CASE 문 없이 BIC_ZDISTCHAN 원본만 SELECT (10/20 코드만 표시됨)
+
+  ■ 최종 답변 문장에서도 값 설명 시 '10'/'20' 대신 '내수'/'수출' 사용.
 
 [핵심 규칙]
 1. SELECT 문만 생성 (INSERT/UPDATE/DELETE/DROP 절대 금지)
@@ -3999,11 +4039,20 @@ ${columnCatalog || '(카탈로그 없음)'}
 
 [★ 컬럼명 절대 규칙]
 - 위 목록에 적힌 컬럼명 외에는 어떤 컬럼도 만들어내지 마세요.
-- 특히 'BIC_*', '/BIC/*' 같은 SAP BW 일반 명명규칙은 **이 DB에 존재하지 않습니다**. 사용 금지.
+- '/BIC/Z*' 같은 SAP BW 원본 명명(슬래시 포함)은 이 DB에 존재하지 않습니다. 반드시 위 [사용 가능한 실제 컬럼] 목록의 컬럼명 그대로 사용하세요.
+  단, 'BIC_' 접두어가 붙은 컬럼(예: BIC_ZDISTCHAN, BIC_ZBRAND, BIC_ZBRAND_NM)은 위 목록에 존재하면 그대로 사용 가능합니다.
 - 수량은 ZQTY_BOX / ZQTY_BAG / ZQTY_KE 중 적합한 것을 선택. (BIC_ZQTY* 아님)
 - 브랜드는 ZBRAND / ZBRAND_NM (BIC_ZBRAND 아님).
 - **거래처/고객/영업사원 등 도메인별로 달라지는 축은 활성 도메인(${dc})의 ontology_synonym·ontology_column 매핑을 기준으로 하세요. 특정 컬럼(CUSTOMER, ZKUNN2 등)으로 하드코딩 금지 — 반드시 위 [사용 가능한 실제 컬럼] 목록에 나와 있는 도메인별 실제 컬럼을 사용하세요.**
-- 유통경로는 DISTR_CHAN / DISTR_CHAN_NM (BIC_ZDISTCHAN 아님).
+- 유통경로 — 도메인별 분리 적용 (2026-08-21 개정):
+  · PS / HL 도메인: DISTR_CHAN / DISTR_CHAN_NM 사용 (BIC_ZDISTCHAN 은 PS/HL 미사용 — 금지)
+  · MGMT(통합) 도메인: BIC_ZDISTCHAN 사용 (독립 코드 규칙).
+    - 고정 코드: BIC_ZDISTCHAN='10' → 내수, BIC_ZDISTCHAN='20' → 수출
+    - BIC_ZDISTCHAN 은 _NM(명칭) 컬럼 없음. 표시 시 반드시 CASE WHEN 으로 명칭 반환:
+        CASE BIC_ZDISTCHAN WHEN '10' THEN '내수' WHEN '20' THEN '수출' ELSE BIC_ZDISTCHAN END AS '구분'
+    - DISTR_CHAN / DISTR_CHAN_NM 로 BIC_ZDISTCHAN 명칭을 간접 매핑하지 마세요 (값이 일치하지 않는 독립 컬럼).
+    - BIC_ZDISTCHAN = '10' 을 DISTR_CHAN = '10' 과 동일시하지 마세요 (서로 다른 마스터).
+    - 필터 예: 내수 → WHERE BIC_ZDISTCHAN = '10' / 수출 → WHERE BIC_ZDISTCHAN = '20'
 - 컬럼이 위 목록에 정확히 존재하는지 한 번 더 확인한 뒤 SQL을 작성하세요.
 
 [당신의 임무]
