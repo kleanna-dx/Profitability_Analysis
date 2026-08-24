@@ -7453,23 +7453,78 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         } catch (e) {
           console.warn('[AnalysisPlan] columnLabels 해석 실패 (무시):', e.message);
         }
-        // 컬럼 순서: dimension 컬럼 먼저, 그다음 metric 컬럼 순 (plan 순서 유지)
+        // ─────────────────────────────────────────────────────────────────
+        // 컬럼 순서 결정
+        //
+        // ★ [2026-08-21] BIC_ZDISTCHAN 등 source column 이 표에 새어 나오는 문제 수정
+        //
+        //   [증상] SQL:
+        //     SELECT CASE `BIC_ZDISTCHAN` WHEN '10' THEN '내수' ... END AS `구분`,
+        //            SUM(...) AS `매출`
+        //     FROM ... GROUP BY `BIC_ZDISTCHAN`
+        //     → 실제 result row keys = ["구분", "매출"] (2개)
+        //   그러나 표에는 ["BIC_ZDISTCHAN", "매출", "구분"] 3개가 렌더링됨.
+        //   BIC_ZDISTCHAN 컬럼의 셀 값은 모두 "-".
+        //
+        //   [원인] 이전 detailColumnOrder 빌더는 plan.dimensions[].columns[]
+        //   (즉 source column) 를 그대로 display column 으로 push 했음.
+        //   caseMap / MAX / expression 등으로 실제 SELECT alias 가 다른 경우
+        //   source column 이 result row 에 존재하지 않는데도 표 헤더에는 남아
+        //   빈 셀("-")로 채워지는 문제 발생.
+        //
+        //   [원칙 — 사용자 지침]
+        //     · sourceColumns 는 lineage/semantic 판단용 내부 metadata 일 뿐.
+        //     · 표의 컬럼 목록은 반드시 실제 DB result row 의 output column
+        //       (여기서는 `구분`, `매출`) 을 기준으로 유지.
+        //     · CASE WHEN / GROUP BY / WHERE 등에 쓰인 source column 이
+        //       최종 SELECT output alias 로 직접 반환되지 않았다면 표에 추가 금지.
+        //
+        //   [수정 방침]
+        //     1) 실제 rowKeys (Object.keys(detailRows[0])) 를 신뢰의 원천으로 삼음.
+        //     2) plan 순서(dimension → metric)는 "정렬 힌트" 로만 사용하며,
+        //        rowKeys 에 포함되지 않는 후보는 skip.
+        //     3) plan.dimensions[] 후보를 rowKey 로 변환할 때 우선순위:
+        //          a) d.name  (caseMap / 명시적 alias 사용 시 이게 row key)
+        //          b) d.columns[]  (single column, no alias 인 경우)
+        //     4) 최종적으로 rowKeys 중 아직 포함되지 않은 것 모두 뒤에 추가.
+        //
+        // ─────────────────────────────────────────────────────────────────
+        const rowKeys = detailRows.length > 0 ? Object.keys(detailRows[0]) : [];
+        const rowKeySet = new Set(rowKeys);
         const detailColumnOrder = [];
         const seen = new Set();
+        const pushIfRowKey = (name) => {
+          if (!name) return;
+          if (!rowKeySet.has(name)) return;   // ← 핵심: 실제 row 에 없는 컬럼은 절대 추가하지 않음
+          if (seen.has(name)) return;
+          detailColumnOrder.push(name);
+          seen.add(name);
+        };
+        // 1) dimension: alias (d.name) 우선, 없으면 columns[] 순서로 시도
         for (const d of (plan.dimensions || [])) {
-          for (const col of (d.columns || [])) {
-            if (!seen.has(col)) { detailColumnOrder.push(col); seen.add(col); }
-          }
+          if (!d) continue;
+          // caseMap 이 있거나 명시적 name 이 있으면 그 alias 가 실제 row key
+          if (d.name) pushIfRowKey(d.name);
+          for (const col of (d.columns || [])) pushIfRowKey(col);
         }
+        // 2) metric
         for (const m of (plan.metrics || [])) {
-          if (m && m.name && !seen.has(m.name)) { detailColumnOrder.push(m.name); seen.add(m.name); }
+          if (m && m.name) pushIfRowKey(m.name);
         }
-        // baseRows 실제 키 중 남은 것 추가 (fallback)
-        if (detailRows.length > 0) {
-          for (const k of Object.keys(detailRows[0])) {
-            if (!seen.has(k)) { detailColumnOrder.push(k); seen.add(k); }
-          }
+        // 3) rowKeys 중 아직 안 들어간 것 뒤에 추가 (plan 에 없는 파생 컬럼 안전망)
+        for (const k of rowKeys) {
+          if (!seen.has(k)) { detailColumnOrder.push(k); seen.add(k); }
         }
+
+        // ★ 진단 로그: 컬럼 정렬 파이프라인 추적 (향후 유사 이슈 발생 시 즉시 원인 파악)
+        try {
+          console.log('[AnalysisPlan][columnOrder] rowKeys=%j planDims=%j planMetrics=%j → columnOrder=%j',
+            rowKeys,
+            (plan.dimensions || []).map(d => ({ name: d?.name, columns: d?.columns, hasCaseMap: !!d?.caseMap })),
+            (plan.metrics || []).map(m => m?.name),
+            detailColumnOrder
+          );
+        } catch (_) { /* logging never breaks response */ }
 
         const nlqUserIdAnalysis = req.session?.user?.id || null;
         // [2026-07-21] chart_config 에 columnOrder / columnLabels 저장 →
