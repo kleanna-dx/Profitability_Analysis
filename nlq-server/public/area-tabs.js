@@ -90,6 +90,42 @@
     const STORAGE_KEY = 'selectedArea';
     const AREA_QUERY = 'area';
 
+    // ─────────────────────────────────────────────────────────────────
+    // [2026-08-24] 세부업무영역(sub-area) 지원
+    //
+    // 요구사항:
+    //   - [제조원가] 영역 하위에 3개 세부업무영역 노출:
+    //       · 제품별원가  (cost-product)  → sys_aimd_cot015
+    //       · 부서별원가  (cost-dept)     → sys_aimd_cot043
+    //       · 호기별원가  (cost-machine)  → sys_aimd_cot043
+    //   - 상위 영역: 수익성분석 / 제조원가
+    //     수익성분석은 서브영역이 없으므로 subArea = null
+    //     (내부 매핑상 기본 테이블 bw_profitability_data 로 그대로 라우팅)
+    //
+    // 첨부 원칙:
+    //   - 화면과 payload 만 다룸. SQL 생성/실행 로직은 다음 단계.
+    //   - 이 파일은 다른 페이지(빌더/학습관리)에도 로드되지만,
+    //     하위 탭은 자연어 질의 화면에서만 명시적으로 mountSubAreaBar() 호출.
+    //   - 상단 PS/HL/통합 잠금 UX 와 동일한 시각언어(fa-lock 아이콘 · alert 문구) 사용.
+    // ─────────────────────────────────────────────────────────────────
+    const SUB_AREAS = {
+        'manufacturing-cost': [
+            { key: 'cost-product', label: '제품별원가', icon: 'fa-box',      table: 'sys_aimd_cot015' },
+            { key: 'cost-dept',    label: '부서별원가', icon: 'fa-sitemap',  table: 'sys_aimd_cot043' },
+            { key: 'cost-machine', label: '호기별원가', icon: 'fa-cogs',     table: 'sys_aimd_cot043' },
+        ],
+    };
+    // 수익성분석은 서브영역 없이 곧바로 대상 테이블에 매핑
+    const AREA_DEFAULT_TABLE = {
+        'profitability':      'bw_profitability_data',
+        'manufacturing-cost': null,   // 반드시 subArea 로 결정
+    };
+    const SUB_AREA_STORAGE_KEY = 'selectedSubArea';   // { areaKey: subAreaKey } JSON
+    const SUB_AREA_QUERY = 'subarea';                 // URL 파라미터
+    const hasSubAreas = (areaKey) => Array.isArray(SUB_AREAS[areaKey]) && SUB_AREAS[areaKey].length > 0;
+    const defaultSubAreaOf = (areaKey) => (hasSubAreas(areaKey) ? SUB_AREAS[areaKey][0].key : null);
+    const findSubAreaMeta = (areaKey, subKey) => (SUB_AREAS[areaKey] || []).find(s => s.key === subKey) || null;
+
     // 서버 area_code(대문자 스네이크) ↔ 프론트 탭 key(소문자 케밥) 매핑
     // 서버가 새 area를 추가하면 여기에 매핑만 추가하면 자동 반영됨.
     const AREA_CODE_TO_KEY = {
@@ -138,11 +174,61 @@
     }
     let currentArea = resolveInitialArea();
 
+    // ── 세부업무영역(sub-area) 상태 ─────────────────────────────────
+    // subAreaMap : area 별로 마지막 선택 서브영역을 기억 (localStorage 지속)
+    function loadSubAreaMap() {
+        try {
+            const raw = localStorage.getItem(SUB_AREA_STORAGE_KEY);
+            const obj = raw ? JSON.parse(raw) : {};
+            return (obj && typeof obj === 'object') ? obj : {};
+        } catch (e) { return {}; }
+    }
+    function saveSubAreaMap(m) {
+        try { localStorage.setItem(SUB_AREA_STORAGE_KEY, JSON.stringify(m || {})); } catch (e) {}
+    }
+    const subAreaMap = loadSubAreaMap();
+
+    function readSubAreaFromUrl() {
+        try {
+            const v = new URLSearchParams(window.location.search).get(SUB_AREA_QUERY);
+            return v || null;
+        } catch (e) { return null; }
+    }
+
+    // 특정 area 에 대한 현재 subArea 결정: URL > storage > default
+    function resolveSubAreaFor(areaKey) {
+        if (!hasSubAreas(areaKey)) return null;
+        const urlSub = readSubAreaFromUrl();
+        if (urlSub && findSubAreaMeta(areaKey, urlSub)) return urlSub;
+        const stored = subAreaMap[areaKey];
+        if (stored && findSubAreaMeta(areaKey, stored)) return stored;
+        return defaultSubAreaOf(areaKey);
+    }
+    let currentSubArea = resolveSubAreaFor(currentArea);
+
+    // ── 세션 잠금 (첫 질의 후 area/subArea 변경 금지) ────────────────
+    //   상단 PS/HL/통합 도메인 잠금(sessionDomainLocked) 과 완전히 동일한 패턴.
+    //   외부(스크립트)에서 AreaTabs.lock() / AreaTabs.unlock() 으로 제어.
+    let sessionAreaLocked = false;
+
     function normalizeUrl() {
         try {
             const p = new URLSearchParams(window.location.search);
+            let changed = false;
             if (p.get(AREA_QUERY) !== currentArea) {
                 p.set(AREA_QUERY, currentArea);
+                changed = true;
+            }
+            if (currentSubArea) {
+                if (p.get(SUB_AREA_QUERY) !== currentSubArea) {
+                    p.set(SUB_AREA_QUERY, currentSubArea);
+                    changed = true;
+                }
+            } else if (p.has(SUB_AREA_QUERY)) {
+                p.delete(SUB_AREA_QUERY);
+                changed = true;
+            }
+            if (changed) {
                 const newUrl = window.location.pathname + '?' + p.toString() + window.location.hash;
                 window.history.replaceState({}, '', newUrl);
             }
@@ -209,6 +295,88 @@
         }
         .area-tab-btn.active.area-manufacturing-cost {
             background: linear-gradient(135deg,#0284c7,#0369a1);
+        }
+
+        /* -------------------- 상위 영역 잠금(첫 질의 후) -------------------- */
+        /*   상단 PS/HL/통합(domain-btn.locked) 과 동일한 UX 로 통일.
+             비활성 탭은 흐리게, 활성 탭은 진하게 + 잠금 아이콘. */
+        .area-tab-btn.locked { opacity: 0.5; cursor: not-allowed; }
+        .area-tab-btn.locked.active { opacity: 1; }
+        .area-lock-icon {
+            margin-left: 4px;
+            font-size: 10px;
+            opacity: 0.8;
+        }
+
+        /* -------------------- 세부업무영역 하위 탭바 -------------------- */
+        /*   상위 영역 탭 바로 아래에 붙어 노출.
+             수익성분석 영역에서는 렌더되지 않음 (SUB_AREAS 미정의).
+             제조원가 테마와 통일된 스카이 톤 사용. */
+        .sub-area-tab-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 20px 10px 20px;
+            background: #f0f9ff;
+            border-bottom: 1px solid #bae6fd;
+            flex-wrap: wrap;
+            flex-shrink: 0;
+            position: sticky;
+            top: 52px;   /* area-tab-bar 아래에 스티키 */
+            z-index: 39;
+        }
+        .sub-area-tab-bar__label {
+            font-size: 11px;
+            font-weight: 700;
+            color: #0369a1;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            margin-right: 4px;
+        }
+        .sub-area-tab-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: #fff;
+            border: 1px solid #bae6fd;
+            border-radius: 7px;
+            font-size: 12.5px;
+            font-weight: 600;
+            color: #0369a1;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all .15s ease;
+            white-space: nowrap;
+        }
+        .sub-area-tab-btn:hover {
+            background: #e0f2fe;
+            border-color: #7dd3fc;
+            color: #075985;
+        }
+        .sub-area-tab-btn i { font-size: 11px; }
+        .sub-area-tab-btn.active {
+            background: linear-gradient(135deg,#0284c7,#0369a1);
+            color: #fff;
+            border-color: transparent;
+            box-shadow: 0 2px 6px rgba(2,132,199,0.28);
+        }
+        .sub-area-tab-btn.locked { opacity: 0.55; cursor: not-allowed; }
+        .sub-area-tab-btn.locked.active { opacity: 1; }
+        .sub-area-tab-bar__hint {
+            margin-left: auto;
+            font-size: 11.5px;
+            color: #0c4a6e;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .sub-area-tab-bar__hint i { color: #0284c7; }
+        @media (max-width: 640px) {
+            .sub-area-tab-bar { padding: 6px 12px 8px 12px; gap: 6px; }
+            .sub-area-tab-bar__label { display: none; }
+            .sub-area-tab-btn { padding: 5px 9px; font-size: 11.5px; }
+            .sub-area-tab-bar__hint { display: none; }
         }
 
         /* -------------------- 제조원가 안내 오버레이 -------------------- */
@@ -773,6 +941,134 @@
         return bar;
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // 3-b. 세부업무영역(sub-area) 탭바 렌더 / 상태 갱신
+    //
+    //   자연어 질의 화면에서만 명시적으로 mountSubAreaBar() 호출.
+    //   호출 지점: index.html DOMContentLoaded 이후.
+    //
+    //   원칙:
+    //     - 상위 영역이 SUB_AREAS 미정의(=수익성분석)면 바 자체를 hidden 처리.
+    //     - 세션 잠금 상태(sessionAreaLocked=true) 이면
+    //       버튼 클릭 시 alert 안내 후 return (상위 area 잠금과 동일 UX).
+    //     - 클릭 성공 시 currentSubArea 갱신 + localStorage/URL 저장 + 이벤트 발행.
+    // ─────────────────────────────────────────────────────────────────
+    function buildSubAreaBar() {
+        const bar = document.createElement('div');
+        bar.className = 'sub-area-tab-bar';
+        bar.id = 'subAreaTabBar';
+        bar.innerHTML = `
+            <span class="sub-area-tab-bar__label">세부영역</span>
+            <div id="subAreaTabBarButtons" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"></div>
+            <span class="sub-area-tab-bar__hint" id="subAreaTabBarHint">
+                <i class="fas fa-info-circle"></i>
+                <span>이 채팅의 참조 테이블이 결정됩니다</span>
+            </span>`;
+        return bar;
+    }
+    function refreshSubAreaBar() {
+        const bar = document.getElementById('subAreaTabBar');
+        if (!bar) return;
+        const btnHost = document.getElementById('subAreaTabBarButtons');
+        const hintEl  = document.getElementById('subAreaTabBarHint');
+        const subs = SUB_AREAS[currentArea];
+
+        // 상위 영역이 서브 미보유 → 바 자체 숨김
+        if (!subs || subs.length === 0) {
+            bar.style.display = 'none';
+            return;
+        }
+        bar.style.display = 'flex';
+
+        // 현재 subArea 가 유효하지 않으면 기본값으로 보정
+        if (!findSubAreaMeta(currentArea, currentSubArea)) {
+            currentSubArea = defaultSubAreaOf(currentArea);
+        }
+
+        // 버튼 렌더
+        if (btnHost) {
+            btnHost.innerHTML = '';
+            subs.forEach(s => {
+                const isActive = s.key === currentSubArea;
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                let cls = 'sub-area-tab-btn';
+                if (isActive) cls += ' active';
+                if (sessionAreaLocked) cls += ' locked';
+                btn.className = cls;
+                btn.dataset.subarea = s.key;
+                const lockIco = (sessionAreaLocked && isActive) ? '<i class="fas fa-lock area-lock-icon"></i>' : '';
+                btn.innerHTML = `<i class="fas ${s.icon}"></i><span>${s.label}</span>${lockIco}`;
+                btn.title = `${s.label} · 참조 테이블: ${s.table}`;
+                btn.addEventListener('click', () => setSubArea(s.key));
+                btnHost.appendChild(btn);
+            });
+        }
+
+        // 힌트: 잠긴 상태에서는 사용자에게 안내
+        if (hintEl) {
+            if (sessionAreaLocked) {
+                hintEl.innerHTML = '<i class="fas fa-lock"></i><span>새 채팅 시작 후 변경 가능</span>';
+            } else {
+                const cur = findSubAreaMeta(currentArea, currentSubArea);
+                hintEl.innerHTML = '<i class="fas fa-database"></i>' +
+                    `<span>참조 테이블: <code style="background:#e0f2fe;padding:1px 6px;border-radius:4px;color:#0c4a6e;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${cur ? cur.table : '-'}</code></span>`;
+            }
+        }
+    }
+
+    function mountSubAreaBar() {
+        if (document.getElementById('subAreaTabBar')) return;
+        const bar = buildSubAreaBar();
+        // 상단 area-tab-bar 바로 아래에 삽입 (같은 sticky 흐름 유지)
+        const areaBar = document.getElementById('areaTabBar');
+        if (areaBar && areaBar.parentNode) {
+            areaBar.parentNode.insertBefore(bar, areaBar.nextSibling);
+        } else {
+            const topBar = document.querySelector('.top-bar');
+            if (topBar && topBar.parentNode) {
+                topBar.parentNode.insertBefore(bar, topBar.nextSibling);
+            } else {
+                document.body.insertBefore(bar, document.body.firstChild);
+            }
+        }
+        refreshSubAreaBar();
+    }
+
+    function setSubArea(nextKey, opts) {
+        opts = opts || {};
+        // 잠금 상태 처리 (상위 도메인 잠금 alert 와 동일 문구 톤)
+        if (sessionAreaLocked && !opts.force) {
+            const cur  = findSubAreaMeta(currentArea, currentSubArea);
+            const next = findSubAreaMeta(currentArea, nextKey);
+            const areaLabel = (AREAS[currentArea] || {}).label || currentArea;
+            const curLabel  = cur  ? cur.label  : currentSubArea;
+            const nextLabel = next ? next.label : nextKey;
+            try {
+                alert(
+                    `현재 채팅은 [${areaLabel} > ${curLabel}] 기준으로 진행 중입니다.\n` +
+                    `세부업무영역을 변경하면 조회 대상 테이블이 달라집니다.\n\n` +
+                    `[${nextLabel}](으)로 변경하려면 새 채팅을 시작해주세요.`
+                );
+            } catch (e) {}
+            return false;
+        }
+        const meta = findSubAreaMeta(currentArea, nextKey);
+        if (!meta) return false;
+        if (nextKey === currentSubArea && !opts.force) return false;
+        currentSubArea = nextKey;
+        subAreaMap[currentArea] = nextKey;
+        saveSubAreaMap(subAreaMap);
+        normalizeUrl();
+        refreshSubAreaBar();
+        try {
+            window.dispatchEvent(new CustomEvent('subareachange', {
+                detail: { area: currentArea, subArea: currentSubArea, table: meta.table }
+            }));
+        } catch (e) {}
+        return true;
+    }
+
     function mountTabBar() {
         if (document.getElementById('areaTabBar')) return;
         const bar = buildTabBar();
@@ -793,7 +1089,14 @@
     // ------------------------------------------------------------------
     function refreshActiveStyle() {
         document.querySelectorAll('.area-tab-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.area === currentArea);
+            const isActive = (btn.dataset.area === currentArea);
+            btn.classList.toggle('active', isActive);
+            btn.classList.toggle('locked', sessionAreaLocked);
+            // 잠금 아이콘: 상단 도메인 버튼과 동일하게 active 탭에만 자물쇠 노출
+            const label = (AREAS[btn.dataset.area] || {}).label || btn.dataset.area;
+            const icon  = (AREAS[btn.dataset.area] || {}).icon  || 'fa-layer-group';
+            const lockIco = (sessionAreaLocked && isActive) ? '<i class="fas fa-lock area-lock-icon"></i>' : '';
+            btn.innerHTML = `<i class="fas ${icon}"></i><span>${label}</span>${lockIco}`;
         });
     }
 
@@ -891,14 +1194,35 @@
                  : (Array.from(allowedAreaKeys)[0] || DEFAULT_AREA);
         }
         if (next === currentArea && !opts.force) return;
+
+        // ─── 세션 잠금 (첫 질의 후 area/subArea 변경 금지) ───────────
+        //   상단 PS/HL/통합 도메인 잠금과 동일한 UX. force 로만 우회.
+        if (sessionAreaLocked && !opts.force) {
+            const curLabel  = (AREAS[currentArea] || {}).label || currentArea;
+            const nextLabel = (AREAS[next] || {}).label || next;
+            try {
+                alert(
+                    `현재 채팅은 [${curLabel}] 영역 기준으로 진행 중입니다.\n` +
+                    `업무영역을 변경하면 조회 대상 테이블이 달라집니다.\n\n` +
+                    `[${nextLabel}](으)로 변경하려면 새 채팅을 시작해주세요.`
+                );
+            } catch (e) {}
+            return;
+        }
+
         currentArea = next;
         try { localStorage.setItem(STORAGE_KEY, currentArea); } catch (e) {}
+
+        // 상위 area 변경 → 해당 area 에 맞는 subArea 재결정
+        currentSubArea = resolveSubAreaFor(currentArea);
+
         normalizeUrl();
         applyAreaVisuals();
+        refreshSubAreaBar();
         setTimeout(hijackSidebarLinks, 0);
         try {
             window.dispatchEvent(new CustomEvent('areachange', {
-                detail: { area: currentArea }
+                detail: { area: currentArea, subArea: currentSubArea }
             }));
         } catch (e) {}
     }
@@ -909,6 +1233,7 @@
     window.AreaTabs = {
         get current() { return currentArea; },
         AREAS: AREAS,
+        SUB_AREAS: SUB_AREAS,
         set: setArea,
         remount: mountTabBar,
         refreshLinks: hijackSidebarLinks,
@@ -924,6 +1249,44 @@
                 } catch (e) {}
             }
         },
+        // ── [2026-08-24] 세부업무영역 지원 API ────────────────────────
+        //   자연어 질의 화면(index.html)의 잠금/상태 관리와 연동.
+        get subArea() { return currentSubArea; },
+        setSubArea: setSubArea,
+        mountSubAreaBar: mountSubAreaBar,
+        refreshSubAreaBar: refreshSubAreaBar,
+        // 현재 (area, subArea) 조합의 참조 테이블 (payload 에 포함할 값)
+        currentTable: () => {
+            const meta = findSubAreaMeta(currentArea, currentSubArea);
+            if (meta) return meta.table;
+            return AREA_DEFAULT_TABLE[currentArea] || null;
+        },
+        // 현재 selection 스냅샷 (payload 삽입용 · 새 채팅 히스토리 저장용)
+        snapshot: () => {
+            const meta = findSubAreaMeta(currentArea, currentSubArea);
+            return {
+                area: currentArea,
+                areaLabel: (AREAS[currentArea] || {}).label || currentArea,
+                subArea: currentSubArea,
+                subAreaLabel: meta ? meta.label : null,
+                table: meta ? meta.table : (AREA_DEFAULT_TABLE[currentArea] || null),
+            };
+        },
+        // 세션 잠금 제어 (첫 질의 완료 시 lock, 새 채팅 시 unlock)
+        //   상단 도메인 잠금(sessionDomainLocked) 과 별도 필드지만 UX 는 동일.
+        lock: () => {
+            if (sessionAreaLocked) return;
+            sessionAreaLocked = true;
+            refreshActiveStyle();
+            refreshSubAreaBar();
+        },
+        unlock: () => {
+            if (!sessionAreaLocked) return;
+            sessionAreaLocked = false;
+            refreshActiveStyle();
+            refreshSubAreaBar();
+        },
+        isLocked: () => sessionAreaLocked,
     };
 
     // ------------------------------------------------------------------
