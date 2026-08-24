@@ -2529,10 +2529,28 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     try {
         const acceptHeaders = { 'Content-Type': 'application/json' };
         if (clientRequestId) acceptHeaders['X-Request-Id'] = clientRequestId;
+        // [2026-08-24] payload 에 업무영역(area) / 세부업무영역(subArea) / 참조테이블(table) 명시 삽입
+        //   - 화면 상 선택된 상태를 백엔드가 명시적으로 수신할 수 있도록 함.
+        //   - 이 단계에서는 서버가 값을 로그로만 수신하고 SQL 라우팅은 다음 단계에서 연결 예정.
+        //   - AreaTabs.snapshot() 은 { area, areaLabel, subArea, subAreaLabel, table } 반환.
+        let areaSnap = null;
+        try { areaSnap = (window.AreaTabs && window.AreaTabs.snapshot) ? window.AreaTabs.snapshot() : null; } catch (_) {}
+        const asyncPayload = {
+            query, conversationContext,
+            session_id: chatSessionId,
+            queryMode: effectiveQueryMode,
+        };
+        if (areaSnap) {
+            asyncPayload.area          = areaSnap.area;
+            asyncPayload.areaLabel     = areaSnap.areaLabel;
+            asyncPayload.subArea       = areaSnap.subArea;
+            asyncPayload.subAreaLabel  = areaSnap.subAreaLabel;
+            asyncPayload.table         = areaSnap.table;
+        }
         const r = await fetch('/api/nlq/async', {
             method: 'POST',
             headers: acceptHeaders,
-            body: JSON.stringify({ query, conversationContext, session_id: chatSessionId, queryMode: effectiveQueryMode }),
+            body: JSON.stringify(asyncPayload),
             signal: abortSignal,
         });
         const ct = r.headers.get('content-type') || '';
@@ -2965,6 +2983,10 @@ async function sendQuery(query) {
         sessionDomainLocked = true;
         renderDomainSelectorBar();
     }
+    // [2026-08-24] 첫 질문 시 업무영역/세부업무영역도 함께 잠금
+    //   - 잠금 대상: 상위(수익성분석/제조원가) + 하위(제품별원가/부서별원가/호기별원가)
+    //   - 변경 시 alert 안내, 새 채팅으로만 해제.
+    try { if (window.AreaTabs && typeof window.AreaTabs.lock === 'function') window.AreaTabs.lock(); } catch (_) {}
 
     // [2026-07-21] 이 요청 전용 시퀀스/컨트롤러 세팅
     //   - mySeq: 응답 처리 전 currentRequestSeq 와 일치 확인 (일치하지 않으면 stale)
@@ -5672,6 +5694,10 @@ async function restoreSession(sessionKey, hintDomain) {
             sessionDomainLocked = true;
             renderDomainSelectorBar();
         }
+        // [2026-08-24] 이력 복원 시에도 업무영역/세부업무영역 잠금 유지
+        //   현재 채팅 세션에서 이미 질의가 완료된 이력을 보고 있는 상태이므로
+        //   상위/하위 영역 변경을 허용하면 세션 정합성이 깨짐.
+        try { if (window.AreaTabs && typeof window.AreaTabs.lock === 'function') window.AreaTabs.lock(); } catch (_) {}
 
         items.forEach(item => {
             // 사용자 질문 말풍선 + 자주질문 하트 (이력 복원 시에도 동일하게)
@@ -5803,6 +5829,9 @@ function startNewChat() {
     conversationContext = [];
     sessionDomainLocked = false;
     renderDomainSelectorBar();
+    // [2026-08-24] 새 채팅 시작 시 업무영역/세부업무영역 잠금 해제
+    //   → 사용자가 새 채팅에서 다시 자유롭게 area/subArea 를 선택 가능.
+    try { if (window.AreaTabs && typeof window.AreaTabs.unlock === 'function') window.AreaTabs.unlock(); } catch (_) {}
     const chatArea = document.getElementById('chatArea');
     const welcome = document.getElementById('welcomeSection');
     chatArea.innerHTML = '';
@@ -6567,5 +6596,31 @@ window.addEventListener('load', () => {
 </script>
 <!-- [2026-07-23] 업무영역(수익성분석/제조원가) 탭 UI — 프론트 프리뷰. 서버 API/데이터 미변경. -->
 <script src="/area-tabs.js"></script>
+<!-- [2026-08-24] 제조원가 하위 세부업무영역(제품별원가/부서별원가/호기별원가) 탭 마운트
+     - 상위 영역 탭바가 mount 된 뒤 하위 탭바를 그 아래에 배치.
+     - 참조 테이블 매핑 (sys_aimd_cot015 / sys_aimd_cot043) 은 payload 에 자동 삽입됨. -->
+<script>
+(function () {
+    'use strict';
+    function mount() {
+        try {
+            if (window.AreaTabs && typeof window.AreaTabs.mountSubAreaBar === 'function') {
+                window.AreaTabs.mountSubAreaBar();
+            }
+        } catch (e) { console.warn('[SubAreaTabs] mount 실패:', e && e.message); }
+    }
+    // area-tabs.js 는 스스로 boot() 완료 시 'areatabs:ready' 이벤트를 발행하므로
+    // 그때 하위 탭바를 마운트한다. 이미 발행된 뒤 로드된 경우 대비 폴백도 둔다.
+    let mounted = false;
+    window.addEventListener('areatabs:ready', () => { if (!mounted) { mounted = true; mount(); } });
+    // 폴백: 500ms 후에도 아직 마운트 안 되었으면 강제 시도
+    setTimeout(() => { if (!mounted) { mounted = true; mount(); } }, 500);
+
+    // 상위 area 변경 이벤트에 반응해 하위 탭바 즉시 리프레시
+    window.addEventListener('areachange', () => {
+        try { window.AreaTabs && window.AreaTabs.refreshSubAreaBar && window.AreaTabs.refreshSubAreaBar(); } catch (_) {}
+    });
+})();
+</script>
 </body>
 </html>

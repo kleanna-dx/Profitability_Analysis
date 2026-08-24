@@ -8814,6 +8814,60 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
   if (!query || !String(query).trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
   }
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-24] 업무영역(area) / 세부업무영역(subArea) / 참조 테이블(table) 수신
+  //
+  //   프론트(index.html) 가 payload 에 명시적으로 area/subArea/table 을
+  //   포함해 보냄. 이번 단계는 "화면 및 선택 로직" 이 우선이라
+  //   서버측 SQL 라우팅은 아직 분기하지 않고, 다음 단계에서 사용할 수 있도록
+  //   job 오브젝트에 그대로 저장 + 로그만 남긴다.
+  //
+  //   테이블 매핑 (프론트와 일치, 서버측 화이트리스트로 검증):
+  //     profitability                           → bw_profitability_data
+  //     manufacturing-cost / cost-product       → sys_aimd_cot015
+  //     manufacturing-cost / cost-dept          → sys_aimd_cot043
+  //     manufacturing-cost / cost-machine       → sys_aimd_cot043
+  //
+  //   보안: 프론트가 임의 값을 보내도 화이트리스트 밖은 null 로 정규화한다.
+  //         (다음 단계에서 이 값을 SQL 에 직접 삽입할 예정이므로 지금 방어)
+  // ─────────────────────────────────────────────────────────────────
+  const _rawArea    = String(req.body?.area || '').toLowerCase();
+  const _rawSubArea = String(req.body?.subArea || '').toLowerCase();
+  const AREA_TABLE_MAP = {
+    'profitability': { subs: null, defaultTable: 'bw_profitability_data' },
+    'manufacturing-cost': {
+      subs: {
+        'cost-product': 'sys_aimd_cot015',
+        'cost-dept':    'sys_aimd_cot043',
+        'cost-machine': 'sys_aimd_cot043',
+      },
+      defaultTable: null,
+    },
+  };
+  let selectedArea = null, selectedSubArea = null, selectedTable = null;
+  const areaCfg = AREA_TABLE_MAP[_rawArea];
+  if (areaCfg) {
+    selectedArea = _rawArea;
+    if (areaCfg.subs) {
+      // 서브영역 필수 영역 (제조원가)
+      if (_rawSubArea && Object.prototype.hasOwnProperty.call(areaCfg.subs, _rawSubArea)) {
+        selectedSubArea = _rawSubArea;
+        selectedTable   = areaCfg.subs[_rawSubArea];
+      } else {
+        // 서브영역 미지정/불명 → 안전 fallback: 기본값 없음 (다음 단계에서 에러 처리)
+        selectedSubArea = null;
+        selectedTable   = null;
+      }
+    } else {
+      // 서브영역 미보유 영역 (수익성분석)
+      selectedSubArea = null;
+      selectedTable   = areaCfg.defaultTable;
+    }
+  }
+  console.log(
+    `[NLQ:AreaSelect] userId=${userId} area=${selectedArea || '-'} subArea=${selectedSubArea || '-'} table=${selectedTable || '-'} ` +
+    `(raw: area="${_rawArea || ''}" subArea="${_rawSubArea || ''}")`
+  );
   // [2026-07-30] 직접 SQL 입력 차단 — 프론트 우회 방어 (async 경로에도 동일 적용)
   // [2026-07-31] errorType='direct_sql_disabled' 추가 — sync 경로와 동일한 라우팅 키.
   const sqlBlock = detectDirectSqlQuery(query);
@@ -8840,6 +8894,10 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     queryMode: queryMode || 'analysis',
     conversationContext: conversationContext || null,
     session_id: session_id || null,
+    // [2026-08-24] 업무영역 선택 정보 (다음 단계에서 SQL 라우팅에 사용)
+    area:    selectedArea,      // 'profitability' | 'manufacturing-cost' | null
+    subArea: selectedSubArea,   // 'cost-product' | 'cost-dept' | 'cost-machine' | null
+    table:   selectedTable,     // 화이트리스트 검증 완료된 참조 테이블 (또는 null)
     startedAt: Date.now(),
     runningAt: null,
     finishedAt: null,
