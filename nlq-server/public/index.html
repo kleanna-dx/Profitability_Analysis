@@ -1461,6 +1461,10 @@ let chatSessionId = crypto.randomUUID();
 let dataDateContext = null;  // 마감 최신월 컨텍스트 (서버에서 조회)
 
 // 도메인별 예시 질문 (fallback 은 PS)
+// ─────────────────────────────────────────────────────────────
+// [수익성분석 영역] 도메인(PS/HL) 기반 예시 (기존 로직 그대로 유지).
+// bw_profitability_data 를 참조하며 SQL/학습 로직에 영향 없음.
+// ─────────────────────────────────────────────────────────────
 const SUGGESTIONS_BY_DOMAIN = {
     PS: [
         '손익센터별 총매출 합계',
@@ -1486,13 +1490,90 @@ const SUGGESTIONS_BY_DOMAIN = {
 function getSuggestionsForDomain(dc) {
     return SUGGESTIONS_BY_DOMAIN[dc] || SUGGESTIONS_BY_DOMAIN.PS;
 }
-// 현재 도메인 기준으로 예시 칩을 다시 그림 (초기 로드 및 도메인 변경 시 호출)
+
+// ─────────────────────────────────────────────────────────────
+// [2026-08-24] 업무영역/세부업무영역별 예시 질문 매핑
+//   - 상위 area 는 area-tabs.js 의 AREAS/SUB_AREAS 키와 정확히 일치.
+//   - area === 'profitability'  → 예시는 도메인(PS/HL) 기준으로 결정
+//                                → 기존 SUGGESTIONS_BY_DOMAIN 을 그대로 사용
+//   - area === 'manufacturing-cost' → subArea(제품별/부서별/호기별) 별로 분리
+//     * cost-product (제품별원가) : sys_aimd_cot015 실제 데이터 기준 8개
+//     * cost-dept    (부서별원가) : 후속 단계에서 sys_aimd_cot043 기준 추가
+//     * cost-machine (호기별원가) : 후속 단계에서 sys_aimd_cot043 기준 추가
+//   - 예시 문구에는 특정 월을 하드코딩하지 않음 (최신 마감월 정책 적용).
+// ─────────────────────────────────────────────────────────────
+const SUGGESTIONS_BY_AREA = {
+    'profitability': null,   // 도메인(PS/HL) 기반 → getSuggestionsForDomain() 위임
+    'manufacturing-cost': {
+        // [제품별원가] sys_aimd_cot015: PLANT/MATERIAL/ZCGUBUN(표준·실제·매출원가)/
+        //   ZCGUBUN_D(입고-생산/소비-소비)/TOTAL/KST_V(변동비)/KST_F(고정비) 기준.
+        'cost-product': [
+            '제품별 실제원가 TOP 5',
+            '제품별 표준원가와 실제원가 차이 TOP 5',
+            '제품별 매출원가 TOP 5',
+            '전월대비 제품별 실제원가 증가액 TOP 10',
+            '제지 플랜트 제품별 실제원가 순위',
+            '화장지 플랜트 제품별 매출원가 TOP 5',
+            '입고-생산 제품별 총원가 TOP 5',
+            '제품별 변동비와 고정비 비교',
+        ],
+        // [부서별원가] 다음 단계에서 sys_aimd_cot043 실제 데이터 기준으로 추가.
+        'cost-dept': [],
+        // [호기별원가] 다음 단계에서 sys_aimd_cot043 실제 데이터 기준으로 추가.
+        'cost-machine': [],
+    },
+};
+
+// 현재 (area, subArea) 조합에 해당하는 예시 질문 배열 반환.
+//   - area-tabs.js 로딩 이전이거나 AreaTabs 미주입 상태여도 안전하게 fallback.
+//   - 반환값이 빈 배열이면 renderSuggestionChips() 는 도메인 fallback 을 사용.
+function getSuggestionsForAreaSelection() {
+    try {
+        const snap = (window.AreaTabs && window.AreaTabs.snapshot)
+            ? window.AreaTabs.snapshot()
+            : null;
+        if (!snap) return null; // AreaTabs 미준비 → 도메인 fallback
+        const areaKey = snap.area;
+        const subKey  = snap.subArea;
+        const entry   = SUGGESTIONS_BY_AREA[areaKey];
+        if (entry === null) return null; // 수익성분석 → 도메인 fallback
+        if (!entry) return null;
+        if (subKey && Array.isArray(entry[subKey])) return entry[subKey];
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// 현재 도메인 기준으로 예시 칩을 다시 그림 (초기 로드 및 도메인/영역 변경 시 호출).
+//   우선순위: (area, subArea) 조합 예시 > 도메인(PS/HL) 예시
+//   빈 배열이 반환되면 '예시 준비 중' 안내를 노출 (제조원가 > 부서/호기 초기 상태 대비).
 function renderSuggestionChips() {
     const fc = document.getElementById('fixedChipContainer');
     if (!fc) return;
     // '예시:' 라벨을 제외한 기존 칩만 제거
     Array.from(fc.querySelectorAll('button.chip-sm')).forEach(b => b.remove());
-    getSuggestionsForDomain(currentDomain).forEach(s => {
+    // 예시 준비 중 안내 span 이 있으면 제거 (매 렌더마다 새로 계산)
+    const oldNotice = fc.querySelector('.chip-empty-notice');
+    if (oldNotice) oldNotice.remove();
+
+    // 1) area/subArea 우선 시도 (제조원가 > 세부영역)
+    let list = getSuggestionsForAreaSelection();
+
+    // 2) 없으면 도메인 기반 fallback (수익성분석 = 기존 동작 완전 보전)
+    if (!list) list = getSuggestionsForDomain(currentDomain);
+
+    if (!list || list.length === 0) {
+        // 후속 단계에서 채워질 세부영역 (부서별/호기별) → 안내 문구 노출
+        const notice = document.createElement('span');
+        notice.className = 'chip-empty-notice';
+        notice.textContent = '예시 질문 준비 중입니다.';
+        notice.style.cssText = 'color:#94a3b8;font-size:13px;line-height:32px;flex-shrink:0;';
+        fc.appendChild(notice);
+        return;
+    }
+
+    list.forEach(s => {
         const btn = document.createElement('button');
         btn.className = 'chip-sm';
         btn.textContent = s;
@@ -6612,13 +6693,34 @@ window.addEventListener('load', () => {
     // area-tabs.js 는 스스로 boot() 완료 시 'areatabs:ready' 이벤트를 발행하므로
     // 그때 하위 탭바를 마운트한다. 이미 발행된 뒤 로드된 경우 대비 폴백도 둔다.
     let mounted = false;
-    window.addEventListener('areatabs:ready', () => { if (!mounted) { mounted = true; mount(); } });
+    function afterMount() {
+        // AreaTabs 준비 완료 후 예시 칩을 다시 그려 area/subArea 기반 예시 반영
+        // (초기 렌더는 AreaTabs 로딩 이전이라 도메인 fallback 만 그려질 수 있음)
+        try { if (typeof renderSuggestionChips === 'function') renderSuggestionChips(); } catch (_) {}
+    }
+    window.addEventListener('areatabs:ready', () => {
+        if (!mounted) { mounted = true; mount(); }
+        afterMount();
+    });
     // 폴백: 500ms 후에도 아직 마운트 안 되었으면 강제 시도
-    setTimeout(() => { if (!mounted) { mounted = true; mount(); } }, 500);
+    setTimeout(() => {
+        if (!mounted) { mounted = true; mount(); afterMount(); }
+    }, 500);
 
-    // 상위 area 변경 이벤트에 반응해 하위 탭바 즉시 리프레시
+    // 상위 area 변경 이벤트에 반응해:
+    //   1) 하위 탭바 즉시 리프레시 (제조원가↔수익성분석 전환 반영)
+    //   2) 예시 질문 칩도 함께 재렌더 (area 별 예시 목록 반영)
     window.addEventListener('areachange', () => {
         try { window.AreaTabs && window.AreaTabs.refreshSubAreaBar && window.AreaTabs.refreshSubAreaBar(); } catch (_) {}
+        try { if (typeof renderSuggestionChips === 'function') renderSuggestionChips(); } catch (_) {}
+    });
+
+    // [2026-08-24] 세부업무영역 변경 이벤트에 반응해 예시 질문 칩 재렌더.
+    //   - 제품별원가 → 부서별원가 등 전환 시 즉시 예시 목록 교체.
+    //   - 첫 질의 후에는 area-tabs.js 가 잠금 alert 를 띄우고 변경을 막으므로
+    //     이 리스너는 잠금 전 상태에서만 실질적으로 호출됨.
+    window.addEventListener('subareachange', () => {
+        try { if (typeof renderSuggestionChips === 'function') renderSuggestionChips(); } catch (_) {}
     });
 })();
 </script>
