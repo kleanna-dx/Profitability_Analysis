@@ -73,6 +73,8 @@ async function buildRagIndex(pool) {
   const chunks = [];
 
   // 1. 스키마 청크 — 컬럼별로 1개씩
+  //    [2026-08-25] metadata 에 table_name 을 명시적으로 담아 searchRelevantMeta 에서
+  //    tableWhitelist 로 필터할 수 있게 함 (제조원가 세부업무영역 격리용).
   const schemaColumns = await getSchemaColumns(pool);
   for (const col of schemaColumns) {
     const text = `컬럼: ${col.column_name} (${col.data_type}) - ${col.description}. 테이블: ${col.table_name}`;
@@ -80,12 +82,19 @@ async function buildRagIndex(pool) {
       type: 'schema',
       sourceId: null,
       text,
-      metadata: { column_name: col.column_name, data_type: col.data_type, description: col.description },
+      metadata: {
+        column_name: col.column_name,
+        data_type: col.data_type,
+        description: col.description,
+        table_name: col.table_name,
+      },
     });
   }
 
-  // 2. 온톨로지 청크 — 컬럼 + 동의어 포함 (domain_code 포함)
+  // 2. 온톨로지 청크 — 컬럼 + 동의어 포함 (domain_code + table_name 포함)
   //    ★ is_active=1 인 컬럼만 RAG 인덱스에 포함 → 비활성 컬럼은 NLQ에 노출되지 않음
+  //    [2026-08-25] 청크 텍스트와 metadata 양쪽에 table_name 명시.
+  //      LLM 프롬프트에도 "테이블:xxx" 라벨이 노출되어야 컬럼 소속 테이블을 정확히 판단.
   const [ontRows] = await pool.query(
     `SELECT c.id, c.column_name, c.table_name, c.description, c.data_type, c.domain_code,
             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
@@ -95,13 +104,19 @@ async function buildRagIndex(pool) {
      GROUP BY c.id`
   );
   for (const o of ontRows) {
-    let text = `온톨로지 컬럼: ${o.column_name} - ${o.description || ''} [도메인:${o.domain_code || 'ALL'}]`;
+    let text = `온톨로지 컬럼: ${o.column_name} - ${o.description || ''} [도메인:${o.domain_code || 'ALL'}][테이블:${o.table_name || '-'}]`;
     if (o.synonyms) text += `. 동의어: ${o.synonyms}`;
     chunks.push({
       type: 'ontology',
       sourceId: o.id,
       text,
-      metadata: { column_name: o.column_name, description: o.description, synonyms: o.synonyms, domain_code: o.domain_code },
+      metadata: {
+        column_name: o.column_name,
+        description: o.description,
+        synonyms: o.synonyms,
+        domain_code: o.domain_code,
+        table_name: o.table_name,
+      },
     });
   }
 
@@ -283,6 +298,7 @@ async function searchRelevantMeta(pool, query, options = {}) {
     codeMappingTopK = 5,    // 코드매핑 관련 최대
     ruleTopK = 3,           // 규칙 관련 최대
     domainCode = null,      // 도메인 필터 (ontology/metric 청크에 적용)
+    tableWhitelist = null,  // [2026-08-25] 업무영역 탭 필터: 허용 테이블 목록 (ontology/schema 청크에 적용)
   } = options;
 
   // 1. 질문 임베딩
@@ -318,6 +334,15 @@ async function searchRelevantMeta(pool, query, options = {}) {
     if (domainCode && (c.type === 'ontology' || c.type === 'metric')) {
       const chunkDomain = c.metadata?.domain_code;
       if (chunkDomain && chunkDomain !== domainCode) return false;
+    }
+    // ★ [2026-08-25] 테이블 화이트리스트 필터: ontology/schema 청크는 허용 테이블만
+    //    (업무영역 탭 강제 필터가 적용되었을 때 다른 테이블 컬럼이 LLM 컨텍스트에 섞이는 것을 방지)
+    if (tableWhitelist && Array.isArray(tableWhitelist) && tableWhitelist.length > 0) {
+      if (c.type === 'ontology' || c.type === 'schema') {
+        const chunkTable = c.metadata?.table_name;
+        // 메타데이터에 table_name이 있으면 화이트리스트와 대조 (없는 청크는 통과)
+        if (chunkTable && !tableWhitelist.includes(chunkTable)) return false;
+      }
     }
     return true;
   }).sort((a, b) => b.score - a.score);
@@ -366,13 +391,19 @@ async function searchRelevantMeta(pool, query, options = {}) {
     if (detection.isGroupQuery) {
       const placeholders = detection.types.map(() => '?').join(',');
       const params = [...detection.types];
-      let sql = `SELECT type, column_name, description
+      let sql = `SELECT type, column_name, description, table_name
                  FROM ontology_column
                  WHERE type IN (${placeholders})
                    AND is_active = 1`;
       if (domainCode) {
         sql += ` AND domain_code = ?`;
         params.push(domainCode);
+      }
+      // [2026-08-25] 테이블 화이트리스트: 강제 필터 활성 시 다른 테이블 컬럼 배제
+      if (tableWhitelist && Array.isArray(tableWhitelist) && tableWhitelist.length > 0) {
+        const tPh = tableWhitelist.map(() => '?').join(',');
+        sql += ` AND table_name IN (${tPh})`;
+        params.push(...tableWhitelist);
       }
       sql += ` ORDER BY type, column_name`;
       const [typeRows] = await pool.query(sql, params);

@@ -934,6 +934,16 @@ window.addEventListener('DOMContentLoaded', async () => {
     await loadRagStatus();
 });
 
+// [2026-08-25] 업무영역 탭 변경 시 학습관리 목록 재로딩
+//   - AreaTabs 가 발행하는 'areachange' 이벤트를 수신하여 ontology 를 해당 area 의 table(s) 로 재조회.
+//   - subarea 변경 시에도 ontology 자체는 area 기준으로 동일하지만 향후 subarea 별 강조를 위해 함께 리스닝.
+window.addEventListener('areachange', () => {
+    try { loadOntology(); } catch (e) { console.warn('[Learning] areachange loadOntology 실패:', e && e.message); }
+});
+window.addEventListener('subareachange', () => {
+    try { loadOntology(); } catch (e) { console.warn('[Learning] subareachange loadOntology 실패:', e && e.message); }
+});
+
 // ============================================================
 // Stats
 // ============================================================
@@ -1135,7 +1145,14 @@ function closeModal(id) { document.getElementById(id).classList.remove('active')
 // ONTOLOGY
 // ============================================================
 async function loadOntology() {
-    const res = await fetch('/api/ontology?domain_code=' + currentDomain);
+    // [2026-08-25] 학습관리 업무영역 탭 진입 시 해당 area 의 테이블(들)로 ontology 필터.
+    //   AreaTabs.snapshot() 이 있으면 area 를 함께 전달하고, 없으면 도메인 전체 유지.
+    let areaParam = '';
+    try {
+        const snap = (window.AreaTabs && window.AreaTabs.snapshot) ? window.AreaTabs.snapshot() : null;
+        if (snap && snap.area) areaParam = '&area=' + encodeURIComponent(snap.area);
+    } catch (_) {}
+    const res = await fetch('/api/ontology?domain_code=' + currentDomain + areaParam);
     ontologyData = await res.json();
     renderOntology();
 }
