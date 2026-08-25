@@ -73,6 +73,8 @@ async function buildRagIndex(pool) {
   const chunks = [];
 
   // 1. 스키마 청크 — 컬럼별로 1개씩
+  //    [2026-08-25] metadata 에 table_name 을 명시적으로 담아 searchRelevantMeta 에서
+  //    tableWhitelist 로 필터할 수 있게 함 (제조원가 세부업무영역 격리용).
   const schemaColumns = await getSchemaColumns(pool);
   for (const col of schemaColumns) {
     const text = `컬럼: ${col.column_name} (${col.data_type}) - ${col.description}. 테이블: ${col.table_name}`;
@@ -80,12 +82,19 @@ async function buildRagIndex(pool) {
       type: 'schema',
       sourceId: null,
       text,
-      metadata: { column_name: col.column_name, data_type: col.data_type, description: col.description },
+      metadata: {
+        column_name: col.column_name,
+        data_type: col.data_type,
+        description: col.description,
+        table_name: col.table_name,
+      },
     });
   }
 
-  // 2. 온톨로지 청크 — 컬럼 + 동의어 포함 (domain_code 포함)
+  // 2. 온톨로지 청크 — 컬럼 + 동의어 포함 (domain_code + table_name 포함)
   //    ★ is_active=1 인 컬럼만 RAG 인덱스에 포함 → 비활성 컬럼은 NLQ에 노출되지 않음
+  //    [2026-08-25] 청크 텍스트와 metadata 양쪽에 table_name 명시.
+  //      LLM 프롬프트에도 "테이블:xxx" 라벨이 노출되어야 컬럼 소속 테이블을 정확히 판단.
   const [ontRows] = await pool.query(
     `SELECT c.id, c.column_name, c.table_name, c.description, c.data_type, c.domain_code,
             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
@@ -95,13 +104,19 @@ async function buildRagIndex(pool) {
      GROUP BY c.id`
   );
   for (const o of ontRows) {
-    let text = `온톨로지 컬럼: ${o.column_name} - ${o.description || ''} [도메인:${o.domain_code || 'ALL'}]`;
+    let text = `온톨로지 컬럼: ${o.column_name} - ${o.description || ''} [도메인:${o.domain_code || 'ALL'}][테이블:${o.table_name || '-'}]`;
     if (o.synonyms) text += `. 동의어: ${o.synonyms}`;
     chunks.push({
       type: 'ontology',
       sourceId: o.id,
       text,
-      metadata: { column_name: o.column_name, description: o.description, synonyms: o.synonyms, domain_code: o.domain_code },
+      metadata: {
+        column_name: o.column_name,
+        description: o.description,
+        synonyms: o.synonyms,
+        domain_code: o.domain_code,
+        table_name: o.table_name,
+      },
     });
   }
 
@@ -111,8 +126,14 @@ async function buildRagIndex(pool) {
   //   - column-level (formula에 이미 집계 함수 포함): formula 그대로
   //   - aggregation 값이 CALC 가 아니어도, formula가 row-level이면 SUM(formula)로 명확히 표기
   //   → 이렇게 해야 LLM이 "CALC(...)" 같은 무의미한 표기를 보지 않고, 바로 사용 가능한 SQL 표현식을 받음
+  // [2026-08-25] metric.table_name 을 함께 로드하여 metadata 에 포함.
+  //   - 기존: metadata 에 table_name 이 없어 searchRelevantMeta 의 tableWhitelist 필터가
+  //           metric 청크에 적용될 수 없었음 → 업무영역 탭 격리 시에도 다른 테이블의 metric
+  //           청크가 LLM 컨텍스트에 섞여 들어감.
+  //   - 변경: SELECT 에 m.table_name 추가 + metadata.table_name = m.table_name.
+  //           chunk_text 에도 [테이블:...] 표기하여 embedding 시 테이블 컨텍스트가 반영되게 함.
   const [metRows] = await pool.query(
-    `SELECT m.id, m.metric_code, m.aggregation, m.formula, m.description, m.domain_code,
+    `SELECT m.id, m.metric_code, m.aggregation, m.formula, m.description, m.domain_code, m.table_name,
             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
      FROM metric m
      LEFT JOIN metric_synonym s ON s.metric_id = m.id
@@ -138,7 +159,8 @@ async function buildRagIndex(pool) {
       sqlExpr = formula;
       level = hasAggInside ? 'column-level' : 'row-level';
     }
-    let text = `지표: ${m.description || m.metric_code} = ${sqlExpr} [${level}, 도메인:${m.domain_code || 'ALL'}]`;
+    const tableTag = m.table_name ? `[테이블:${m.table_name}]` : '';
+    let text = `지표: ${m.description || m.metric_code} = ${sqlExpr} [${level}, 도메인:${m.domain_code || 'ALL'}]${tableTag}`;
     text += `. 원본 산식(학습관리 등록값): ${formula}`;
     if (m.synonyms) text += `. 동의어: ${m.synonyms}`;
     chunks.push({
@@ -152,7 +174,8 @@ async function buildRagIndex(pool) {
         sql_expr: sqlExpr,
         level,
         description: m.description,
-        domain_code: m.domain_code
+        domain_code: m.domain_code,
+        table_name: m.table_name || null,   // ★ [2026-08-25] 업무영역 격리용 (tableWhitelist 필터 지원)
       },
     });
   }
@@ -173,16 +196,32 @@ async function buildRagIndex(pool) {
   }
 
   // 5. SQL 피드백 청크 — 질문-SQL 쌍
+  //   [2026-08-25] sql_feedback 는 도메인 코드만 있고 대상 테이블 정보가 없으므로,
+  //   corrected_sql 안의 `FROM <table>` 절을 정규식으로 추출하여 metadata.tables 에 담음.
+  //   이후 searchRelevantMeta 에서 tableWhitelist 격리 시,
+  //   feedback 청크에 담긴 테이블이 화이트리스트와 하나도 겹치지 않으면 제외.
+  //   (스코프 격리로 다른 테이블 예시 SQL 이 LLM 컨텍스트에 섞이는 문제 방지)
   const [fbRows] = await pool.query(
-    `SELECT id, query_text, corrected_sql, feedback_type FROM sql_feedback WHERE is_active = 1`
+    `SELECT id, query_text, corrected_sql, feedback_type, domain_code FROM sql_feedback WHERE is_active = 1`
   );
   for (const fb of fbRows) {
+    // FROM/JOIN 뒤 테이블 이름 추출 (대소문자 무시, backtick/스키마 접두 허용)
+    const fromMatches = String(fb.corrected_sql || '').match(/\b(?:FROM|JOIN)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/gi) || [];
+    const tables = [...new Set(
+      fromMatches.map(f => f.replace(/\b(?:FROM|JOIN)\s+`?/i, '').replace(/`$/, '').toLowerCase())
+    )];
     const text = `검증된 SQL 예시 [${fb.feedback_type}]: 질문="${fb.query_text}" → SQL: ${fb.corrected_sql}`;
     chunks.push({
       type: 'feedback',
       sourceId: fb.id,
       text,
-      metadata: { query_text: fb.query_text, corrected_sql: fb.corrected_sql, feedback_type: fb.feedback_type },
+      metadata: {
+        query_text: fb.query_text,
+        corrected_sql: fb.corrected_sql,
+        feedback_type: fb.feedback_type,
+        domain_code: fb.domain_code || null,
+        tables,   // ★ [2026-08-25] 업무영역 격리용 (예: ['bw_profitability_data'] / ['sys_aimd_cot015', ...])
+      },
     });
   }
 
@@ -251,14 +290,59 @@ async function buildRagIndex(pool) {
 }
 
 // 스키마 컬럼 정보 (DB 코멘트에서 추출)
+//
+// [2026-08-25] 다중 테이블 지원 — 원래 bw_profitability_data 한 테이블만 하드코딩되어
+//   sys_aimd_cot015 / sys_aimd_cot043 (제조원가 세부업무영역) 은 RAG schema 청크가
+//   생성되지 않아 NLQ 가 "알 수 없는 용어" 로 refuse 하는 버그가 있었음.
+//
+//   해결: ontology_column 에 등록된 모든 distinct table_name 을 대상으로 스키마 조회.
+//         이러면 신규 업무영역 테이블을 추가할 때 학습관리 화면에서 컬럼 등록만 하면
+//         자동으로 스키마 청크가 인덱스에 포함됨(하드코딩 유지보수 불필요).
+//
+//   Fallback: 온톨로지가 비어있는 초기 상태에서도 최소 bw_profitability_data 는 인덱싱.
 async function getSchemaColumns(pool) {
-  const [rows] = await pool.query(
-    `SELECT COLUMN_NAME AS column_name, COLUMN_TYPE AS data_type, 
-            COLUMN_COMMENT AS description, TABLE_NAME AS table_name
-     FROM INFORMATION_SCHEMA.COLUMNS 
-     WHERE TABLE_SCHEMA = 'company_board' AND TABLE_NAME = 'bw_profitability_data'
-     ORDER BY ORDINAL_POSITION`
+  // 1) 온톨로지에 등록된 대상 테이블 목록 수집 (신규 업무영역 자동 감지)
+  const [tblRows] = await pool.query(
+    `SELECT DISTINCT table_name
+       FROM ontology_column
+      WHERE is_active = 1
+        AND table_name IS NOT NULL
+        AND table_name <> ''`
   );
+  const targetTables = tblRows.map(r => r.table_name);
+  // 2) Fallback — 온톨로지가 비어있으면 기존 동작 유지
+  if (targetTables.length === 0) {
+    targetTables.push('bw_profitability_data');
+  }
+  // 3) 존재하지 않는 테이블은 warn 후 스킵 (INFORMATION_SCHEMA IN 절 안전 처리)
+  const [existRows] = await pool.query(
+    `SELECT TABLE_NAME
+       FROM INFORMATION_SCHEMA.TABLES
+      WHERE TABLE_SCHEMA = 'company_board'
+        AND TABLE_NAME IN (?)`,
+    [targetTables]
+  );
+  const existingSet = new Set(existRows.map(r => r.TABLE_NAME));
+  const missing = targetTables.filter(t => !existingSet.has(t));
+  if (missing.length > 0) {
+    console.warn(`[RAG] 스키마 인덱싱 대상 중 존재하지 않는 테이블 스킵: ${missing.join(', ')}`);
+  }
+  const finalTables = targetTables.filter(t => existingSet.has(t));
+  if (finalTables.length === 0) {
+    console.warn('[RAG] 인덱싱 가능한 스키마 테이블이 없음 — schema 청크 0건');
+    return [];
+  }
+  // 4) 실제 스키마 조회
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME AS column_name, COLUMN_TYPE AS data_type,
+            COLUMN_COMMENT AS description, TABLE_NAME AS table_name
+       FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = 'company_board'
+        AND TABLE_NAME IN (?)
+      ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+    [finalTables]
+  );
+  console.log(`[RAG] 스키마 인덱싱 대상 테이블 (${finalTables.length}개): ${finalTables.join(', ')} → 컬럼 ${rows.length}개`);
   return rows;
 }
 
@@ -283,6 +367,7 @@ async function searchRelevantMeta(pool, query, options = {}) {
     codeMappingTopK = 5,    // 코드매핑 관련 최대
     ruleTopK = 3,           // 규칙 관련 최대
     domainCode = null,      // 도메인 필터 (ontology/metric 청크에 적용)
+    tableWhitelist = null,  // [2026-08-25] 업무영역 탭 필터: 허용 테이블 목록 (ontology/schema 청크에 적용)
   } = options;
 
   // 1. 질문 임베딩
@@ -319,10 +404,35 @@ async function searchRelevantMeta(pool, query, options = {}) {
       const chunkDomain = c.metadata?.domain_code;
       if (chunkDomain && chunkDomain !== domainCode) return false;
     }
+    // ★ [2026-08-25] 테이블 화이트리스트 필터: 업무영역 탭 강제 필터가 적용되었을 때,
+    //    LLM 컨텍스트에 다른 테이블 정보(컬럼/지표/피드백 SQL)가 섞여 들어가는 것을 방지.
+    //    - ontology/schema/metric 청크: metadata.table_name (단일)
+    //    - feedback 청크: metadata.tables (배열 — corrected_sql 에서 추출한 FROM/JOIN 대상 테이블들)
+    //      → 화이트리스트와 겹치는 테이블이 하나라도 있으면 통과. 하나도 없으면 제외.
+    //    - metadata 에 table 정보가 없는 (구버전) 청크는 통과 (하위호환).
+    if (tableWhitelist && Array.isArray(tableWhitelist) && tableWhitelist.length > 0) {
+      if (c.type === 'ontology' || c.type === 'schema' || c.type === 'metric') {
+        const chunkTable = c.metadata?.table_name;
+        // 메타데이터에 table_name 이 있으면 화이트리스트와 대조 (없는 청크는 통과)
+        if (chunkTable && !tableWhitelist.includes(chunkTable)) return false;
+      } else if (c.type === 'feedback') {
+        const tables = Array.isArray(c.metadata?.tables) ? c.metadata.tables : null;
+        if (tables && tables.length > 0) {
+          const wlLower = tableWhitelist.map(t => String(t).toLowerCase());
+          const anyOverlap = tables.some(t => wlLower.includes(String(t).toLowerCase()));
+          if (!anyOverlap) return false;
+        }
+        // tables 정보가 없는 (구버전) feedback 청크는 통과
+      }
+    }
     return true;
   }).sort((a, b) => b.score - a.score);
 
   // 4. 카테고리별 Top-K 분류
+  //
+  // [2026-08-25] tableWhitelist 를 result 에 담아 프롬프트 렌더링 단계로 전달.
+  //   원래 예시 SQL 이 `FROM bw_profitability_data` 로 하드코딩되어 있어
+  //   제조원가 세부업무영역 탭에서 잘못된 테이블로 SQL 이 유도되던 버그 방지.
   const result = {
     schema: [],
     ontology: [],
@@ -331,6 +441,8 @@ async function searchRelevantMeta(pool, query, options = {}) {
     feedback: [],
     join_condition: [],
     rule: [],
+    _tableWhitelist: (tableWhitelist && Array.isArray(tableWhitelist) && tableWhitelist.length > 0)
+      ? [...tableWhitelist] : null,
   };
 
   const limits = {
@@ -366,13 +478,19 @@ async function searchRelevantMeta(pool, query, options = {}) {
     if (detection.isGroupQuery) {
       const placeholders = detection.types.map(() => '?').join(',');
       const params = [...detection.types];
-      let sql = `SELECT type, column_name, description
+      let sql = `SELECT type, column_name, description, table_name
                  FROM ontology_column
                  WHERE type IN (${placeholders})
                    AND is_active = 1`;
       if (domainCode) {
         sql += ` AND domain_code = ?`;
         params.push(domainCode);
+      }
+      // [2026-08-25] 테이블 화이트리스트: 강제 필터 활성 시 다른 테이블 컬럼 배제
+      if (tableWhitelist && Array.isArray(tableWhitelist) && tableWhitelist.length > 0) {
+        const tPh = tableWhitelist.map(() => '?').join(',');
+        sql += ` AND table_name IN (${tPh})`;
+        params.push(...tableWhitelist);
       }
       sql += ` ORDER BY type, column_name`;
       const [typeRows] = await pool.query(sql, params);
@@ -520,12 +638,19 @@ function ragResultToPromptContext(ragResult) {
       }
     }
 
+    // [2026-08-25] 예시 SQL 의 테이블명을 tableWhitelist 우선으로 동적 결정.
+    //   원래 'bw_profitability_data' 하드코딩 → 제조원가 탭에서도 이 예시 때문에
+    //   LLM 이 잘못된 테이블로 SQL 을 생성하던 문제를 예방.
+    //   fallback: whitelist 가 없으면 기존 동작 유지(bw_profitability_data).
+    const exampleTable = (ragResult._tableWhitelist && ragResult._tableWhitelist.length > 0)
+      ? ragResult._tableWhitelist[0]
+      : 'bw_profitability_data';
     ctx += `\n📝 예시 SQL 구조 (그룹 조회):\n`;
     ctx += `  SELECT '<설명1 또는 컬럼코드>' AS 항목명, SUM(COALESCE(<컬럼1>, 0)) AS 금액\n`;
-    ctx += `    FROM bw_profitability_data WHERE <필터>\n`;
+    ctx += `    FROM ${exampleTable} WHERE <필터>\n`;
     ctx += `  UNION ALL\n`;
     ctx += `  SELECT '<설명2 또는 컬럼코드>' AS 항목명, SUM(COALESCE(<컬럼2>, 0)) AS 금액\n`;
-    ctx += `    FROM bw_profitability_data WHERE <필터>\n`;
+    ctx += `    FROM ${exampleTable} WHERE <필터>\n`;
     ctx += `  ...\n`;
     ctx += `  ORDER BY 금액 DESC LIMIT N;\n`;
     ctx += `\n  ⚠️ 각 컬럼은 NULL 이 포함될 수 있으므로 반드시 SUM(COALESCE(컬럼, 0)) 형태로 감싸세요.\n`;

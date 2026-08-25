@@ -1461,6 +1461,10 @@ let chatSessionId = crypto.randomUUID();
 let dataDateContext = null;  // 마감 최신월 컨텍스트 (서버에서 조회)
 
 // 도메인별 예시 질문 (fallback 은 PS)
+// ─────────────────────────────────────────────────────────────
+// [수익성분석 영역] 도메인(PS/HL) 기반 예시 (기존 로직 그대로 유지).
+// bw_profitability_data 를 참조하며 SQL/학습 로직에 영향 없음.
+// ─────────────────────────────────────────────────────────────
 const SUGGESTIONS_BY_DOMAIN = {
     PS: [
         '손익센터별 총매출 합계',
@@ -1486,13 +1490,112 @@ const SUGGESTIONS_BY_DOMAIN = {
 function getSuggestionsForDomain(dc) {
     return SUGGESTIONS_BY_DOMAIN[dc] || SUGGESTIONS_BY_DOMAIN.PS;
 }
-// 현재 도메인 기준으로 예시 칩을 다시 그림 (초기 로드 및 도메인 변경 시 호출)
+
+// ─────────────────────────────────────────────────────────────
+// [2026-08-24] 업무영역/세부업무영역별 예시 질문 매핑
+//   - 상위 area 는 area-tabs.js 의 AREAS/SUB_AREAS 키와 정확히 일치.
+//   - area === 'profitability'  → 예시는 도메인(PS/HL) 기준으로 결정
+//                                → 기존 SUGGESTIONS_BY_DOMAIN 을 그대로 사용
+//   - area === 'manufacturing-cost' → subArea(제품별/부서별/호기별) 별로 분리
+//     * cost-product (제품별원가) : sys_aimd_cot015 실제 데이터 기준 8개
+//     * cost-dept    (부서별원가) : 후속 단계에서 sys_aimd_cot043 기준 추가
+//     * cost-machine (호기별원가) : 후속 단계에서 sys_aimd_cot043 기준 추가
+//   - 예시 문구에는 특정 월을 하드코딩하지 않음 (최신 마감월 정책 적용).
+// ─────────────────────────────────────────────────────────────
+const SUGGESTIONS_BY_AREA = {
+    'profitability': null,   // 도메인(PS/HL) 기반 → getSuggestionsForDomain() 위임
+    'manufacturing-cost': {
+        // [제품별원가] sys_aimd_cot015: PLANT/MATERIAL/ZCGUBUN(표준·실제·매출원가)/
+        //   ZCGUBUN_D(입고-생산/소비-소비)/TOTAL/KST_V(변동비)/KST_F(고정비) 기준.
+        'cost-product': [
+            '제품별 실제원가 TOP 5',
+            '제품별 표준원가와 실제원가 차이 TOP 5',
+            '제품별 매출원가 TOP 5',
+            '전월대비 제품별 실제원가 증가액 TOP 10',
+            '제지 플랜트 제품별 실제원가 순위',
+            '화장지 플랜트 제품별 매출원가 TOP 5',
+            '입고-생산 제품별 총원가 TOP 5',
+            '제품별 변동비와 고정비 비교',
+        ],
+        // [부서별원가] sys_aimd_cot043 실제 데이터 기준 (호기 COSTCENTER 제외).
+        //   COSTCENTER/COSTCENTER_NM(부서) × ZCOSTCOMP_NM(원가구성)/COSTELMNT_NM(원가요소) × AMOUNT(금액).
+        //   서버측 forcedFilter 로 23개 호기 COSTCENTER 는 자동 제외됨.
+        'cost-dept': [
+            '부서별 총원가 TOP 5',
+            '부서별 재료비 TOP 5',
+            '부서별 노무비 TOP 5',
+            '부서별 경비 TOP 5',
+            '부서별 원가구성별 금액 비교',
+            '전월대비 부서별 총원가 증가액 TOP 10',
+            '부서별 원가요소 순위',
+            '부서별 원가구성비율 TOP 5',
+        ],
+        // [호기별원가] sys_aimd_cot043 실제 데이터 기준 (23개 호기 COSTCENTER 만 포함).
+        //   COSTCENTER/COSTCENTER_NM(호기) × ZCOSTCOMP_NM(원가구성)/COSTELMNT_NM(원가요소) × AMOUNT(금액).
+        //   서버측 forcedFilter 로 23개 호기 COSTCENTER 만 자동 포함됨.
+        'cost-machine': [
+            '호기별 총원가 TOP 5',
+            '호기별 재료비 TOP 5',
+            '호기별 노무비 TOP 5',
+            '호기별 경비 TOP 5',
+            '호기별 원가구성별 금액 비교',
+            '전월대비 호기별 총원가 증가액 TOP 10',
+            '호기별 원가요소 순위',
+            '호기별 원가구성비율 TOP 5',
+        ],
+    },
+};
+
+// 현재 (area, subArea) 조합에 해당하는 예시 질문 배열 반환.
+//   - area-tabs.js 로딩 이전이거나 AreaTabs 미주입 상태여도 안전하게 fallback.
+//   - 반환값이 빈 배열이면 renderSuggestionChips() 는 도메인 fallback 을 사용.
+function getSuggestionsForAreaSelection() {
+    try {
+        const snap = (window.AreaTabs && window.AreaTabs.snapshot)
+            ? window.AreaTabs.snapshot()
+            : null;
+        if (!snap) return null; // AreaTabs 미준비 → 도메인 fallback
+        const areaKey = snap.area;
+        const subKey  = snap.subArea;
+        const entry   = SUGGESTIONS_BY_AREA[areaKey];
+        if (entry === null) return null; // 수익성분석 → 도메인 fallback
+        if (!entry) return null;
+        if (subKey && Array.isArray(entry[subKey])) return entry[subKey];
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// 현재 도메인 기준으로 예시 칩을 다시 그림 (초기 로드 및 도메인/영역 변경 시 호출).
+//   우선순위: (area, subArea) 조합 예시 > 도메인(PS/HL) 예시
+//   빈 배열이 반환되면 '예시 준비 중' 안내를 노출 (제조원가 > 부서/호기 초기 상태 대비).
 function renderSuggestionChips() {
     const fc = document.getElementById('fixedChipContainer');
     if (!fc) return;
     // '예시:' 라벨을 제외한 기존 칩만 제거
     Array.from(fc.querySelectorAll('button.chip-sm')).forEach(b => b.remove());
-    getSuggestionsForDomain(currentDomain).forEach(s => {
+    // 예시 준비 중 안내 span 이 있으면 제거 (매 렌더마다 새로 계산)
+    const oldNotice = fc.querySelector('.chip-empty-notice');
+    if (oldNotice) oldNotice.remove();
+
+    // 1) area/subArea 우선 시도 (제조원가 > 세부영역)
+    let list = getSuggestionsForAreaSelection();
+
+    // 2) 없으면 도메인 기반 fallback (수익성분석 = 기존 동작 완전 보전)
+    if (!list) list = getSuggestionsForDomain(currentDomain);
+
+    if (!list || list.length === 0) {
+        // 후속 단계에서 채워질 세부영역 (부서별/호기별) → 안내 문구 노출
+        const notice = document.createElement('span');
+        notice.className = 'chip-empty-notice';
+        notice.textContent = '예시 질문 준비 중입니다.';
+        notice.style.cssText = 'color:#94a3b8;font-size:13px;line-height:32px;flex-shrink:0;';
+        fc.appendChild(notice);
+        return;
+    }
+
+    list.forEach(s => {
         const btn = document.createElement('button');
         btn.className = 'chip-sm';
         btn.textContent = s;
@@ -2529,10 +2632,28 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     try {
         const acceptHeaders = { 'Content-Type': 'application/json' };
         if (clientRequestId) acceptHeaders['X-Request-Id'] = clientRequestId;
+        // [2026-08-24] payload 에 업무영역(area) / 세부업무영역(subArea) / 참조테이블(table) 명시 삽입
+        //   - 화면 상 선택된 상태를 백엔드가 명시적으로 수신할 수 있도록 함.
+        //   - 이 단계에서는 서버가 값을 로그로만 수신하고 SQL 라우팅은 다음 단계에서 연결 예정.
+        //   - AreaTabs.snapshot() 은 { area, areaLabel, subArea, subAreaLabel, table } 반환.
+        let areaSnap = null;
+        try { areaSnap = (window.AreaTabs && window.AreaTabs.snapshot) ? window.AreaTabs.snapshot() : null; } catch (_) {}
+        const asyncPayload = {
+            query, conversationContext,
+            session_id: chatSessionId,
+            queryMode: effectiveQueryMode,
+        };
+        if (areaSnap) {
+            asyncPayload.area          = areaSnap.area;
+            asyncPayload.areaLabel     = areaSnap.areaLabel;
+            asyncPayload.subArea       = areaSnap.subArea;
+            asyncPayload.subAreaLabel  = areaSnap.subAreaLabel;
+            asyncPayload.table         = areaSnap.table;
+        }
         const r = await fetch('/api/nlq/async', {
             method: 'POST',
             headers: acceptHeaders,
-            body: JSON.stringify({ query, conversationContext, session_id: chatSessionId, queryMode: effectiveQueryMode }),
+            body: JSON.stringify(asyncPayload),
             signal: abortSignal,
         });
         const ct = r.headers.get('content-type') || '';
@@ -2965,6 +3086,10 @@ async function sendQuery(query) {
         sessionDomainLocked = true;
         renderDomainSelectorBar();
     }
+    // [2026-08-24] 첫 질문 시 업무영역/세부업무영역도 함께 잠금
+    //   - 잠금 대상: 상위(수익성분석/제조원가) + 하위(제품별원가/부서별원가/호기별원가)
+    //   - 변경 시 alert 안내, 새 채팅으로만 해제.
+    try { if (window.AreaTabs && typeof window.AreaTabs.lock === 'function') window.AreaTabs.lock(); } catch (_) {}
 
     // [2026-07-21] 이 요청 전용 시퀀스/컨트롤러 세팅
     //   - mySeq: 응답 처리 전 currentRequestSeq 와 일치 확인 (일치하지 않으면 stale)
@@ -5560,6 +5685,18 @@ function renderHistoryList(items) {
         // [2026-07-30] 질의 이력 배지 표기는 사용자 표시명(MGMT → '통합'). 내부 코드는 dc 로 유지.
         const _dcDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(dc) : dc);
         const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${_dcDisp}]</span>` : '';
+        // [2026-08-25] 업무영역(수익성분석/제조원가) 배지 — 질의 실행 당시 실제 선택된 업무영역 값 기준.
+        //   - 서버 저장: nl_query_history.business_area_code (PROFITABILITY / MANUFACTURING_COST / NULL)
+        //   - 표시 색상 (고정, 사용자 요구사항):
+        //       · [수익] (PROFITABILITY)      → 배경 #885DF6, 글씨 #ffffff (보라)
+        //       · [제조] (MANUFACTURING_COST) → 배경 #0373AE, 글씨 #ffffff (파랑)
+        //   - 기존 이력(business_area_code=NULL)은 배지 미표시 → 기존 동작 유지
+        //   - domainBadge 앞에 렌더링 → 예: [수익] [통합] 손익센터별 총매출 합계
+        const bac = item.business_area_code;
+        const _bacDisp = bac === 'PROFITABILITY' ? '수익' : (bac === 'MANUFACTURING_COST' ? '제조' : null);
+        const areaBadge = _bacDisp
+            ? `<span style="display:inline-block;background:${bac==='PROFITABILITY'?'#885DF6':'#0373AE'};color:#ffffff;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${_bacDisp}]</span>`
+            : '';
         const meta = `${time}${countBadge}`;
         // 즐겨찾기 별 아이콘 — 채워진 별(fas) vs 빈 별(far)
         const isBookmarked = !!item.is_bookmarked;
@@ -5572,7 +5709,7 @@ function renderHistoryList(items) {
             <div class="history-item${activeCls}" data-session="${esc(sessionKey)}" onclick="restoreSession('${esc(sessionKey)}'${hintArg})">
                 <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
                 <div class="history-item-text">
-                    <div class="history-item-query">${domainBadge}${esc(title)}</div>
+                    <div class="history-item-query">${areaBadge}${domainBadge}${esc(title)}</div>
                     <div class="history-item-meta">${meta}</div>
                 </div>
                 <div class="history-item-actions">
@@ -5672,6 +5809,10 @@ async function restoreSession(sessionKey, hintDomain) {
             sessionDomainLocked = true;
             renderDomainSelectorBar();
         }
+        // [2026-08-24] 이력 복원 시에도 업무영역/세부업무영역 잠금 유지
+        //   현재 채팅 세션에서 이미 질의가 완료된 이력을 보고 있는 상태이므로
+        //   상위/하위 영역 변경을 허용하면 세션 정합성이 깨짐.
+        try { if (window.AreaTabs && typeof window.AreaTabs.lock === 'function') window.AreaTabs.lock(); } catch (_) {}
 
         items.forEach(item => {
             // 사용자 질문 말풍선 + 자주질문 하트 (이력 복원 시에도 동일하게)
@@ -5803,6 +5944,9 @@ function startNewChat() {
     conversationContext = [];
     sessionDomainLocked = false;
     renderDomainSelectorBar();
+    // [2026-08-24] 새 채팅 시작 시 업무영역/세부업무영역 잠금 해제
+    //   → 사용자가 새 채팅에서 다시 자유롭게 area/subArea 를 선택 가능.
+    try { if (window.AreaTabs && typeof window.AreaTabs.unlock === 'function') window.AreaTabs.unlock(); } catch (_) {}
     const chatArea = document.getElementById('chatArea');
     const welcome = document.getElementById('welcomeSection');
     chatArea.innerHTML = '';
@@ -6567,5 +6711,52 @@ window.addEventListener('load', () => {
 </script>
 <!-- [2026-07-23] 업무영역(수익성분석/제조원가) 탭 UI — 프론트 프리뷰. 서버 API/데이터 미변경. -->
 <script src="/area-tabs.js"></script>
+<!-- [2026-08-24] 제조원가 하위 세부업무영역(제품별원가/부서별원가/호기별원가) 탭 마운트
+     - 상위 영역 탭바가 mount 된 뒤 하위 탭바를 그 아래에 배치.
+     - 참조 테이블 매핑 (sys_aimd_cot015 / sys_aimd_cot043) 은 payload 에 자동 삽입됨. -->
+<script>
+(function () {
+    'use strict';
+    function mount() {
+        try {
+            if (window.AreaTabs && typeof window.AreaTabs.mountSubAreaBar === 'function') {
+                window.AreaTabs.mountSubAreaBar();
+            }
+        } catch (e) { console.warn('[SubAreaTabs] mount 실패:', e && e.message); }
+    }
+    // area-tabs.js 는 스스로 boot() 완료 시 'areatabs:ready' 이벤트를 발행하므로
+    // 그때 하위 탭바를 마운트한다. 이미 발행된 뒤 로드된 경우 대비 폴백도 둔다.
+    let mounted = false;
+    function afterMount() {
+        // AreaTabs 준비 완료 후 예시 칩을 다시 그려 area/subArea 기반 예시 반영
+        // (초기 렌더는 AreaTabs 로딩 이전이라 도메인 fallback 만 그려질 수 있음)
+        try { if (typeof renderSuggestionChips === 'function') renderSuggestionChips(); } catch (_) {}
+    }
+    window.addEventListener('areatabs:ready', () => {
+        if (!mounted) { mounted = true; mount(); }
+        afterMount();
+    });
+    // 폴백: 500ms 후에도 아직 마운트 안 되었으면 강제 시도
+    setTimeout(() => {
+        if (!mounted) { mounted = true; mount(); afterMount(); }
+    }, 500);
+
+    // 상위 area 변경 이벤트에 반응해:
+    //   1) 하위 탭바 즉시 리프레시 (제조원가↔수익성분석 전환 반영)
+    //   2) 예시 질문 칩도 함께 재렌더 (area 별 예시 목록 반영)
+    window.addEventListener('areachange', () => {
+        try { window.AreaTabs && window.AreaTabs.refreshSubAreaBar && window.AreaTabs.refreshSubAreaBar(); } catch (_) {}
+        try { if (typeof renderSuggestionChips === 'function') renderSuggestionChips(); } catch (_) {}
+    });
+
+    // [2026-08-24] 세부업무영역 변경 이벤트에 반응해 예시 질문 칩 재렌더.
+    //   - 제품별원가 → 부서별원가 등 전환 시 즉시 예시 목록 교체.
+    //   - 첫 질의 후에는 area-tabs.js 가 잠금 alert 를 띄우고 변경을 막으므로
+    //     이 리스너는 잠금 전 상태에서만 실질적으로 호출됨.
+    window.addEventListener('subareachange', () => {
+        try { if (typeof renderSuggestionChips === 'function') renderSuggestionChips(); } catch (_) {}
+    });
+})();
+</script>
 </body>
 </html>

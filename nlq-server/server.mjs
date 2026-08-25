@@ -996,6 +996,171 @@ function resolveDomainAlias(input) {
   return DOMAIN_DISPLAY_TO_CODE_MAP[key] || input;
 }
 
+// ═════════════════════════════════════════════════════════════════
+// [2026-08-25] 업무영역 / 세부업무영역 ↔ 참조 테이블 매핑 (Single Source of Truth)
+// ─────────────────────────────────────────────────────────────────
+// - 프론트 area-tabs.js 의 SUB_AREAS 와 대응.
+// - 프론트에서 area/subArea 를 body 에 실어 보내면 서버가 이 맵으로 검증하여
+//   1) 학습 컨텍스트 (ontology_column / metric) 를 table_name 으로 화이트리스트
+//   2) SQL 실행 전 COSTCENTER 강제 필터 자동 주입 (호기 vs 부서 구분)
+//   3) 서브영역 ↔ 질의 불일치 감지 (호기 탭 + '부서' → 부서 탭 안내)
+//
+// forcedFilter 스펙:
+//   { column: 'COSTCENTER', op: 'IN' | 'NOT IN', values: ['0001220010', ...] }
+//   - 서브영역이 sys_aimd_cot043 을 공유하므로 IN/NOT IN 으로 분리.
+//   - COSTCENTER 는 문자열 (앞자리 0 유지) — 반드시 quoted.
+//
+// ⚠️ MACHINE_COSTCENTER_CODES 는 사용자 확정본 (2026-08-25):
+//   - 23개 코드 모두 유지 (그 중 3개는 현재 0건이지만 향후 데이터 유입 예정).
+// ═════════════════════════════════════════════════════════════════
+const MACHINE_COSTCENTER_CODES = [
+  '0001220010', '0001220020', '0001220030', '0001221010', '0001221020',
+  '0001221030', '0001222010', '0001222020', '0001222030', '0001223010',
+  '0001223020', '0001224010', '0001230010', '0001230020', '0001231010',
+  '0001231020', '0001231030', '0001232010', '0001232020', '0001232030',
+  '0001233010', '0001233020', '0001234010',
+]; // 23개
+
+const AREA_SUB_TABLE_MAP = {
+  'profitability': {
+    label: '수익성분석',
+    defaultSubArea: null,
+    subs: {
+      // 서브영역 없음 — defaultTable 사용
+      '__default__': {
+        label: '수익성분석',
+        table: 'bw_profitability_data',
+        forcedFilter: null,
+      },
+    },
+  },
+  'manufacturing-cost': {
+    label: '제조원가',
+    defaultSubArea: 'cost-product',
+    subs: {
+      'cost-product': {
+        label: '제품별원가',
+        table: 'sys_aimd_cot015',
+        forcedFilter: null,   // 별도 필터 불필요 (테이블 자체가 유일)
+      },
+      'cost-dept': {
+        label: '부서별원가',
+        table: 'sys_aimd_cot043',
+        // 호기 COSTCENTER 코드를 제외한 것 = 부서
+        forcedFilter: {
+          column: 'COSTCENTER',
+          op: 'NOT IN',
+          values: MACHINE_COSTCENTER_CODES,
+        },
+      },
+      'cost-machine': {
+        label: '호기별원가',
+        table: 'sys_aimd_cot043',
+        // 호기 COSTCENTER 코드만
+        forcedFilter: {
+          column: 'COSTCENTER',
+          op: 'IN',
+          values: MACHINE_COSTCENTER_CODES,
+        },
+      },
+    },
+  },
+};
+
+/**
+ * area/subArea 조합을 안전하게 검증하고 정규화된 컨텍스트를 반환.
+ * @param {string|null|undefined} rawArea
+ * @param {string|null|undefined} rawSubArea
+ * @returns {{
+ *   area: string|null,
+ *   subArea: string|null,
+ *   subAreaLabel: string|null,
+ *   table: string|null,
+ *   tableWhitelist: string[],
+ *   forcedFilter: {column:string,op:string,values:string[]}|null,
+ * }}
+ *   - 매핑 실패 시 모든 필드가 null / [] (기존 동작 유지)
+ *   - tableWhitelist 는 학습 컨텍스트 필터링용 (ontology_column.table_name IN(...))
+ */
+function resolveAreaContext(rawArea, rawSubArea) {
+  const empty = {
+    area: null, subArea: null, subAreaLabel: null,
+    table: null, tableWhitelist: [], forcedFilter: null,
+  };
+  const areaKey = String(rawArea || '').toLowerCase().trim();
+  if (!areaKey || !AREA_SUB_TABLE_MAP[areaKey]) return empty;
+  const areaCfg = AREA_SUB_TABLE_MAP[areaKey];
+
+  // 서브영역 결정
+  let subKey = String(rawSubArea || '').toLowerCase().trim();
+  if (!subKey && areaCfg.defaultSubArea) subKey = areaCfg.defaultSubArea;
+  const subCfg = areaCfg.subs[subKey] || areaCfg.subs['__default__'];
+  if (!subCfg) return { ...empty, area: areaKey };
+
+  return {
+    area: areaKey,
+    subArea: subKey === '__default__' ? null : subKey,
+    subAreaLabel: subCfg.label || null,
+    table: subCfg.table,
+    tableWhitelist: [subCfg.table],
+    forcedFilter: subCfg.forcedFilter || null,
+  };
+}
+
+/**
+ * 서브영역과 사용자 질의의 불일치를 감지.
+ * - cost-machine 탭 + '부서' 언급 → 부서별원가 탭 이용 안내
+ * - cost-dept    탭 + '호기'/'설비'/'라인' 언급 → 호기별원가 탭 이용 안내
+ *
+ * @param {string} subArea  현재 서브영역 키
+ * @param {string} query    사용자 질의 원문
+ * @returns {{ mismatched: true, suggestSubArea: string, suggestLabel: string, message: string } | null}
+ */
+function detectSubAreaMismatch(subArea, query) {
+  if (!subArea || !query) return null;
+  const q = String(query);
+  // 앞뒤 조사/공백을 허용하는 완만한 매칭 (한글 단어 경계 근사)
+  const hasDeptWord    = /부서/.test(q);
+  // 호기/설비/라인 (기계 언급) — 단, "라인업" 같은 오탐 방지 위해 조사와 함께
+  const hasMachineWord = /호기|설비|(^|[\s가-힣])라인($|[\s별로에서의는을를가와과])/.test(q);
+
+  if (subArea === 'cost-machine' && hasDeptWord && !hasMachineWord) {
+    return {
+      mismatched: true,
+      suggestSubArea: 'cost-dept',
+      suggestLabel: '부서별원가',
+      message: '현재 "호기별원가" 세부업무영역에서는 부서 단위 데이터를 조회할 수 없습니다. 화면 상단의 "부서별원가" 탭으로 이동한 뒤 다시 질문해 주세요.',
+    };
+  }
+  if (subArea === 'cost-dept' && hasMachineWord && !hasDeptWord) {
+    return {
+      mismatched: true,
+      suggestSubArea: 'cost-machine',
+      suggestLabel: '호기별원가',
+      message: '현재 "부서별원가" 세부업무영역에서는 호기 단위 데이터를 조회할 수 없습니다. 화면 상단의 "호기별원가" 탭으로 이동한 뒤 다시 질문해 주세요.',
+    };
+  }
+  return null;
+}
+
+// ============================================================
+// [2026-08-25] 프론트 area 키(kebab-case) → DB 저장용 area code(SNAKE_CASE) 정규화
+// ------------------------------------------------------------
+// - 프론트/URL 라우팅용:   'profitability', 'manufacturing-cost'
+// - DB(sys_aimd_areas.area_code, nl_query_history.business_area_code): 'PROFITABILITY', 'MANUFACTURING_COST'
+// - resolveAreaContext 는 kebab-case 를 그대로 통과시키므로 saveHistory 로 전달 직전에 정규화 필요.
+// - 표시명(사용자 배지 "수익"/"제조")은 프론트가 area_code 로부터 계산.
+// - 매핑 실패 시 null 반환 (기존 area 미선택 이력과 동일 처리)
+// ============================================================
+const AREA_KEY_TO_DB_CODE = {
+  'profitability':      'PROFITABILITY',
+  'manufacturing-cost': 'MANUFACTURING_COST',
+};
+function areaKeyToDbCode(rawArea) {
+  const k = String(rawArea || '').toLowerCase().trim();
+  return AREA_KEY_TO_DB_CODE[k] || null;
+}
+
 // 도메인 목록 API
 //   응답에 display_code 를 함께 실어 프런트가 표시용으로 사용.
 app.get('/api/domains', async (req, res) => {
@@ -2355,6 +2520,10 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
   - 허용 컬럼 목록의 컬럼명/설명과도 일치하지 않음
   → 이 경우 응답 형식: "'{용어}'에 대한 정보가 등록되어 있지 않습니다. 관리자에게 문의하여 학습관리에 해당 용어를 등록해 주세요."
   → 절대 용어를 임의로 추측/해석하여 SQL을 생성하지 마세요! 틀린 SQL보다 모른다고 답하는 것이 훨씬 좋습니다.
+  → **예외 (2026-08-25 추가)**: 아래 두 조건이 모두 참이면 refuse 하지 말고 SQL 을 생성하세요.
+     (a) 사용자 질문의 핵심 용어가 이미 다른 Ontology 컬럼의 **차원값(dimension value)** 으로 매칭되어 WHERE 필터로 사용 가능 (예: '실제원가' → ZCGUBUN 필터)
+     (b) 프롬프트에 "[★ 정렬용 Measure 자동 후보]" 섹션이 제시되어 있음
+     → 이 경우 (a) 를 WHERE 필터로 걸고, (b) 후보 중 사용자 의도에 가장 부합하는 컬럼 하나를 골라 SUM(...) 정렬로 사용하여 정상 SQL 을 만드세요.
 
 [날짜/기간 필터링 규칙 - 매우 중요!]
 - **ZYEAR, ZMONTH, FISC_YEAR, FISC_PERIOD, YEAR, MONTH 등의 컬럼은 존재하지 않습니다! 절대 사용 금지!**
@@ -2615,16 +2784,53 @@ function collectReferencedMetricCodes(_formula, _metricMap, _visited = new Set()
 }
 
 /**
+ * [2026-08-25] 학습 컨텍스트(ontology_column / metric) 를 업무영역별로 격리하기 위한 헬퍼.
+ *
+ * @param {string[]|null|undefined} tableWhitelist   허용할 table_name 배열 (없으면 필터 없음)
+ * @param {string} alias                              WHERE 절에서 사용할 컬럼 alias (기본 없음)
+ *                                                    예: 'c' → 'c.table_name IN (?, ?)'
+ * @returns {{ fragment: string, params: string[] }}
+ *   - fragment: WHERE 절에 추가할 조건 (앞에 ' AND ' 이 이미 붙어있음). 빈 배열이면 ''.
+ *   - params: 바인딩할 파라미터 배열
+ *
+ * 사용 예:
+ *   const { fragment, params } = buildTableWhitelistCondition(['sys_aimd_cot015'], 'c');
+ *   pool.query(`SELECT ... FROM ontology_column c WHERE c.domain_code=? ${fragment}`, [dc, ...params])
+ *
+ * 정책:
+ *   - tableWhitelist 가 비어있으면 (null/undefined/[]): no-op — 전체 조회 (하위호환)
+ *   - table_name 이 NULL 인 레코드도 포함하려면 별도 정책 필요.
+ *     여기서는 명시적으로 IN(...) 만 사용 → NULL table_name 레코드는 제외됨.
+ *     학습관리에서 반드시 table_name 을 채우도록 seed 스크립트가 보장함.
+ */
+function buildTableWhitelistCondition(tableWhitelist, alias) {
+  if (!Array.isArray(tableWhitelist) || tableWhitelist.length === 0) {
+    return { fragment: '', params: [] };
+  }
+  const col = alias ? `${alias}.table_name` : 'table_name';
+  const placeholders = tableWhitelist.map(() => '?').join(', ');
+  return {
+    fragment: ` AND ${col} IN (${placeholders})`,
+    params: [...tableWhitelist],
+  };
+}
+
+/**
  * 도메인별 전체 Metric 맵 로드
  * - matchSynonymsDirectly에서 재귀 확장 시 참조용
  * - { metric_code: { formula, aggregation, description } } 형태
+ *
+ * [2026-08-25] tableWhitelist 지원: 지정된 table_name 의 metric 만 로드
+ *   (제조원가 탭에서 수익성분석 metric 이 재귀확장으로 끌려오는 것 방지)
  */
-async function loadMetricMap(domainCode) {
+async function loadMetricMap(domainCode, tableWhitelist) {
   const dc = domainCode || 'PS';
   const map = {};
+  const wl = buildTableWhitelistCondition(tableWhitelist, null);
   try {
     const [rows] = await pool.query(
-      `SELECT metric_code, aggregation, formula, description FROM metric WHERE domain_code = ?`, [dc]
+      `SELECT metric_code, aggregation, formula, description FROM metric WHERE domain_code = ?${wl.fragment}`,
+      [dc, ...wl.params]
     );
     for (const r of rows) {
       map[r.metric_code] = {
@@ -2637,6 +2843,123 @@ async function loadMetricMap(domainCode) {
     console.error('[Metric] loadMetricMap 실패:', e.message);
   }
   return map;
+}
+
+// ============================================================
+// [2026-08-25] "정렬 의도" 감지 — TOP N / 상위 N / 랭킹 / 순위 / 많은 / 높은 등
+//   ORDER BY <숫자 컬럼> 이 필요한 질문인지 판정.
+//   → matchSynonymsDirectly 에서 이 정렬 의도가 있고 metric 매칭이 0건일 때만
+//     candidate numeric measure 를 자동 발굴하여 프롬프트에 노출한다.
+// ============================================================
+const RANK_INTENT_PATTERNS = [
+  /\bTOP\s*\d*\b/i,      // TOP, TOP 5, TOP5
+  /상위\s*\d*/,          // 상위, 상위 5
+  /하위\s*\d*/,          // 하위 N
+  /최상위\s*\d*/,
+  /\b랭킹|순위|등수/,     // 랭킹/순위/등수
+  /가장\s*(많|높|큰|작|낮|적)/,  // "가장 많은", "가장 높은"
+  /제일\s*(많|높|큰|작|낮|적)/,
+  /\bMAX\s*\(/i, /\bMIN\s*\(/i,
+];
+function detectRankIntent(query) {
+  const q = String(query || '');
+  return RANK_INTENT_PATTERNS.some(p => p.test(q));
+}
+
+// ============================================================
+// [2026-08-25] 스코프 내 "숫자성 measure candidate" 자동 발굴
+// ------------------------------------------------------------
+// 목적:
+//   사용자 질문이 "제품별 실제원가 TOP 5" 같이 정렬 대상 metric 이 필요한데
+//   학습관리에 해당 스코프(sys_aimd_cot015 등)용 metric 이 아직 등록되지 않은 경우,
+//   ontology_column 의 숫자 컬럼(bigint/decimal/int/…)을 자동 발굴하여
+//   LLM 에게 "이 중에서 하나를 골라 SUM(...) 정렬에 사용하라"고 candidate 로 제시.
+//
+// 하드코딩 금지 원칙:
+//   - 특정 컬럼명(TOTAL/TOTAL1/ZAMT005 등)을 코드에 넣지 않음.
+//   - 순수하게 ontology_column.data_type 이 숫자 계열이고 스코프+도메인이 맞는 것만 선정.
+//   - 사용자 질문 키워드가 description 이나 동의어에 부분 매칭되면 관련도 가중.
+//
+// 반환: [{ column_name, description, data_type, synonyms: [], relevance }]
+//   relevance 내림차순 정렬. 최대 8건.
+// ============================================================
+const NUMERIC_TYPE_LIKE = ['%int%', '%decimal%', '%numeric%', '%double%', '%float%'];
+
+async function discoverNumericMeasureCandidates(query, domainCode, tableWhitelist) {
+  const dc = domainCode || 'PS';
+  const wl = Array.isArray(tableWhitelist) ? tableWhitelist.filter(Boolean) : [];
+  if (wl.length === 0) return [];   // 스코프 없으면 후보 발굴 안 함 (부작용 방지)
+
+  try {
+    // 숫자성 컬럼만 조회 (data_type 이 int/decimal/numeric/double/float 계열)
+    const dtOr = NUMERIC_TYPE_LIKE.map(() => 'c.data_type LIKE ?').join(' OR ');
+    const tPh = wl.map(() => '?').join(',');
+    const sql = `
+      SELECT c.id, c.column_name, c.description, c.data_type, c.table_name,
+             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
+      FROM ontology_column c
+      LEFT JOIN ontology_synonym s ON s.column_id = c.id
+      WHERE c.is_active = 1
+        AND c.domain_code = ?
+        AND c.table_name IN (${tPh})
+        AND (${dtOr})
+      GROUP BY c.id
+    `;
+    const params = [dc, ...wl, ...NUMERIC_TYPE_LIKE];
+    const [rows] = await pool.query(sql, params);
+
+    // 관련도 점수 계산: 사용자 질문 안의 어절과 description/synonyms 의 (양방향) 부분 매칭
+    //   [단방향] query 토큰이 description/synonym 에 포함되면:
+    //     - description 안에 사용자 질문의 2+ 글자 어절이 포함되면 +2
+    //     - 동의어 안에 포함되면 +3
+    //   [양방향] description/synonym 이 query 토큰에 포함되면 (짧은 어휘가 긴 복합어 안에 들어가는 경우):
+    //     - description 어절이 query 토큰에 포함되면 +1
+    //     - synonym 이 query 토큰에 포함되면 +2
+    //   [measure 성 힌트] description 이 "합계|합|계"/"금액"/"가"/"비" 로 끝나면 +1
+    //   [하드코딩 금지] 특정 컬럼명(TOTAL, TOTAL1, ZAMT005 등)에 대한 가중치는 없음 — 순수히 ontology 기반
+    const qTokens = String(query || '')
+      .split(/[\s,./·\-_()\[\]!?~"'`|]+/)
+      .filter(t => t && t.length >= 2);
+
+    const scored = rows.map(r => {
+      const desc = String(r.description || '');
+      const syns = String(r.synonyms || '');
+      const descTokens = desc.split(/[\s]+/).filter(t => t && t.length >= 2);
+      const synList = syns ? syns.split(', ').filter(Boolean) : [];
+      let rel = 0;
+      for (const qt of qTokens) {
+        // 단방향: query token 이 desc/syn 안에 포함
+        if (desc.includes(qt)) rel += 2;
+        if (syns.includes(qt)) rel += 3;
+        // 양방향: desc 어절 또는 synonym 이 query token 에 포함 (예: "실제원가" ⊃ "원가")
+        for (const dt of descTokens) {
+          if (dt !== qt && qt.includes(dt)) rel += 1;
+        }
+        for (const s of synList) {
+          if (s.length >= 2 && s !== qt && !syns.includes(qt) && qt.includes(s)) rel += 2;
+        }
+      }
+      // measure 성 힌트 (description 이 금액/합계/비/가 로 끝나면 가산)
+      if (/(합계|합|계|금액|가|비)$/.test(desc)) rel += 1;
+
+      return {
+        column_name: r.column_name,
+        description: desc,
+        data_type: r.data_type,
+        synonyms: synList,
+        relevance: rel,
+      };
+    });
+
+    // 관련도 내림차순, 동점 시 description 짧은 것 우선(더 일반적일수록 짧다는 heuristic)
+    scored.sort((a, b) => (b.relevance - a.relevance) || (a.description.length - b.description.length));
+
+    // 최대 8건, 관련도 0 인 컬럼도 스코프 안이면 조금은 넘김 (정렬 후보로 참고)
+    return scored.slice(0, 8);
+  } catch (e) {
+    console.error('[NumericCandidate] 조회 실패:', e.message);
+    return [];
+  }
 }
 
 /**
@@ -2664,15 +2987,16 @@ async function loadMetricMap(domainCode) {
  * @returns {Promise<string>} LLM 프롬프트에 합칠 "계산 지표 사전" 문자열
  *   (등록된 metric 이 0건이면 빈 문자열 반환 — 프롬프트에 빈 헤더 안 들어감)
  */
-async function buildMetricDictionaryFromDB(domainCode) {
+async function buildMetricDictionaryFromDB(domainCode, tableWhitelist) {
   const dc = domainCode || 'PS';
+  const wl = buildTableWhitelistCondition(tableWhitelist, null);
   try {
     const [rows] = await pool.query(
       `SELECT metric_code, aggregation, formula, description
        FROM metric
-       WHERE domain_code = ? AND formula IS NOT NULL AND formula != ''
+       WHERE domain_code = ? AND formula IS NOT NULL AND formula != ''${wl.fragment}
        ORDER BY metric_code`,
-      [dc]
+      [dc, ...wl.params]
     );
     if (!rows || rows.length === 0) return '';
 
@@ -2761,12 +3085,20 @@ function detectExpansionIntent(query) {
   return false;
 }
 
-async function matchSynonymsDirectly(query, domainCode) {
+async function matchSynonymsDirectly(query, domainCode, tableWhitelist) {
   const matched = [];
   let filtered = [];
   const dc = domainCode || 'PS';
   // ★ 도메인 전체 Metric 맵 로드 (재귀 확장용)
-  const metricMap = await loadMetricMap(dc);
+  //   [2026-08-25] tableWhitelist 지정 시 해당 테이블의 metric 만 로드
+  const metricMap = await loadMetricMap(dc, tableWhitelist);
+  // 학습 컨텍스트 조회에 재사용할 WHERE fragment 미리 계산
+  const wlOC = buildTableWhitelistCondition(tableWhitelist, 'c');   // ontology_column alias 'c'
+  const wlOCplain = buildTableWhitelistCondition(tableWhitelist, null); // alias 없음
+  const wlMT = buildTableWhitelistCondition(tableWhitelist, null); // metric alias 없음
+  if (Array.isArray(tableWhitelist) && tableWhitelist.length > 0) {
+    console.log(`[Synonym] tableWhitelist=[${tableWhitelist.join(',')}] — 학습 컨텍스트를 이 테이블로 격리`);
+  }
   const queryUpper = query.toUpperCase();
 
   // ★★★ [원가/비용 그룹 라우팅 가드] ★★★
@@ -2808,7 +3140,8 @@ async function matchSynonymsDirectly(query, domainCode) {
       `SELECT s.synonym_text, c.column_name, c.description, c.data_type
        FROM ontology_synonym s
        JOIN ontology_column c ON s.column_id = c.id
-       WHERE c.domain_code = ? AND c.is_active = 1`, [dc]
+       WHERE c.domain_code = ? AND c.is_active = 1${wlOC.fragment}`,
+      [dc, ...wlOC.params]
     );
     // ★ 사용자 질문에서 매칭된 동의어 키워드 추적 (다른 컬럼의 description 매칭에 활용)
     //   예: "소모품비" 키워드로 ZAMT049 동의어 매칭 → "소모품비"를 키워드로 기록
@@ -2882,11 +3215,14 @@ async function matchSynonymsDirectly(query, domainCode) {
     //   ★ longest-match-wins: 더 긴 동의어가 점유한 구간에 포함되는 짧은 동의어는 제외
     //     Ontology 1단계에서 이미 점유한 구간도 같이 고려.
     // =========================================================
+    // [2026-08-25] tableWhitelist 적용 — metric.table_name IN(...) 로 격리
+    const wlMS = buildTableWhitelistCondition(tableWhitelist, 'm');
     const [metSyns] = await pool.query(
       `SELECT s.synonym_text, m.metric_code, m.aggregation, m.formula, m.description
        FROM metric_synonym s
        JOIN metric m ON s.metric_id = m.id
-       WHERE m.domain_code = ?`, [dc]
+       WHERE m.domain_code = ?${wlMS.fragment}`,
+      [dc, ...wlMS.params]
     );
     // 2단계 longest-match-wins 적용 (Ontology 1단계 점유 구간과 통합)
     const metMatchCandidates = [];
@@ -2974,7 +3310,8 @@ async function matchSynonymsDirectly(query, domainCode) {
     const exactMatchedKeywords = new Set(matchedKeywords);
 
     const [ontCols] = await pool.query(
-      `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != '' AND domain_code = ? AND is_active = 1`, [dc]
+      `SELECT column_name, description, data_type FROM ontology_column WHERE description IS NOT NULL AND description != '' AND domain_code = ? AND is_active = 1${wlOCplain.fragment}`,
+      [dc, ...wlOCplain.params]
     );
     for (const row of ontCols) {
       // 3-A: description 전체가 질문에 포함
@@ -3037,7 +3374,8 @@ async function matchSynonymsDirectly(query, domainCode) {
     //   예: "마케팅비" → metric.description = "마케팅비합계" → MARKETING_COST
     // =========================================================
     const [metDescs] = await pool.query(
-      `SELECT metric_code, aggregation, formula, description FROM metric WHERE domain_code = ? AND description IS NOT NULL AND description != ''`, [dc]
+      `SELECT metric_code, aggregation, formula, description FROM metric WHERE domain_code = ? AND description IS NOT NULL AND description != ''${wlMT.fragment}`,
+      [dc, ...wlMT.params]
     );
     for (const row of metDescs) {
       // metric.description이 질문에 포함되었거나, 질문이 description을 포함하면 매칭
@@ -3121,19 +3459,26 @@ async function matchSynonymsDirectly(query, domainCode) {
  * @param {string} query - 사용자 질문
  * @returns {Promise<{prompt: string, ragContext: Object}>}
  */
-async function buildRAGSystemPrompt(query, domainCode) {
+async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   let ragContext = null;
   let contextText = '';
 
   // ★ 동의어 직접 매칭 (RAG 보완 - 최우선 적용, domain 기반)
-  const synonymMatches = await matchSynonymsDirectly(query, domainCode);
+  //   [2026-08-25] tableWhitelist 지정 시 학습 컨텍스트를 해당 테이블로 격리
+  const synonymMatches = await matchSynonymsDirectly(query, domainCode, tableWhitelist);
   let synonymContext = '';
+  // [2026-08-25] metricMatches / columnMatches 를 바깥 스코프로 끌어올림 —
+  //   candidate 렌더링 블록(line ~3600)이 synonymMatches.length === 0 상황에서도
+  //   참조할 수 있도록 하기 위함. 이전에는 if-블록 내부 const 였어서
+  //   "metricMatches is not defined" ReferenceError 가 발생했음.
+  let metricMatches = [];
+  let columnMatches = [];
   if (synonymMatches.length > 0) {
     // Metric 산식 매칭과 Ontology 컬럼 매칭 분리
     //   ★ ontology_desc_partial: 사용자 키워드가 다른 컬럼의 description에 부분 포함된 매칭
     //     (예: "소모품비"로 ZAMT049 동의어 매칭 + ZAMT019 description "수선/소모품비"에 포함)
-    const metricMatches = synonymMatches.filter(m => m.source === 'metric' || m.source === 'metric_desc');
-    const columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc' || m.source === 'ontology_desc_partial');
+    metricMatches = synonymMatches.filter(m => m.source === 'metric' || m.source === 'metric_desc');
+    columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc' || m.source === 'ontology_desc_partial');
     
     synonymContext = '\n[★ 동의어 매칭 결과 - 최우선 적용! 아래 매핑을 반드시 SQL에 사용하세요]\n';
     
@@ -3257,6 +3602,47 @@ async function buildRAGSystemPrompt(query, domainCode) {
     }
   }
 
+  // ============================================================
+  // [2026-08-25] Numeric Measure Candidate 자동 노출
+  // ------------------------------------------------------------
+  // 조건 (모두 충족 시 발동):
+  //   1) 정렬 의도(TOP N / 상위 N / 랭킹 / 가장 많은/높은 등) 감지
+  //   2) Metric 매칭이 0건 (스코프 내 metric 이 아직 학습관리에 등록되지 않은 상황)
+  //   3) tableWhitelist 지정됨 (업무영역 탭 컨텍스트 확실할 때만)
+  //
+  // 목적:
+  //   "'실제원가' 가 ZCGUBUN 차원값으로 매칭되었더라도, TOP 5 정렬용 measure 를
+  //    포기하지 말고 스코프 내 숫자 컬럼에서 후보를 자동 발굴하여 LLM 에게 제시" (사용자 요구).
+  //
+  // 하드코딩 금지: TOTAL/TOTAL1 같은 특정 컬럼명이 코드에 등장하지 않음.
+  //                순수 ontology_column.data_type + description + synonym 기반.
+  // ============================================================
+  const rankIntent = detectRankIntent(query);
+  const hasScope = Array.isArray(tableWhitelist) && tableWhitelist.length > 0;
+  if (rankIntent && metricMatches.length === 0 && hasScope) {
+    try {
+      const candidates = await discoverNumericMeasureCandidates(query, domainCode, tableWhitelist);
+      if (candidates.length > 0) {
+        synonymContext += '\n[★ 정렬용 Measure 자동 후보 — 학습관리에 Metric 이 없어도 SQL 을 만들 수 있게 노출]\n';
+        synonymContext += `사용자 질문에 정렬 의도(TOP N/상위 N/랭킹 등)가 있고, 이 업무영역(테이블: ${tableWhitelist.join(', ')})에 등록된 Metric 산식이 없습니다.\n`;
+        synonymContext += `아래 Ontology 숫자 컬럼 중 사용자 의도에 가장 부합하는 것을 하나 선택하여 SUM(<컬럼>) 형태로 SELECT / ORDER BY 에 사용하세요.\n`;
+        synonymContext += `단, 사용자 질문에서 이미 다른 Ontology 차원값(예: ZCGUBUN='실제원가')이 매칭되어 있다면, 그 차원값 필터는 WHERE 절에 그대로 유지하고, 이 후보 중에서 measure 컬럼을 별도로 선택하세요.\n`;
+        for (const c of candidates) {
+          const synTxt = c.synonyms.length > 0 ? ` (동의어: ${c.synonyms.join(', ')})` : '';
+          synonymContext += `- ${c.column_name} [${c.data_type}] — "${c.description}"${synTxt}\n`;
+        }
+        synonymContext += `▶ 위 후보들이 학습관리에 정식 Metric 으로 등록되기 전까지의 임시 후보입니다.\n`;
+        synonymContext += `▶ 이 후보에서 하나를 골라 SUM(...) 으로 SELECT 및 ORDER BY 에 사용하세요 — 이 정보가 있으므로 "정렬 대상을 알 수 없다"고 답하지 마세요.\n`;
+        console.log(`[NumericCandidate] rank-intent + no-metric + scope=[${tableWhitelist.join(',')}] → ${candidates.length}개 후보 노출: ${candidates.map(c => c.column_name).join(', ')}`);
+      } else {
+        console.log(`[NumericCandidate] rank-intent 감지되었지만 스코프 내 숫자 후보 컬럼이 0건이라 스킵`);
+      }
+    } catch (e) {
+      console.error('[NumericCandidate] 발굴 실패 (무시):', e.message);
+    }
+  }
+  
+
   // ★ Metric 산식이 매칭된 컬럼 목록 수집 (RAG 컨텍스트에서 해당 단순 컬럼 제거용)
   //   matchSynonymsDirectly에서 이미 수집한 referenced_codes를 그대로 활용
   //   (예: ZAMT035 매칭 시 → ZAMT035, ZAMT003, ZAMT034, ZAMT026, ZAMT005 전부 차단)
@@ -3284,6 +3670,10 @@ async function buildRAGSystemPrompt(query, domainCode) {
         codeMappingTopK: 5,
         ruleTopK: 5,
         domainCode: domainCode,  // ★ RAG 검색 단계에서 도메인 필터링
+        // [2026-08-25] 업무영역 탭 강제 테이블 화이트리스트 (예: cost-dept/cost-machine → [sys_aimd_cot015, sys_aimd_cot043])
+        //   - LLM 컨텍스트에 다른 테이블(bw_profitability_data 등) 컬럼이 섞이는 것을 방지
+        //   - tableWhitelist 가 빈 배열/null 이면 no-op (기존 동작 유지)
+        tableWhitelist: (Array.isArray(tableWhitelist) && tableWhitelist.length > 0) ? tableWhitelist : null,
       });
       // ★★★ 도메인 필터링: RAG 검색 결과에서 다른 도메인의 ontology/metric 제거
       if (ragContext.ontology) {
@@ -3367,7 +3757,8 @@ async function buildRAGSystemPrompt(query, domainCode) {
     // 폴백: 기존 방식 (전체 스키마 + 메트릭 + 폴백 컨텍스트)
     // [2026-06-30] METRIC_DICTIONARY 하드코딩 상수 제거 → DB metric 테이블에서 동적 생성
     //   학습관리에서 산식 수정 시 즉시 LLM 프롬프트에 반영되도록 함.
-    const dynamicMetricDict = await buildMetricDictionaryFromDB(domainCode);
+    // [2026-08-25] tableWhitelist 지정 시 해당 테이블의 metric 만 사전에 포함
+    const dynamicMetricDict = await buildMetricDictionaryFromDB(domainCode, tableWhitelist);
     prompt = BASE_SYSTEM_PROMPT + domainCtx + synonymContext + '\n' + TABLE_SCHEMA + '\n' + dynamicMetricDict
       + '\n\n--- 컨텍스트 ---\n' + contextText;
   }
@@ -3379,6 +3770,37 @@ async function buildRAGSystemPrompt(query, domainCode) {
     .replace(/__PREV_LABEL__/g, dateCtx.prevLabel)
     .replace(/__LATEST_MONTH__/g, dateCtx.latestMonth)
     .replace(/__PREV_MONTH__/g, dateCtx.prevMonth);
+
+  // ============================================================
+  // [2026-08-25] 업무영역 탭 강제 테이블 힌트 (FROM 절 오선택 방지)
+  // ------------------------------------------------------------
+  // 배경:
+  //   PR #387 로 RAG 청크는 tableWhitelist 로 좁혀졌으나, LLM 이 종종
+  //   sys_aimd_cot015 의 ZCGUBUN 을 인식하면서도 FROM 절엔 익숙한
+  //   bw_profitability_data 를 골라 "Unknown column 'ZCGUBUN'" DB 에러
+  //   발생 (사용자 리포트).
+  //
+  // 대응:
+  //   tableWhitelist 가 지정된 경우 시스템 프롬프트 최상단에
+  //   "허용 테이블 목록" 을 하드-강제 지시문으로 삽입.
+  //   - 여러 테이블 화이트리스트 (cost-dept/cost-machine 공용
+  //     [sys_aimd_cot015, sys_aimd_cot043]) 도 LLM 이 그 중에서만 선택.
+  //   - 화이트리스트 밖 테이블 사용 금지를 명시.
+  //   - forcedFilter 로 자동 주입되는 COSTCENTER 조건은 절대 제거 금지 명시.
+  // ============================================================
+  if (Array.isArray(tableWhitelist) && tableWhitelist.length > 0) {
+    const wlLine = tableWhitelist.map(t => `\`${t}\``).join(', ');
+    const forceFromHint =
+      '\n\n🚨🚨🚨 [절대 준수] 허용 테이블 화이트리스트 🚨🚨🚨\n' +
+      `이 질문은 특정 업무영역 탭에서 발생했습니다. **FROM 절에는 오직 다음 테이블만** 사용하세요: ${wlLine}\n` +
+      '- 위 목록에 없는 테이블(예: bw_profitability_data)을 FROM/JOIN 에 절대 사용하지 마세요.\n' +
+      '- 위 목록 안에서 질문 의미에 맞는 테이블을 선택하세요. 여러 개 나열되어 있어도 하나만 골라 사용합니다.\n' +
+      '- 컬럼 이름이 익숙해 보여도 위 목록 밖 테이블의 컬럼은 존재하지 않는다고 간주하세요.\n' +
+      '- 위 목록 안에서 실제 컬럼 목록은 아래 "허용 컬럼 목록" / RAG 검색 컨텍스트만 참고하세요.\n' +
+      '- 시스템이 자동 주입한 COSTCENTER IN/NOT IN 필터는 절대 제거하거나 완화하지 마세요.\n';
+    prompt = forceFromHint + prompt;
+    console.log(`[NLQ:Prompt] FROM 강제 힌트 주입: tableWhitelist=[${tableWhitelist.join(',')}]`);
+  }
 
   return { prompt, ragContext, dateContext: dateCtx };
 }
@@ -6418,6 +6840,122 @@ function applyDomainFilter(inputSql, domainCodeOrCodes) {
   return result;
 }
 
+// ═════════════════════════════════════════════════════════════════
+// [2026-08-25] 제조원가 세부업무영역용 강제 필터 자동 주입
+// ─────────────────────────────────────────────────────────────────
+// - sys_aimd_cot043 은 부서별원가(cost-dept) 와 호기별원가(cost-machine) 가
+//   공유하는 테이블. 두 서브영역을 COSTCENTER 값으로 구분한다.
+// - LLM 이 자연스럽게 COSTCENTER 조건을 넣지 않으므로 서버가 강제 주입.
+// - applyDomainFilter (DIVISION) 와 동일한 정책을 따르되, target table 은
+//   forcedFilter 의 컨텍스트로 결정.
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * SQL 에 강제 필터를 자동 주입한다 (COSTCENTER IN/NOT IN ...).
+ *
+ * @param {string} inputSql  원본 SQL
+ * @param {{column: string, op: 'IN'|'NOT IN', values: string[]} | null} forcedFilter
+ * @param {string} targetTable  이 테이블을 참조하는 SQL 에만 주입 (예: 'sys_aimd_cot043')
+ * @returns {string} 필터가 주입된 SQL (또는 조건 미충족 시 원본 그대로)
+ *
+ * 정책:
+ *   1) forcedFilter 가 null 이거나 values 가 비어있으면 no-op
+ *   2) SQL 이 targetTable 을 참조하지 않으면 no-op (예: bw_profitability_data 만 있는 SQL)
+ *   3) 이미 동일 컬럼 조건이 있으면 no-op (scrubForcedFilter 후 다시 주입하는 흐름 지원)
+ *   4) WHERE 절 있음: 앞에 `<column> <op> (...) AND (기존조건)` 형태로 삽입
+ *   5) WHERE 절 없음: FROM <table> 뒤에 WHERE 추가
+ */
+function applyForcedTableFilter(inputSql, forcedFilter, targetTable) {
+  if (!inputSql) return inputSql;
+  if (!forcedFilter || !Array.isArray(forcedFilter.values) || forcedFilter.values.length === 0) {
+    return inputSql;
+  }
+  if (!targetTable) return inputSql;
+
+  // targetTable 참조 여부 (단어경계) — 대소문자 무시
+  const tableRe = new RegExp(`\\b${targetTable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+  if (!tableRe.test(inputSql)) return inputSql;
+
+  const col = forcedFilter.column;
+  const op = forcedFilter.op;
+  // 이미 동일 컬럼의 IN/NOT IN 조건이 있으면 중복 주입 금지
+  const dupRe = new RegExp(`\\b${col}\\b\\s*(?:=|<>|!=|\\s+(?:NOT\\s+)?IN\\b|\\s+LIKE\\b|\\s+BETWEEN\\b)`, 'i');
+  if (dupRe.test(inputSql)) return inputSql;
+
+  // 값 리스트 생성 (문자열 quoted)
+  const valuesClause = forcedFilter.values.map(v => `'${String(v).replace(/'/g, "''")}'`).join(', ');
+  const filterClause = `${col} ${op} (${valuesClause})`;
+
+  // ── WHERE 절 파싱 (applyDomainFilter 와 동일한 안전 스캔 로직) ──
+  const whereEndKeywords = /^(GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION)\b/i;
+  function findWhereEnd(rest) {
+    let depth = 0, inStr = false, strCh = null;
+    for (let i = 0; i < rest.length; i++) {
+      const ch = rest[i];
+      if (inStr) {
+        if (ch === strCh) {
+          if (rest[i + 1] === strCh) { i++; continue; }
+          inStr = false; strCh = null;
+        }
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') { inStr = true; strCh = ch; continue; }
+      if (ch === '(') { depth++; continue; }
+      if (ch === ')') {
+        if (depth === 0) return i;
+        depth--; continue;
+      }
+      if (depth !== 0) continue;
+      if (ch === ';') return i;
+      if (whereEndKeywords.test(rest.slice(i))) return i;
+    }
+    return -1;
+  }
+
+  const whereRegex = /\bWHERE\b\s+/i;
+  const whereMatch = whereRegex.exec(inputSql);
+  let result;
+  if (whereMatch) {
+    const before = inputSql.slice(0, whereMatch.index + whereMatch[0].length);
+    const rest = inputSql.slice(whereMatch.index + whereMatch[0].length);
+    const endIdx = findWhereEnd(rest);
+    let cond, tail;
+    if (endIdx >= 0) { cond = rest.slice(0, endIdx).trim(); tail = rest.slice(endIdx); }
+    else { cond = rest.trim(); tail = ''; }
+    const wrapped = cond ? `${filterClause} AND (${cond})` : filterClause;
+    const sep = tail && !tail.startsWith(' ') && !tail.startsWith(';') && !tail.startsWith(')') ? ' ' : '';
+    result = `${before}${wrapped}${sep}${tail}`;
+  } else {
+    // WHERE 없음 → FROM <targetTable> [별칭?] 뒤에 삽입
+    const reservedAfterFrom = /^(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|ON)$/i;
+    const fromRegex = new RegExp(`\\bFROM\\s+${targetTable}\\b(\\s+(?:AS\\s+)?([A-Za-z_][A-Za-z0-9_]*))?`, 'i');
+    const fromMatch = fromRegex.exec(inputSql);
+    if (!fromMatch) return inputSql;
+    let matchLen = fromMatch[0].length;
+    if (fromMatch[2] && reservedAfterFrom.test(fromMatch[2])) {
+      matchLen = fromMatch[0].length - fromMatch[1].length;
+    }
+    const insertPos = fromMatch.index + matchLen;
+    const before = inputSql.slice(0, insertPos);
+    const rest = inputSql.slice(insertPos);
+    const endIdx = findWhereEnd(rest);
+    if (endIdx > 0) {
+      const head = rest.slice(0, endIdx);
+      const tail = rest.slice(endIdx);
+      result = `${before}${head} WHERE ${filterClause} ${tail}`;
+    } else if (endIdx === 0) {
+      result = `${before} WHERE ${filterClause} ${rest}`;
+    } else {
+      result = `${before} WHERE ${filterClause}${rest}`;
+    }
+  }
+
+  if (result !== inputSql) {
+    console.log(`[NLQ] 세부업무영역 강제 필터 자동 주입 (${targetTable}: ${col} ${op} ${forcedFilter.values.length}개)`);
+  }
+  return result;
+}
+
 // ============================================================
 // [★★★ 사업부 명칭 고정 매핑 규칙 (2026-07-03) ★★★]
 //   - DB 저장 값이 배포 환경별로 다를 수 있음:
@@ -7009,6 +7547,38 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   if (!query || !query.trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
   }
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-25] area/subArea/table 수신 (async self-fetch 로부터 전달됨)
+  //
+  //   - /api/nlq/async 가 이미 화이트리스트 검증한 값을 body 에 실어 보냄
+  //   - 여기서 다시 resolveAreaContext 로 방어적으로 정규화
+  //     (외부 호출 우회 방어 — 프론트가 sync 경로를 직접 때리는 경우도 커버)
+  //   - 결과 areaCtx 는 이 함수 전역에서 사용:
+  //       · buildRAGSystemPrompt(query, activeDomain, areaCtx.tableWhitelist)
+  //       · SQL 실행 전 applyCostCenterFilter(sql, areaCtx.forcedFilter)
+  // ─────────────────────────────────────────────────────────────────
+  const areaCtx = resolveAreaContext(req.body?.area, req.body?.subArea);
+  // 서브영역 vs 질의 불일치 감지 (sync 경로 방어 — async 경로에서 이미 걸러졌겠지만 2중 방어)
+  const subAreaMismatchSync = detectSubAreaMismatch(areaCtx.subArea, query);
+  if (subAreaMismatchSync) {
+    console.log(`[NLQ:SubAreaMismatch:sync] currentSubArea=${areaCtx.subArea} → suggest=${subAreaMismatchSync.suggestSubArea} query="${String(query).slice(0, 60)}"`);
+    return res.json({
+      success: true,
+      rows: [], rowCount: 0, sql: null,
+      explanation: subAreaMismatchSync.message,
+      answer: subAreaMismatchSync.message,
+      isUnknownTerm: false,
+      subAreaMismatch: {
+        currentSubArea: areaCtx.subArea,
+        suggestSubArea: subAreaMismatchSync.suggestSubArea,
+        suggestLabel: subAreaMismatchSync.suggestLabel,
+      },
+      requestId: getCurrentRequestId(),
+    });
+  }
+  if (areaCtx.area) {
+    console.log(`[NLQ:AreaCtx] area=${areaCtx.area} subArea=${areaCtx.subArea || '-'} table=${areaCtx.table || '-'} whitelist=[${areaCtx.tableWhitelist.join(',')}] forcedFilter=${areaCtx.forcedFilter ? `${areaCtx.forcedFilter.column} ${areaCtx.forcedFilter.op}(${areaCtx.forcedFilter.values.length})` : '-'}`);
+  }
   // [2026-07-30] 직접 SQL 입력 차단 — 프론트 우회 방어
   // [2026-07-31] errorType='direct_sql_disabled' 추가 — 프론트에서 '시스템 오류' 대신
   //   회색 중립 안내(모래시계 스타일) UI 로 분기하기 위한 라우팅 키.
@@ -7168,7 +7738,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           'SUCCESS',                                       // status — ★ 기존 컨벤션('SUCCESS'/'FAILED' 대문자) 준수. 이전엔 'success'(소문자)로 저장되어 이력 복원 시 status 비교 실패 → 빨간 오류 박스 노출 버그가 있었음
           null,                                            // error_message
           session_id || null,                              // session_id
-          activeDomain                                     // domain_code
+          activeDomain,                                    // domain_code
+          // [2026-08-25] 사이드바 [질의 이력] 배지용 area code (수익/제조)
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
         );
       } catch (histErr) {
         console.error('[NLQ:Intent] saveHistory 실패 (응답에는 영향 없음):', histErr.message);
@@ -7292,7 +7864,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           saveHistory(
             nlqUserIdConcept, query, null,
             conceptAnswer, 'analysis', {}, [],
-            0, 0, 'SUCCESS', null, session_id || null, activeDomain
+            0, 0, 'SUCCESS', null, session_id || null, activeDomain,
+            { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
           ).catch(e => console.error('[History] 저장 실패:', e.message));
           return res.json({
             success: true,
@@ -7371,7 +7944,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             nlqUserIdFail, query, execRecord.baseSql || null,
             QUERY_SCOPE_TIMEOUT_MESSAGE, 'analysis', {}, [],
             0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain,
-            { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE }
+            { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE, businessAreaCode: areaKeyToDbCode(areaCtx.area) }
           );
           // analysisPlan / executionDiagnostics 는 진단용 필드 — 프론트 중립 UI 는 렌더하지 않음
           const analysisTimeoutBody = {
@@ -7404,7 +7977,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             nlqUserIdFail, query, execRecord.baseSql,
             failMsg, 'analysis', {}, [],
             0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain,
-            { requestId: analysisRequestId, errorType: 'execution_failed' }
+            { requestId: analysisRequestId, errorType: 'execution_failed', businessAreaCode: areaKeyToDbCode(areaCtx.area) }
           );
           return res.status(200).json({
             success: true,
@@ -7536,7 +8109,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         saveHistory(
           nlqUserIdAnalysis, query, execRecord.baseSql,
           analysis, 'analysis', analysisChartConfig, detailRows,
-          execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain
+          execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain,
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
         // [2026-07-31] 분석 결과 상세표 옆에 실제 조회 기간 표시.
@@ -7661,7 +8235,13 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       }
     } else {
       // 1. RAG 기반 SQL 생성 (질문 관련 메타데이터만 검색하여 프롬프트에 주입)
-      const buildResult = await buildRAGSystemPrompt(query, activeDomain);
+      // [2026-08-25] tableWhitelist 를 전달하여 학습 컨텍스트(ontology/metric)를
+      //   현재 세부업무영역의 참조 테이블로 격리.
+      //   - profitability   → bw_profitability_data
+      //   - cost-product    → sys_aimd_cot015
+      //   - cost-dept/machine → sys_aimd_cot043
+      //   - 미지정(레거시)  → [] (전체 조회, 하위호환)
+      const buildResult = await buildRAGSystemPrompt(query, activeDomain, areaCtx.tableWhitelist);
       // [2026-08-21] BUG B 수정: 상위 스코프의 systemPrompt 에 재할당 (재선언 X)
       //   → else 블록 밖의 SQL 재생성 로직에서도 참조 가능
       systemPrompt = buildResult.prompt;
@@ -7872,6 +8452,18 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     sql = normalizeNameSearchFilter(sql);
     // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
+    // ─────────────────────────────────────────────────────────────
+    // [2026-08-25] 세부업무영역 강제 필터 자동 주입 (COSTCENTER IN/NOT IN)
+    //   - cost-dept    → sys_aimd_cot043 + COSTCENTER NOT IN (23개 호기)
+    //   - cost-machine → sys_aimd_cot043 + COSTCENTER IN (23개 호기)
+    //   - cost-product / profitability → forcedFilter=null → no-op
+    //   - 이미 SQL 에 동일 컬럼 조건이 있으면 no-op (applyForcedTableFilter 내부 방어)
+    //   - LLM 이 COSTCENTER 를 지정하지 않아도 서브영역 격리 보장
+    // ─────────────────────────────────────────────────────────────
+    if (areaCtx.forcedFilter && areaCtx.table) {
+      sql = applyForcedTableFilter(sql, areaCtx.forcedFilter, areaCtx.table);
+    }
+
     // [2026-08-21] SQL Validator 개선 — CTE(WITH ... SELECT) 허용
     // 기존: sqlUpper.startsWith('SELECT') + forbidden.includes(kw)
     //   → WITH으로 시작하는 정상 조회 SQL이 무조건 차단되고,
@@ -7965,6 +8557,10 @@ ${sqlValidation.reason}
           sql = applyDomainFilter(sql, activeDomain);
           sql = applyDivisionFromQuery(sql, query);
           sql = normalizeNameSearchFilter(sql);
+          // [2026-08-25] 재생성 SQL 에도 세부업무영역 강제 필터 주입
+          if (areaCtx.forcedFilter && areaCtx.table) {
+            sql = applyForcedTableFilter(sql, areaCtx.forcedFilter, areaCtx.table);
+          }
           // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
           // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
           const reval = validateSqlPreExecution(sql);
@@ -8054,7 +8650,7 @@ ${sqlValidation.reason}
         saveHistorySafe(
           failUserId, query, sql, null, null, null, null, 0, dbElapsedMs,
           'FAILED', errMsg, session_id || null, activeDomain,
-          { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE }
+          { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE, businessAreaCode: areaKeyToDbCode(areaCtx.area) }
         );
         // [PR #335] aggregate 타이밍 로그 flush — DB 타임아웃 지점에서 즉시 출력
         aggTimingFlushLog('TIMEOUT', { errorCode: QUERY_SCOPE_TIMEOUT_CODE });
@@ -8084,7 +8680,7 @@ ${sqlValidation.reason}
       saveHistorySafe(
         failUserId, query, sql, null, null, null, null, 0, 0,
         'FAILED', errMsg, session_id || null, activeDomain,
-        { requestId: errorDetail.requestId || null, errorType: 'db_execution' }
+        { requestId: errorDetail.requestId || null, errorType: 'db_execution', businessAreaCode: areaKeyToDbCode(areaCtx.area) }
       );
       return res.status(200).json({
         success: false, sql, rows: [], rowCount: 0,
@@ -8371,7 +8967,7 @@ ${formatRule}
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
     const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain)
+    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain, { businessAreaCode: areaKeyToDbCode(areaCtx.area) })
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
     // [PR #335] aggregate 정상 종료 타이밍 로그
@@ -8399,7 +8995,7 @@ ${formatRule}
     saveHistory(
       nlqUserId, query, null, null, null, null, null, 0, 0,
       'FAILED', msg, session_id || null, activeDomain,
-      { requestId: errorDetail.requestId || null, errorType: 'system' }
+      { requestId: errorDetail.requestId || null, errorType: 'system', businessAreaCode: areaKeyToDbCode(areaCtx.area) }
     ).catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
     return res.status(500).json({
@@ -8645,11 +9241,17 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
   }, 10 * 60 * 1000);
 
   try {
+    // [2026-08-25] area/subArea/table 을 self-fetch body 에도 실어서
+    //   /api/nlq 핸들러가 학습 컨텍스트 격리 + COSTCENTER 자동 주입에 사용할 수 있게 함.
+    //   (기존 코드가 job 객체를 여기서 참조 못 했던 부분을 해결)
     const body = JSON.stringify({
       query: job.query,
       conversationContext: job.conversationContext,
       session_id: job.session_id,
       queryMode: job.queryMode,
+      area: job.area || null,
+      subArea: job.subArea || null,
+      table: job.table || null,
     });
     const headers = { 'Content-Type': 'application/json' };
     if (forwardedCookie) headers['Cookie'] = forwardedCookie;
@@ -8814,6 +9416,87 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
   if (!query || !String(query).trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
   }
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-24 → 2026-08-25 갱신] 업무영역(area) / 세부업무영역(subArea) / 참조 테이블(table) 수신
+  //
+  //   프론트(index.html)가 payload 에 명시적으로 area/subArea/table 을 실어 보냄.
+  //   서버는 resolveAreaContext() 로 화이트리스트 검증 → 정규화된 컨텍스트를 얻는다.
+  //   이 컨텍스트는:
+  //     1) job 오브젝트에 저장 → self-fetch body 로 /api/nlq 에 전달
+  //     2) /api/nlq 에서 학습 컨텍스트(ontology/metric) 격리에 사용
+  //     3) /api/nlq 에서 SQL 실행 전 COSTCENTER 강제 필터 자동 주입에 사용
+  //
+  //   보안: 프론트가 임의 값을 보내도 resolveAreaContext 가 화이트리스트 밖은
+  //         모두 null 로 정규화한다.
+  // ─────────────────────────────────────────────────────────────────
+  const areaCtx = resolveAreaContext(req.body?.area, req.body?.subArea);
+  const selectedArea    = areaCtx.area;
+  const selectedSubArea = areaCtx.subArea;
+  const selectedTable   = areaCtx.table;
+  console.log(
+    `[NLQ:AreaSelect] userId=${userId} area=${selectedArea || '-'} subArea=${selectedSubArea || '-'} table=${selectedTable || '-'} ` +
+    `forcedFilter=${areaCtx.forcedFilter ? `${areaCtx.forcedFilter.column} ${areaCtx.forcedFilter.op} (${areaCtx.forcedFilter.values.length}개)` : '-'} ` +
+    `(raw: area="${String(req.body?.area || '')}" subArea="${String(req.body?.subArea || '')}")`
+  );
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-25] 서브영역 ↔ 질의 불일치 조기 감지 (호기 탭 + "부서" → 부서 탭 안내)
+  //   LLM/DB 실행 전에 즉시 안내 응답 반환하여 credit 낭비 방지.
+  //   3번 요구사항: "호기별원가에서 '부서' 질문 시 부서별원가 탭 안내"
+  // ─────────────────────────────────────────────────────────────────
+  const subAreaMismatch = detectSubAreaMismatch(selectedSubArea, query);
+  if (subAreaMismatch) {
+    console.log(`[NLQ:SubAreaMismatch] userId=${userId} currentSubArea=${selectedSubArea} → suggest=${subAreaMismatch.suggestSubArea} query="${String(query).slice(0, 60)}"`);
+    // async 경로 특성상 즉시 응답이 아닌 "완료된 job" 으로 저장 → 프론트 폴링이 done 을 받도록
+    const jobId = generateNlqJobId();
+    const requestId = getCurrentRequestId();
+    const finishedJob = {
+      jobId,
+      status: 'done',
+      userId,
+      userRole: req.session.user.role || 'user',
+      requestId,
+      query: String(query),
+      queryMode: queryMode || 'analysis',
+      conversationContext: conversationContext || null,
+      session_id: session_id || null,
+      area: selectedArea,
+      subArea: selectedSubArea,
+      table: selectedTable,
+      startedAt: Date.now(),
+      runningAt: Date.now(),
+      finishedAt: Date.now(),
+      result: {
+        success: true,
+        rows: [],
+        rowCount: 0,
+        sql: null,
+        explanation: subAreaMismatch.message,
+        answer: subAreaMismatch.message,
+        isUnknownTerm: false,
+        subAreaMismatch: {
+          currentSubArea: selectedSubArea,
+          suggestSubArea: subAreaMismatch.suggestSubArea,
+          suggestLabel: subAreaMismatch.suggestLabel,
+        },
+        requestId,
+      },
+      error: null,
+      statusCode: 200,
+      innerRequestId: null,
+      timings: null,
+    };
+    nlqJobs.set(jobId, finishedJob);
+    return res.json({
+      success: true,
+      jobId,
+      status: 'pending',
+      requestId,
+      asyncRequestId: requestId,
+      startedAt: new Date(finishedJob.startedAt).toISOString(),
+      pollUrl: `/api/nlq/job/${jobId}`,
+      recommendedPollIntervalMs: 500,   // 이미 done 이므로 빠르게 폴링해도 됨
+    });
+  }
   // [2026-07-30] 직접 SQL 입력 차단 — 프론트 우회 방어 (async 경로에도 동일 적용)
   // [2026-07-31] errorType='direct_sql_disabled' 추가 — sync 경로와 동일한 라우팅 키.
   const sqlBlock = detectDirectSqlQuery(query);
@@ -8840,6 +9523,10 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     queryMode: queryMode || 'analysis',
     conversationContext: conversationContext || null,
     session_id: session_id || null,
+    // [2026-08-24] 업무영역 선택 정보 (다음 단계에서 SQL 라우팅에 사용)
+    area:    selectedArea,      // 'profitability' | 'manufacturing-cost' | null
+    subArea: selectedSubArea,   // 'cost-product' | 'cost-dept' | 'cost-machine' | null
+    table:   selectedTable,     // 화이트리스트 검증 완료된 참조 테이블 (또는 null)
     startedAt: Date.now(),
     runningAt: null,
     finishedAt: null,
@@ -9133,10 +9820,14 @@ async function saveHistory(userId, queryText, sql, explanation, chartType, chart
   const configJson = chartConfig ? JSON.stringify(chartConfig) : null;
   const requestId = (options && options.requestId) ? String(options.requestId).slice(0, 64) : null;
   const errorType = (options && options.errorType) ? String(options.errorType).slice(0, 50) : null;
+  // [2026-08-25] business_area_code 는 options.businessAreaCode 로 전달 (하위호환 - 기본 null)
+  //   사이드바 [질의 이력] 배지 표시용. 실제 실행 시점의 선택된 area 값 그대로 저장.
+  //   options 가 없거나 필드가 없어도 기존 호출부 동작에 영향 없음.
+  const businessAreaCode = (options && options.businessAreaCode) ? String(options.businessAreaCode).slice(0, 32) : null;
   await pool.query(
-    `INSERT INTO nl_query_history (user_id, session_id, domain_code, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message, request_id, error_type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [userId || null, sessionId || null, domainCode || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg, requestId, errorType]
+    `INSERT INTO nl_query_history (user_id, session_id, domain_code, business_area_code, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message, request_id, error_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId || null, sessionId || null, domainCode || null, businessAreaCode, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg, requestId, errorType]
   );
 
   // 시간 기준 보관 정책: NLQ_HISTORY_RETENTION_DAYS(기본 31일) 경과 행 자동 삭제
@@ -9195,6 +9886,10 @@ app.get('/api/history', async (req, res) => {
          SUM(row_count) AS total_rows,
          session_id,
          MAX(domain_code) AS domain_code,
+         /* [2026-08-25] 사이드바 [질의 이력] 업무영역 배지용 (PROFITABILITY/MANUFACTURING_COST/NULL)
+            - 세션 내 여러 row 가 있어도 동일 area 로 저장되므로 MAX 로 대표값 취득 (domain_code 와 동일 패턴)
+            - 레거시 row 는 NULL → 프론트에서 배지 미표시 */
+         MAX(business_area_code) AS business_area_code,
          MAX(is_bookmarked) AS is_bookmarked
        FROM nl_query_history h
        WHERE user_id = ?
@@ -9584,13 +10279,34 @@ app.get('/api/suggestions', (req, res) => {
 // 전체 목록 (동의어 포함, domain 필터)
 app.get('/api/ontology', requireAdmin, async (req, res) => {
   const dc = req.query.domain_code || await getActiveDomain(req);
+  // [2026-08-25] 학습관리 업무영역 탭 필터
+  //   - area 파라미터로 넘어오면 AREA_SUB_TABLE_MAP 을 따라 해당 area 의 모든 서브영역 테이블 리스트를 사용
+  //     · profitability      → ['bw_profitability_data']
+  //     · manufacturing-cost → ['sys_aimd_cot015', 'sys_aimd_cot043']
+  //   - table 파라미터로 직접 특정 table_name 필터도 허용
+  //   - area/table 모두 없으면 기존 동작(도메인 전체) 유지 (하위호환)
+  let tableFilterCondition = '';
+  const tableFilterValues = [];
+  const rawArea = String(req.query.area || '').toLowerCase().trim();
+  const rawTable = String(req.query.table || '').trim();
+  if (rawTable) {
+    tableFilterCondition = ' AND c.table_name = ?';
+    tableFilterValues.push(rawTable);
+  } else if (rawArea && AREA_SUB_TABLE_MAP[rawArea]) {
+    const subs = AREA_SUB_TABLE_MAP[rawArea].subs || {};
+    const tables = [...new Set(Object.values(subs).map(s => s.table).filter(Boolean))];
+    if (tables.length > 0) {
+      tableFilterCondition = ` AND c.table_name IN (${tables.map(() => '?').join(',')})`;
+      tableFilterValues.push(...tables);
+    }
+  }
   try {
     const [columns] = await pool.query(
       `SELECT c.*, GROUP_CONCAT(s.id, ':::', s.synonym_text ORDER BY s.id SEPARATOR '|||') AS synonyms
        FROM ontology_column c
        LEFT JOIN ontology_synonym s ON s.column_id = c.id
-       WHERE c.domain_code = ?
-       GROUP BY c.id ORDER BY c.id`, [dc]
+       WHERE c.domain_code = ?${tableFilterCondition}
+       GROUP BY c.id ORDER BY c.id`, [dc, ...tableFilterValues]
     );
     const result = columns.map(row => ({
       ...row,
@@ -16422,6 +17138,33 @@ async function ensureBookmarkShareTables() {
       await pool.query(`ALTER TABLE ontology_column ADD COLUMN type VARCHAR(10) DEFAULT NULL COMMENT '원가/비용 구분 (원가|비용|NULL)' AFTER is_active`);
       await pool.query(`CREATE INDEX idx_ontology_type ON ontology_column(type)`);
       console.log('[Migration] ontology_column 에 type 컬럼 추가 완료');
+    }
+
+    // ============================================================
+    // [2026-08-25] nl_query_history 에 business_area_code 컬럼 추가
+    //   목적:
+    //     사이드바 [질의 이력]에서 각 질문이 수익성분석 / 제조원가 중 어느
+    //     업무영역 탭에서 실행되었는지 표시하기 위함.
+    //   저장값:
+    //     - 'PROFITABILITY' (수익성분석 탭)
+    //     - 'MANUFACTURING_COST' (제조원가 탭)
+    //     - NULL (업무영역 컨텍스트 없이 저장된 기존 이력)
+    //   프론트가 표시할 배지는 area_code → 사용자 표시명(수익/제조) 매핑을 사용.
+    //   업무영역은 실제 질의 실행 시점의 선택된 값을 그대로 저장 (문구 추측 금지).
+    // ============================================================
+    const [baCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nl_query_history' AND COLUMN_NAME = 'business_area_code'`
+    );
+    if (baCols.length === 0) {
+      // domain_code 옆에 나란히 배치 — 두 컬럼 모두 요청 컨텍스트 분류용
+      await pool.query(
+        `ALTER TABLE nl_query_history
+           ADD COLUMN business_area_code VARCHAR(32) DEFAULT NULL
+             COMMENT '질의 실행 당시 선택된 업무영역 코드 (PROFITABILITY/MANUFACTURING_COST/NULL)'
+             AFTER domain_code`
+      );
+      console.log('[Migration] nl_query_history 에 business_area_code 컬럼 추가 완료');
     }
   } catch (e) {
     console.error('[Migration] 북마크/공유 마이그레이션 실패:', e.message);

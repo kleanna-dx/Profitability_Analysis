@@ -59,6 +59,18 @@
         .domain-lock-msg{font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:4px;margin-left:auto;}
         .domain-lock-msg i{color:#f59e0b;font-size:12px;}
 
+        /* [2026-08-25] 학습관리 전용 테이블 서브탭 바 — 제조원가 area 진입 시에만 표시 */
+        .table-subtab-bar{background:#fff;border-radius:14px;border:1px solid #e5e7eb;padding:12px 20px;margin-bottom:16px;display:flex;align-items:center;gap:14px;box-shadow:0 1px 4px rgba(0,0,0,.04);}
+        .table-subtab-label{font-size:13px;font-weight:700;color:#475569;white-space:nowrap;display:flex;align-items:center;gap:8px;}
+        .table-subtab-label i{font-size:16px;color:#8b5cf6;}
+        .table-subtab-buttons{display:flex;gap:6px;flex-wrap:wrap;}
+        .table-subtab-btn{padding:8px 18px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;border:2px solid transparent;background:#f8fafc;color:#64748b;white-space:nowrap;display:inline-flex;align-items:center;gap:8px;}
+        .table-subtab-btn code{font-family:'SF Mono',Menlo,Monaco,Consolas,monospace;font-size:11px;background:rgba(139,92,246,.08);color:#7c3aed;padding:2px 6px;border-radius:4px;}
+        .table-subtab-btn:hover{background:#f5f3ff;color:#7c3aed;border-color:#ddd6fe;}
+        .table-subtab-btn.active{background:linear-gradient(135deg,#8b5cf6,#a78bfa);color:#fff;border-color:transparent;box-shadow:0 2px 8px rgba(139,92,246,.25);}
+        .table-subtab-btn.active code{background:rgba(255,255,255,.22);color:#fff;}
+        .table-subtab-hint{font-size:11px;color:#94a3b8;margin-left:auto;}
+
         /* Content area */
         .content-area{flex:1;overflow-y:auto;padding:24px;}
 
@@ -385,6 +397,23 @@
             <div class="domain-banner-label"><i class="fas fa-layer-group"></i>영역 선택</div>
             <div class="domain-tabs" id="domainTabs"></div>
             <div class="domain-lock-msg" id="domainLockMsg" style="display:none;"><i class="fas fa-lock"></i><span>관리 영역이 지정되어 고정됩니다</span></div>
+        </div>
+
+        <!-- [2026-08-25] 학습관리 전용 테이블 서브탭 — 제조원가 area 진입 시에만 표시.
+             sys_aimd_cot015(제품별원가) 와 sys_aimd_cot043(부서·호기 원가) 컬럼이 섞여 보이는 문제를
+             테이블 단위로 분리하기 위한 UI. area-tabs.js 의 3-way 역할 서브탭(cost-product/dept/machine)과 달리
+             cost-dept 와 cost-machine 은 동일 테이블(sys_aimd_cot043)을 공유하므로 학습관리에서는 2-way 로 압축한다. -->
+        <div class="table-subtab-bar" id="learningTableSubtabBar" style="display:none;">
+            <div class="table-subtab-label"><i class="fas fa-table"></i>테이블 선택</div>
+            <div class="table-subtab-buttons" id="learningTableSubtabButtons">
+                <button type="button" class="table-subtab-btn active" data-table="sys_aimd_cot015" onclick="switchLearningTable('sys_aimd_cot015')">
+                    <i class="fas fa-box"></i><span>제품별원가</span><code>sys_aimd_cot015</code>
+                </button>
+                <button type="button" class="table-subtab-btn" data-table="sys_aimd_cot043" onclick="switchLearningTable('sys_aimd_cot043')">
+                    <i class="fas fa-sitemap"></i><span>부서·호기 원가</span><code>sys_aimd_cot043</code>
+                </button>
+            </div>
+            <div class="table-subtab-hint"><i class="fas fa-info-circle"></i> 선택한 테이블의 컬럼/지표/JOIN 만 표시됩니다</div>
         </div>
 
         <!-- Stats -->
@@ -831,6 +860,16 @@ let currentDomain = 'PS';
 let isDomainLocked = false;
 let domainsList = [];
 
+// [2026-08-25] 학습관리 전용 테이블 필터 상태
+//   - 제조원가(area='manufacturing-cost') 진입 시에만 활성화
+//   - '' (빈 문자열) = 필터 없음 (모든 area 에서 기본)
+//   - 'sys_aimd_cot015' = 제품별원가 컬럼만
+//   - 'sys_aimd_cot043' = 부서·호기 원가 컬럼만
+// area-tabs.js 의 서브영역(cost-product/cost-dept/cost-machine)과 별개인, "테이블 단위" 사용자 선택.
+// 이렇게 나눈 이유: cost-dept 와 cost-machine 은 동일 테이블(sys_aimd_cot043)을 공유하므로
+// 학습관리 컨텍스트에서 3-way 로 나누면 두 탭이 동일 컬럼을 보여주게 되어 중복. 2-way(테이블 단위)가 자연스럽다.
+let currentTableFilter = '';
+
 async function initLearningDomain() {
     try {
         const r = await fetch('/api/me'); const me = await r.json();
@@ -918,6 +957,9 @@ async function switchDomainAndReload(dc) { await switchDomainTab(dc); }
 
 window.addEventListener('DOMContentLoaded', async () => {
     await initLearningDomain();
+    // [2026-08-25] area-tabs.js 가 저장된 area 를 복원한 상태를 반영해 테이블 서브탭 UI 초기화.
+    //   초기 area 가 manufacturing-cost 라면 currentTableFilter 를 기본값(sys_aimd_cot015)으로 설정한 뒤 loadOntology 호출.
+    try { syncLearningTableSubtabUI(); } catch (e) { console.warn('[Learning] 초기 서브탭 동기화 실패:', e && e.message); }
     await loadStats();
     await loadOntology();
     await loadMetric();
@@ -933,6 +975,76 @@ window.addEventListener('DOMContentLoaded', async () => {
     // RAG 상태 로드
     await loadRagStatus();
 });
+
+// [2026-08-25] 업무영역 탭 변경 시 학습관리 목록 재로딩
+//   - AreaTabs 가 발행하는 'areachange' 이벤트를 수신하여 ontology 를 해당 area 의 table(s) 로 재조회.
+//   - subarea 변경 시에도 ontology 자체는 area 기준으로 동일하지만 향후 subarea 별 강조를 위해 함께 리스닝.
+//   - [추가] 제조원가 area 진입 시 테이블 서브탭 UI 를 표시하고 기본값(sys_aimd_cot015)으로 필터.
+window.addEventListener('areachange', () => {
+    try { syncLearningTableSubtabUI(); loadOntology(); renderMetric(); renderJoin(); }
+    catch (e) { console.warn('[Learning] areachange 처리 실패:', e && e.message); }
+});
+window.addEventListener('subareachange', () => {
+    try { loadOntology(); }
+    catch (e) { console.warn('[Learning] subareachange loadOntology 실패:', e && e.message); }
+});
+
+// ============================================================
+// [2026-08-25] 학습관리 테이블 서브탭 (제조원가 전용) 제어
+// ============================================================
+// 현재 area 가 'manufacturing-cost' 이면 테이블 서브탭 바를 표시하고,
+// 그렇지 않으면 숨긴 뒤 필터 상태를 초기화한다.
+// area 최초 진입 시 기본 테이블은 sys_aimd_cot015 (제품별원가).
+function syncLearningTableSubtabUI() {
+    const bar = document.getElementById('learningTableSubtabBar');
+    if (!bar) return;
+    let area = null;
+    try {
+        const snap = (window.AreaTabs && window.AreaTabs.snapshot) ? window.AreaTabs.snapshot() : null;
+        area = snap && snap.area ? snap.area : null;
+    } catch (_) {}
+    if (area === 'manufacturing-cost') {
+        bar.style.display = '';
+        // 필터가 없거나 제조원가와 무관한 값이면 기본값으로 초기화
+        if (currentTableFilter !== 'sys_aimd_cot015' && currentTableFilter !== 'sys_aimd_cot043') {
+            currentTableFilter = 'sys_aimd_cot015';
+        }
+    } else {
+        bar.style.display = 'none';
+        currentTableFilter = '';
+    }
+    // 버튼 active 상태 갱신
+    document.querySelectorAll('#learningTableSubtabButtons .table-subtab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.table === currentTableFilter);
+    });
+}
+
+// 테이블 서브탭 클릭 시 호출.
+// 온톨로지는 서버 재조회(테이블 필터를 서버에 위임), 지표/JOIN 은 클라이언트단 재렌더(가벼움).
+async function switchLearningTable(tableName) {
+    if (currentTableFilter === tableName) return;
+    // 미저장 변경사항이 있으면 확인 다이얼로그 (기존 switchDomainTab 패턴과 동일)
+    if (typeof hasPendingChanges === 'function' && hasPendingChanges()) {
+        if (!confirm('미저장 변경사항이 있습니다. 테이블을 전환하면 변경사항이 폐기됩니다. 계속하시겠습니까?')) {
+            return;
+        }
+        if (typeof clearAllPending === 'function') clearAllPending();
+    }
+    currentTableFilter = tableName;
+    document.querySelectorAll('#learningTableSubtabButtons .table-subtab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.table === tableName);
+    });
+    try {
+        await loadOntology();
+        // 지표/JOIN 은 서버 재조회 불필요 — 클라이언트 필터로 렌더 재수행
+        renderMetric();
+        renderJoin();
+    } catch (e) {
+        console.warn('[Learning] switchLearningTable 실패:', e && e.message);
+    }
+}
+// 전역 노출 (onclick 핸들러에서 사용)
+window.switchLearningTable = switchLearningTable;
 
 // ============================================================
 // Stats
@@ -1135,7 +1247,18 @@ function closeModal(id) { document.getElementById(id).classList.remove('active')
 // ONTOLOGY
 // ============================================================
 async function loadOntology() {
-    const res = await fetch('/api/ontology?domain_code=' + currentDomain);
+    // [2026-08-25] 학습관리 업무영역 탭 진입 시 해당 area 의 테이블(들)로 ontology 필터.
+    //   AreaTabs.snapshot() 이 있으면 area 를 함께 전달하고, 없으면 도메인 전체 유지.
+    //   [추가] 제조원가 area 에서는 currentTableFilter(sys_aimd_cot015 | sys_aimd_cot043) 를 우선.
+    //   서버(/api/ontology)는 table 파라미터가 있으면 그것을 우선하고, 없으면 area 기반 IN 필터.
+    let areaParam = '';
+    let tableParam = '';
+    try {
+        const snap = (window.AreaTabs && window.AreaTabs.snapshot) ? window.AreaTabs.snapshot() : null;
+        if (snap && snap.area) areaParam = '&area=' + encodeURIComponent(snap.area);
+        if (currentTableFilter) tableParam = '&table=' + encodeURIComponent(currentTableFilter);
+    } catch (_) {}
+    const res = await fetch('/api/ontology?domain_code=' + currentDomain + areaParam + tableParam);
     ontologyData = await res.json();
     renderOntology();
 }
@@ -1561,11 +1684,17 @@ async function loadMetric() {
 function renderMetric() {
     const tbody = document.getElementById('metricBody');
     // 실제 DB 데이터 + pending add 합산
-    const allMetrics = [
+    let allMetrics = [
         ...metricData.map(m => ({ ...m, _source: 'db' })),
         ...pendingMetricAdds.map(p => ({ id: p.tempId, metric_code: p.metric_code, aggregation: p.aggregation, formula: p.formula, table_name: p.table_name, description: p.description, synonyms: [], _source: 'pending_add' }))
     ];
-    const totalCount = metricData.length + pendingMetricAdds.length - pendingMetricDeletes.length;
+    // [2026-08-25] 학습관리 테이블 서브탭 필터 (제조원가 area 진입 시 활성)
+    //   지표의 table_name 이 currentTableFilter 와 일치할 때만 표시.
+    //   table_name 이 비어있는 지표(기존 수익성분석용)는 제조원가 필터에서 자동 제외됨.
+    if (currentTableFilter) {
+        allMetrics = allMetrics.filter(m => m.table_name === currentTableFilter);
+    }
+    const totalCount = allMetrics.length - pendingMetricDeletes.filter(id => allMetrics.some(m => m.id === id)).length;
     document.getElementById('metricCount').textContent = (totalCount >= 0 ? totalCount : 0) + '개';
     updateMetricSortIndicators();
     if (allMetrics.length === 0) {
@@ -1780,12 +1909,18 @@ async function loadJoin() {
 }
 function renderJoin() {
     const tbody = document.getElementById('joinBody');
-    document.getElementById('joinCount').textContent = joinData.length + '개';
-    if (joinData.length === 0) {
+    // [2026-08-25] 학습관리 테이블 서브탭 필터 (제조원가 area 진입 시 활성)
+    //   left_table 또는 right_table 이 currentTableFilter 와 일치하는 JOIN 만 표시.
+    let filteredJoins = joinData;
+    if (currentTableFilter) {
+        filteredJoins = joinData.filter(j => j.left_table === currentTableFilter || j.right_table === currentTableFilter);
+    }
+    document.getElementById('joinCount').textContent = filteredJoins.length + '개';
+    if (filteredJoins.length === 0) {
         tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-400 py-8">등록된 JOIN 조건이 없습니다.</td></tr>';
         return;
     }
-    tbody.innerHTML = joinData.map((j, i) => {
+    tbody.innerHTML = filteredJoins.map((j, i) => {
         const cls = j.join_type === 'INNER' ? 'join-inner' : j.join_type === 'LEFT' ? 'join-left' : j.join_type === 'RIGHT' ? 'join-right' : 'join-full';
         return `
         <tr>
