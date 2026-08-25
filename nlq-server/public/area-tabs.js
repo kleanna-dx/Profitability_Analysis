@@ -379,48 +379,14 @@
             .sub-area-tab-bar__hint { display: none; }
         }
 
-        /* -------------------- 제조원가 안내 오버레이 -------------------- */
-        .area-mc-notice {
-            position: fixed;
-            left: 50%;
-            top: 96px;
-            transform: translateX(-50%);
-            z-index: 45;
-            background: #f0f9ff;
-            border: 1px solid #7dd3fc;
-            border-radius: 12px;
-            padding: 14px 22px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            box-shadow: 0 8px 24px rgba(2,132,199,0.15);
-            max-width: 92vw;
-        }
-        .area-mc-notice__icon {
-            width: 34px; height: 34px;
-            border-radius: 8px;
-            background: linear-gradient(135deg,#0284c7,#0369a1);
-            color: #fff;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 15px;
-            flex-shrink: 0;
-        }
-        .area-mc-notice__text { font-size: 13px; color: #075985; line-height: 1.5; }
-        .area-mc-notice__text strong { color: #0c4a6e; }
-        .area-mc-notice__close {
-            background: transparent; border: 0;
-            color: #0c4a6e; cursor: pointer;
-            font-size: 15px; padding: 2px 6px; border-radius: 6px;
-            font-family: inherit;
-        }
-        .area-mc-notice__close:hover { background: #bae6fd; }
+        /* [2026-08-25] 제조원가 프리뷰 안내 배너 제거 (.area-mc-notice 스타일 삭제).
+         *   제조원가 기능이 실제 데이터/질의/학습과 연동 완료되어 안내 배너가 더 이상 필요 없음.
+         *   showManufacturingNotice() / ensureNoticeRemoved() 도 함께 제거됨. */
 
         @media (max-width: 640px) {
             .area-tab-bar { padding: 8px 12px; gap: 6px; }
             .area-tab-bar__label { display: none; }
             .area-tab-btn { padding: 6px 10px; font-size: 12px; }
-            .area-mc-notice { top: auto; bottom: 90px; padding: 10px 14px; }
-            .area-mc-notice__text { font-size: 12px; }
         }
 
         /* ================================================================
@@ -430,7 +396,7 @@
          *     - 기존 CSS 미수정, !important 스코프 오버라이드만.
          *     - 수익성분석 탭 복귀 시 selector 미매치 → 즉시 원복.
          *     - 사이드바(dark 인디고 배경) 자체는 미수정 (사용자 요구).
-         *     - 상단 area-tab-bar 및 area-mc-notice 는 자체 스타일 유지.
+         *     - 상단 area-tab-bar 는 자체 스타일 유지.
          *
          *   팔레트:
          *     주 그라디언트 : #0284c7 → #0369a1 (sky-600 → sky-700)
@@ -575,7 +541,7 @@
             background: #f0f9ff !important;
             color: #165274 !important;
         }
-        /* 활성 버튼: 딥 스카이 그라디언트 + 스카이 그림자 (area-mc-notice 아이콘과 통일) */
+        /* 활성 버튼: 딥 스카이 그라디언트 + 스카이 그림자 (제조원가 테마 컬러) */
         body[data-area="manufacturing-cost"] .domain-btn.active {
             background: linear-gradient(135deg,#0284c7,#0369a1) !important;
             box-shadow: 0 2px 8px rgba(2,132,199,0.30) !important;
@@ -1100,27 +1066,10 @@
         });
     }
 
-    function ensureNoticeRemoved() {
-        const n = document.getElementById('areaMcNotice');
-        if (n && n.parentNode) n.parentNode.removeChild(n);
-    }
-    function showManufacturingNotice() {
-        if (document.getElementById('areaMcNotice')) return;
-        const n = document.createElement('div');
-        n.className = 'area-mc-notice';
-        n.id = 'areaMcNotice';
-        n.innerHTML = `
-            <div class="area-mc-notice__icon"><i class="fas fa-industry"></i></div>
-            <div class="area-mc-notice__text">
-                <strong>[제조원가]</strong> 업무영역은 현재 화면 디자인 프리뷰 상태입니다.<br>
-                기능(데이터·질의·학습)은 이후 단계에서 순차적으로 연결됩니다.
-            </div>
-            <button type="button" class="area-mc-notice__close" title="닫기"
-                    onclick="this.parentNode.remove();">
-                <i class="fas fa-times"></i>
-            </button>`;
-        document.body.appendChild(n);
-    }
+    // [2026-08-25] 제조원가 프리뷰 안내 배너 제거.
+    //   showManufacturingNotice() / ensureNoticeRemoved() 및 관련 CSS 삭제됨.
+    //   제조원가 기능(데이터/질의/학습) 연동 완료로 안내 배너가 더 이상 필요 없음.
+    //   혹시 이전 세션에서 남아있을 수 있는 DOM 은 안전하게 정리하도록 leftover cleanup 만 유지.
 
     function applyAreaVisuals() {
         refreshActiveStyle();
@@ -1128,11 +1077,9 @@
         if (document.body) {
             document.body.setAttribute('data-area', currentArea);
         }
-        if (currentArea === 'manufacturing-cost') {
-            showManufacturingNotice();
-        } else {
-            ensureNoticeRemoved();
-        }
+        // 과거 배너 DOM leftover 방어 (캐시된 페이지 대비)
+        const leftover = document.getElementById('areaMcNotice');
+        if (leftover && leftover.parentNode) leftover.parentNode.removeChild(leftover);
     }
 
     // ------------------------------------------------------------------
