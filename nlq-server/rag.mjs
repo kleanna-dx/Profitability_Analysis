@@ -126,8 +126,14 @@ async function buildRagIndex(pool) {
   //   - column-level (formula에 이미 집계 함수 포함): formula 그대로
   //   - aggregation 값이 CALC 가 아니어도, formula가 row-level이면 SUM(formula)로 명확히 표기
   //   → 이렇게 해야 LLM이 "CALC(...)" 같은 무의미한 표기를 보지 않고, 바로 사용 가능한 SQL 표현식을 받음
+  // [2026-08-25] metric.table_name 을 함께 로드하여 metadata 에 포함.
+  //   - 기존: metadata 에 table_name 이 없어 searchRelevantMeta 의 tableWhitelist 필터가
+  //           metric 청크에 적용될 수 없었음 → 업무영역 탭 격리 시에도 다른 테이블의 metric
+  //           청크가 LLM 컨텍스트에 섞여 들어감.
+  //   - 변경: SELECT 에 m.table_name 추가 + metadata.table_name = m.table_name.
+  //           chunk_text 에도 [테이블:...] 표기하여 embedding 시 테이블 컨텍스트가 반영되게 함.
   const [metRows] = await pool.query(
-    `SELECT m.id, m.metric_code, m.aggregation, m.formula, m.description, m.domain_code,
+    `SELECT m.id, m.metric_code, m.aggregation, m.formula, m.description, m.domain_code, m.table_name,
             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
      FROM metric m
      LEFT JOIN metric_synonym s ON s.metric_id = m.id
@@ -153,7 +159,8 @@ async function buildRagIndex(pool) {
       sqlExpr = formula;
       level = hasAggInside ? 'column-level' : 'row-level';
     }
-    let text = `지표: ${m.description || m.metric_code} = ${sqlExpr} [${level}, 도메인:${m.domain_code || 'ALL'}]`;
+    const tableTag = m.table_name ? `[테이블:${m.table_name}]` : '';
+    let text = `지표: ${m.description || m.metric_code} = ${sqlExpr} [${level}, 도메인:${m.domain_code || 'ALL'}]${tableTag}`;
     text += `. 원본 산식(학습관리 등록값): ${formula}`;
     if (m.synonyms) text += `. 동의어: ${m.synonyms}`;
     chunks.push({
@@ -167,7 +174,8 @@ async function buildRagIndex(pool) {
         sql_expr: sqlExpr,
         level,
         description: m.description,
-        domain_code: m.domain_code
+        domain_code: m.domain_code,
+        table_name: m.table_name || null,   // ★ [2026-08-25] 업무영역 격리용 (tableWhitelist 필터 지원)
       },
     });
   }
@@ -188,16 +196,32 @@ async function buildRagIndex(pool) {
   }
 
   // 5. SQL 피드백 청크 — 질문-SQL 쌍
+  //   [2026-08-25] sql_feedback 는 도메인 코드만 있고 대상 테이블 정보가 없으므로,
+  //   corrected_sql 안의 `FROM <table>` 절을 정규식으로 추출하여 metadata.tables 에 담음.
+  //   이후 searchRelevantMeta 에서 tableWhitelist 격리 시,
+  //   feedback 청크에 담긴 테이블이 화이트리스트와 하나도 겹치지 않으면 제외.
+  //   (스코프 격리로 다른 테이블 예시 SQL 이 LLM 컨텍스트에 섞이는 문제 방지)
   const [fbRows] = await pool.query(
-    `SELECT id, query_text, corrected_sql, feedback_type FROM sql_feedback WHERE is_active = 1`
+    `SELECT id, query_text, corrected_sql, feedback_type, domain_code FROM sql_feedback WHERE is_active = 1`
   );
   for (const fb of fbRows) {
+    // FROM/JOIN 뒤 테이블 이름 추출 (대소문자 무시, backtick/스키마 접두 허용)
+    const fromMatches = String(fb.corrected_sql || '').match(/\b(?:FROM|JOIN)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/gi) || [];
+    const tables = [...new Set(
+      fromMatches.map(f => f.replace(/\b(?:FROM|JOIN)\s+`?/i, '').replace(/`$/, '').toLowerCase())
+    )];
     const text = `검증된 SQL 예시 [${fb.feedback_type}]: 질문="${fb.query_text}" → SQL: ${fb.corrected_sql}`;
     chunks.push({
       type: 'feedback',
       sourceId: fb.id,
       text,
-      metadata: { query_text: fb.query_text, corrected_sql: fb.corrected_sql, feedback_type: fb.feedback_type },
+      metadata: {
+        query_text: fb.query_text,
+        corrected_sql: fb.corrected_sql,
+        feedback_type: fb.feedback_type,
+        domain_code: fb.domain_code || null,
+        tables,   // ★ [2026-08-25] 업무영역 격리용 (예: ['bw_profitability_data'] / ['sys_aimd_cot015', ...])
+      },
     });
   }
 
@@ -380,13 +404,25 @@ async function searchRelevantMeta(pool, query, options = {}) {
       const chunkDomain = c.metadata?.domain_code;
       if (chunkDomain && chunkDomain !== domainCode) return false;
     }
-    // ★ [2026-08-25] 테이블 화이트리스트 필터: ontology/schema 청크는 허용 테이블만
-    //    (업무영역 탭 강제 필터가 적용되었을 때 다른 테이블 컬럼이 LLM 컨텍스트에 섞이는 것을 방지)
+    // ★ [2026-08-25] 테이블 화이트리스트 필터: 업무영역 탭 강제 필터가 적용되었을 때,
+    //    LLM 컨텍스트에 다른 테이블 정보(컬럼/지표/피드백 SQL)가 섞여 들어가는 것을 방지.
+    //    - ontology/schema/metric 청크: metadata.table_name (단일)
+    //    - feedback 청크: metadata.tables (배열 — corrected_sql 에서 추출한 FROM/JOIN 대상 테이블들)
+    //      → 화이트리스트와 겹치는 테이블이 하나라도 있으면 통과. 하나도 없으면 제외.
+    //    - metadata 에 table 정보가 없는 (구버전) 청크는 통과 (하위호환).
     if (tableWhitelist && Array.isArray(tableWhitelist) && tableWhitelist.length > 0) {
-      if (c.type === 'ontology' || c.type === 'schema') {
+      if (c.type === 'ontology' || c.type === 'schema' || c.type === 'metric') {
         const chunkTable = c.metadata?.table_name;
-        // 메타데이터에 table_name이 있으면 화이트리스트와 대조 (없는 청크는 통과)
+        // 메타데이터에 table_name 이 있으면 화이트리스트와 대조 (없는 청크는 통과)
         if (chunkTable && !tableWhitelist.includes(chunkTable)) return false;
+      } else if (c.type === 'feedback') {
+        const tables = Array.isArray(c.metadata?.tables) ? c.metadata.tables : null;
+        if (tables && tables.length > 0) {
+          const wlLower = tableWhitelist.map(t => String(t).toLowerCase());
+          const anyOverlap = tables.some(t => wlLower.includes(String(t).toLowerCase()));
+          if (!anyOverlap) return false;
+        }
+        // tables 정보가 없는 (구버전) feedback 청크는 통과
       }
     }
     return true;
