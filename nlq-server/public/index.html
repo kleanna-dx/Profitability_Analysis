@@ -1517,10 +1517,32 @@ const SUGGESTIONS_BY_AREA = {
             '입고-생산 제품별 총원가 TOP 5',
             '제품별 변동비와 고정비 비교',
         ],
-        // [부서별원가] 다음 단계에서 sys_aimd_cot043 실제 데이터 기준으로 추가.
-        'cost-dept': [],
-        // [호기별원가] 다음 단계에서 sys_aimd_cot043 실제 데이터 기준으로 추가.
-        'cost-machine': [],
+        // [부서별원가] sys_aimd_cot043 실제 데이터 기준 (호기 COSTCENTER 제외).
+        //   COSTCENTER/COSTCENTER_NM(부서) × ZCOSTCOMP_NM(원가구성)/COSTELMNT_NM(원가요소) × AMOUNT(금액).
+        //   서버측 forcedFilter 로 23개 호기 COSTCENTER 는 자동 제외됨.
+        'cost-dept': [
+            '부서별 총원가 TOP 5',
+            '부서별 재료비 TOP 5',
+            '부서별 노무비 TOP 5',
+            '부서별 경비 TOP 5',
+            '부서별 원가구성별 금액 비교',
+            '전월대비 부서별 총원가 증가액 TOP 10',
+            '부서별 원가요소 순위',
+            '부서별 원가구성비율 TOP 5',
+        ],
+        // [호기별원가] sys_aimd_cot043 실제 데이터 기준 (23개 호기 COSTCENTER 만 포함).
+        //   COSTCENTER/COSTCENTER_NM(호기) × ZCOSTCOMP_NM(원가구성)/COSTELMNT_NM(원가요소) × AMOUNT(금액).
+        //   서버측 forcedFilter 로 23개 호기 COSTCENTER 만 자동 포함됨.
+        'cost-machine': [
+            '호기별 총원가 TOP 5',
+            '호기별 재료비 TOP 5',
+            '호기별 노무비 TOP 5',
+            '호기별 경비 TOP 5',
+            '호기별 원가구성별 금액 비교',
+            '전월대비 호기별 총원가 증가액 TOP 10',
+            '호기별 원가요소 순위',
+            '호기별 원가구성비율 TOP 5',
+        ],
     },
 };
 
