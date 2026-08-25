@@ -3585,6 +3585,37 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
     .replace(/__LATEST_MONTH__/g, dateCtx.latestMonth)
     .replace(/__PREV_MONTH__/g, dateCtx.prevMonth);
 
+  // ============================================================
+  // [2026-08-25] 업무영역 탭 강제 테이블 힌트 (FROM 절 오선택 방지)
+  // ------------------------------------------------------------
+  // 배경:
+  //   PR #387 로 RAG 청크는 tableWhitelist 로 좁혀졌으나, LLM 이 종종
+  //   sys_aimd_cot015 의 ZCGUBUN 을 인식하면서도 FROM 절엔 익숙한
+  //   bw_profitability_data 를 골라 "Unknown column 'ZCGUBUN'" DB 에러
+  //   발생 (사용자 리포트).
+  //
+  // 대응:
+  //   tableWhitelist 가 지정된 경우 시스템 프롬프트 최상단에
+  //   "허용 테이블 목록" 을 하드-강제 지시문으로 삽입.
+  //   - 여러 테이블 화이트리스트 (cost-dept/cost-machine 공용
+  //     [sys_aimd_cot015, sys_aimd_cot043]) 도 LLM 이 그 중에서만 선택.
+  //   - 화이트리스트 밖 테이블 사용 금지를 명시.
+  //   - forcedFilter 로 자동 주입되는 COSTCENTER 조건은 절대 제거 금지 명시.
+  // ============================================================
+  if (Array.isArray(tableWhitelist) && tableWhitelist.length > 0) {
+    const wlLine = tableWhitelist.map(t => `\`${t}\``).join(', ');
+    const forceFromHint =
+      '\n\n🚨🚨🚨 [절대 준수] 허용 테이블 화이트리스트 🚨🚨🚨\n' +
+      `이 질문은 특정 업무영역 탭에서 발생했습니다. **FROM 절에는 오직 다음 테이블만** 사용하세요: ${wlLine}\n` +
+      '- 위 목록에 없는 테이블(예: bw_profitability_data)을 FROM/JOIN 에 절대 사용하지 마세요.\n' +
+      '- 위 목록 안에서 질문 의미에 맞는 테이블을 선택하세요. 여러 개 나열되어 있어도 하나만 골라 사용합니다.\n' +
+      '- 컬럼 이름이 익숙해 보여도 위 목록 밖 테이블의 컬럼은 존재하지 않는다고 간주하세요.\n' +
+      '- 위 목록 안에서 실제 컬럼 목록은 아래 "허용 컬럼 목록" / RAG 검색 컨텍스트만 참고하세요.\n' +
+      '- 시스템이 자동 주입한 COSTCENTER IN/NOT IN 필터는 절대 제거하거나 완화하지 마세요.\n';
+    prompt = forceFromHint + prompt;
+    console.log(`[NLQ:Prompt] FROM 강제 힌트 주입: tableWhitelist=[${tableWhitelist.join(',')}]`);
+  }
+
   return { prompt, ragContext, dateContext: dateCtx };
 }
 
