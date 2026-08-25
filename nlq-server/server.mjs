@@ -1143,6 +1143,24 @@ function detectSubAreaMismatch(subArea, query) {
   return null;
 }
 
+// ============================================================
+// [2026-08-25] 프론트 area 키(kebab-case) → DB 저장용 area code(SNAKE_CASE) 정규화
+// ------------------------------------------------------------
+// - 프론트/URL 라우팅용:   'profitability', 'manufacturing-cost'
+// - DB(sys_aimd_areas.area_code, nl_query_history.business_area_code): 'PROFITABILITY', 'MANUFACTURING_COST'
+// - resolveAreaContext 는 kebab-case 를 그대로 통과시키므로 saveHistory 로 전달 직전에 정규화 필요.
+// - 표시명(사용자 배지 "수익"/"제조")은 프론트가 area_code 로부터 계산.
+// - 매핑 실패 시 null 반환 (기존 area 미선택 이력과 동일 처리)
+// ============================================================
+const AREA_KEY_TO_DB_CODE = {
+  'profitability':      'PROFITABILITY',
+  'manufacturing-cost': 'MANUFACTURING_COST',
+};
+function areaKeyToDbCode(rawArea) {
+  const k = String(rawArea || '').toLowerCase().trim();
+  return AREA_KEY_TO_DB_CODE[k] || null;
+}
+
 // 도메인 목록 API
 //   응답에 display_code 를 함께 실어 프런트가 표시용으로 사용.
 app.get('/api/domains', async (req, res) => {
@@ -7720,7 +7738,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           'SUCCESS',                                       // status — ★ 기존 컨벤션('SUCCESS'/'FAILED' 대문자) 준수. 이전엔 'success'(소문자)로 저장되어 이력 복원 시 status 비교 실패 → 빨간 오류 박스 노출 버그가 있었음
           null,                                            // error_message
           session_id || null,                              // session_id
-          activeDomain                                     // domain_code
+          activeDomain,                                    // domain_code
+          // [2026-08-25] 사이드바 [질의 이력] 배지용 area code (수익/제조)
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
         );
       } catch (histErr) {
         console.error('[NLQ:Intent] saveHistory 실패 (응답에는 영향 없음):', histErr.message);
@@ -7844,7 +7864,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           saveHistory(
             nlqUserIdConcept, query, null,
             conceptAnswer, 'analysis', {}, [],
-            0, 0, 'SUCCESS', null, session_id || null, activeDomain
+            0, 0, 'SUCCESS', null, session_id || null, activeDomain,
+            { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
           ).catch(e => console.error('[History] 저장 실패:', e.message));
           return res.json({
             success: true,
@@ -7923,7 +7944,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             nlqUserIdFail, query, execRecord.baseSql || null,
             QUERY_SCOPE_TIMEOUT_MESSAGE, 'analysis', {}, [],
             0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain,
-            { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE }
+            { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE, businessAreaCode: areaKeyToDbCode(areaCtx.area) }
           );
           // analysisPlan / executionDiagnostics 는 진단용 필드 — 프론트 중립 UI 는 렌더하지 않음
           const analysisTimeoutBody = {
@@ -7956,7 +7977,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             nlqUserIdFail, query, execRecord.baseSql,
             failMsg, 'analysis', {}, [],
             0, execRecord.baseExecMs || 0, 'FAILED', execRecord.baseError, session_id || null, activeDomain,
-            { requestId: analysisRequestId, errorType: 'execution_failed' }
+            { requestId: analysisRequestId, errorType: 'execution_failed', businessAreaCode: areaKeyToDbCode(areaCtx.area) }
           );
           return res.status(200).json({
             success: true,
@@ -8088,7 +8109,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         saveHistory(
           nlqUserIdAnalysis, query, execRecord.baseSql,
           analysis, 'analysis', analysisChartConfig, detailRows,
-          execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain
+          execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain,
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
         // [2026-07-31] 분석 결과 상세표 옆에 실제 조회 기간 표시.
@@ -8628,7 +8650,7 @@ ${sqlValidation.reason}
         saveHistorySafe(
           failUserId, query, sql, null, null, null, null, 0, dbElapsedMs,
           'FAILED', errMsg, session_id || null, activeDomain,
-          { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE }
+          { requestId: timeoutResp.body.requestId, errorType: LEGACY_DB_QUERY_TIMEOUT_CODE, businessAreaCode: areaKeyToDbCode(areaCtx.area) }
         );
         // [PR #335] aggregate 타이밍 로그 flush — DB 타임아웃 지점에서 즉시 출력
         aggTimingFlushLog('TIMEOUT', { errorCode: QUERY_SCOPE_TIMEOUT_CODE });
@@ -8658,7 +8680,7 @@ ${sqlValidation.reason}
       saveHistorySafe(
         failUserId, query, sql, null, null, null, null, 0, 0,
         'FAILED', errMsg, session_id || null, activeDomain,
-        { requestId: errorDetail.requestId || null, errorType: 'db_execution' }
+        { requestId: errorDetail.requestId || null, errorType: 'db_execution', businessAreaCode: areaKeyToDbCode(areaCtx.area) }
       );
       return res.status(200).json({
         success: false, sql, rows: [], rowCount: 0,
@@ -8945,7 +8967,7 @@ ${formatRule}
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
     const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain)
+    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain, { businessAreaCode: areaKeyToDbCode(areaCtx.area) })
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
     // [PR #335] aggregate 정상 종료 타이밍 로그
@@ -8973,7 +8995,7 @@ ${formatRule}
     saveHistory(
       nlqUserId, query, null, null, null, null, null, 0, 0,
       'FAILED', msg, session_id || null, activeDomain,
-      { requestId: errorDetail.requestId || null, errorType: 'system' }
+      { requestId: errorDetail.requestId || null, errorType: 'system', businessAreaCode: areaKeyToDbCode(areaCtx.area) }
     ).catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
     return res.status(500).json({
@@ -9798,10 +9820,14 @@ async function saveHistory(userId, queryText, sql, explanation, chartType, chart
   const configJson = chartConfig ? JSON.stringify(chartConfig) : null;
   const requestId = (options && options.requestId) ? String(options.requestId).slice(0, 64) : null;
   const errorType = (options && options.errorType) ? String(options.errorType).slice(0, 50) : null;
+  // [2026-08-25] business_area_code 는 options.businessAreaCode 로 전달 (하위호환 - 기본 null)
+  //   사이드바 [질의 이력] 배지 표시용. 실제 실행 시점의 선택된 area 값 그대로 저장.
+  //   options 가 없거나 필드가 없어도 기존 호출부 동작에 영향 없음.
+  const businessAreaCode = (options && options.businessAreaCode) ? String(options.businessAreaCode).slice(0, 32) : null;
   await pool.query(
-    `INSERT INTO nl_query_history (user_id, session_id, domain_code, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message, request_id, error_type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [userId || null, sessionId || null, domainCode || null, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg, requestId, errorType]
+    `INSERT INTO nl_query_history (user_id, session_id, domain_code, business_area_code, query_text, generated_sql, explanation, chart_type, chart_config, result_data, row_count, execution_time_ms, status, error_message, request_id, error_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId || null, sessionId || null, domainCode || null, businessAreaCode, queryText, sql, explanation, chartType, configJson, trimmedData, rowCount, execTime, status, errorMsg, requestId, errorType]
   );
 
   // 시간 기준 보관 정책: NLQ_HISTORY_RETENTION_DAYS(기본 31일) 경과 행 자동 삭제
@@ -9860,6 +9886,10 @@ app.get('/api/history', async (req, res) => {
          SUM(row_count) AS total_rows,
          session_id,
          MAX(domain_code) AS domain_code,
+         /* [2026-08-25] 사이드바 [질의 이력] 업무영역 배지용 (PROFITABILITY/MANUFACTURING_COST/NULL)
+            - 세션 내 여러 row 가 있어도 동일 area 로 저장되므로 MAX 로 대표값 취득 (domain_code 와 동일 패턴)
+            - 레거시 row 는 NULL → 프론트에서 배지 미표시 */
+         MAX(business_area_code) AS business_area_code,
          MAX(is_bookmarked) AS is_bookmarked
        FROM nl_query_history h
        WHERE user_id = ?
@@ -17108,6 +17138,33 @@ async function ensureBookmarkShareTables() {
       await pool.query(`ALTER TABLE ontology_column ADD COLUMN type VARCHAR(10) DEFAULT NULL COMMENT '원가/비용 구분 (원가|비용|NULL)' AFTER is_active`);
       await pool.query(`CREATE INDEX idx_ontology_type ON ontology_column(type)`);
       console.log('[Migration] ontology_column 에 type 컬럼 추가 완료');
+    }
+
+    // ============================================================
+    // [2026-08-25] nl_query_history 에 business_area_code 컬럼 추가
+    //   목적:
+    //     사이드바 [질의 이력]에서 각 질문이 수익성분석 / 제조원가 중 어느
+    //     업무영역 탭에서 실행되었는지 표시하기 위함.
+    //   저장값:
+    //     - 'PROFITABILITY' (수익성분석 탭)
+    //     - 'MANUFACTURING_COST' (제조원가 탭)
+    //     - NULL (업무영역 컨텍스트 없이 저장된 기존 이력)
+    //   프론트가 표시할 배지는 area_code → 사용자 표시명(수익/제조) 매핑을 사용.
+    //   업무영역은 실제 질의 실행 시점의 선택된 값을 그대로 저장 (문구 추측 금지).
+    // ============================================================
+    const [baCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nl_query_history' AND COLUMN_NAME = 'business_area_code'`
+    );
+    if (baCols.length === 0) {
+      // domain_code 옆에 나란히 배치 — 두 컬럼 모두 요청 컨텍스트 분류용
+      await pool.query(
+        `ALTER TABLE nl_query_history
+           ADD COLUMN business_area_code VARCHAR(32) DEFAULT NULL
+             COMMENT '질의 실행 당시 선택된 업무영역 코드 (PROFITABILITY/MANUFACTURING_COST/NULL)'
+             AFTER domain_code`
+      );
+      console.log('[Migration] nl_query_history 에 business_area_code 컬럼 추가 완료');
     }
   } catch (e) {
     console.error('[Migration] 북마크/공유 마이그레이션 실패:', e.message);

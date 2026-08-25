@@ -5685,6 +5685,16 @@ function renderHistoryList(items) {
         // [2026-07-30] 질의 이력 배지 표기는 사용자 표시명(MGMT → '통합'). 내부 코드는 dc 로 유지.
         const _dcDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(dc) : dc);
         const domainBadge = dc ? `<span style="display:inline-block;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${_dcDisp}]</span>` : '';
+        // [2026-08-25] 업무영역(수익성분석/제조원가) 배지 — 질의 실행 당시 실제 선택된 업무영역 값 기준.
+        //   - 서버 저장: nl_query_history.business_area_code (PROFITABILITY / MANUFACTURING_COST / NULL)
+        //   - 표시: [수익] (하늘색 계열) / [제조] (주황색 계열)
+        //   - 기존 이력(business_area_code=NULL)은 배지 미표시 → 기존 동작 유지
+        //   - domainBadge 앞에 렌더링 → 예: [수익] [통합] 손익센터별 총매출 합계
+        const bac = item.business_area_code;
+        const _bacDisp = bac === 'PROFITABILITY' ? '수익' : (bac === 'MANUFACTURING_COST' ? '제조' : null);
+        const areaBadge = _bacDisp
+            ? `<span style="display:inline-block;background:${bac==='PROFITABILITY'?'#e0f2fe':'#ffedd5'};color:${bac==='PROFITABILITY'?'#0284c7':'#c2410c'};font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${_bacDisp}]</span>`
+            : '';
         const meta = `${time}${countBadge}`;
         // 즐겨찾기 별 아이콘 — 채워진 별(fas) vs 빈 별(far)
         const isBookmarked = !!item.is_bookmarked;
@@ -5697,7 +5707,7 @@ function renderHistoryList(items) {
             <div class="history-item${activeCls}" data-session="${esc(sessionKey)}" onclick="restoreSession('${esc(sessionKey)}'${hintArg})">
                 <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
                 <div class="history-item-text">
-                    <div class="history-item-query">${domainBadge}${esc(title)}</div>
+                    <div class="history-item-query">${areaBadge}${domainBadge}${esc(title)}</div>
                     <div class="history-item-meta">${meta}</div>
                 </div>
                 <div class="history-item-actions">
