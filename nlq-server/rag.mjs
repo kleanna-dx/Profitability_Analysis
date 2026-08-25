@@ -266,14 +266,59 @@ async function buildRagIndex(pool) {
 }
 
 // 스키마 컬럼 정보 (DB 코멘트에서 추출)
+//
+// [2026-08-25] 다중 테이블 지원 — 원래 bw_profitability_data 한 테이블만 하드코딩되어
+//   sys_aimd_cot015 / sys_aimd_cot043 (제조원가 세부업무영역) 은 RAG schema 청크가
+//   생성되지 않아 NLQ 가 "알 수 없는 용어" 로 refuse 하는 버그가 있었음.
+//
+//   해결: ontology_column 에 등록된 모든 distinct table_name 을 대상으로 스키마 조회.
+//         이러면 신규 업무영역 테이블을 추가할 때 학습관리 화면에서 컬럼 등록만 하면
+//         자동으로 스키마 청크가 인덱스에 포함됨(하드코딩 유지보수 불필요).
+//
+//   Fallback: 온톨로지가 비어있는 초기 상태에서도 최소 bw_profitability_data 는 인덱싱.
 async function getSchemaColumns(pool) {
-  const [rows] = await pool.query(
-    `SELECT COLUMN_NAME AS column_name, COLUMN_TYPE AS data_type, 
-            COLUMN_COMMENT AS description, TABLE_NAME AS table_name
-     FROM INFORMATION_SCHEMA.COLUMNS 
-     WHERE TABLE_SCHEMA = 'company_board' AND TABLE_NAME = 'bw_profitability_data'
-     ORDER BY ORDINAL_POSITION`
+  // 1) 온톨로지에 등록된 대상 테이블 목록 수집 (신규 업무영역 자동 감지)
+  const [tblRows] = await pool.query(
+    `SELECT DISTINCT table_name
+       FROM ontology_column
+      WHERE is_active = 1
+        AND table_name IS NOT NULL
+        AND table_name <> ''`
   );
+  const targetTables = tblRows.map(r => r.table_name);
+  // 2) Fallback — 온톨로지가 비어있으면 기존 동작 유지
+  if (targetTables.length === 0) {
+    targetTables.push('bw_profitability_data');
+  }
+  // 3) 존재하지 않는 테이블은 warn 후 스킵 (INFORMATION_SCHEMA IN 절 안전 처리)
+  const [existRows] = await pool.query(
+    `SELECT TABLE_NAME
+       FROM INFORMATION_SCHEMA.TABLES
+      WHERE TABLE_SCHEMA = 'company_board'
+        AND TABLE_NAME IN (?)`,
+    [targetTables]
+  );
+  const existingSet = new Set(existRows.map(r => r.TABLE_NAME));
+  const missing = targetTables.filter(t => !existingSet.has(t));
+  if (missing.length > 0) {
+    console.warn(`[RAG] 스키마 인덱싱 대상 중 존재하지 않는 테이블 스킵: ${missing.join(', ')}`);
+  }
+  const finalTables = targetTables.filter(t => existingSet.has(t));
+  if (finalTables.length === 0) {
+    console.warn('[RAG] 인덱싱 가능한 스키마 테이블이 없음 — schema 청크 0건');
+    return [];
+  }
+  // 4) 실제 스키마 조회
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME AS column_name, COLUMN_TYPE AS data_type,
+            COLUMN_COMMENT AS description, TABLE_NAME AS table_name
+       FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = 'company_board'
+        AND TABLE_NAME IN (?)
+      ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+    [finalTables]
+  );
+  console.log(`[RAG] 스키마 인덱싱 대상 테이블 (${finalTables.length}개): ${finalTables.join(', ')} → 컬럼 ${rows.length}개`);
   return rows;
 }
 
@@ -348,6 +393,10 @@ async function searchRelevantMeta(pool, query, options = {}) {
   }).sort((a, b) => b.score - a.score);
 
   // 4. 카테고리별 Top-K 분류
+  //
+  // [2026-08-25] tableWhitelist 를 result 에 담아 프롬프트 렌더링 단계로 전달.
+  //   원래 예시 SQL 이 `FROM bw_profitability_data` 로 하드코딩되어 있어
+  //   제조원가 세부업무영역 탭에서 잘못된 테이블로 SQL 이 유도되던 버그 방지.
   const result = {
     schema: [],
     ontology: [],
@@ -356,6 +405,8 @@ async function searchRelevantMeta(pool, query, options = {}) {
     feedback: [],
     join_condition: [],
     rule: [],
+    _tableWhitelist: (tableWhitelist && Array.isArray(tableWhitelist) && tableWhitelist.length > 0)
+      ? [...tableWhitelist] : null,
   };
 
   const limits = {
@@ -551,12 +602,19 @@ function ragResultToPromptContext(ragResult) {
       }
     }
 
+    // [2026-08-25] 예시 SQL 의 테이블명을 tableWhitelist 우선으로 동적 결정.
+    //   원래 'bw_profitability_data' 하드코딩 → 제조원가 탭에서도 이 예시 때문에
+    //   LLM 이 잘못된 테이블로 SQL 을 생성하던 문제를 예방.
+    //   fallback: whitelist 가 없으면 기존 동작 유지(bw_profitability_data).
+    const exampleTable = (ragResult._tableWhitelist && ragResult._tableWhitelist.length > 0)
+      ? ragResult._tableWhitelist[0]
+      : 'bw_profitability_data';
     ctx += `\n📝 예시 SQL 구조 (그룹 조회):\n`;
     ctx += `  SELECT '<설명1 또는 컬럼코드>' AS 항목명, SUM(COALESCE(<컬럼1>, 0)) AS 금액\n`;
-    ctx += `    FROM bw_profitability_data WHERE <필터>\n`;
+    ctx += `    FROM ${exampleTable} WHERE <필터>\n`;
     ctx += `  UNION ALL\n`;
     ctx += `  SELECT '<설명2 또는 컬럼코드>' AS 항목명, SUM(COALESCE(<컬럼2>, 0)) AS 금액\n`;
-    ctx += `    FROM bw_profitability_data WHERE <필터>\n`;
+    ctx += `    FROM ${exampleTable} WHERE <필터>\n`;
     ctx += `  ...\n`;
     ctx += `  ORDER BY 금액 DESC LIMIT N;\n`;
     ctx += `\n  ⚠️ 각 컬럼은 NULL 이 포함될 수 있으므로 반드시 SUM(COALESCE(컬럼, 0)) 형태로 감싸세요.\n`;
