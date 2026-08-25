@@ -8227,6 +8227,18 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     sql = normalizeNameSearchFilter(sql);
     // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
+    // ─────────────────────────────────────────────────────────────
+    // [2026-08-25] 세부업무영역 강제 필터 자동 주입 (COSTCENTER IN/NOT IN)
+    //   - cost-dept    → sys_aimd_cot043 + COSTCENTER NOT IN (23개 호기)
+    //   - cost-machine → sys_aimd_cot043 + COSTCENTER IN (23개 호기)
+    //   - cost-product / profitability → forcedFilter=null → no-op
+    //   - 이미 SQL 에 동일 컬럼 조건이 있으면 no-op (applyForcedTableFilter 내부 방어)
+    //   - LLM 이 COSTCENTER 를 지정하지 않아도 서브영역 격리 보장
+    // ─────────────────────────────────────────────────────────────
+    if (areaCtx.forcedFilter && areaCtx.table) {
+      sql = applyForcedTableFilter(sql, areaCtx.forcedFilter, areaCtx.table);
+    }
+
     // [2026-08-21] SQL Validator 개선 — CTE(WITH ... SELECT) 허용
     // 기존: sqlUpper.startsWith('SELECT') + forbidden.includes(kw)
     //   → WITH으로 시작하는 정상 조회 SQL이 무조건 차단되고,
@@ -8320,6 +8332,10 @@ ${sqlValidation.reason}
           sql = applyDomainFilter(sql, activeDomain);
           sql = applyDivisionFromQuery(sql, query);
           sql = normalizeNameSearchFilter(sql);
+          // [2026-08-25] 재생성 SQL 에도 세부업무영역 강제 필터 주입
+          if (areaCtx.forcedFilter && areaCtx.table) {
+            sql = applyForcedTableFilter(sql, areaCtx.forcedFilter, areaCtx.table);
+          }
           // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
           // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
           const reval = validateSqlPreExecution(sql);
