@@ -2502,6 +2502,10 @@ ZAMT057, ZAMT058, ZAMT059, ZAMT060, ZAMT061, ZAMT062, ZAMT063, ZAMT064
   - 허용 컬럼 목록의 컬럼명/설명과도 일치하지 않음
   → 이 경우 응답 형식: "'{용어}'에 대한 정보가 등록되어 있지 않습니다. 관리자에게 문의하여 학습관리에 해당 용어를 등록해 주세요."
   → 절대 용어를 임의로 추측/해석하여 SQL을 생성하지 마세요! 틀린 SQL보다 모른다고 답하는 것이 훨씬 좋습니다.
+  → **예외 (2026-08-25 추가)**: 아래 두 조건이 모두 참이면 refuse 하지 말고 SQL 을 생성하세요.
+     (a) 사용자 질문의 핵심 용어가 이미 다른 Ontology 컬럼의 **차원값(dimension value)** 으로 매칭되어 WHERE 필터로 사용 가능 (예: '실제원가' → ZCGUBUN 필터)
+     (b) 프롬프트에 "[★ 정렬용 Measure 자동 후보]" 섹션이 제시되어 있음
+     → 이 경우 (a) 를 WHERE 필터로 걸고, (b) 후보 중 사용자 의도에 가장 부합하는 컬럼 하나를 골라 SUM(...) 정렬로 사용하여 정상 SQL 을 만드세요.
 
 [날짜/기간 필터링 규칙 - 매우 중요!]
 - **ZYEAR, ZMONTH, FISC_YEAR, FISC_PERIOD, YEAR, MONTH 등의 컬럼은 존재하지 않습니다! 절대 사용 금지!**
@@ -2821,6 +2825,123 @@ async function loadMetricMap(domainCode, tableWhitelist) {
     console.error('[Metric] loadMetricMap 실패:', e.message);
   }
   return map;
+}
+
+// ============================================================
+// [2026-08-25] "정렬 의도" 감지 — TOP N / 상위 N / 랭킹 / 순위 / 많은 / 높은 등
+//   ORDER BY <숫자 컬럼> 이 필요한 질문인지 판정.
+//   → matchSynonymsDirectly 에서 이 정렬 의도가 있고 metric 매칭이 0건일 때만
+//     candidate numeric measure 를 자동 발굴하여 프롬프트에 노출한다.
+// ============================================================
+const RANK_INTENT_PATTERNS = [
+  /\bTOP\s*\d*\b/i,      // TOP, TOP 5, TOP5
+  /상위\s*\d*/,          // 상위, 상위 5
+  /하위\s*\d*/,          // 하위 N
+  /최상위\s*\d*/,
+  /\b랭킹|순위|등수/,     // 랭킹/순위/등수
+  /가장\s*(많|높|큰|작|낮|적)/,  // "가장 많은", "가장 높은"
+  /제일\s*(많|높|큰|작|낮|적)/,
+  /\bMAX\s*\(/i, /\bMIN\s*\(/i,
+];
+function detectRankIntent(query) {
+  const q = String(query || '');
+  return RANK_INTENT_PATTERNS.some(p => p.test(q));
+}
+
+// ============================================================
+// [2026-08-25] 스코프 내 "숫자성 measure candidate" 자동 발굴
+// ------------------------------------------------------------
+// 목적:
+//   사용자 질문이 "제품별 실제원가 TOP 5" 같이 정렬 대상 metric 이 필요한데
+//   학습관리에 해당 스코프(sys_aimd_cot015 등)용 metric 이 아직 등록되지 않은 경우,
+//   ontology_column 의 숫자 컬럼(bigint/decimal/int/…)을 자동 발굴하여
+//   LLM 에게 "이 중에서 하나를 골라 SUM(...) 정렬에 사용하라"고 candidate 로 제시.
+//
+// 하드코딩 금지 원칙:
+//   - 특정 컬럼명(TOTAL/TOTAL1/ZAMT005 등)을 코드에 넣지 않음.
+//   - 순수하게 ontology_column.data_type 이 숫자 계열이고 스코프+도메인이 맞는 것만 선정.
+//   - 사용자 질문 키워드가 description 이나 동의어에 부분 매칭되면 관련도 가중.
+//
+// 반환: [{ column_name, description, data_type, synonyms: [], relevance }]
+//   relevance 내림차순 정렬. 최대 8건.
+// ============================================================
+const NUMERIC_TYPE_LIKE = ['%int%', '%decimal%', '%numeric%', '%double%', '%float%'];
+
+async function discoverNumericMeasureCandidates(query, domainCode, tableWhitelist) {
+  const dc = domainCode || 'PS';
+  const wl = Array.isArray(tableWhitelist) ? tableWhitelist.filter(Boolean) : [];
+  if (wl.length === 0) return [];   // 스코프 없으면 후보 발굴 안 함 (부작용 방지)
+
+  try {
+    // 숫자성 컬럼만 조회 (data_type 이 int/decimal/numeric/double/float 계열)
+    const dtOr = NUMERIC_TYPE_LIKE.map(() => 'c.data_type LIKE ?').join(' OR ');
+    const tPh = wl.map(() => '?').join(',');
+    const sql = `
+      SELECT c.id, c.column_name, c.description, c.data_type, c.table_name,
+             GROUP_CONCAT(s.synonym_text SEPARATOR ', ') AS synonyms
+      FROM ontology_column c
+      LEFT JOIN ontology_synonym s ON s.column_id = c.id
+      WHERE c.is_active = 1
+        AND c.domain_code = ?
+        AND c.table_name IN (${tPh})
+        AND (${dtOr})
+      GROUP BY c.id
+    `;
+    const params = [dc, ...wl, ...NUMERIC_TYPE_LIKE];
+    const [rows] = await pool.query(sql, params);
+
+    // 관련도 점수 계산: 사용자 질문 안의 어절과 description/synonyms 의 (양방향) 부분 매칭
+    //   [단방향] query 토큰이 description/synonym 에 포함되면:
+    //     - description 안에 사용자 질문의 2+ 글자 어절이 포함되면 +2
+    //     - 동의어 안에 포함되면 +3
+    //   [양방향] description/synonym 이 query 토큰에 포함되면 (짧은 어휘가 긴 복합어 안에 들어가는 경우):
+    //     - description 어절이 query 토큰에 포함되면 +1
+    //     - synonym 이 query 토큰에 포함되면 +2
+    //   [measure 성 힌트] description 이 "합계|합|계"/"금액"/"가"/"비" 로 끝나면 +1
+    //   [하드코딩 금지] 특정 컬럼명(TOTAL, TOTAL1, ZAMT005 등)에 대한 가중치는 없음 — 순수히 ontology 기반
+    const qTokens = String(query || '')
+      .split(/[\s,./·\-_()\[\]!?~"'`|]+/)
+      .filter(t => t && t.length >= 2);
+
+    const scored = rows.map(r => {
+      const desc = String(r.description || '');
+      const syns = String(r.synonyms || '');
+      const descTokens = desc.split(/[\s]+/).filter(t => t && t.length >= 2);
+      const synList = syns ? syns.split(', ').filter(Boolean) : [];
+      let rel = 0;
+      for (const qt of qTokens) {
+        // 단방향: query token 이 desc/syn 안에 포함
+        if (desc.includes(qt)) rel += 2;
+        if (syns.includes(qt)) rel += 3;
+        // 양방향: desc 어절 또는 synonym 이 query token 에 포함 (예: "실제원가" ⊃ "원가")
+        for (const dt of descTokens) {
+          if (dt !== qt && qt.includes(dt)) rel += 1;
+        }
+        for (const s of synList) {
+          if (s.length >= 2 && s !== qt && !syns.includes(qt) && qt.includes(s)) rel += 2;
+        }
+      }
+      // measure 성 힌트 (description 이 금액/합계/비/가 로 끝나면 가산)
+      if (/(합계|합|계|금액|가|비)$/.test(desc)) rel += 1;
+
+      return {
+        column_name: r.column_name,
+        description: desc,
+        data_type: r.data_type,
+        synonyms: synList,
+        relevance: rel,
+      };
+    });
+
+    // 관련도 내림차순, 동점 시 description 짧은 것 우선(더 일반적일수록 짧다는 heuristic)
+    scored.sort((a, b) => (b.relevance - a.relevance) || (a.description.length - b.description.length));
+
+    // 최대 8건, 관련도 0 인 컬럼도 스코프 안이면 조금은 넘김 (정렬 후보로 참고)
+    return scored.slice(0, 8);
+  } catch (e) {
+    console.error('[NumericCandidate] 조회 실패:', e.message);
+    return [];
+  }
 }
 
 /**
@@ -3328,12 +3449,18 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   //   [2026-08-25] tableWhitelist 지정 시 학습 컨텍스트를 해당 테이블로 격리
   const synonymMatches = await matchSynonymsDirectly(query, domainCode, tableWhitelist);
   let synonymContext = '';
+  // [2026-08-25] metricMatches / columnMatches 를 바깥 스코프로 끌어올림 —
+  //   candidate 렌더링 블록(line ~3600)이 synonymMatches.length === 0 상황에서도
+  //   참조할 수 있도록 하기 위함. 이전에는 if-블록 내부 const 였어서
+  //   "metricMatches is not defined" ReferenceError 가 발생했음.
+  let metricMatches = [];
+  let columnMatches = [];
   if (synonymMatches.length > 0) {
     // Metric 산식 매칭과 Ontology 컬럼 매칭 분리
     //   ★ ontology_desc_partial: 사용자 키워드가 다른 컬럼의 description에 부분 포함된 매칭
     //     (예: "소모품비"로 ZAMT049 동의어 매칭 + ZAMT019 description "수선/소모품비"에 포함)
-    const metricMatches = synonymMatches.filter(m => m.source === 'metric' || m.source === 'metric_desc');
-    const columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc' || m.source === 'ontology_desc_partial');
+    metricMatches = synonymMatches.filter(m => m.source === 'metric' || m.source === 'metric_desc');
+    columnMatches = synonymMatches.filter(m => m.source === 'ontology' || m.source === 'ontology_desc' || m.source === 'ontology_desc_partial');
     
     synonymContext = '\n[★ 동의어 매칭 결과 - 최우선 적용! 아래 매핑을 반드시 SQL에 사용하세요]\n';
     
@@ -3456,6 +3583,47 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       synonymContext += '⚠️ 이 질문에서는 Metric 산식이 매칭되지 않았습니다. Ontology 컬럼 기준의 GROUP BY/WHERE 조회를 수행하세요.\n';
     }
   }
+
+  // ============================================================
+  // [2026-08-25] Numeric Measure Candidate 자동 노출
+  // ------------------------------------------------------------
+  // 조건 (모두 충족 시 발동):
+  //   1) 정렬 의도(TOP N / 상위 N / 랭킹 / 가장 많은/높은 등) 감지
+  //   2) Metric 매칭이 0건 (스코프 내 metric 이 아직 학습관리에 등록되지 않은 상황)
+  //   3) tableWhitelist 지정됨 (업무영역 탭 컨텍스트 확실할 때만)
+  //
+  // 목적:
+  //   "'실제원가' 가 ZCGUBUN 차원값으로 매칭되었더라도, TOP 5 정렬용 measure 를
+  //    포기하지 말고 스코프 내 숫자 컬럼에서 후보를 자동 발굴하여 LLM 에게 제시" (사용자 요구).
+  //
+  // 하드코딩 금지: TOTAL/TOTAL1 같은 특정 컬럼명이 코드에 등장하지 않음.
+  //                순수 ontology_column.data_type + description + synonym 기반.
+  // ============================================================
+  const rankIntent = detectRankIntent(query);
+  const hasScope = Array.isArray(tableWhitelist) && tableWhitelist.length > 0;
+  if (rankIntent && metricMatches.length === 0 && hasScope) {
+    try {
+      const candidates = await discoverNumericMeasureCandidates(query, domainCode, tableWhitelist);
+      if (candidates.length > 0) {
+        synonymContext += '\n[★ 정렬용 Measure 자동 후보 — 학습관리에 Metric 이 없어도 SQL 을 만들 수 있게 노출]\n';
+        synonymContext += `사용자 질문에 정렬 의도(TOP N/상위 N/랭킹 등)가 있고, 이 업무영역(테이블: ${tableWhitelist.join(', ')})에 등록된 Metric 산식이 없습니다.\n`;
+        synonymContext += `아래 Ontology 숫자 컬럼 중 사용자 의도에 가장 부합하는 것을 하나 선택하여 SUM(<컬럼>) 형태로 SELECT / ORDER BY 에 사용하세요.\n`;
+        synonymContext += `단, 사용자 질문에서 이미 다른 Ontology 차원값(예: ZCGUBUN='실제원가')이 매칭되어 있다면, 그 차원값 필터는 WHERE 절에 그대로 유지하고, 이 후보 중에서 measure 컬럼을 별도로 선택하세요.\n`;
+        for (const c of candidates) {
+          const synTxt = c.synonyms.length > 0 ? ` (동의어: ${c.synonyms.join(', ')})` : '';
+          synonymContext += `- ${c.column_name} [${c.data_type}] — "${c.description}"${synTxt}\n`;
+        }
+        synonymContext += `▶ 위 후보들이 학습관리에 정식 Metric 으로 등록되기 전까지의 임시 후보입니다.\n`;
+        synonymContext += `▶ 이 후보에서 하나를 골라 SUM(...) 으로 SELECT 및 ORDER BY 에 사용하세요 — 이 정보가 있으므로 "정렬 대상을 알 수 없다"고 답하지 마세요.\n`;
+        console.log(`[NumericCandidate] rank-intent + no-metric + scope=[${tableWhitelist.join(',')}] → ${candidates.length}개 후보 노출: ${candidates.map(c => c.column_name).join(', ')}`);
+      } else {
+        console.log(`[NumericCandidate] rank-intent 감지되었지만 스코프 내 숫자 후보 컬럼이 0건이라 스킵`);
+      }
+    } catch (e) {
+      console.error('[NumericCandidate] 발굴 실패 (무시):', e.message);
+    }
+  }
+  
 
   // ★ Metric 산식이 매칭된 컬럼 목록 수집 (RAG 컨텍스트에서 해당 단순 컬럼 제거용)
   //   matchSynonymsDirectly에서 이미 수집한 referenced_codes를 그대로 활용
