@@ -3484,6 +3484,10 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
         codeMappingTopK: 5,
         ruleTopK: 5,
         domainCode: domainCode,  // ★ RAG 검색 단계에서 도메인 필터링
+        // [2026-08-25] 업무영역 탭 강제 테이블 화이트리스트 (예: cost-dept/cost-machine → [sys_aimd_cot015, sys_aimd_cot043])
+        //   - LLM 컨텍스트에 다른 테이블(bw_profitability_data 등) 컬럼이 섞이는 것을 방지
+        //   - tableWhitelist 가 빈 배열/null 이면 no-op (기존 동작 유지)
+        tableWhitelist: (Array.isArray(tableWhitelist) && tableWhitelist.length > 0) ? tableWhitelist : null,
       });
       // ★★★ 도메인 필터링: RAG 검색 결과에서 다른 도메인의 ontology/metric 제거
       if (ragContext.ontology) {
@@ -10046,13 +10050,34 @@ app.get('/api/suggestions', (req, res) => {
 // 전체 목록 (동의어 포함, domain 필터)
 app.get('/api/ontology', requireAdmin, async (req, res) => {
   const dc = req.query.domain_code || await getActiveDomain(req);
+  // [2026-08-25] 학습관리 업무영역 탭 필터
+  //   - area 파라미터로 넘어오면 AREA_SUB_TABLE_MAP 을 따라 해당 area 의 모든 서브영역 테이블 리스트를 사용
+  //     · profitability      → ['bw_profitability_data']
+  //     · manufacturing-cost → ['sys_aimd_cot015', 'sys_aimd_cot043']
+  //   - table 파라미터로 직접 특정 table_name 필터도 허용
+  //   - area/table 모두 없으면 기존 동작(도메인 전체) 유지 (하위호환)
+  let tableFilterCondition = '';
+  const tableFilterValues = [];
+  const rawArea = String(req.query.area || '').toLowerCase().trim();
+  const rawTable = String(req.query.table || '').trim();
+  if (rawTable) {
+    tableFilterCondition = ' AND c.table_name = ?';
+    tableFilterValues.push(rawTable);
+  } else if (rawArea && AREA_SUB_TABLE_MAP[rawArea]) {
+    const subs = AREA_SUB_TABLE_MAP[rawArea].subs || {};
+    const tables = [...new Set(Object.values(subs).map(s => s.table).filter(Boolean))];
+    if (tables.length > 0) {
+      tableFilterCondition = ` AND c.table_name IN (${tables.map(() => '?').join(',')})`;
+      tableFilterValues.push(...tables);
+    }
+  }
   try {
     const [columns] = await pool.query(
       `SELECT c.*, GROUP_CONCAT(s.id, ':::', s.synonym_text ORDER BY s.id SEPARATOR '|||') AS synonyms
        FROM ontology_column c
        LEFT JOIN ontology_synonym s ON s.column_id = c.id
-       WHERE c.domain_code = ?
-       GROUP BY c.id ORDER BY c.id`, [dc]
+       WHERE c.domain_code = ?${tableFilterCondition}
+       GROUP BY c.id ORDER BY c.id`, [dc, ...tableFilterValues]
     );
     const result = columns.map(row => ({
       ...row,

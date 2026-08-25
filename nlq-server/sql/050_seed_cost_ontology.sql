@@ -25,6 +25,13 @@
 --   사용자 확정 예시질문 (PR #385) 및 이번 세션에서 확정한
 --   부서별/호기별 예시질문에서 도출한 자연어 표현들을 우선 등록.
 --
+-- ⚠️ 실행 후 반드시 RAG 인덱스 재빌드:
+--     POST /api/rag/build   (관리자 로그인 세션 필요)
+--   또는 서버 재기동 후 학습관리 화면에서 [RAG 인덱스 재빌드] 버튼 클릭.
+--   이 시드가 DB 에 들어와도 rag_embeddings 에 반영되지 않으면 NLQ 프롬프트의
+--   "허용 컬럼 목록" 에 sys_aimd_cot015 / sys_aimd_cot043 컬럼이 노출되지 않아
+--   "알 수 없는 용어입니다" 응답이 계속 발생합니다.
+--
 -- 멱등성:
 --   - ontology_column: UNIQUE KEY (domain_code, column_name, table_name)
 --     → INSERT IGNORE 로 재실행 안전.
