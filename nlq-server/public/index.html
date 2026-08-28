@@ -4118,6 +4118,24 @@ function appendSubareaClarificationMessage(data) {
     const originalQuery = clarify.originalQuery || '';
     const options = Array.isArray(clarify.options) ? clarify.options : [];
 
+    // [2026-08-28 방어] originalQuery 유실 시 명확화 UI 렌더 스킵
+    //   (버튼을 눌러도 재요청이 불가하므로 사용자에게 재입력을 유도)
+    if (!String(originalQuery).trim() || options.length === 0) {
+        const warn = document.createElement('div');
+        warn.className = 'msg-bot fade-in';
+        warn.innerHTML = `
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+                <div class="bot-avatar" style="background:#dc2626;"><i class="fas fa-exclamation-triangle" style="font-size:13px;"></i></div>
+                <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px 16px;border-radius:12px;flex:1;">
+                    <p style="color:#991b1b;font-size:13px;font-weight:600;margin:0;">명확화 응답 데이터가 유효하지 않습니다.</p>
+                    <p style="color:#7f1d1d;font-size:12px;margin-top:6px;">질문을 다시 입력해 주세요.</p>
+                </div>
+            </div>`;
+        chatArea.appendChild(warn);
+        scrollToBottom();
+        return;
+    }
+
     // 지표명 추출 시도 (질문에서 명사 힌트) — 실패해도 안전 fallback
     // 예: "6월 인건비 알려줘" → "인건비"
     let metricHint = '';
@@ -4203,25 +4221,58 @@ function appendSubareaClarificationMessage(data) {
 // [2026-08-25] 명확화 응답 후 재요청 (원 질의 + 선택된 subArea)
 // ------------------------------------------------------------
 // - 사용자가 명확화 버튼을 눌렀을 때 호출.
-// - 표준 sendQuery() 를 재사용하되, area/subArea 를 강제로 payload 에 실음.
+// - 표준 sendQuery(query) 를 재사용하되, area/subArea 를 강제로 payload 에 실음.
 // - AreaTabs.snapshot() 은 이제 subArea=null 을 반환하므로 별도 override 필요.
+//
+// [2026-08-28 fix] 명확화 버튼 클릭 후 400 오류 (query 빈값 전달) 수정
+//   - 원 원인: 이전 구현이 `await sendQuery();` 를 파라미터 없이 호출하여
+//     query 가 undefined 로 전달됨 → payload.query 가 JSON.stringify 시 사라짐
+//     → 서버 /api/nlq/async 가 400 "질의를 입력하세요." 로 응답.
+//   - 수정: sendQuery(originalQuery) 처럼 명시적으로 원 질의를 파라미터로 전달.
+//     또한 originalQuery 가 비어있으면 재요청 자체를 차단(방어).
 // ============================================================
 async function resendQueryWithSubArea(originalQuery, subArea) {
-    // 사용자 시각 피드백을 위해 채팅에 "선택됨: 부서별 원가" 안내를 남기지 않고,
-    // 곧바로 재질의 로딩 UI 로 진입 (sendQuery 재사용).
-    //
-    // 구현 방식:
-    //   - 임시로 AreaTabs.snapshot 를 monkey-patch 해서 subArea 를 넣지 않고,
-    //     sendQuery 내부의 payload 조립 지점 이후 우리 override 를 통한다면 복잡.
-    //   - 더 안전: window.__forceSubArea 플래그를 세팅하고 sendQuery 는 그대로 호출,
-    //     payload 조립 부분에서 이 플래그를 읽어 payload.subArea 를 덮어씀.
+    // ─────────────────────────────────────────────────────────
+    // [방어 로직] originalQuery 빈값이면 재요청 차단
+    //   - 명확화 응답에서 originalQuery 가 유실된 이상 상황에서 서버 400 을
+    //     내는 대신 사용자에게 안내 후 종료.
+    // ─────────────────────────────────────────────────────────
+    const trimmedQuery = String(originalQuery || '').trim();
+    if (!trimmedQuery) {
+        console.warn('[SubareaClarify] originalQuery 가 비어있어 재요청을 중단합니다.');
+        try {
+            const chatArea = document.getElementById('chatArea');
+            if (chatArea) {
+                const warn = document.createElement('div');
+                warn.className = 'msg-bot fade-in';
+                warn.innerHTML = `
+                    <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+                        <div class="bot-avatar" style="background:#dc2626;"><i class="fas fa-exclamation-triangle" style="font-size:13px;"></i></div>
+                        <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px 16px;border-radius:12px;flex:1;">
+                            <p style="color:#991b1b;font-size:13px;font-weight:600;margin:0;">원 질문을 확인할 수 없어 재요청을 진행할 수 없습니다.</p>
+                            <p style="color:#7f1d1d;font-size:12px;margin-top:6px;">질문을 다시 입력해 주세요.</p>
+                        </div>
+                    </div>`;
+                chatArea.appendChild(warn);
+                scrollToBottom();
+            }
+        } catch (_) {}
+        return;
+    }
+    if (!subArea) {
+        console.warn('[SubareaClarify] subArea 가 비어있어 재요청을 중단합니다.');
+        return;
+    }
+
+    // window.__forceMfgSubArea 플래그를 세팅하고 sendQuery(originalQuery) 호출.
+    // payload 조립 부분(index.html ~L2677)이 이 플래그를 읽어 payload.subArea 를 덮어씀.
+    // 서버(server.mjs ~L9625)는 payload.subArea 가 명시적으로 오면 자동 라우터를 스킵.
     window.__forceMfgSubArea = subArea;
     try {
-        // sendQuery 는 input.value 를 사용하므로 임시 설정 후 호출
-        const input = document.getElementById('queryInput');
-        if (input) input.value = originalQuery;
         if (typeof sendQuery === 'function') {
-            await sendQuery();
+            // ⚠️ 반드시 파라미터로 원 질의를 전달 — 파라미터 없이 호출하면
+            //    query=undefined 로 서버 400 발생.
+            await sendQuery(trimmedQuery);
         }
     } finally {
         // 재요청 완료 후 플래그 해제 (다음 자유 질의에서 자동 라우팅 재개)
