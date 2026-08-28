@@ -4230,7 +4230,56 @@ function appendSubareaClarificationMessage(data) {
 //     → 서버 /api/nlq/async 가 400 "질의를 입력하세요." 로 응답.
 //   - 수정: sendQuery(originalQuery) 처럼 명시적으로 원 질의를 파라미터로 전달.
 //     또한 originalQuery 가 비어있으면 재요청 자체를 차단(방어).
+//
+// [2026-08-28 enhance] 사용자 요구사항 반영: 버튼 선택 = 분석 차원(Dimension) 추가
+//   - [제품별 원가] 선택 → "2026년 7월의 인건비 알려줘" → "2026년 7월의 제품별 인건비 알려줘"
+//   - [부서별 원가] 선택 → "부서별" 접두어 추가
+//   - [호기별 원가] 선택 → "호기별" 접두어 추가
+//   - 이렇게 하면 GPT 가 GROUP BY MATERIAL / COSTCENTER 를 자연스럽게 생성.
+//   - 사용자 말풍선/이력에도 증강된 문장이 그대로 흐름 (sendQuery 는 파라미터를 그대로 노출)
+//
+//   증강 규칙 (SUBAREA_DIMENSION_KEYWORDS):
+//     - cost-product  → "제품별"  (MATERIAL / MATERIAL_NM)
+//     - cost-dept     → "부서별"  (COSTCENTER 부서 코드)
+//     - cost-machine  → "호기별"  (COSTCENTER 호기 코드)
+//
+//   중복 방지: 원 질문에 이미 "제품별/부서별/호기별" 등의 차원 키워드가 있으면
+//              증강하지 않음 (사용자가 그 경우엔 애매하지 않아 명확화 자체가 뜨지 않지만,
+//              만약 뜬 경우에도 안전하게 no-op).
 // ============================================================
+const SUBAREA_DIMENSION_KEYWORDS = {
+    'cost-product': { prefix: '제품별', label: '제품별 원가' },
+    'cost-dept':    { prefix: '부서별', label: '부서별 원가' },
+    'cost-machine': { prefix: '호기별', label: '호기별 원가' },
+};
+
+// 원 질문에 이미 차원 키워드가 들어있는지 검사 (모든 subArea 통합)
+// 이미 있으면 접두어를 추가하지 않아 "제품별 제품별 인건비" 같은 어색한 문장 방지.
+function _queryHasDimensionKeyword(query) {
+    if (!query) return false;
+    // 각 subArea 별로 후보 키워드 (라우터의 MFG_SUBAREA_KEYWORDS 서브셋 — 명확한 차원 표시만)
+    const dimKeywords = ['제품별', '부서별', '호기별', '팀별', '라인별', '설비별', '품목별'];
+    return dimKeywords.some(kw => query.includes(kw));
+}
+
+// 원 질문에 subArea 분석 차원(Dimension) 정보를 추가
+// - 이미 차원 키워드가 있으면 원문 그대로 반환 (중복 방지)
+// - 없으면 원문 뒤에 라벨 접미어 추가: "<원문> (제품별 원가)"
+//
+// [형태 선택 근거] 사용자 요구 4번 UI 표시 명세:
+//   [제품별 원가] 선택 → "2026년 7월의 인건비 알려줘 (제품별 원가)"
+//   이렇게 하면 사용자 말풍선/이력에도 자연스럽게 라벨이 표시되고,
+//   GPT SQL 프롬프트에는 "(제품별 원가)" 힌트가 명시적으로 들어가
+//   GROUP BY MATERIAL / COSTCENTER 를 자연스럽게 유도.
+function augmentQueryWithSubArea(originalQuery, subArea) {
+    const q = String(originalQuery || '').trim();
+    if (!q) return q;
+    if (_queryHasDimensionKeyword(q)) return q;
+    const cfg = SUBAREA_DIMENSION_KEYWORDS[subArea];
+    if (!cfg) return q;
+    return `${q} (${cfg.label})`;
+}
+
 async function resendQueryWithSubArea(originalQuery, subArea) {
     // ─────────────────────────────────────────────────────────
     // [방어 로직] originalQuery 빈값이면 재요청 차단
@@ -4264,15 +4313,28 @@ async function resendQueryWithSubArea(originalQuery, subArea) {
         return;
     }
 
-    // window.__forceMfgSubArea 플래그를 세팅하고 sendQuery(originalQuery) 호출.
+    // ─────────────────────────────────────────────────────────
+    // [2026-08-28 enhance] 원 질문에 분석 차원(Dimension) 키워드 접두어 삽입
+    // ─────────────────────────────────────────────────────────
+    //   예) "2026년 7월의 인건비 알려줘" + [제품별 원가]
+    //     → "제품별 2026년 7월의 인건비 알려줘"
+    //   이렇게 하면:
+    //     1. 사용자 말풍선/이력에도 자연스럽게 "제품별" 표시
+    //     2. GPT SQL 프롬프트에도 "제품별" 힌트가 명시적으로 들어가 GROUP BY MATERIAL 유도
+    //     3. subArea 는 payload override 로 별도 전달 (테이블 라우팅/COSTCENTER 필터 유지)
+    const augmentedQuery = augmentQueryWithSubArea(trimmedQuery, subArea);
+    console.log(`[SubareaClarify] 재질의 → subArea=${subArea}  original="${trimmedQuery}"  augmented="${augmentedQuery}"`);
+
+    // window.__forceMfgSubArea 플래그를 세팅하고 sendQuery(augmentedQuery) 호출.
     // payload 조립 부분(index.html ~L2677)이 이 플래그를 읽어 payload.subArea 를 덮어씀.
     // 서버(server.mjs ~L9625)는 payload.subArea 가 명시적으로 오면 자동 라우터를 스킵.
     window.__forceMfgSubArea = subArea;
     try {
         if (typeof sendQuery === 'function') {
-            // ⚠️ 반드시 파라미터로 원 질의를 전달 — 파라미터 없이 호출하면
+            // ⚠️ 반드시 파라미터로 (증강된) 질의를 전달 — 파라미터 없이 호출하면
             //    query=undefined 로 서버 400 발생.
-            await sendQuery(trimmedQuery);
+            // 사용자 말풍선/이력에 증강된 텍스트가 자연스럽게 표시됨.
+            await sendQuery(augmentedQuery);
         }
     } finally {
         // 재요청 완료 후 플래그 해제 (다음 자유 질의에서 자동 라우팅 재개)

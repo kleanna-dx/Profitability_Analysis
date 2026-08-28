@@ -4827,9 +4827,44 @@ async function runAnalysisSqls(safeQueries) {
 // ────────────────────────────────────────────────────────────
 // [1] generateAnalysisPlan — LLM이 사용자 질문을 문맥 전체로 판단하여
 //     실행 계획을 생성. 특정 키워드에 의존하지 않고 목적을 추론.
+//
+// [2026-08-28] areaCtx 지원:
+//   options.areaCtx = { area, subArea, table, tableWhitelist, forcedFilter }
+//   - table 이 지정되면 컬럼 카탈로그·프롬프트·SQL 빌더가 그 테이블 기준으로 동작.
+//   - 미지정(레거시) 시 기존 동작 유지 (bw_profitability_data).
 // ────────────────────────────────────────────────────────────
 async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationContext, options = {}) {
   const dc = activeDomain || 'PS';
+
+  // [2026-08-28] 세부업무영역 컨텍스트 (없으면 기본 수익성분석 테이블)
+  const areaCtx = options.areaCtx || null;
+  const targetTable = (areaCtx && areaCtx.table) || 'bw_profitability_data';
+  const isMfgCost = areaCtx && areaCtx.area === 'manufacturing-cost';
+  // 세부영역별 GROUP BY 힌트 (사용자 요구사항: 명확화 버튼 = 분석 차원 추가)
+  //   cost-product : MATERIAL / MATERIAL_NM   (제품별)
+  //   cost-dept    : COSTCENTER               (부서별, 호기 COSTCENTER 제외)
+  //   cost-machine : COSTCENTER               (호기별, 호기 COSTCENTER만)
+  let subAreaDirective = '';
+  if (isMfgCost && areaCtx.subArea) {
+    if (areaCtx.subArea === 'cost-product') {
+      subAreaDirective = `\n[★★★ 세부업무영역 = 제품별원가 (${targetTable}) ★★★]\n` +
+        `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+        `- 사용자가 "제품별" 이라 언급하지 않았어도 dimension 에 반드시 [MATERIAL, MATERIAL_NM] 을 포함하여 제품별 집계로 답하세요 (columns=["MATERIAL","MATERIAL_NM"]).\n` +
+        `- 결과는 절대 1행 총합이 아니라 제품 여러 행이 나와야 합니다.\n`;
+    } else if (areaCtx.subArea === 'cost-dept') {
+      subAreaDirective = `\n[★★★ 세부업무영역 = 부서별원가 (${targetTable}) ★★★]\n` +
+        `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+        `- 사용자가 "부서별" 이라 언급하지 않았어도 dimension 에 반드시 [COSTCENTER, COSTCENTER_NM] 을 포함하여 부서별 집계로 답하세요 (COSTCENTER_NM 이 없다면 [COSTCENTER] 단독).\n` +
+        `- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n` +
+        `- 결과는 절대 1행 총합이 아니라 부서 여러 행이 나와야 합니다.\n`;
+    } else if (areaCtx.subArea === 'cost-machine') {
+      subAreaDirective = `\n[★★★ 세부업무영역 = 호기별원가 (${targetTable}) ★★★]\n` +
+        `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+        `- 사용자가 "호기별" 이라 언급하지 않았어도 dimension 에 반드시 [COSTCENTER, COSTCENTER_NM] 을 포함하여 호기별 집계로 답하세요 (COSTCENTER_NM 이 없다면 [COSTCENTER] 단독).\n` +
+        `- 호기(설비) COSTCENTER 코드만 대상으로 백엔드가 자동 필터링합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n` +
+        `- 결과는 절대 1행 총합이 아니라 호기 여러 행이 나와야 합니다.\n`;
+    }
+  }
 
   // ── [2026-08-07] 사업부 표현 결정적 감지 (aggregate 모드와 동일 정책 이식)
   //   배경: 분석질문 파이프라인은 그동안 사업부 표현(HL/HL사업부/홈앤라이프 등)
@@ -4890,13 +4925,17 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   }
 
   // ── 컬럼 카탈로그
+  // [2026-08-28] targetTable 을 기준으로 컬럼 카탈로그 조회.
+  //   세부업무영역이 지정되면 그 테이블(sys_aimd_cot015/043)의 컬럼만 카탈로그에 포함.
+  //   미지정 시 기본 bw_profitability_data.
   let columnCatalog = '';
   try {
     const [actualCols] = await pool.query(
       `SELECT COLUMN_NAME, COLUMN_COMMENT
          FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME='bw_profitability_data'
-        ORDER BY ORDINAL_POSITION`
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME=?
+        ORDER BY ORDINAL_POSITION`,
+      [targetTable]
     );
     const ontoDesc = {};
     try {
@@ -5012,10 +5051,13 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 
     // 재시도 시에만 활성 도메인 + 활성 기간에서 ZAMT 컬럼들의 실제 값 유무를 진단해 프롬프트에 첨부
     //  → 값이 모두 0/NULL 인 컬럼은 어느 것인지 LLM이 알 수 있어야 대체 공식 선택 가능
+    //
+    // [2026-08-28] ZAMT 진단은 bw_profitability_data 전용. 세부업무영역 테이블
+    //   (sys_aimd_cot015/043) 에서는 ZAMT 컬럼이 없으므로 스킵.
     try {
       const div = dc === 'PS' ? '10' : (dc === 'HL' ? '20' : null);
       const cmForDiag = (options.previousPlan?.period?.from) || cm;
-      if (div && cmForDiag) {
+      if (div && cmForDiag && targetTable === 'bw_profitability_data') {
         const zamtCols = [];
         for (let i = 1; i <= 55; i++) zamtCols.push('ZAMT' + String(i).padStart(3, '0'));
         const selectParts = zamtCols.map(c => `SUM(${c}) AS \`${c}\``).join(', ');
@@ -5283,11 +5325,12 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 - 당월: ${cmLabel} (CALMONTH='${cm}')
 - 전월: ${prevLabel} (CALMONTH='${prevCm}')
 - 활성 도메인 (UI 필터): ${dc}
-${divisionDirective}${synonymDirective}
+- 대상 테이블: ${targetTable}
+${subAreaDirective}${divisionDirective}${synonymDirective}
 [★ 학습관리 등록 지표 (지표성 컬럼은 반드시 이 산식 사용)]
 ${metricCatalog || '(없음)'}
 
-[★ 사용 가능 실제 컬럼 — 이 목록에 없는 컬럼명 만들지 말 것]
+[★ 사용 가능 실제 컬럼 (테이블 ${targetTable}) — 이 목록에 없는 컬럼명 만들지 말 것]
 ${columnCatalog || '(없음)'}
 ${convCtx}${retryHint}
 
@@ -5438,7 +5481,10 @@ ${convCtx}${retryHint}
 // [2-a] buildAggregationSqlFromPlan — plan의 dimensions/metrics/filters
 //        로 GROUP BY SELECT 자동 생성 (LLM이 SQL 문법을 직접 작성하지 않도록)
 // ────────────────────────────────────────────────────────────
-function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
+// [2026-08-28] targetTable 파라미터 추가 (기본값 하위호환).
+//   세부업무영역이 있는 경우 executeAnalysisPlan 이 areaCtx.table 을 넘겨
+//   FROM 절이 sys_aimd_cot015 / sys_aimd_cot043 로 생성되도록 함.
+function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo, targetTable = 'bw_profitability_data') {
   const dims = Array.isArray(plan.dimensions) ? plan.dimensions : [];
   const mets = Array.isArray(plan.metrics) ? plan.metrics : [];
   const filters = Array.isArray(plan.filters) ? plan.filters : [];
@@ -5641,7 +5687,7 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
     const rankAlias = '순위';
     const cteSql =
       `WITH _base AS (` +
-        `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause}` +
+        `SELECT ${selectClause} FROM ${targetTable} WHERE ${whereClause}${groupByClause}` +
       `), ` +
       `_ranked AS (` +
         `SELECT _base.*, ` +
@@ -5683,7 +5729,7 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   if (!useCte && topOp && topN !== null && !partitionColSql && orderColAlias && groupByParts.length > 0) {
     const buffer = 20;
     const dbLimit = Math.min(50000, topN + buffer);
-    const sql = `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause} ORDER BY ${orderColAlias} ${orderDirSql} LIMIT ${dbLimit}`;
+    const sql = `SELECT ${selectClause} FROM ${targetTable} WHERE ${whereClause}${groupByClause} ORDER BY ${orderColAlias} ${orderDirSql} LIMIT ${dbLimit}`;
     return {
       sql,
       dimAliasByName,
@@ -5706,7 +5752,7 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   // ────────────────────────────────────────────────────────
   const limit = groupByParts.length > 0 ? 50000 : 1;
 
-  const sql = `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause} LIMIT ${limit}`;
+  const sql = `SELECT ${selectClause} FROM ${targetTable} WHERE ${whereClause}${groupByClause} LIMIT ${limit}`;
 
   return { sql, dimAliasByName, metricAliasByName };
 }
@@ -6055,11 +6101,19 @@ function runPostOperations(plan, baseRows) {
 
 // ────────────────────────────────────────────────────────────
 // [2-c] executeAnalysisPlan — plan 을 실제 DB 로 실행
+//
+// [2026-08-28] areaCtx 파라미터 추가:
+//   - areaCtx.table       : FROM 절 대상 테이블 (sys_aimd_cot015/043 등)
+//   - areaCtx.forcedFilter: 실행 직전 SQL 에 자동 주입할 강제 필터
+//                          (예: cost-dept 는 COSTCENTER NOT IN (23개 호기),
+//                               cost-machine 은 COSTCENTER IN (23개 호기))
+//   - 미지정(레거시) 시 기존 동작 유지 (bw_profitability_data).
 // ────────────────────────────────────────────────────────────
-async function executeAnalysisPlan(plan, activeDomain, query = '') {
+async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = null) {
   const domain = (plan.domain && plan.domain.value) || activeDomain || 'PS';
   const calmonth = (plan.period && plan.period.from) || '';
   const calmonthTo = (plan.period && plan.period.to) || calmonth;
+  const targetTable = (areaCtx && areaCtx.table) || 'bw_profitability_data';
 
   const execRecord = {
     baseSql: null,
@@ -6074,7 +6128,7 @@ async function executeAnalysisPlan(plan, activeDomain, query = '') {
   };
 
   // ── base SQL 생성 및 실행
-  const built = buildAggregationSqlFromPlan(plan, calmonth, calmonthTo);
+  const built = buildAggregationSqlFromPlan(plan, calmonth, calmonthTo, targetTable);
   // ── [2026-08-07] 사업부 필터 3중 방어 (aggregate 모드와 동일 정책 이식)
   //   기존: applyDomainFilter 만 호출 → plan.domain.value 만 참조하므로
   //         LLM 이 filter 에 DIVISION_NM='HL사업부' 같은 잘못된 조건을
@@ -6089,10 +6143,19 @@ async function executeAnalysisPlan(plan, activeDomain, query = '') {
   //   ※ plan 생성 단계에서 이미 domain 이 감지값으로 재작성되었지만,
   //     이 3중 방어는 aggregate 모드와 동일한 안전망을 제공하여
   //     "표현이 달라도 결과가 같음" 을 보장.
+  //   ※ applyDomainFilter/applyDivisionFromQuery/normalizeDivisionFilter 는
+  //     모두 bw_profitability_data 참조 SQL 에만 적용되므로,
+  //     sys_aimd_cot015/043 대상 SQL 에서는 자연스럽게 no-op 로 스킵됨.
   let baseSql = built.sql;
   baseSql = normalizeDivisionFilter(baseSql);
   baseSql = applyDomainFilter(baseSql, domain);
   baseSql = applyDivisionFromQuery(baseSql, query || '');
+  // ── [2026-08-28] 세부업무영역 강제 필터 (COSTCENTER IN/NOT IN 23개 호기 코드)
+  //   applyForcedTableFilter 는 대상 테이블(sys_aimd_cot043) 참조 SQL 에만 주입.
+  //   sys_aimd_cot015 (제품별) / bw_profitability_data 대상 SQL 에서는 no-op.
+  if (areaCtx && areaCtx.forcedFilter && areaCtx.table) {
+    baseSql = applyForcedTableFilter(baseSql, areaCtx.forcedFilter, areaCtx.table);
+  }
   execRecord.baseSql = baseSql;
   // [2026-08-07] (Task 6) TOP N 진단 정보 노출: DB 단 ORDER BY LIMIT 적용 여부 등
   //   - built.rankInfo:  partitionBy 있는 CTE 경로 (기존)
@@ -6141,12 +6204,15 @@ async function executeAnalysisPlan(plan, activeDomain, query = '') {
   const cmpOp = (plan.operations || []).find(o => String(o.type).toUpperCase() === 'COMPARE_PERIODS');
   if (cmpOp && cmpOp.prior) {
     const priorPlan = { ...plan, period: { ...plan.period, from: cmpOp.prior, to: cmpOp.prior } };
-    const priorBuilt = buildAggregationSqlFromPlan(priorPlan, cmpOp.prior);
-    // [2026-08-07] prior SQL 에도 base SQL 과 동일한 3중 방어 적용
+    const priorBuilt = buildAggregationSqlFromPlan(priorPlan, cmpOp.prior, cmpOp.prior, targetTable);
+    // [2026-08-07] prior SQL 에도 base SQL 과 동일한 3중 방어 + 세부업무영역 강제 필터 적용
     let priorSql = priorBuilt.sql;
     priorSql = normalizeDivisionFilter(priorSql);
     priorSql = applyDomainFilter(priorSql, domain);
     priorSql = applyDivisionFromQuery(priorSql, query || '');
+    if (areaCtx && areaCtx.forcedFilter && areaCtx.table) {
+      priorSql = applyForcedTableFilter(priorSql, areaCtx.forcedFilter, areaCtx.table);
+    }
     execRecord.priorSql = priorSql;
     try {
       // [2026-07-22 PR #247] prior 기간 SQL 도 동일 statement timeout 적용
@@ -8025,7 +8091,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         dateContext = dc;
 
         // ── [1] AnalysisPlan 생성 (1차)
-        let plan = await generateAnalysisPlan(query, activeDomain, dc, conversationContext);
+        // [2026-08-28] areaCtx 전달: 세부업무영역이 지정되면 그 테이블 기준으로
+        //   컬럼 카탈로그·프롬프트가 동작하고, executeAnalysisPlan 이 그 테이블 FROM 을 생성.
+        let plan = await generateAnalysisPlan(query, activeDomain, dc, conversationContext, { areaCtx });
         console.log(`[AnalysisPlan] 1차 생성 완료: requiresDataExecution=${plan.requiresDataExecution}, ` +
           `answerMode=${plan.answerMode}, dims=${(plan.dimensions||[]).length}, ` +
           `metrics=${(plan.metrics||[]).length}, ops=${(plan.operations||[]).length}, ` +
@@ -8063,7 +8131,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         setRequestStage('analysis_execute');
         // [2026-08-07] query 전달: executeAnalysisPlan 내부 3중 방어
         //   (normalizeDivisionFilter + applyDivisionFromQuery) 를 위해 필요
-        let execRecord = await executeAnalysisPlan(plan, activeDomain, query);
+        // [2026-08-28] areaCtx 전달: 세부업무영역별 FROM 테이블 + 강제 필터 주입
+        let execRecord = await executeAnalysisPlan(plan, activeDomain, query, areaCtx);
         console.log(`[AnalysisPlan] 1차 실행: baseRows=${execRecord.baseRowCount}, ` +
           `err=${execRecord.baseError || '-'}, ops_diag=${execRecord.diagnostics.length}`);
 
@@ -8086,8 +8155,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             plan = await generateAnalysisPlan(query, activeDomain, dc, conversationContext, {
               retryReason: reason,
               previousPlan: plan,
+              areaCtx,  // [2026-08-28] 재시도에도 areaCtx 유지
             });
-            execRecord = await executeAnalysisPlan(plan, activeDomain, query);
+            execRecord = await executeAnalysisPlan(plan, activeDomain, query, areaCtx);
             validation = validateAnalysisResults(plan, execRecord);
             console.log(`[AnalysisPlan] 2차 실행: baseRows=${execRecord.baseRowCount}, err=${execRecord.baseError || '-'}, validation.ok=${validation.ok}`);
           } catch (retryErr) {
