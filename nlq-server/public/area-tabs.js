@@ -939,6 +939,15 @@
         const hintEl  = document.getElementById('subAreaTabBarHint');
         const subs = SUB_AREAS[currentArea];
 
+        // [2026-08-25] 제조원가 세부탭 UI 통합 (사용자 확정)
+        //   - UI 에서 3개 세부탭(제품별/부서별/호기별)을 제거하고
+        //     하나의 자연어 질의창에서 서버가 자동 라우팅.
+        //   - SUB_AREAS 정의는 유지 (name/table 매핑은 다른 로직도 참조).
+        //   - 여기서는 항상 바 자체를 hidden 처리.
+        bar.style.display = 'none';
+        return;
+
+        /* eslint-disable no-unreachable */
         // 상위 영역이 서브 미보유 → 바 자체 숨김
         if (!subs || subs.length === 0) {
             bar.style.display = 'none';
@@ -1209,7 +1218,21 @@
             return AREA_DEFAULT_TABLE[currentArea] || null;
         },
         // 현재 selection 스냅샷 (payload 삽입용 · 새 채팅 히스토리 저장용)
+        //
+        // [2026-08-25] 제조원가 세부탭 UI 통합:
+        //   - 제조원가일 때 subArea/subAreaLabel/table 을 null 로 반환
+        //     → 서버가 inferManufacturingCostSubArea() 로 자동 라우팅
+        //   - 수익성분석은 기존과 동일 (세부영역 없음)
         snapshot: () => {
+            if (currentArea === 'manufacturing-cost') {
+                return {
+                    area: currentArea,
+                    areaLabel: (AREAS[currentArea] || {}).label || currentArea,
+                    subArea: null,      // ← 세부탭 제거 → 서버 자동 라우팅
+                    subAreaLabel: null,
+                    table: null,
+                };
+            }
             const meta = findSubAreaMeta(currentArea, currentSubArea);
             return {
                 area: currentArea,

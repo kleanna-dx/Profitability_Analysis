@@ -1492,19 +1492,33 @@ function getSuggestionsForDomain(dc) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// [2026-08-24] 업무영역/세부업무영역별 예시 질문 매핑
-//   - 상위 area 는 area-tabs.js 의 AREAS/SUB_AREAS 키와 정확히 일치.
+// [2026-08-24 / 2026-08-25 통합] 업무영역별 예시 질문 매핑
+//   - 상위 area 는 area-tabs.js 의 AREAS 키와 정확히 일치.
 //   - area === 'profitability'  → 예시는 도메인(PS/HL) 기준으로 결정
 //                                → 기존 SUGGESTIONS_BY_DOMAIN 을 그대로 사용
-//   - area === 'manufacturing-cost' → subArea(제품별/부서별/호기별) 별로 분리
-//     * cost-product (제품별원가) : sys_aimd_cot015 실제 데이터 기준 8개
-//     * cost-dept    (부서별원가) : 후속 단계에서 sys_aimd_cot043 기준 추가
-//     * cost-machine (호기별원가) : 후속 단계에서 sys_aimd_cot043 기준 추가
+//   - area === 'manufacturing-cost'
+//     ▸ [2026-08-25] UI 세부탭 통합에 따라 subArea 대신 '__unified__' 통합 예시 사용
+//     ▸ 각 문구가 '제품별 / 부서별 / 호기별' 중 어느 기준인지 명시적으로 드러나므로
+//       서버 라우터가 명확화 질문 없이 즉시 subArea 를 결정할 수 있음.
+//     ▸ 아래 subArea 별 리스트(cost-product/cost-dept/cost-machine)는
+//       참고용으로 남겨두되 사용되지 않음.
 //   - 예시 문구에는 특정 월을 하드코딩하지 않음 (최신 마감월 정책 적용).
 // ─────────────────────────────────────────────────────────────
 const SUGGESTIONS_BY_AREA = {
     'profitability': null,   // 도메인(PS/HL) 기반 → getSuggestionsForDomain() 위임
     'manufacturing-cost': {
+        // [2026-08-25] UI 세부탭 통합 → 통합 예시질문 (제품/부서/호기 골고루)
+        //   각 예시가 어느 subArea 인지 규칙 매칭으로 즉시 확정 가능한 문구로 구성.
+        '__unified__': [
+            '제품별 실제원가 TOP 5',
+            '부서별 총원가 TOP 5',
+            '설비별 총원가 TOP 5',
+            '제품별 매출원가 TOP 5',
+            '부서별 재료비 TOP 5',
+            '설비별 노무비 TOP 5',
+            '전월대비 제품별 실제원가 증가액 TOP 10',
+            '팀별 원가구성별 금액 비교',
+        ],
         // [제품별원가] sys_aimd_cot015: PLANT/MATERIAL/ZCGUBUN(표준·실제·매출원가)/
         //   ZCGUBUN_D(입고-생산/소비-소비)/TOTAL/KST_V(변동비)/KST_F(고정비) 기준.
         'cost-product': [
@@ -1560,7 +1574,13 @@ function getSuggestionsForAreaSelection() {
         const entry   = SUGGESTIONS_BY_AREA[areaKey];
         if (entry === null) return null; // 수익성분석 → 도메인 fallback
         if (!entry) return null;
+        // [2026-08-25] 제조원가 UI 세부탭 통합
+        //   - snapshot().subArea === null 로 오므로 '__unified__' 예시를 사용
+        //   - 세부탭이 다시 부활할 경우를 대비해 subKey 매칭도 유지
         if (subKey && Array.isArray(entry[subKey])) return entry[subKey];
+        if (areaKey === 'manufacturing-cost' && Array.isArray(entry['__unified__'])) {
+            return entry['__unified__'];
+        }
         return null;
     } catch (e) {
         return null;
@@ -2650,6 +2670,15 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             asyncPayload.subAreaLabel  = areaSnap.subAreaLabel;
             asyncPayload.table         = areaSnap.table;
         }
+        // [2026-08-25] 명확화 응답 후 재요청 지원
+        //   - window.__forceMfgSubArea 가 세팅되어 있으면 그것으로 subArea override
+        //   - snapshot() 은 제조원가일 때 subArea=null 을 반환하므로 이 override 가 필요
+        try {
+            if (window.__forceMfgSubArea && asyncPayload.area === 'manufacturing-cost') {
+                asyncPayload.subArea = window.__forceMfgSubArea;
+                console.log(`[SubareaClarify] 재요청 subArea override: ${window.__forceMfgSubArea}`);
+            }
+        } catch (_) {}
         const r = await fetch('/api/nlq/async', {
             method: 'POST',
             headers: acceptHeaders,
@@ -2935,6 +2964,12 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             timestamp: sd.timestamp || new Date().toISOString(),
             jobId,
         });
+    } else if (data.subareaClarification) {
+        // [2026-08-25] 제조원가 세부영역 명확화 응답
+        //   - 서버가 자연어에서 subArea 를 확정하지 못한 경우 반환 (규칙+LLM 모두 AMBIGUOUS)
+        //   - 사용자에게 3개 버튼(제품별/부서별/호기별)을 제시하여 재질의 유도
+        //   - 버튼 클릭 시 원 질의 + 선택된 subArea 를 명시적으로 실어 재요청
+        appendSubareaClarificationMessage(data);
     } else if (data.isUnknownTerm) {
         appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
     } else if (isNewIntent(data)) {
@@ -4058,6 +4093,140 @@ function appendUnknownTermMessage(msg) {
         </div>`;
     chatArea.appendChild(el);
     scrollToBottom();
+}
+
+// ============================================================
+// [2026-08-25] 제조원가 세부영역 명확화 메시지
+// ------------------------------------------------------------
+// 서버가 자연어에서 subArea 를 확정하지 못한 경우 반환하는 응답 UI.
+// 사용자에게 [제품별 원가] [부서별 원가] [호기별 원가] 3개 버튼을 제시하고
+// 클릭 시 원 질의 + 선택된 subArea 를 명시적으로 실어 서버에 재요청한다.
+//
+// data 구조 (서버 /api/nlq/async 명확화 응답):
+//   {
+//     subareaClarification: {
+//       originalQuery: string,
+//       options: [{ subArea: string, label: string }, ...],
+//       rationale: string
+//     },
+//     ...
+//   }
+// ============================================================
+function appendSubareaClarificationMessage(data) {
+    const chatArea = document.getElementById('chatArea');
+    const clarify = data.subareaClarification || {};
+    const originalQuery = clarify.originalQuery || '';
+    const options = Array.isArray(clarify.options) ? clarify.options : [];
+
+    // 지표명 추출 시도 (질문에서 명사 힌트) — 실패해도 안전 fallback
+    // 예: "6월 인건비 알려줘" → "인건비"
+    let metricHint = '';
+    try {
+        const m = String(originalQuery).match(/([가-힣A-Za-z0-9]+비|[가-힣A-Za-z0-9]+금액|[가-힣A-Za-z0-9]+원가|[가-힣A-Za-z0-9]+가액|매출|이익)/);
+        if (m) metricHint = m[1];
+    } catch (e) {}
+    const promptText = metricHint
+        ? `어떤 기준의 <b>${esc(metricHint)}</b>를 조회할까요?`
+        : `조회하시려는 데이터 기준을 선택해 주세요.`;
+
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+    const btnHtml = options.map(opt =>
+        `<button type="button" class="subarea-clarify-btn" data-subarea="${esc(opt.subArea)}"
+            style="padding:8px 16px;background:#fff;border:1.5px solid #0369a1;border-radius:8px;color:#0369a1;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;">
+            ${esc(opt.label)}
+        </button>`
+    ).join('');
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#0284c7,#0369a1);">
+                <i class="fas fa-question-circle" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#f0f9ff;border:1px solid #bae6fd;padding:14px 18px;border-radius:12px;flex:1;">
+                <p style="color:#075985;font-size:13px;font-weight:600;margin-bottom:10px;">
+                    <i class="fas fa-info-circle" style="margin-right:5px;"></i>${promptText}
+                </p>
+                <p style="color:#0c4a6e;font-size:12px;margin-bottom:12px;line-height:1.5;">
+                    질문만으로는 <b>제품별 / 부서별 / 호기별</b> 중 어느 기준인지 판단하기 어렵습니다.<br>
+                    아래에서 원하시는 조회 기준을 선택해 주세요.
+                </p>
+                <div class="subarea-clarify-buttons" style="display:flex;gap:8px;flex-wrap:wrap;">
+                    ${btnHtml}
+                </div>
+                <p style="color:#64748b;font-size:11px;margin-top:10px;font-style:italic;">
+                    원래 질문: "${esc(originalQuery)}"
+                </p>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+
+    // 버튼 클릭 핸들러 — 원 질의 + 선택된 subArea 로 재요청
+    el.querySelectorAll('.subarea-clarify-btn').forEach(btn => {
+        // Hover 효과
+        btn.addEventListener('mouseenter', () => {
+            btn.style.background = '#0369a1';
+            btn.style.color = '#fff';
+        });
+        btn.addEventListener('mouseleave', () => {
+            if (!btn.dataset.selected) {
+                btn.style.background = '#fff';
+                btn.style.color = '#0369a1';
+            }
+        });
+        btn.addEventListener('click', async () => {
+            const chosenSubArea = btn.dataset.subarea;
+            // 모든 버튼 비활성화 (중복 클릭 방지)
+            el.querySelectorAll('.subarea-clarify-btn').forEach(b => {
+                b.disabled = true;
+                b.style.opacity = '0.5';
+                b.style.cursor = 'not-allowed';
+            });
+            // 선택된 버튼만 강조
+            btn.dataset.selected = '1';
+            btn.style.background = '#0369a1';
+            btn.style.color = '#fff';
+            btn.style.opacity = '1';
+            btn.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>${btn.textContent.trim()}`;
+            // 재요청 — sendQuery 우회하여 payload 에 subArea 명시적으로 삽입
+            try {
+                await resendQueryWithSubArea(originalQuery, chosenSubArea);
+            } catch (e) {
+                console.error('[SubareaClarify] 재요청 실패:', e);
+            }
+        });
+    });
+
+    scrollToBottom();
+}
+
+// ============================================================
+// [2026-08-25] 명확화 응답 후 재요청 (원 질의 + 선택된 subArea)
+// ------------------------------------------------------------
+// - 사용자가 명확화 버튼을 눌렀을 때 호출.
+// - 표준 sendQuery() 를 재사용하되, area/subArea 를 강제로 payload 에 실음.
+// - AreaTabs.snapshot() 은 이제 subArea=null 을 반환하므로 별도 override 필요.
+// ============================================================
+async function resendQueryWithSubArea(originalQuery, subArea) {
+    // 사용자 시각 피드백을 위해 채팅에 "선택됨: 부서별 원가" 안내를 남기지 않고,
+    // 곧바로 재질의 로딩 UI 로 진입 (sendQuery 재사용).
+    //
+    // 구현 방식:
+    //   - 임시로 AreaTabs.snapshot 를 monkey-patch 해서 subArea 를 넣지 않고,
+    //     sendQuery 내부의 payload 조립 지점 이후 우리 override 를 통한다면 복잡.
+    //   - 더 안전: window.__forceSubArea 플래그를 세팅하고 sendQuery 는 그대로 호출,
+    //     payload 조립 부분에서 이 플래그를 읽어 payload.subArea 를 덮어씀.
+    window.__forceMfgSubArea = subArea;
+    try {
+        // sendQuery 는 input.value 를 사용하므로 임시 설정 후 호출
+        const input = document.getElementById('queryInput');
+        if (input) input.value = originalQuery;
+        if (typeof sendQuery === 'function') {
+            await sendQuery();
+        }
+    } finally {
+        // 재요청 완료 후 플래그 해제 (다음 자유 질의에서 자동 라우팅 재개)
+        setTimeout(() => { window.__forceMfgSubArea = null; }, 100);
+    }
 }
 
 // ============================================================

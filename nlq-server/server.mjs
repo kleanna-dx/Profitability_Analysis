@@ -1694,6 +1694,182 @@ const GPT_MODEL = process.env.GPT_MODEL || 'gpt-5.5';
 
 console.log(`[NLQ] AI 설정: model=${GPT_MODEL}, baseURL=${process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'}`);
 
+// ═════════════════════════════════════════════════════════════════
+// [2026-08-25] 제조원가 세부영역 자동 라우터 (UI 세부탭 통합 대응)
+// ─────────────────────────────────────────────────────────────────
+// 배경:
+//   - 제조원가 화면에서 3개 세부탭(제품별/부서별/호기별)이 UI 통합됨.
+//   - 이제 사용자는 하나의 자연어 질의창에서 모든 제조원가 데이터를 조회.
+//   - subArea 컨텍스트는 GPT 가 자연어에서 추론해야 함.
+//
+// 라우팅 원칙 (사용자 확정):
+//   1) 규칙 기반 키워드 매칭 (빠르고 결정론적)
+//      - cost-product : 제품, 품목, 자재, SKU, 제품별
+//      - cost-dept    : 부서, 부서별, 팀, 조직, 팀별
+//      - cost-machine : 설비, 라인, 기계, 장비
+//        (※ '호기'/'호기별'은 사용자 지시로 제외 — 데이터에 '호기' 표기가
+//            혼재하여 오탐 소지가 있고, '설비/라인/기계/장비' 로 커버 가능)
+//   2) 정확히 1개 매칭 → 결정
+//   3) 0개 또는 2개 이상 매칭 → LLM 보조 라우터 (AMBIGUOUS 허용)
+//   4) LLM 도 판단 불가 → AMBIGUOUS → 사용자에게 3개 버튼 명확화 질문
+//
+// ⚠️ 임의 선택 금지: 요구사항 5번 (모호 상태에서 임의 SQL 실행 금지)
+// ═════════════════════════════════════════════════════════════════
+const MFG_SUBAREA_KEYWORDS = {
+  'cost-product': ['제품별', '제품', '품목', '자재', 'SKU'],
+  'cost-dept':    ['부서별', '팀별', '부서', '조직', '팀'],
+  'cost-machine': ['설비', '라인', '기계', '장비'],
+};
+
+/**
+ * 규칙 기반 subArea 매칭.
+ * 우선순위: 긴 키워드 먼저 매칭 (예: '제품별'이 '제품'보다 먼저 시도).
+ * @param {string} query
+ * @returns {{ matches: string[], reason: string }}
+ *   matches: 매칭된 subArea 키 배열 (0/1/2/3개)
+ *   reason:  매칭된 키워드 요약 (로그용)
+ */
+function matchMfgSubAreaByKeywords(query) {
+  const q = String(query || '');
+  if (!q.trim()) return { matches: [], reason: '(empty)' };
+  const matched = new Set();
+  const matchedKw = [];
+  for (const [subKey, kws] of Object.entries(MFG_SUBAREA_KEYWORDS)) {
+    // 긴 키워드부터 시도 (definiteness 확보)
+    const sorted = [...kws].sort((a, b) => b.length - a.length);
+    for (const kw of sorted) {
+      if (q.includes(kw)) {
+        matched.add(subKey);
+        matchedKw.push(`${subKey}:${kw}`);
+        break;   // 이 subArea 는 이미 매칭됨, 다음 subArea 로
+      }
+    }
+  }
+  return {
+    matches: [...matched],
+    reason: matchedKw.length ? matchedKw.join(', ') : '(no keyword match)',
+  };
+}
+
+/**
+ * LLM 보조 라우터 — 규칙 매칭이 애매할 때 GPT 로 재판정.
+ * ⚠️ 강제 선택하지 않음: 명확한 근거가 없으면 AMBIGUOUS 반환 허용.
+ *
+ * @param {string} query
+ * @returns {Promise<{ subArea: string|null, ambiguous: boolean, rationale: string }>}
+ *   - subArea: 'cost-product' | 'cost-dept' | 'cost-machine' | null (ambiguous 시)
+ *   - ambiguous: true 면 사용자에게 명확화 질문 필요
+ *   - rationale: LLM 판단 근거 (로그/디버깅용)
+ */
+async function llmClassifyMfgSubArea(query) {
+  const sysPrompt = [
+    '너는 제조원가 자연어 질의를 3개 세부영역 중 하나로 분류하는 라우터다.',
+    '',
+    '세부영역:',
+    '  - cost-product : 제품/품목/자재/SKU 단위 원가 (테이블 sys_aimd_cot015)',
+    '  - cost-dept    : 부서/팀/조직 단위 원가 (테이블 sys_aimd_cot043, 호기 코드 제외)',
+    '  - cost-machine : 설비/라인/기계/장비 단위 원가 (테이블 sys_aimd_cot043, 호기 코드만)',
+    '',
+    '중요 규칙:',
+    '  1) 사용자 질문에 명확한 근거(예: "제품별", "부서별", "설비", "라인" 등)가 있을 때만 분류한다.',
+    '  2) 근거가 없거나, 2개 이상 세부영역에 모두 해당할 수 있다면 반드시 "AMBIGUOUS" 로 답한다.',
+    '  3) 임의로 세부영역을 선택하지 마라. 모호하면 반드시 AMBIGUOUS.',
+    '  4) sys_aimd_cot015 와 sys_aimd_cot043 은 JOIN KEY 가 없으므로 반드시 하나만 선택해야 한다.',
+    '',
+    '출력 형식(JSON 만):',
+    '  {"subArea": "cost-product" | "cost-dept" | "cost-machine" | "AMBIGUOUS", "rationale": "판단 근거 한 줄"}',
+  ].join('\n');
+  try {
+    const completion = await openai.chat.completions.create({
+      model: GPT_MODEL,
+      messages: [
+        { role: 'system', content: sysPrompt },
+        { role: 'user', content: String(query) },
+      ],
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      max_tokens: 200,
+    });
+    const raw = completion.choices?.[0]?.message?.content || '{}';
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (e) {
+      return { subArea: null, ambiguous: true, rationale: `(LLM 응답 파싱 실패: ${raw.slice(0, 80)})` };
+    }
+    const sub = String(parsed.subArea || '').trim();
+    const rationale = String(parsed.rationale || '').slice(0, 200);
+    if (sub === 'cost-product' || sub === 'cost-dept' || sub === 'cost-machine') {
+      return { subArea: sub, ambiguous: false, rationale };
+    }
+    // AMBIGUOUS 또는 기타 값 → 모호 판정
+    return { subArea: null, ambiguous: true, rationale: rationale || '(LLM: AMBIGUOUS)' };
+  } catch (e) {
+    console.warn(`[MfgRouter:LLM] 호출 실패 → AMBIGUOUS 로 처리: ${e.message}`);
+    return { subArea: null, ambiguous: true, rationale: `(LLM 호출 실패: ${e.message})` };
+  }
+}
+
+/**
+ * 제조원가 세부영역 통합 라우터.
+ * 1) 프론트가 이미 subArea 를 명시적으로 보내면 → 존중 (명확화 응답 이후 재요청 케이스)
+ * 2) 규칙 매칭 정확히 1개 → 결정
+ * 3) 0개 or 다중 매칭 → LLM 보조 라우터
+ * 4) LLM 도 판단 불가 → AMBIGUOUS
+ *
+ * @param {string} query
+ * @param {string|null} explicitSubArea  프론트가 명시적으로 보낸 subArea (재요청 시)
+ * @returns {Promise<{
+ *   subArea: string|null,
+ *   ambiguous: boolean,
+ *   source: 'explicit'|'rule'|'llm'|'ambiguous',
+ *   matched: string[],
+ *   rationale: string
+ * }>}
+ */
+async function inferManufacturingCostSubArea(query, explicitSubArea) {
+  // 1) 프론트가 명시적으로 보낸 subArea (예: 명확화 응답 후 사용자가 버튼 클릭한 케이스)
+  const explicit = String(explicitSubArea || '').toLowerCase().trim();
+  if (explicit === 'cost-product' || explicit === 'cost-dept' || explicit === 'cost-machine') {
+    return {
+      subArea: explicit,
+      ambiguous: false,
+      source: 'explicit',
+      matched: [explicit],
+      rationale: '프론트가 명시적으로 지정 (명확화 응답 후 재요청)',
+    };
+  }
+  // 2) 규칙 매칭
+  const ruleResult = matchMfgSubAreaByKeywords(query);
+  if (ruleResult.matches.length === 1) {
+    return {
+      subArea: ruleResult.matches[0],
+      ambiguous: false,
+      source: 'rule',
+      matched: ruleResult.matches,
+      rationale: `규칙 매칭: ${ruleResult.reason}`,
+    };
+  }
+  // 3) 0개 또는 다중 매칭 → LLM 보조
+  console.log(`[MfgRouter] 규칙 매칭 ${ruleResult.matches.length}개 (${ruleResult.reason}) → LLM 보조 라우터 호출`);
+  const llmResult = await llmClassifyMfgSubArea(query);
+  if (!llmResult.ambiguous && llmResult.subArea) {
+    return {
+      subArea: llmResult.subArea,
+      ambiguous: false,
+      source: 'llm',
+      matched: [llmResult.subArea],
+      rationale: `LLM 판단: ${llmResult.rationale}`,
+    };
+  }
+  // 4) LLM 도 판단 불가 → AMBIGUOUS
+  return {
+    subArea: null,
+    ambiguous: true,
+    source: 'ambiguous',
+    matched: ruleResult.matches,   // 규칙 매칭 결과(있으면 참고용)
+    rationale: `규칙 매칭 ${ruleResult.matches.length}개 + LLM: ${llmResult.rationale}`,
+  };
+}
+
 // ============================================================
 // MariaDB 커넥션 풀
 // ============================================================
@@ -9429,7 +9605,97 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
   //   보안: 프론트가 임의 값을 보내도 resolveAreaContext 가 화이트리스트 밖은
   //         모두 null 로 정규화한다.
   // ─────────────────────────────────────────────────────────────────
-  const areaCtx = resolveAreaContext(req.body?.area, req.body?.subArea);
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-25] 제조원가 세부탭 UI 통합 대응 — 자동 라우터
+  //
+  //   프론트가 세부탭을 제거하고 subArea 를 보내지 않으면(빈 문자열/null/undefined),
+  //   자연어 질의에서 자동으로 subArea 를 추론한다.
+  //   1) 규칙 매칭 정확히 1개 → 결정
+  //   2) 0개 or 다중 매칭 → LLM 보조 라우터 (AMBIGUOUS 허용)
+  //   3) LLM 도 판단 불가 → AMBIGUOUS → 프론트에 명확화 응답
+  //      (subareaClarification 필드 포함, done 상태의 job 으로 즉시 반환)
+  //
+  //   ⚠️ 순서 중요:
+  //     - resolveAreaContext 는 subArea 가 비어있으면 defaultSubArea 로 자동 fallback 하므로
+  //       라우터를 태우려면 raw 값을 먼저 확인해야 함.
+  //     - 프론트가 이미 subArea 를 명시적으로 보낸 경우 (예: 명확화 응답
+  //       이후 사용자가 [부서별 원가] 버튼을 눌러 재요청한 케이스)에는
+  //       resolveAreaContext 를 그대로 사용 (자동 라우팅 스킵).
+  // ─────────────────────────────────────────────────────────────────
+  const rawAreaKey    = String(req.body?.area || '').toLowerCase().trim();
+  const rawSubAreaKey = String(req.body?.subArea || '').toLowerCase().trim();
+  const needsRouting  = (rawAreaKey === 'manufacturing-cost') && !rawSubAreaKey;
+  let areaCtx = resolveAreaContext(req.body?.area, needsRouting ? '__skip__' : req.body?.subArea);
+  // needsRouting=true 인 경우: resolveAreaContext 에 '__skip__' 을 넘겨서 매핑 실패 → area 만 세팅됨
+  if (needsRouting) {
+    // 매핑 실패 시 area 만 유지, 나머지는 empty. 아래에서 라우터 태움.
+    areaCtx = { area: 'manufacturing-cost', subArea: null, subAreaLabel: null, table: null, tableWhitelist: [], forcedFilter: null };
+  }
+  if (needsRouting) {
+    const routed = await inferManufacturingCostSubArea(query, req.body?.subArea);
+    console.log(`[MfgRouter] userId=${userId} query="${String(query).slice(0, 60)}" → source=${routed.source} subArea=${routed.subArea || 'AMBIGUOUS'} rationale="${routed.rationale}"`);
+    if (routed.ambiguous) {
+      // 명확화 응답 — 프론트가 3개 버튼을 렌더링하여 사용자에게 재질문
+      const jobId = generateNlqJobId();
+      const requestId = getCurrentRequestId();
+      const clarifyMsg = '조회하시려는 데이터 기준을 선택해 주세요.';
+      const finishedJob = {
+        jobId,
+        status: 'done',
+        userId,
+        userRole: req.session.user.role || 'user',
+        requestId,
+        query: String(query),
+        queryMode: queryMode || 'analysis',
+        conversationContext: conversationContext || null,
+        session_id: session_id || null,
+        area: 'manufacturing-cost',
+        subArea: null,
+        table: null,
+        startedAt: Date.now(),
+        runningAt: Date.now(),
+        finishedAt: Date.now(),
+        result: {
+          success: true,
+          rows: [], rowCount: 0, sql: null,
+          explanation: clarifyMsg,
+          answer: clarifyMsg,
+          isUnknownTerm: false,
+          // 프론트가 이 필드를 보고 3개 버튼을 렌더링하고 원 질의 + 선택된 subArea 로 재요청
+          subareaClarification: {
+            originalQuery: String(query),
+            options: [
+              { subArea: 'cost-product', label: '제품별 원가' },
+              { subArea: 'cost-dept',    label: '부서별 원가' },
+              { subArea: 'cost-machine', label: '호기별 원가' },
+            ],
+            rationale: routed.rationale,
+          },
+          requestId,
+        },
+        error: null,
+        statusCode: 200,
+        innerRequestId: null,
+        timings: null,
+      };
+      nlqJobs.set(jobId, finishedJob);
+      return res.json({
+        success: true,
+        jobId,
+        status: 'pending',
+        requestId,
+        asyncRequestId: requestId,
+        startedAt: new Date(finishedJob.startedAt).toISOString(),
+        pollUrl: `/api/nlq/job/${jobId}`,
+        recommendedPollIntervalMs: 500,
+      });
+    }
+    // 라우팅 성공 → areaCtx 를 새 subArea 로 재계산
+    if (routed.subArea) {
+      areaCtx = resolveAreaContext('manufacturing-cost', routed.subArea);
+      console.log(`[MfgRouter] 라우팅 확정: subArea=${routed.subArea} table=${areaCtx.table} forcedFilter=${areaCtx.forcedFilter ? `${areaCtx.forcedFilter.column} ${areaCtx.forcedFilter.op}(${areaCtx.forcedFilter.values.length})` : '-'}`);
+    }
+  }
   const selectedArea    = areaCtx.area;
   const selectedSubArea = areaCtx.subArea;
   const selectedTable   = areaCtx.table;
