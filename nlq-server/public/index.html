@@ -2679,6 +2679,19 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
                 console.log(`[SubareaClarify] 재요청 subArea override: ${window.__forceMfgSubArea}`);
             }
         } catch (_) {}
+        // [2026-08-28] ZCOSTCOMP_NM 명확화 응답 후 재요청 지원
+        //   - window.__forceCostComp 가 세팅되어 있으면 payload 에 실어서 서버로 전달
+        //   - 서버가 명확화 게이트를 스킵하고 이 값으로 ZCOSTCOMP_NM = 또는 IN 을 강제 주입
+        //   - values 는 [] (사용자가 취소한 케이스) 는 아예 실지 않음
+        try {
+            if (window.__forceCostComp && Array.isArray(window.__forceCostComp.values) && window.__forceCostComp.values.length > 0) {
+                asyncPayload.forcedCostComp = {
+                    values: window.__forceCostComp.values.slice(),
+                    op: window.__forceCostComp.op || (window.__forceCostComp.values.length === 1 ? '=' : 'IN'),
+                };
+                console.log(`[CostCompClarify] 재요청 forcedCostComp: op=${asyncPayload.forcedCostComp.op} values=[${asyncPayload.forcedCostComp.values.join(', ')}]`);
+            }
+        } catch (_) {}
         const r = await fetch('/api/nlq/async', {
             method: 'POST',
             headers: acceptHeaders,
@@ -2970,6 +2983,12 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         //   - 사용자에게 3개 버튼(제품별/부서별/호기별)을 제시하여 재질의 유도
         //   - 버튼 클릭 시 원 질의 + 선택된 subArea 를 명시적으로 실어 재요청
         appendSubareaClarificationMessage(data);
+    } else if (data.costcompClarification) {
+        // [2026-08-28] 제조원가 ZCOSTCOMP_NM 명확화 응답 (sys_aimd_cot043 전용)
+        //   - 서버가 사용자 질의에서 원가 용어를 찾고 DB DISTINCT 후보를 조회한 결과
+        //     2개 이상이면 여기로 응답 (사용자 확인 없이 LIKE 합산 금지)
+        //   - 각 후보 + "관련 항목 전체" 버튼 렌더 → 재요청 시 forcedCostComp 실어보냄
+        appendCostcompClarificationMessage(data);
     } else if (data.isUnknownTerm) {
         appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
     } else if (isNewIntent(data)) {
@@ -4339,6 +4358,183 @@ async function resendQueryWithSubArea(originalQuery, subArea) {
     } finally {
         // 재요청 완료 후 플래그 해제 (다음 자유 질의에서 자동 라우팅 재개)
         setTimeout(() => { window.__forceMfgSubArea = null; }, 100);
+    }
+}
+
+// ============================================================
+// [2026-08-28] 제조원가 ZCOSTCOMP_NM 명확화 메시지 (sys_aimd_cot043 전용)
+// ------------------------------------------------------------
+// 서버 게이트가 후보 다수를 감지하여 반환한 응답 UI.
+// [XX비] [XX비_경비] [XX비_기타] [관련 항목 전체] 버튼을 렌더링하고
+// 클릭 시 원 질의 + 선택된 값으로 재요청.
+//
+// data 구조:
+//   {
+//     costcompClarification: {
+//       originalQuery: string,
+//       searchTerm: string,   // 예: "인건비"
+//       options: [{ value: string, label: string, allValues?: string[] }, ...],
+//       area: 'manufacturing-cost',
+//       subArea: 'cost-dept' | 'cost-machine',
+//     },
+//   }
+//
+// 옵션 종류:
+//   - value != '__ALL__' → 단일 값. 재요청 payload.forcedCostComp = { values:[value], op:'=' }
+//   - value === '__ALL__' → allValues 전체. 재요청 payload.forcedCostComp = { values:allValues, op:'IN' }
+// ============================================================
+function appendCostcompClarificationMessage(data) {
+    const chatArea = document.getElementById('chatArea');
+    const clarify = data.costcompClarification || {};
+    const originalQuery = clarify.originalQuery || '';
+    const searchTerm    = clarify.searchTerm || '';
+    const options       = Array.isArray(clarify.options) ? clarify.options : [];
+    const subArea       = clarify.subArea || null;
+    // 방어: 필수 필드 유실 시 렌더 스킵
+    if (!String(originalQuery).trim() || options.length === 0) {
+        const warn = document.createElement('div');
+        warn.className = 'msg-bot fade-in';
+        warn.innerHTML = `
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+                <div class="bot-avatar" style="background:#dc2626;"><i class="fas fa-exclamation-triangle" style="font-size:13px;"></i></div>
+                <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px 16px;border-radius:12px;flex:1;">
+                    <p style="color:#991b1b;font-size:13px;font-weight:600;margin:0;">원가구성요소 명확화 응답 데이터가 유효하지 않습니다.</p>
+                    <p style="color:#7f1d1d;font-size:12px;margin-top:6px;">질문을 다시 입력해 주세요.</p>
+                </div>
+            </div>`;
+        chatArea.appendChild(warn);
+        scrollToBottom();
+        return;
+    }
+
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+    // 버튼 HTML: 마지막 옵션(__ALL__)은 시각적으로 살짝 구분 (다른 색)
+    const btnHtml = options.map((opt, idx) => {
+        const isAll = opt.value === '__ALL__';
+        const bg = isAll ? '#eff6ff' : '#fff';
+        const bc = isAll ? '#2563eb' : '#0369a1';
+        const fg = isAll ? '#1d4ed8' : '#0369a1';
+        // allValues 는 data-* 로 직렬화하여 저장
+        const allAttr = isAll && Array.isArray(opt.allValues)
+            ? ` data-allvalues="${esc(JSON.stringify(opt.allValues))}"`
+            : '';
+        return `<button type="button" class="costcomp-clarify-btn" data-value="${esc(opt.value)}"${allAttr}
+            style="padding:8px 16px;background:${bg};border:1.5px solid ${bc};border-radius:8px;color:${fg};font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;">
+            ${esc(opt.label)}
+        </button>`;
+    }).join('');
+    const promptText = searchTerm
+        ? `<b>${esc(searchTerm)}</b>와(과) 관련된 원가구성요소가 여러 개 있습니다. 어떤 항목을 조회할까요?`
+        : `원가구성요소 후보가 여러 개 있습니다. 어떤 항목을 조회할까요?`;
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#0284c7,#0369a1);">
+                <i class="fas fa-question-circle" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#f0f9ff;border:1px solid #bae6fd;padding:14px 18px;border-radius:12px;flex:1;">
+                <p style="color:#075985;font-size:13px;font-weight:600;margin-bottom:10px;">
+                    <i class="fas fa-info-circle" style="margin-right:5px;"></i>${promptText}
+                </p>
+                <p style="color:#0c4a6e;font-size:12px;margin-bottom:12px;line-height:1.5;">
+                    데이터에 세부 원가 항목이 여러 개 존재하므로, 확인 없이 자동으로 합산하지 않습니다.<br>
+                    아래에서 조회할 항목을 선택해 주세요. <b>[관련 항목 전체]</b> 선택 시 각 항목 + 합계를 함께 조회합니다.
+                </p>
+                <div class="costcomp-clarify-buttons" style="display:flex;gap:8px;flex-wrap:wrap;">
+                    ${btnHtml}
+                </div>
+                <p style="color:#64748b;font-size:11px;margin-top:10px;font-style:italic;">
+                    원래 질문: "${esc(originalQuery)}"
+                </p>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+
+    el.querySelectorAll('.costcomp-clarify-btn').forEach(btn => {
+        const isAll = btn.dataset.value === '__ALL__';
+        btn.addEventListener('mouseenter', () => {
+            btn.style.background = isAll ? '#2563eb' : '#0369a1';
+            btn.style.color = '#fff';
+        });
+        btn.addEventListener('mouseleave', () => {
+            if (!btn.dataset.selected) {
+                btn.style.background = isAll ? '#eff6ff' : '#fff';
+                btn.style.color = isAll ? '#1d4ed8' : '#0369a1';
+            }
+        });
+        btn.addEventListener('click', async () => {
+            // 중복 클릭 방지
+            el.querySelectorAll('.costcomp-clarify-btn').forEach(b => {
+                b.disabled = true;
+                b.style.opacity = '0.5';
+                b.style.cursor = 'not-allowed';
+            });
+            btn.dataset.selected = '1';
+            btn.style.background = isAll ? '#2563eb' : '#0369a1';
+            btn.style.color = '#fff';
+            btn.style.opacity = '1';
+            btn.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>${btn.textContent.trim()}`;
+
+            // 선택값 → forcedCostComp 조립
+            let values, op;
+            if (btn.dataset.value === '__ALL__') {
+                try {
+                    values = JSON.parse(btn.dataset.allvalues || '[]');
+                } catch (_) { values = []; }
+                op = values.length === 1 ? '=' : 'IN';
+            } else {
+                values = [btn.dataset.value];
+                op = '=';
+            }
+            if (!Array.isArray(values) || values.length === 0) {
+                console.warn('[CostCompClarify] 선택 값이 비어있어 재요청을 중단합니다.');
+                return;
+            }
+            try {
+                await resendQueryWithForcedCostComp(originalQuery, subArea, { values, op });
+            } catch (e) {
+                console.error('[CostCompClarify] 재요청 실패:', e);
+            }
+        });
+    });
+
+    scrollToBottom();
+}
+
+// ============================================================
+// [2026-08-28] ZCOSTCOMP_NM 명확화 응답 후 재요청
+// ------------------------------------------------------------
+// - 사용자가 명확화 버튼을 눌렀을 때 호출.
+// - 원 질의 그대로 sendQuery(originalQuery) 재요청.
+//   (분석 차원 접미어 증강은 하지 않음 — 이미 subArea 는 서버에서 결정되어 있고,
+//    ZCOSTCOMP_NM 은 payload.forcedCostComp 로 명시적으로 전달됨)
+// - window.__forceCostComp 를 세팅해 payload 조립부(~L2695)가 실어서 서버로 전송.
+// - 서버는 forcedCostComp 를 보면 명확화 게이트를 스킵하고 SQL 에 = 또는 IN 을 강제 주입.
+// ============================================================
+async function resendQueryWithForcedCostComp(originalQuery, subArea, forcedCostComp) {
+    const trimmedQuery = String(originalQuery || '').trim();
+    if (!trimmedQuery) {
+        console.warn('[CostCompClarify] originalQuery 가 비어있어 재요청을 중단합니다.');
+        return;
+    }
+    if (!forcedCostComp || !Array.isArray(forcedCostComp.values) || forcedCostComp.values.length === 0) {
+        console.warn('[CostCompClarify] forcedCostComp 가 비어있어 재요청을 중단합니다.');
+        return;
+    }
+    console.log(`[CostCompClarify] 재질의 → op=${forcedCostComp.op} values=[${forcedCostComp.values.join(', ')}] original="${trimmedQuery}"`);
+
+    // subArea 도 함께 강제 (제조원가 라우팅 안정성 확보)
+    if (subArea) window.__forceMfgSubArea = subArea;
+    window.__forceCostComp = { values: forcedCostComp.values.slice(), op: forcedCostComp.op };
+    try {
+        if (typeof sendQuery === 'function') {
+            await sendQuery(trimmedQuery);
+        }
+    } finally {
+        setTimeout(() => {
+            window.__forceMfgSubArea = null;
+            window.__forceCostComp = null;
+        }, 100);
     }
 }
 
