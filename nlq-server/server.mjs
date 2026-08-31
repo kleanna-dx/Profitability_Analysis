@@ -4869,22 +4869,30 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   // ── [2026-08-31] 원가구성요소(ZCOSTCOMP_NM) 명확화 확정 시 plan-phase LLM 제약
   //
   //   배경 (근본 원인):
-  //     사용자가 명확화 UI 에서 [인건비] 버튼을 클릭하면 프론트가
-  //     forcedCostComp = { values: ['인건비'], op: '=' } 를 재요청 payload 에 실어
-  //     서버에 다시 보냅니다. 하지만 LLM 은 원래 질의문 "총 인건비" 만 보고
-  //     ontology 동의어(ZCOSTCOMP_NM 별칭: 재료비/노무비/경비)에 이끌려
-  //     filters 에 { column:"COSTELMNT_NM", op:"LIKE", value:"%노무비%" } 같은
-  //     "동일 원가 개념 확장" 조건을 스스로 만들어 넣곤 했습니다.
-  //     그동안(PR #400/#401) 은 이렇게 생성된 나쁜 SQL 을 사후 정규식으로 지우는
-  //     방어(defense-in-depth) 만 있었고, LLM 이 애초에 그런 필터를 만들지 않도록
-  //     하는 근본 원인 차단은 없었습니다.
+  //     사용자가 명확화 UI 에서 원가구성요소 버튼을 클릭하면 프론트가
+  //     forcedCostComp = { values: [<사용자선택값>], op: '=' } 를 재요청 payload 에
+  //     실어 서버에 다시 보냅니다. 서버는 이 값을 이용해 SQL 에 결정적으로
+  //     "ZCOSTCOMP_NM = <선택값>" WHERE 조건을 주입합니다 (applyForcedCostCompFilter).
+  //     또한 COSTELMNT_NM 을 통한 부수적 재해석 조건은 _removeCollateralCostElmntConds
+  //     가 사후에 자동 제거합니다. 즉 **백엔드 방어망만으로 결정적 SQL 이 완성**됩니다.
   //
-  //   이 블록의 역할:
-  //     forcedCostComp 가 있으면 (= 사용자가 이미 원가구성요소를 확정했으면)
-  //     plan-phase LLM 프롬프트에 "그 값 하나만 결정적이며, 다른 컬럼으로 재해석·
-  //     확장 금지" 규칙을 명시적으로 주입합니다. 이렇게 하면 LLM 이 애초에
-  //     COSTELMNT_NM 재해석 필터를 만들지 않게 되고, PR #401 의 사후 청소는
-  //     belt-and-suspenders(2중 방어)로만 남습니다.
+  //   PR #402 회고 (이 블록의 이전 버전):
+  //     이전 버전 costCompDirective 는 LLM 에게 "노무비/재료비/경비 등으로 재해석하지
+  //     마" 라고 지시하기 위해 프롬프트에 **부정 어휘(노무비/재료비/경비 등) 를
+  //     직접 명시**했습니다. 그 결과 LLM 이 이 부정 어휘를 응답 explanation 에
+  //     그대로 뱉어내는 역효과가 발생:
+  //       "'인건비'가 ... 등록되어 있지 않아 임의로 '노무비' 등으로 해석하지 않았습니다"
+  //     이 응답이 aggregate route 의 isUnknownTerm 감지기(등록되어 있지 않/알 수 없/
+  //     관리자/학습관리) 에 걸려 사용자에게는 노란 "알 수 없는 용어" 경고 박스로 표시.
+  //     (호기별 vs 부서별 케이스가 갈린 이유: cost-machine 은 COSTCENTER IN 필터로
+  //      LLM 이 SQL 생성에 집중, cost-dept 은 조회 범위가 넓어 LLM 이 부정 어휘에
+  //      더 잘 이끌려 refusal 응답 확률이 높아짐.)
+  //
+  //   이번 수정 (근본 원인 차단):
+  //     LLM 프롬프트에서 원가구성요소 부정 어휘를 완전히 제거하고, 사용자 선택값
+  //     하나만 담백하게 알려줍니다. "노무비/재료비/경비 로 확장하지 마" 라는 부정적
+  //     지시는 서버 방어망(applyForcedCostCompFilter + _removeCollateralCostElmntConds)
+  //     이 이미 결정적으로 처리하므로 LLM 에게는 이 어휘를 노출할 필요가 없습니다.
   let costCompDirective = '';
   if (areaCtx && areaCtx.forcedCostComp
       && Array.isArray(areaCtx.forcedCostComp.values)
@@ -4896,31 +4904,16 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
     const whereClauseText = op === 'IN' || vals.length > 1
       ? `ZCOSTCOMP_NM IN (${valuesText})`
       : `ZCOSTCOMP_NM = ${valuesText}`;
-    costCompDirective = `\n[★★★★★ 원가구성요소(ZCOSTCOMP_NM) 확정 — 사용자가 명확화 UI 에서 이미 선택 완료 (최상위 우선순위) ★★★★★]\n` +
-      `사용자는 명확화 화면에서 원가구성요소를 다음 값으로 이미 확정했습니다:\n` +
-      `  - ZCOSTCOMP_NM ${op === 'IN' || vals.length > 1 ? 'IN' : '='} ${valuesText}\n` +
-      `  - 최종 SQL 은 백엔드가 자동으로 "${whereClauseText}" WHERE 조건을 주입합니다.\n\n` +
-      `[반드시 지켜야 할 규칙 — 매우 중요]\n` +
-      `  1. filters 배열에 ZCOSTCOMP_NM 조건을 **절대 추가하지 마세요**. 백엔드가 결정적으로 주입합니다.\n` +
-      `  2. filters 배열에 COSTELMNT_NM / COSTELMNT (원가요소명·원가요소코드) 등\n` +
-      `     "다른 컬럼" 을 통한 원가구성요소 어휘(인건비/노무비/재료비/경비/제조경비/판관비 등)\n` +
-      `     재해석·확장 조건을 **절대 만들지 마세요**. 사용자는 그런 확장을 요청하지 않았습니다.\n` +
-      `     ✗ 금지 예시:\n` +
-      `        { "column":"COSTELMNT_NM", "op":"LIKE", "value":"%노무비%" }\n` +
-      `        { "column":"COSTELMNT_NM", "op":"LIKE", "value":"%인건비%" }\n` +
-      `        { "column":"COSTELMNT_NM", "op":"IN",   "value":["노무비","인건비"] }\n` +
-      `        { "column":"COSTELMNT",    "op":"LIKE", "value":"%인건비%" }\n` +
-      `  3. dimensions 에도 원가구성요소 확장을 위한 COSTELMNT_NM / COSTELMNT 축을 넣지 마세요.\n` +
-      `     (사용자가 "원가요소별" 이라 명시적으로 요청한 경우가 아닌 한.)\n` +
-      `  4. ontology 동의어에 ZCOSTCOMP_NM 별칭으로 "재료비/노무비/경비" 등이 등록되어 있어도,\n` +
-      `     사용자가 이미 명확화 UI 로 확정값을 골랐으므로 그 별칭들을 다시 확장하지 마세요.\n` +
-      `     사용자가 고른 값(${valuesText}) 만이 결정적입니다.\n` +
-      `  5. 사용자 질의문에 "인건비", "총 인건비" 처럼 원가구성요소 어휘가 들어 있어도\n` +
-      `     그 어휘를 filters 의 문자열 값으로 재사용하지 마세요. ZCOSTCOMP_NM 은 서버가 처리합니다.\n` +
-      `  6. COSTELMNT_NM = '기본급' 처럼 "원가구성요소 어휘가 아닌" 실제 원가요소 개별값을\n` +
-      `     사용자가 명시적으로 요청한 경우에는 정상 필터로 사용해도 됩니다.\n` +
-      `     (예: "인건비 중 기본급만 보고 싶어" → COSTELMNT_NM='기본급' 은 유효. 하지만\n` +
-      `      단순히 "인건비" 만 물었다면 그런 세분화 필터도 만들지 마세요.)\n`;
+    costCompDirective = `\n[★★★ 원가구성요소(ZCOSTCOMP_NM) — 사용자가 명확화 UI 에서 이미 선택 완료 ★★★]\n` +
+      `사용자는 이미 원가구성요소 값을 확정했습니다. 서버가 최종 SQL 에 다음 조건을 결정적으로 주입합니다:\n` +
+      `  WHERE ${whereClauseText}\n\n` +
+      `[plan 작성 규칙]\n` +
+      `  1. filters 배열에 ZCOSTCOMP_NM 조건을 넣지 마세요. 서버가 자동 주입합니다.\n` +
+      `  2. dimensions 에 원가구성요소 축(ZCOSTCOMP_NM) 을 넣지 마세요. 이미 단일 값으로 확정되었습니다.\n` +
+      `  3. 나머지는 사용자 질의(기간·부서·호기 등) 에만 집중하여 정상적으로 plan 을 작성하세요.\n` +
+      `  4. explanation 에는 사용자가 확정한 값(${valuesText})을 그대로 사용하세요.\n` +
+      `     사용자는 이미 명확화 UI 로 값을 확정했으므로, 그 값이 유일한 정답이며\n` +
+      `     "다른 값으로 해석했다" 같은 부연 설명은 붙이지 마세요.\n`;
   }
 
   // ── [2026-08-07] 사업부 표현 결정적 감지 (aggregate 모드와 동일 정책 이식)
