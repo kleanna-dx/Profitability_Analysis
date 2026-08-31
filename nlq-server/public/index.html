@@ -2658,8 +2658,22 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         //   - AreaTabs.snapshot() 은 { area, areaLabel, subArea, subAreaLabel, table } 반환.
         let areaSnap = null;
         try { areaSnap = (window.AreaTabs && window.AreaTabs.snapshot) ? window.AreaTabs.snapshot() : null; } catch (_) {}
+        // [2026-08-31] ZCOSTCOMP_NM 명확화 재요청 시 conversationContext 미전송 (belt-and-suspenders)
+        //   ─ window.__forceCostComp 가 세팅되어 있으면 이번 요청은 "명확화 확정 후 재실행".
+        //     이때 conversationContext 를 함께 보내면 서버가 이전 turn 의 query 를 LLM messages 에 push 하여
+        //     alias/설명에 이전 어휘("통신비 우편/택배" 등) 가 유입되고 현재 turn 의 dimension 필터가 누락된다.
+        //     서버측에서도 방어(server.mjs L9395 isClarifyResubmit)하지만 프론트에서도 미리 차단.
+        const _isClarifyResubmit = !!(
+            window.__forceCostComp
+            && Array.isArray(window.__forceCostComp.values)
+            && window.__forceCostComp.values.length > 0
+        );
+        if (_isClarifyResubmit) {
+            console.log(`[CostCompClarify] 재요청 감지 → conversationContext 미전송 (오염 방지)`);
+        }
         const asyncPayload = {
-            query, conversationContext,
+            query,
+            conversationContext: _isClarifyResubmit ? [] : conversationContext,
             session_id: chatSessionId,
             queryMode: effectiveQueryMode,
         };

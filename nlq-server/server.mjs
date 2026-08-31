@@ -5119,8 +5119,21 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   const prevLabel = prevCm ? `${prevCm.substring(0,4)}년 ${parseInt(prevCm.substring(4,6))}월` : '';
 
   // 대화 컨텍스트 (직전 턴 SQL/답변 참조)
+  //
+  // [2026-08-31] ZCOSTCOMP_NM 명확화 재요청 시 conversationContext 무시
+  //   ─ generateAnalysisPlan 도 sync route (L9395) 와 동일한 오염 경로를 가짐:
+  //     직전 turn 의 SQL/설명이 프롬프트에 [직전 턴 참조] 로 들어가면 LLM 이 그 표현을 재사용
+  //     → alias/설명에 이전 질의 어휘("통신비 우편/택배") 유출, 현재 turn 의 dimension 필터 누락.
+  //   ─ 명확화 재요청은 "동일 원 질문의 재실행" 이므로 이전 대화 문맥이 필요 없다.
   let convCtx = '';
-  if (Array.isArray(conversationContext) && conversationContext.length > 0) {
+  const isClarifyResubmitPlan = !!(
+    areaCtx && areaCtx.forcedCostComp
+    && Array.isArray(areaCtx.forcedCostComp.values)
+    && areaCtx.forcedCostComp.values.length > 0
+  );
+  if (isClarifyResubmitPlan) {
+    console.log(`[AnalysisPlan:ClarifyReset] ZCOSTCOMP_NM 명확화 재요청 감지 → conversationContext 무시. forcedCostComp.values=[${areaCtx.forcedCostComp.values.join(', ')}]`);
+  } else if (Array.isArray(conversationContext) && conversationContext.length > 0) {
     const last = [...conversationContext].reverse().find(c => c && (c.sql || c.explanation));
     if (last) {
       convCtx = `\n[직전 턴 참조]\n${last.sql ? `- 직전 SQL: ${String(last.sql).substring(0, 300)}` : ''}${last.explanation ? `\n- 직전 답변 요지: ${String(last.explanation).substring(0, 200)}` : ''}`;
@@ -7974,6 +7987,153 @@ function _removeCollateralCostElmntConds(sql, values) {
 }
 
 // ============================================================
+// [2026-08-31] Post-SQL 오염 감지 & 정정
+// ------------------------------------------------------------
+// 배경:
+//   ZCOSTCOMP_NM 명확화 재요청 시 conversationContext 를 무시하도록 방어를 걸었지만,
+//   그럼에도 다음 경우 LLM 이 이전 어휘를 유출할 가능성이 있다:
+//     - 학습 SQL 재사용 (이전 SQL 에 alias 가 박혀 있음)
+//     - 세션 내부 캐시 / 부분 매칭
+//     - 사용자가 conversationContext 없이 재요청했으나 LLM 이 프롬프트 잔여 어휘 흡수
+//   → 최종 SQL/alias/explanation 이 현재 질의 + 확정된 forcedCostComp.values 에
+//     맞는지 사후 검증하고, 유출된 이전 어휘가 있으면 explanation 을 서버가 재작성한다.
+//
+// 정책:
+//   1) forcedCostComp 확정값 (values) 이 있을 때만 동작
+//   2) SQL 은 이미 applyForcedCostCompFilter 로 정확히 주입됨 → SQL 자체 오염 검사는 최소
+//   3) explanation / alias 에 다음이 포함되어 있으면 오염 판정:
+//      - "통신비 우편/택배" 같은 forcedCostComp.values 에 없는 원가구성요소 어휘
+//      - 원 질의에도 없는 어휘
+//   4) 오염 감지 시:
+//      a) 서버 로그로 원인 (어떤 어휘가 어디에 유출) 기록
+//      b) explanation 을 서버가 재작성 (확정된 필터 조합을 서술)
+//      c) SELECT alias 도 확정값 기준으로 교체
+//
+// @param {object} params
+//   sql              : 최종 SQL (applyForcedCostCompFilter 이후)
+//   explanation      : LLM 이 생성한 설명 텍스트
+//   query            : 현재 사용자 질의 (원 질문)
+//   forcedCostComp   : { values: string[], op: '=' | 'IN' }
+//   knownCostCompVocab : (선택) 이전 turn 들에서 자주 등장한 원가구성요소 어휘 목록 (감지 강화용)
+// @returns {{
+//   sql: string,
+//   explanation: string,
+//   contaminated: boolean,
+//   leakedTerms: string[],
+//   reasons: string[]
+// }}
+// ============================================================
+function validateAndSanitizeCostCompOutput({ sql, explanation, query, forcedCostComp, knownCostCompVocab = [] }) {
+  const result = {
+    sql: sql,
+    explanation: explanation,
+    contaminated: false,
+    leakedTerms: [],
+    reasons: [],
+  };
+  if (!forcedCostComp || !Array.isArray(forcedCostComp.values) || forcedCostComp.values.length === 0) {
+    return result;
+  }
+  const values = forcedCostComp.values.map(v => String(v));
+  const queryStr = String(query || '');
+  const explStr = String(explanation || '');
+  const sqlStr = String(sql || '');
+
+  // ── 1) 오염 후보 어휘 수집: sys_aimd_cot043 원가구성요소 자주 쓰이는 표현들 + knownCostCompVocab
+  //    Hardcoded 리스트는 최소화 (실제 DB 값은 sys_aimd_cot043.ZCOSTCOMP_NM 에 있으나
+  //    이 함수는 동기 컨텍스트에서 호출되므로 정적 목록으로 대응).
+  //    누락되는 어휘가 있을 수 있지만, 로그로 원인 추적 가능.
+  const commonCostCompVocab = [
+    '인건비', '인건비_경비', '인건비_기타', '노무비',
+    '재료비', '경비', '감가상각비', '연구개발비',
+    '동력비', '수도광열비', '전력비',
+    '통신비', '통신비 우편/택배', '수선비', '보험료', '임차료',
+    '외주가공비', '외주비', '지급수수료', '수출제비',
+    '판매촉진비', '광고선전비', '접대비',
+    '여비교통비', '교육훈련비', '복리후생비',
+    '세금과공과', '지급이자',
+    '기타경비', '기타판관비',
+  ];
+  const vocab = new Set([...commonCostCompVocab, ...knownCostCompVocab.map(v => String(v))]);
+  // forcedCostComp.values 자체는 정상 값이므로 후보에서 제외
+  //   추가: forced 값 안에 포함된 부분 어휘도 오탐 소지가 있으므로 제외
+  //         예: forced=['인건비_경비'] → "경비" 는 forced 의 substring 이므로 오탐 회피
+  for (const v of values) {
+    vocab.delete(v);
+    for (const w of Array.from(vocab)) {
+      if (v.includes(w)) vocab.delete(w);
+    }
+  }
+
+  // ── 2) explanation / SQL alias 에서 유출 어휘 감지
+  //    ⚠️ 긴 어휘부터 먼저 감지·정정해야 substring 겹침으로 인한 오정정 방지.
+  //       예: leakedTerms 에 "통신비" 와 "통신비 우편/택배" 가 모두 있을 때,
+  //           "통신비" 를 먼저 치환하면 "인건비 우편/택배 원가" 라는 이상한 alias 가 남는다.
+  const vocabList = Array.from(vocab).sort((a, b) => b.length - a.length);
+  const leaked = new Set();
+  const reasons = [];
+  const scanBlobs = [
+    { name: 'explanation', text: explStr },
+    // SQL 자체는 WHERE 조건이 이미 교정되어 있으나 alias 부분에 유출 가능
+    { name: 'sql_alias',   text: sqlStr },
+  ];
+  for (const term of vocabList) {
+    if (!term) continue;
+    // 현재 사용자 질의에 그 어휘가 있으면 정상 (사용자가 언급한 것)
+    if (queryStr.includes(term)) continue;
+    for (const blob of scanBlobs) {
+      if (blob.text && blob.text.includes(term)) {
+        leaked.add(term);
+        reasons.push(`${blob.name} 에 "${term}" 유입 (현재 질의에 없음)`);
+      }
+    }
+  }
+
+  if (leaked.size === 0) {
+    return result;
+  }
+
+  // ── 3) 오염 감지 → 사후 정정
+  result.contaminated = true;
+  result.leakedTerms = Array.from(leaked);
+  result.reasons = reasons;
+
+  const forcedLabel = values.length === 1 ? values[0] : values.join(', ');
+  console.warn(`[CostCompPostValidate] 오염 감지 → 정정 수행. leakedTerms=[${result.leakedTerms.join(', ')}] forcedValues=[${forcedLabel}] reasons=${JSON.stringify(reasons)}`);
+  console.warn(`[CostCompPostValidate] 원본 explanation: ${explStr.substring(0, 300)}`);
+
+  // ── 3a) SELECT alias 에서 유출 어휘를 확정값으로 교체
+  //    예:  SUM(AMOUNT) AS '통신비 우편/택배 원가 합계(원)'
+  //      →  SUM(AMOUNT) AS '인건비 원가 합계(원)'
+  //   ⚠️ 긴 어휘부터 먼저 치환. "통신비" 를 먼저 치환하면 "통신비 우편/택배" 안의 "통신비" 만
+  //       바뀌어 "인건비 우편/택배" 라는 잘못된 alias 가 남는다.
+  let sanitizedSql = sqlStr;
+  const leakedSorted = Array.from(leaked).sort((a, b) => b.length - a.length);
+  for (const term of leakedSorted) {
+    // 작은따옴표 alias 내부 치환
+    const singleQuoteRe = new RegExp(`'([^']*)${escapeRegex(term)}([^']*)'`, 'g');
+    sanitizedSql = sanitizedSql.replace(singleQuoteRe, (m, pre, post) => `'${pre}${forcedLabel}${post}'`);
+    // 이중따옴표 alias 내부 치환
+    const doubleQuoteRe = new RegExp(`"([^"]*)${escapeRegex(term)}([^"]*)"`, 'g');
+    sanitizedSql = sanitizedSql.replace(doubleQuoteRe, (m, pre, post) => `"${pre}${forcedLabel}${post}"`);
+    // backtick alias 내부 치환
+    const backtickRe = new RegExp('`([^`]*)' + escapeRegex(term) + '([^`]*)`', 'g');
+    sanitizedSql = sanitizedSql.replace(backtickRe, (m, pre, post) => '`' + pre + forcedLabel + post + '`');
+  }
+  result.sql = sanitizedSql;
+
+  // ── 3b) explanation 재작성:
+  //    LLM 원문이 이전 turn 어휘를 사용하고 있으므로 그것 자체를 신뢰할 수 없음.
+  //    서버가 확정 조건만으로 간결하게 재작성한다.
+  const opText = values.length === 1
+    ? `ZCOSTCOMP_NM = '${values[0]}'`
+    : `ZCOSTCOMP_NM IN (${values.map(v => `'${v}'`).join(', ')})`;
+  result.explanation = `사용자 확정 원가구성요소 조건(${opText})으로 sys_aimd_cot043 에서 원가 데이터를 조회했습니다. (서버 정정: 이전 대화 문맥에서 유입된 어휘 "${result.leakedTerms.join(', ')}" 는 현재 질의와 무관하여 제거되었습니다.)`;
+
+  return result;
+}
+
+// ============================================================
 // [★★★ 사업부 명칭 고정 매핑 규칙 (2026-07-03) ★★★]
 //   - DB 저장 값이 배포 환경별로 다를 수 있음:
 //       'PS'/'HL' (샌드박스)  vs  '페이퍼솔루션'/'홈앤라이프' (운영)
@@ -8586,6 +8746,11 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       op: (req.body.forcedCostComp.op === 'IN' || vs.length > 1) ? 'IN' : '=',
     };
     console.log(`[NLQ:CostCompForced] forcedCostComp 수신 → op=${areaCtx.forcedCostComp.op} values=[${areaCtx.forcedCostComp.values.join(', ')}]`);
+    // [2026-08-31] Fix 3: 명확화 재요청의 structured plan 진단 로그
+    //   - 사용자 요구사항 #6, #8: 명확화 재요청 시 원 질의의 조건이 각 단계에서 유지되는지 추적.
+    //   - conversationContext 는 위에서 무시되지만, 만약 프론트가 보냈다면 크기만 로그.
+    const _ctxLen = Array.isArray(conversationContext) ? conversationContext.length : 0;
+    console.log(`[NLQ:ClarifyStructuredPlan] stage=receive query="${String(query).substring(0, 120)}" area=${areaCtx.area} subArea=${areaCtx.subArea || '(none)'} forcedCostComp=[${areaCtx.forcedCostComp.values.join(', ')}] conversationContextLen=${_ctxLen} (재요청은 conversationContext 무시)`);
   }
   // 서브영역 vs 질의 불일치 감지 (sync 경로 방어 — async 경로에서 이미 걸러졌겠지만 2중 방어)
   const subAreaMismatchSync = detectSubAreaMismatch(areaCtx.subArea, query);
@@ -9392,8 +9557,30 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       //     LLM이 그 잘못된 SQL을 "정답"으로 인식하여 재생산(회귀)함.
       //   - 따라서 이전 턴은 사용자 질의(role=user)만 포함하고, assistant 응답은 주지 않음.
       //   - 후속 질문의 맥락("그 중에서 5월만", "그래프로 보여줘")은 user 질의 흐름만으로 충분.
+      //
+      // [2026-08-31] ZCOSTCOMP_NM 명확화 재요청 시 conversationContext 강제 무시
+      //   ─ 재현 시나리오 (버그):
+      //     1) 사용자: "2026년 7월 통신비 우편/택배 알려줘" → COSTELMNT_NM LIKE '%통신비 우편/택배%' 로 정상 처리
+      //     2) 사용자: "2026년 7월 AX운영팀의 인건비를 알려줘" → ZCOSTCOMP_NM 후보 [인건비], [인건비_경비], [인건비_기타] ... 명확화 요청
+      //     3) 사용자: [인건비] 버튼 클릭 → forcedCostComp={values:['인건비'], op:'='} 실은 재요청
+      //     4) 서버가 conversationContext.slice(-3) 로 최근 3턴 query 를 그대로 messages 에 push
+      //        → messages = [system, "통신비 우편/택배 알려줘"(이전 turn), "AX운영팀 인건비 알려줘"(현재 turn)]
+      //     5) LLM 이 두 user 메시지를 함께 해석 → alias/설명에 "통신비 우편/택배" 재사용,
+      //        현재 turn 의 "AX운영팀" dimension 필터는 첫 turn 어휘에 밀려 누락됨.
+      //   ─ 방어 정책:
+      //     명확화 재요청은 "동일한 원 질문의 재실행" 이다. 이전 대화 문맥이 필요 없을 뿐 아니라,
+      //     함께 실리면 이전 질의 어휘가 새 SQL 로 유입되어 필터/alias/설명이 오염된다.
+      //     → forcedCostComp 이 payload 에 실려온 경우 conversationContext 를 완전히 무시하고
+      //       현재 query 만 LLM 에 전달한다.
       const messages = [{ role: 'system', content: systemPrompt }];
-      if (Array.isArray(conversationContext) && conversationContext.length > 0) {
+      const isClarifyResubmit = !!(
+        areaCtx && areaCtx.forcedCostComp
+        && Array.isArray(areaCtx.forcedCostComp.values)
+        && areaCtx.forcedCostComp.values.length > 0
+      );
+      if (isClarifyResubmit) {
+        console.log(`[NLQ:ClarifyReset] ZCOSTCOMP_NM 명확화 재요청 감지 → conversationContext 무시 (이전 turn 어휘 오염 차단). forcedCostComp.values=[${areaCtx.forcedCostComp.values.join(', ')}], query="${String(query).substring(0, 100)}"`);
+      } else if (Array.isArray(conversationContext) && conversationContext.length > 0) {
         // 최근 3턴만 사용 (토큰 절약 + 오염 최소화)
         const recentCtx = conversationContext.slice(-3);
         for (const turn of recentCtx) {
@@ -9530,6 +9717,18 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     //   - sys_aimd_cot043 참조 SQL 이 아니면 자동 no-op
     if (areaCtx.forcedCostComp) {
       sql = applyForcedCostCompFilter(sql, areaCtx.forcedCostComp);
+
+      // [2026-08-31] Post-SQL 오염 감지 & 정정 (Fix 2)
+      //   applyForcedCostCompFilter 는 WHERE 절만 정정한다. LLM 이 이전 turn 어휘를
+      //   SELECT alias 나 explanation 텍스트로 유출한 경우는 여기서 감지·정정한다.
+      const _postValidate = validateAndSanitizeCostCompOutput({
+        sql, explanation, query, forcedCostComp: areaCtx.forcedCostComp,
+      });
+      if (_postValidate.contaminated) {
+        sql = _postValidate.sql;
+        explanation = _postValidate.explanation;
+        console.warn(`[NLQ:CostCompPostValidate] 오염 정정 완료. SQL alias·explanation 재작성됨.`);
+      }
     }
 
     // [2026-08-21] SQL Validator 개선 — CTE(WITH ... SELECT) 허용
@@ -9632,6 +9831,15 @@ ${sqlValidation.reason}
           // [2026-08-28] 재생성 SQL 에도 ZCOSTCOMP_NM 강제 필터 주입
           if (areaCtx.forcedCostComp) {
             sql = applyForcedCostCompFilter(sql, areaCtx.forcedCostComp);
+            // [2026-08-31] 재생성 SQL 에도 Post-SQL 오염 감지 & 정정
+            const _postValidate = validateAndSanitizeCostCompOutput({
+              sql, explanation, query, forcedCostComp: areaCtx.forcedCostComp,
+            });
+            if (_postValidate.contaminated) {
+              sql = _postValidate.sql;
+              explanation = _postValidate.explanation;
+              console.warn(`[NLQ:CostCompPostValidate] (재생성 SQL) 오염 정정 완료.`);
+            }
           }
           // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
           // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
