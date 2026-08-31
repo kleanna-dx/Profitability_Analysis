@@ -6395,7 +6395,7 @@ function inferAnalysisUnit(plan) {
 // ────────────────────────────────────────────────────────────
 // [4] generateFinalAnalysisAnswer — 제한된 컨텍스트로 최종 답변 생성
 // ────────────────────────────────────────────────────────────
-async function generateFinalAnalysisAnswer(query, plan, execRecord) {
+async function generateFinalAnalysisAnswer(query, plan, execRecord, areaCtx = null) {
   const cm = (plan.period && plan.period.from) || '';
   const cmTo = (plan.period && plan.period.to) || cm;
   const fmtYm = (v) => v ? `${v.substring(0,4)}년 ${parseInt(v.substring(4,6))}월` : '';
@@ -6428,6 +6428,20 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
       phrase: unit.unitLabelPhrase,                  // "분석 대상 거래처"
     },
   };
+
+  // [2026-08-31] 사용자가 명확화 UI 에서 확정한 ZCOSTCOMP_NM 값 (있으면 답변 설명에 강제 반영)
+  //   - LLM 이 "노무비" 같은 임의 동의어 확장을 답변 설명에 넣지 못하도록 명시적 constraint 로 전달
+  const forcedCostComp = (areaCtx && areaCtx.forcedCostComp) || null;
+  if (forcedCostComp && Array.isArray(forcedCostComp.values) && forcedCostComp.values.length > 0) {
+    summary.selectedCostComponent = {
+      op: forcedCostComp.op || (forcedCostComp.values.length === 1 ? '=' : 'IN'),
+      values: forcedCostComp.values.slice(),
+      // 답변 설명에 그대로 넣을 수 있는 조건 표현 (LLM 용 힌트)
+      conditionText: forcedCostComp.values.length === 1
+        ? `ZCOSTCOMP_NM = '${forcedCostComp.values[0]}'`
+        : `ZCOSTCOMP_NM IN (${forcedCostComp.values.map(v => `'${v}'`).join(', ')})`,
+    };
+  }
 
   const computed = (execRecord.postOps && execRecord.postOps.computed) || {};
 
@@ -6627,6 +6641,33 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
     (4) 필요 시 짧은 해석 보조 문장 (사용자 이해를 돕는 결론)
     → 상세 계산 결과 표는 별도 UI에서 표시되므로 텍스트에 포함하지 않음.`;
 
+  // [2026-08-31] 사용자가 명확화 UI 에서 확정한 ZCOSTCOMP_NM 값이 있으면 —
+  //   LLM 이 답변 설명에서 임의 동의어 확장을 하지 못하도록 명시적 규칙 추가.
+  //   (예: 사용자가 '인건비' 만 선택 → LLM 이 "노무비도 포함해서..." 로 오해석 금지)
+  const costCompConstraint = (forcedCostComp && summary.selectedCostComponent)
+    ? `
+
+[★★★ 원가구성요소(ZCOSTCOMP_NM) 사용자 확정값 준수 규칙 — 매우 중요 ★★★]
+사용자가 명확화 UI 에서 원가구성요소 값을 직접 선택했습니다.
+확정된 조건: **${summary.selectedCostComponent.conditionText}**
+
+절대 지켜야 할 규칙:
+1. 답변 설명에서 원가구성요소를 언급할 때는 **위 확정값만** 사용하세요.
+   - 사용자가 선택한 값: [${summary.selectedCostComponent.values.map(v => `"${v}"`).join(', ')}]
+2. 위 목록에 **없는 원가구성요소 이름을 절대 답변에 넣지 마세요**.
+   - ✗ 금지: 사용자가 "인건비" 선택했는데 답변에 "노무비", "인건비_경비", "인건비_기타" 등을 언급
+   - ✗ 금지: "인건비를 노무비로 보고" / "인건비에 관련 항목을 포함해서" 같은 의미 확장
+   - ✓ 권장: "원가구성요소명(ZCOSTCOMP_NM)이 '인건비'인 항목만 조회하여..."
+3. 사용자 원 질문에 "총 인건비" 처럼 "총" 이 붙어 있어도, 이는 **SUM(AMOUNT)** 를 의미하는 것이지
+   원가구성요소를 여러 개 합산한다는 뜻이 **아닙니다**. 확정값 하나만 사용하세요.
+4. 사용자 원 질문의 자연어 표현("인건비", "재료비" 등) 을 다시 해석해서 다른 ZCOSTCOMP_NM 값을
+   추론하지 마세요. 사용자 확정값이 이미 정답입니다.
+5. 답변의 조건 설명은 **실제 실행된 SQL 의 조건과 일치**해야 합니다. 실제 SQL 은 아래 조건을 사용:
+   \`${summary.selectedCostComponent.conditionText}\``
+    : '';
+
+  const finalSystemPrompt = systemPrompt + costCompConstraint;
+
   const userContent = `[사용자 원문 질문]
 ${query}
 
@@ -6648,7 +6689,7 @@ ${plan.userGoal || ''}
   const completion = await openai.chat.completions.create({
     model: GPT_MODEL,
     messages: [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: finalSystemPrompt },
       { role: 'user', content: userContent },
     ],
     temperature: 0.3,
@@ -7395,23 +7436,92 @@ function applyForcedCostCompFilter(inputSql, forcedCostComp) {
 
   const values = forcedCostComp.values;
   const valuesClause = values.map(v => `'${String(v).replace(/'/g, "''")}'`).join(', ');
-  // 값이 1개면 = , 여러 개면 IN
+  // 값이 1개면 = , 여러 개면 IN — 사용자 선택값만 정확히 반영 (deterministic)
   const filterClause = values.length === 1
     ? `ZCOSTCOMP_NM = '${String(values[0]).replace(/'/g, "''")}'`
     : `ZCOSTCOMP_NM IN (${valuesClause})`;
 
-  // 이미 ZCOSTCOMP_NM 조건이 있으면 → LLM 이 임의 LIKE 등을 넣은 것이므로 치환
-  //   예: WHERE ZCOSTCOMP_NM LIKE '%인건비%' → WHERE ZCOSTCOMP_NM IN ('인건비','인건비_경비',...)
-  //   보수적으로 " ZCOSTCOMP_NM ... (다음 AND/OR/GROUP/ORDER/) " 범위만 치환.
-  const existingCondRe = /\bZCOSTCOMP_NM\s*(?:=|<>|!=|\s+(?:NOT\s+)?IN\s*\([^)]*\)|\s+(?:NOT\s+)?LIKE\s+'[^']*')/i;
-  if (existingCondRe.test(inputSql)) {
-    const replaced = inputSql.replace(existingCondRe, filterClause);
-    if (replaced !== inputSql) {
-      console.log(`[CostCompClarify] SQL 내 기존 ZCOSTCOMP_NM 조건을 강제 필터로 치환 (values=${values.length}개)`);
-      return replaced;
+  // ────────────────────────────────────────────────────────────
+  // [2026-08-31] 강력한 방어: LLM 이 생성한 ZCOSTCOMP_NM 관련 조건을
+  //   값 리터럴까지 통째로 **완전 제거**한 뒤, 서버가 확정한 값만
+  //   deterministic 하게 주입한다.
+  //
+  //   과거 버그:
+  //     - LLM 이 `ZCOSTCOMP_NM = '인건비' '노무비'` 처럼 잘못된 SQL 생성
+  //     - 기존 정규식은 `ZCOSTCOMP_NM =` 만 매치 → 값 리터럴이 남아 문법 오류
+  //     - 또는 LLM 이 동의어 확장으로 `ZCOSTCOMP_NM IN ('인건비','노무비')` 생성
+  //
+  //   해결:
+  //     1) 정규식이 값 리터럴 (반복 리터럴 포함) 을 통째로 삼킴
+  //     2) 반복 매치로 모든 ZCOSTCOMP_NM 조건 제거
+  //     3) 앞·뒤 AND/OR 잔여 및 잔여 괄호 정리
+  //     4) 마지막에 filterClause 를 WHERE 절 맨 앞에 주입
+  // ────────────────────────────────────────────────────────────
+
+  //   패턴 A: `ZCOSTCOMP_NM (=|<>|!=|<|>|<=|>=|LIKE|NOT LIKE)  '…'  ('…')*`
+  //     - 연산자 뒤 첫 문자열 리터럴 필수
+  //     - 이어지는 (공백/쉼표 없이 또는 있으면서) 문자열 리터럴이 붙어 있으면 함께 흡수
+  //       ("인건비" '노무비' 같은 LLM 오류 SQL 대응)
+  //   패턴 B: `ZCOSTCOMP_NM  (NOT )?IN  ( ... )` — 괄호 내용 모두 흡수
+  //   패턴 C: `ZCOSTCOMP_NM  IS  (NOT )?NULL`
+  //
+  //   [2026-08-31] LLM 이 컬럼명을 backtick 으로 감싼 경우도 대응:
+  //     `ZCOSTCOMP_NM` LIKE '%인건비%'  →  매치
+  const condPattern = new RegExp(
+    // 앞 boundary (WORD_BOUNDARY 만으로 충분)
+    '`?\\bZCOSTCOMP_NM\\b`?\\s*' +
+    '(?:' +
+      // A) 비교/LIKE + 값 리터럴 (연속 리터럴 흡수)
+      '(?:=|<>|!=|<=?|>=?|\\s+(?:NOT\\s+)?LIKE)\\s*' +
+      "'(?:[^']|'')*'" +           // 첫 문자열 리터럴
+      "(?:\\s*,?\\s*'(?:[^']|'')*')*" +  // (오류 케이스) 이어지는 연속 문자열 리터럴
+    '|' +
+      // B) (NOT) IN ( ... )
+      '\\s+(?:NOT\\s+)?IN\\s*\\([^)]*\\)' +
+    '|' +
+      // C) IS (NOT) NULL
+      '\\s+IS\\s+(?:NOT\\s+)?NULL' +
+    ')',
+    'gi'
+  );
+
+  // 반복 매치로 모든 ZCOSTCOMP_NM 관련 조건 제거
+  //   추적: 각 매치 위치 앞뒤의 AND/OR 연결자도 정리
+  let working = inputSql;
+  let removeCount = 0;
+  let iterationGuard = 0;
+  while (iterationGuard++ < 10) {
+    condPattern.lastIndex = 0;
+    const m = condPattern.exec(working);
+    if (!m) break;
+    const start = m.index;
+    const end = m.index + m[0].length;
+    // 앞쪽 AND/OR 연결자 흡수 (있다면 함께 제거)
+    //   예: "... AND ZCOSTCOMP_NM = '노무비' AND ..." → 앞의 AND 제거
+    //   예: "WHERE ZCOSTCOMP_NM = '노무비' AND ..." → 뒤의 AND 제거
+    let cutStart = start;
+    let cutEnd = end;
+    // 앞쪽에 " AND " 또는 " OR " 있는지 확인 (공백 포함)
+    const beforeText = working.slice(0, start).replace(/\s+$/, '');
+    const afterText = working.slice(end);
+    const andPrefixMatch = /(?:\bAND\b|\bOR\b)\s*$/i.exec(beforeText);
+    const andSuffixMatch = /^\s*(?:AND\b|OR\b)/i.exec(afterText);
+    if (andPrefixMatch) {
+      // 앞쪽 AND/OR 제거 (WHERE 절 중간 또는 끝에 걸린 경우)
+      cutStart = beforeText.length - andPrefixMatch[0].length;
+      // trailing whitespace 도 원본에 있었으므로 cutStart 를 원본 좌표계로 계산
+      // (beforeText 는 rtrim 했으므로 원본에서 그만큼 공백이 추가로 있음)
+      const trimmedLen = start - working.slice(0, start).length;  // 항상 0 이지만 명시
+      void trimmedLen;
+    } else if (andSuffixMatch) {
+      // WHERE 절 시작 조건이었던 경우: 뒤쪽 AND/OR 를 제거
+      cutEnd = end + andSuffixMatch[0].length;
     }
-    // replace 실패 시 no-op (원본 반환) — 안전한 선택
-    return inputSql;
+    working = working.slice(0, cutStart) + working.slice(cutEnd);
+    removeCount++;
+  }
+  if (removeCount > 0) {
+    console.log(`[CostCompClarify] SQL 내 기존 ZCOSTCOMP_NM 조건 ${removeCount}건 제거 (LLM 자유 생성 방어)`);
   }
 
   // WHERE 절 스캔 (applyForcedTableFilter 와 동일 로직)
@@ -7441,30 +7551,32 @@ function applyForcedCostCompFilter(inputSql, forcedCostComp) {
   }
 
   const whereRegex = /\bWHERE\b\s+/i;
-  const whereMatch = whereRegex.exec(inputSql);
+  const whereMatch = whereRegex.exec(working);
   let result;
   if (whereMatch) {
-    const before = inputSql.slice(0, whereMatch.index + whereMatch[0].length);
-    const rest = inputSql.slice(whereMatch.index + whereMatch[0].length);
+    const before = working.slice(0, whereMatch.index + whereMatch[0].length);
+    const rest = working.slice(whereMatch.index + whereMatch[0].length);
     const endIdx = findWhereEnd(rest);
     let cond, tail;
     if (endIdx >= 0) { cond = rest.slice(0, endIdx).trim(); tail = rest.slice(endIdx); }
     else { cond = rest.trim(); tail = ''; }
+    // 조건 앞뒤 잔여 AND/OR 및 빈 괄호 정리
+    cond = _sanitizeWhereCond(cond);
     const wrapped = cond ? `${filterClause} AND (${cond})` : filterClause;
     const sep = tail && !tail.startsWith(' ') && !tail.startsWith(';') && !tail.startsWith(')') ? ' ' : '';
     result = `${before}${wrapped}${sep}${tail}`;
   } else {
     const reservedAfterFrom = /^(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|ON)$/i;
     const fromRegex = new RegExp(`\\bFROM\\s+${targetTable}\\b(\\s+(?:AS\\s+)?([A-Za-z_][A-Za-z0-9_]*))?`, 'i');
-    const fromMatch = fromRegex.exec(inputSql);
-    if (!fromMatch) return inputSql;
+    const fromMatch = fromRegex.exec(working);
+    if (!fromMatch) return working;
     let matchLen = fromMatch[0].length;
     if (fromMatch[2] && reservedAfterFrom.test(fromMatch[2])) {
       matchLen = fromMatch[0].length - fromMatch[1].length;
     }
     const insertPos = fromMatch.index + matchLen;
-    const before = inputSql.slice(0, insertPos);
-    const rest = inputSql.slice(insertPos);
+    const before = working.slice(0, insertPos);
+    const rest = working.slice(insertPos);
     const endIdx = findWhereEnd(rest);
     if (endIdx > 0) {
       const head = rest.slice(0, endIdx);
@@ -7478,9 +7590,33 @@ function applyForcedCostCompFilter(inputSql, forcedCostComp) {
   }
 
   if (result !== inputSql) {
-    console.log(`[CostCompClarify] SQL 에 ZCOSTCOMP_NM 강제 필터 주입 (values=${values.length}개, op=${values.length === 1 ? '=' : 'IN'})`);
+    console.log(`[CostCompClarify] SQL 에 ZCOSTCOMP_NM 강제 필터 주입 (values=${values.length}개, op=${values.length === 1 ? '=' : 'IN'}, removed=${removeCount})`);
   }
   return result;
+}
+
+/**
+ * WHERE 조건 문자열에서 잔여 AND/OR, 빈 괄호, 연속 AND 등을 정리.
+ * ZCOSTCOMP_NM 조건 제거 후 발생하는 문법 오류 방어용.
+ */
+function _sanitizeWhereCond(cond) {
+  if (!cond) return cond;
+  let s = String(cond);
+  // 연속 AND/OR 정리
+  s = s.replace(/\bAND\s+AND\b/gi, 'AND');
+  s = s.replace(/\bOR\s+OR\b/gi, 'OR');
+  s = s.replace(/\bAND\s+OR\b/gi, 'OR');
+  s = s.replace(/\bOR\s+AND\b/gi, 'AND');
+  // 시작·끝의 AND/OR 제거
+  s = s.replace(/^\s*(?:AND|OR)\s+/i, '');
+  s = s.replace(/\s+(?:AND|OR)\s*$/i, '');
+  // 빈 괄호 제거: "( )" or "()"
+  s = s.replace(/\(\s*\)/g, '');
+  // 괄호 안 시작·끝 AND/OR 제거: "( AND cond )" → "( cond )"
+  s = s.replace(/\(\s*(?:AND|OR)\s+/gi, '(');
+  s = s.replace(/\s+(?:AND|OR)\s*\)/gi, ')');
+  s = s.trim();
+  return s;
 }
 
 // ============================================================
@@ -8541,7 +8677,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 
         // ── [5] 최종 답변 생성 (실제 결과만)
         setRequestStage('analysis_answer_generate');
-        const { answer: analysis, summary } = await generateFinalAnalysisAnswer(query, plan, execRecord);
+        const { answer: analysis, summary } = await generateFinalAnalysisAnswer(query, plan, execRecord, areaCtx);
 
         // ── [5-b] 분석 결과 상세표(거래처별/품목별/기간별 1행씩 집계) 프론트에 노출
         //   - 이전에는 rows:[] 로 텍스트만 반환했으나, 사용자 요청에 따라
