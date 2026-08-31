@@ -6663,7 +6663,12 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord, areaCtx = nu
 4. 사용자 원 질문의 자연어 표현("인건비", "재료비" 등) 을 다시 해석해서 다른 ZCOSTCOMP_NM 값을
    추론하지 마세요. 사용자 확정값이 이미 정답입니다.
 5. 답변의 조건 설명은 **실제 실행된 SQL 의 조건과 일치**해야 합니다. 실제 SQL 은 아래 조건을 사용:
-   \`${summary.selectedCostComponent.conditionText}\``
+   \`${summary.selectedCostComponent.conditionText}\`
+6. **부수 컬럼 재해석 금지**: 원가요소명(COSTELMNT_NM), 원가요소코드(COSTELMNT) 등 다른 컬럼을
+   원가구성요소 어휘(인건비/노무비/재료비/경비 등)로 다시 필터링·언급하지 마세요.
+   - ✗ 금지: "COSTELMNT_NM 이 노무비/인건비인 항목을 합산하여..."
+   - ✗ 금지: "인건비 관련 요소로 노무비도 포함하여..."
+   서버는 이러한 부수 조건을 자동으로 제거하므로, 답변도 확정된 ZCOSTCOMP_NM 조건만 언급하세요.`
     : '';
 
   const finalSystemPrompt = systemPrompt + costCompConstraint;
@@ -7524,6 +7529,39 @@ function applyForcedCostCompFilter(inputSql, forcedCostComp) {
     console.log(`[CostCompClarify] SQL 내 기존 ZCOSTCOMP_NM 조건 ${removeCount}건 제거 (LLM 자유 생성 방어)`);
   }
 
+  // ────────────────────────────────────────────────────────────
+  // [2026-08-31 확장] 부수 조건 방어: COSTELMNT_NM 관련 자유 조건 제거
+  //
+  //   과거 버그:
+  //     사용자: "총 인건비" + [인건비] 선택
+  //     LLM 이 생성한 SQL:
+  //       WHERE ZCOSTCOMP_NM = '인건비'   -- ✅ 올바름
+  //         AND (COSTELMNT_NM LIKE '%노무비%' OR COSTELMNT_NM LIKE '%인건비%')
+  //                            -- ❌ 사용자 확정값과 무관한 재해석 (노무비 유입)
+  //
+  //   원인:
+  //     - LLM 이 "총 인건비 = 인건비 + 노무비" 같은 의미 확장을 시도.
+  //     - ZCOSTCOMP_NM 방어만으로는 COSTELMNT_NM 자유 필터가 남음.
+  //
+  //   정책:
+  //     forcedCostComp 가 활성인 경우 (= 사용자가 원가구성요소 값을 확정)
+  //     LLM 이 임의로 넣은 COSTELMNT_NM 필터가 "원가구성요소 개념 어휘" (인건비/
+  //     노무비/재료비/경비 등 ZCOSTCOMP_NM 카테고리) 를 포함하면 그 조건도 제거.
+  //     ⚠️ COSTELMNT_NM 자체를 직접 쓰는 정당한 케이스 (예: "기본급 얼마?" →
+  //        COSTELMNT_NM = '기본급') 는 값이 원가구성요소 어휘와 겹치지 않으므로
+  //        그대로 통과 → 이 방어는 오탐 위험이 낮음.
+  //
+  //   방어 어휘 (하드코딩 최소):
+  //     - 사용자 확정값 자체 (forcedCostComp.values) → 필터가 필요 없는 중복
+  //     - 그리고 잘 알려진 ZCOSTCOMP_NM 상위 카테고리 어휘.
+  //       (실제 DB DISTINCT 조회 없이 서버가 stable 하게 판단할 수 있는 범위)
+  // ────────────────────────────────────────────────────────────
+  const collateralResult = _removeCollateralCostElmntConds(working, values);
+  working = collateralResult.sql;
+  if (collateralResult.removed > 0) {
+    console.log(`[CostCompClarify] SQL 내 부수 COSTELMNT_NM 재해석 조건 ${collateralResult.removed}건 제거 (동일 개념 확장 방어)`);
+  }
+
   // WHERE 절 스캔 (applyForcedTableFilter 와 동일 로직)
   const whereEndKeywords = /^(GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION)\b/i;
   function findWhereEnd(rest) {
@@ -7617,6 +7655,151 @@ function _sanitizeWhereCond(cond) {
   s = s.replace(/\s+(?:AND|OR)\s*\)/gi, ')');
   s = s.trim();
   return s;
+}
+
+/**
+ * forcedCostComp 활성 시 SQL 내 COSTELMNT_NM 관련 자유 조건 중
+ * "원가구성요소 어휘" 를 값으로 가진 것들을 제거.
+ *
+ * 배경:
+ *   - LLM 이 "총 인건비" 같은 표현을 "인건비 관련 원가요소 전체" 로 재해석하여
+ *     `COSTELMNT_NM LIKE '%노무비%' OR COSTELMNT_NM LIKE '%인건비%'` 를
+ *     ZCOSTCOMP_NM 필터와 별개로 덧붙이는 문제 발견.
+ *   - 사용자는 이미 ZCOSTCOMP_NM 값을 명확화 UI 로 확정했으므로,
+ *     동일 개념에 대한 COSTELMNT_NM 재해석은 항상 잘못이다.
+ *
+ * 스코프:
+ *   - COSTELMNT_NM 필터의 값(리터럴) 이 "원가구성요소 어휘" 를 포함할 때만 제거.
+ *     원가구성요소 어휘 = 사용자 확정값(values) + 잘 알려진 상위 카테고리
+ *                        ('인건비', '노무비', '재료비', '경비', '제조경비').
+ *   - COSTELMNT_NM = '기본급' 같은 정당한 하위 항목명 필터는 값이 이 어휘 목록에
+ *     들어있지 않으므로 그대로 통과한다.
+ *
+ * 제거 대상 패턴:
+ *   패턴 A: `COSTELMNT_NM  (=|<>|!=|<|>|<=|>=|LIKE|NOT LIKE)  '값'  ('값')*`
+ *     - 값에 대상 어휘가 포함된 경우에만 제거
+ *   패턴 B: `COSTELMNT_NM  (NOT )?IN ( '값','값', ... )`
+ *     - 괄호 내 값들이 모두 대상 어휘 (또는 그 부분 문자열) 인 경우에만 제거
+ *   패턴 C: `COSTELMNT_NM  IS  (NOT )?NULL`
+ *     - 값 판단 불가 → 제거하지 않음 (보수적)
+ *
+ * 부가 처리:
+ *   - 매치 대상은 OR/AND 로 묶여있을 수 있으므로 조건 하나만 제거하면 문법이
+ *     깨질 수 있음. 그래서 다음 방식을 사용:
+ *       1) 각 매치를 __PLACEHOLDER__ 로 치환
+ *       2) OR-그룹, AND 연결자, 빈 괄호를 정리
+ *       3) 최종적으로 sanitize
+ *
+ * @param {string} sql
+ * @param {string[]} values  사용자 확정 ZCOSTCOMP_NM 값들
+ * @returns {{sql: string, removed: number}}
+ */
+function _removeCollateralCostElmntConds(sql, values) {
+  if (!sql) return { sql, removed: 0 };
+  // 원가구성요소 어휘 (대상 판정용). 정규화(공백/언더스코어 제거 + 소문자) 후 비교.
+  const knownCostCompCategories = ['인건비', '노무비', '재료비', '경비', '제조경비', '판관비'];
+  const targetVocab = new Set();
+  for (const v of (values || [])) {
+    if (v) targetVocab.add(_normalizeCostCompText(v));
+  }
+  for (const c of knownCostCompCategories) {
+    targetVocab.add(_normalizeCostCompText(c));
+  }
+
+  /**
+   * 리터럴 값이 원가구성요소 어휘를 포함하는지 판정.
+   *   - LLM 이 LIKE '%인건비%' 처럼 % 감쌈 → 정규화된 값의 substring 매칭
+   *   - 정확 일치 (예: '인건비') 도 매칭.
+   * @param {string} literal  SQL 문자열 리터럴 내부 값 (따옴표 제외)
+   */
+  function _literalIsCostCompVocab(literal) {
+    const norm = _normalizeCostCompText(literal.replace(/%/g, ''));
+    if (!norm) return false;
+    for (const term of targetVocab) {
+      if (!term) continue;
+      // 정규화 값이 어휘와 정확히 같거나, 어휘를 substring 으로 포함 (LIKE 확장 대응)
+      if (norm === term || norm.includes(term) || term.includes(norm)) return true;
+    }
+    return false;
+  }
+
+  // 패턴 A: 비교/LIKE (연속 리터럴까지 흡수) — 백틱 컬럼명 지원
+  const patternA = new RegExp(
+    '`?\\bCOSTELMNT_NM\\b`?\\s*' +
+    '(?:=|<>|!=|<=?|>=?|\\s+(?:NOT\\s+)?LIKE)\\s*' +
+    "'((?:[^']|'')*)'" +                       // group 1: 첫 리터럴 값
+    "((?:\\s*,?\\s*'(?:[^']|'')*')*)",         // group 2: 이어지는 연속 리터럴
+    'gi'
+  );
+  // 패턴 B: (NOT) IN ( ... )
+  const patternB = new RegExp(
+    '`?\\bCOSTELMNT_NM\\b`?\\s+(?:NOT\\s+)?IN\\s*\\(([^)]*)\\)',
+    'gi'
+  );
+
+  let working = String(sql);
+  let removed = 0;
+
+  // 패턴 A 처리
+  working = working.replace(patternA, (full, firstLit, restLits) => {
+    if (_literalIsCostCompVocab(firstLit)) {
+      removed++;
+      return '__REMOVED_COSTELMNT_COND__';
+    }
+    return full;
+  });
+
+  // 패턴 B 처리 - 괄호 내 값들이 모두 어휘일 때만 제거
+  working = working.replace(patternB, (full, inside) => {
+    const lits = [];
+    const litRe = /'((?:[^']|'')*)'/g;
+    let mm;
+    while ((mm = litRe.exec(inside)) !== null) lits.push(mm[1]);
+    if (lits.length === 0) return full;
+    const allMatch = lits.every(_literalIsCostCompVocab);
+    if (allMatch) {
+      removed++;
+      return '__REMOVED_COSTELMNT_COND__';
+    }
+    return full;
+  });
+
+  if (removed === 0) return { sql: working, removed: 0 };
+
+  // 플레이스홀더 앞뒤의 AND/OR 연결자와 빈 괄호를 정리.
+  //   Case 1: "(A OR __PH__ OR B)" → "(A OR B)"
+  //   Case 2: "(__PH__ OR B)"      → "(B)"
+  //   Case 3: "(A OR __PH__)"      → "(A)"
+  //   Case 4: "(__PH__)"           → 빈 괄호 → 제거
+  //   Case 5: "AND __PH__ AND ..." → "AND ..."
+  //   Case 6: "... AND __PH__"     → "..."
+  //
+  //   먼저 플레이스홀더 좌우의 연결자를 흡수.
+  let prev = null;
+  let guard = 0;
+  while (prev !== working && guard++ < 20) {
+    prev = working;
+    // (A OR __PH__ ...) / (A AND __PH__ ...) → 앞쪽 연결자 함께 제거
+    working = working.replace(/\s+(?:AND|OR)\s+__REMOVED_COSTELMNT_COND__/gi, '');
+    // (__PH__ OR B ...) / (__PH__ AND B ...) → 뒤쪽 연결자 함께 제거
+    working = working.replace(/__REMOVED_COSTELMNT_COND__\s+(?:AND|OR)\s+/gi, '');
+    // "AND __PH__" / "OR __PH__" (더 이상 뒤에 연결자 없음)
+    working = working.replace(/\s+(?:AND|OR)\s+__REMOVED_COSTELMNT_COND__/gi, '');
+    // "__PH__ AND" / "__PH__ OR"
+    working = working.replace(/__REMOVED_COSTELMNT_COND__\s+(?:AND|OR)\s+/gi, '');
+    // 남은 홀로 플레이스홀더 → 빈 문자열
+    working = working.replace(/__REMOVED_COSTELMNT_COND__/g, '');
+    // 빈 괄호 제거 및 잔여 연결자 정리
+    working = working.replace(/\(\s*\)/g, '');
+    working = working.replace(/\(\s*(?:AND|OR)\s+/gi, '(');
+    working = working.replace(/\s+(?:AND|OR)\s*\)/gi, ')');
+    working = working.replace(/\bAND\s+AND\b/gi, 'AND');
+    working = working.replace(/\bOR\s+OR\b/gi, 'OR');
+    working = working.replace(/\bAND\s+OR\b/gi, 'OR');
+    working = working.replace(/\bOR\s+AND\b/gi, 'AND');
+  }
+
+  return { sql: working, removed };
 }
 
 // ============================================================
