@@ -9460,6 +9460,66 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 - 따라서 이 질문은 표/차트 없이 텍스트 분석 답변만 생성해야 합니다 (analysisRequired: true).`;
       }
 
+      // ─────────────────────────────────────────────────────────────────
+      // [2026-08-31] Fix 4 — forcedCostComp 확정 시 aggregate route refusal 우회 지시
+      //
+      //   배경 (PR #405 이후 잔존 버그):
+      //     PR #402/#403 는 analysis route (generateAnalysisPlan L4929) 에만
+      //     costCompDirective 를 주입했고, PR #405 는 context pollution 만 처리.
+      //     aggregate route 의 buildRAGSystemPrompt 결과에는 forcedCostComp
+      //     관련 지시가 없어, 사용자가 명확화 UI 에서 [인건비] 를 클릭해
+      //     forcedCostComp={values:['인건비'], op:'='} 를 payload 로 실어 보내도
+      //     LLM 은 여전히 원 프롬프트 규칙 18 ("알 수 없는 용어 처리",
+      //     server.mjs L2693-2698) 에 걸려 SQL 생성을 거부:
+      //       → "'인건비'가 제공된 동의어 매칭 결과, RAG 컨텍스트, 허용 컬럼
+      //          목록의 명확한 지표 정의와 대응되지 않아 …" refusal 응답.
+      //
+      //   실제 사용자 시나리오 (2026-08-31 재현):
+      //     Q: "2026년 7월 베트남지사의 인건비를 알려줘"
+      //     Step 1: 명확화 응답 [인건비] [인건비_경비] [인건비_기타] [관련 항목 전체]
+      //     Step 2: 사용자가 [인건비] 클릭 → forcedCostComp 실은 재요청
+      //     Step 3: 여전히 "알 수 없는 용어입니다" refusal
+      //     (사용자 확인: sys_aimd_cot043 에 CALMONTH=202607, ZCOSTCOMP_NM='인건비',
+      //      COSTCENTER_NM='베트남지사' 인 실제 데이터 2행 존재)
+      //
+      //   수정 방침 (analysis route 의 costCompDirective 와 대칭):
+      //     - "이 값은 이미 확정된 필터이며, 서버가 결정적으로 주입한다" 를
+      //       프롬프트에 명시 → LLM 이 refusal 규칙 18 을 이 값에 적용하지 않음.
+      //     - LLM 이 원 질의 조건(기간·부서명 등) 은 그대로 유지하여 정상 SQL 생성.
+      //     - "노무비/인건비_경비" 등 부정 어휘를 프롬프트에 넣지 않음 (PR #403
+      //       회귀 방지) — 서버 방어망(applyForcedCostCompFilter +
+      //       validateAndSanitizeCostCompOutput) 이 이미 결정적으로 처리.
+      //
+      //   범위:
+      //     areaCtx.forcedCostComp 이 실제로 있을 때만 지시 추가 → 정상 refusal
+      //     경로(forcedCostComp 부재 시) 는 종전대로 유지.
+      // ─────────────────────────────────────────────────────────────────
+      if (areaCtx && areaCtx.forcedCostComp
+          && Array.isArray(areaCtx.forcedCostComp.values)
+          && areaCtx.forcedCostComp.values.length > 0) {
+        const _fcc = areaCtx.forcedCostComp;
+        const _vals = _fcc.values.slice();
+        const _op = _fcc.op || (_vals.length === 1 ? '=' : 'IN');
+        const _valuesText = _vals.map(v => `'${v}'`).join(', ');
+        const _whereClauseText = (_op === 'IN' || _vals.length > 1)
+          ? `ZCOSTCOMP_NM IN (${_valuesText})`
+          : `ZCOSTCOMP_NM = ${_valuesText}`;
+        systemPrompt += `\n\n[★★★ 원가구성요소(ZCOSTCOMP_NM) — 사용자가 명확화 UI 에서 이미 선택 완료 ★★★]\n` +
+          `사용자는 이미 원가구성요소 값을 확정했습니다. 서버가 최종 SQL 에 다음 조건을 결정적으로 주입합니다:\n` +
+          `  WHERE ${_whereClauseText}\n\n` +
+          `[SQL 작성 규칙]\n` +
+          `  1. 이 값(${_valuesText}) 은 학습관리 등록 여부·동의어 매칭 결과·RAG 컨텍스트와 무관하게 사용자가 명시적으로 확정한 필터입니다.\n` +
+          `  2. "알 수 없는 용어 처리" 규칙(위 규칙 18)을 이 값에는 적용하지 마세요. 반드시 정상 SELECT SQL 을 생성해야 합니다.\n` +
+          `  3. SQL 은 반드시 sys_aimd_cot043 을 FROM 하고, WHERE 절에 ${_whereClauseText} 를 포함하세요. (서버가 재주입하지만 LLM 이 함께 넣는 것이 안전)\n` +
+          `  4. 사용자 원 질문의 다른 조건은 그대로 유지하세요:\n` +
+          `     · 기간 → CALMONTH 조건 (예: "2026년 7월" → CALMONTH = '202607')\n` +
+          `     · 부서명 → COSTCENTER_NM LIKE '%<부서명>%' (예: "베트남지사" → COSTCENTER_NM LIKE '%베트남지사%')\n` +
+          `     · 그 외 사용자 명시 조건도 누락 없이 반영.\n` +
+          `  5. 원가구성요소 어휘를 다른 값(예: 노무비, 인건비_경비, 재료비 등)으로 확장·재해석하지 마세요. 확정값(${_valuesText}) 만 사용하세요.\n` +
+          `  6. SELECT 절 컬럼 별칭·설명(explanation) 에도 확정값(${_valuesText}) 을 그대로 사용하세요. "다른 값으로 해석" 같은 부연 설명은 붙이지 마세요.\n`;
+        console.log(`[NLQ:CostCompDirective:Aggregate] 명확화 확정값 프롬프트 주입: ${_whereClauseText} (query="${String(query).substring(0, 80)}")`);
+      }
+
       // [2026-08-31] 전체 합계(OVERALL) 의도 처리 — 제조원가 영역 전용
       //   Q3: analysis / aggregate 두 모드 모두 동일 규칙 적용 (라우팅 모드에 따라 결과 형태가 달라지면 안 됨)
       //   제한: 제조원가(manufacturing-cost) 영역 + subArea 지정된 경우에만 적용.
