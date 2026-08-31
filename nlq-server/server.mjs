@@ -4844,25 +4844,58 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   //   cost-product : MATERIAL / MATERIAL_NM   (제품별)
   //   cost-dept    : COSTCENTER               (부서별, 호기 COSTCENTER 제외)
   //   cost-machine : COSTCENTER               (호기별, 호기 COSTCENTER만)
+  //
+  // [2026-09-01] 전체 합계 의도 (outputGranularity=OVERALL) 처리:
+  //   사용자 자연어에 "총 / 합 / 합계 / 총합 / 전체 합계 / 모두 합한 / 다 더한"
+  //   같은 총합 표현이 있으면 subArea 자연 축 GROUP BY 강제 지시를 해제하고
+  //   대신 "1행 전체 합계" 지시로 교체한다.
+  //   테이블 격리(targetTable) 와 forcedFilter(COSTCENTER 필터) 는 유지.
   let subAreaDirective = '';
   if (isMfgCost && areaCtx.subArea) {
-    if (areaCtx.subArea === 'cost-product') {
-      subAreaDirective = `\n[★★★ 세부업무영역 = 제품별원가 (${targetTable}) ★★★]\n` +
+    const overallIntent = detectOverallTotalIntent(query);
+    if (overallIntent.isOverall) {
+      // OVERALL 모드: subArea 는 조회 범위(테이블/COSTCENTER 필터)만 결정.
+      //   GROUP BY 강제 없음 → SUM(...) 단독 SELECT 로 1행 결과.
+      console.log(`[NLQ:OverallTotalIntent] mode=analysis subArea=${areaCtx.subArea} matchedKeyword="${overallIntent.matchedKeyword}" → dimension 강제 해제, 1행 전체 합계 요청`);
+      const subAreaLabel = (
+        areaCtx.subArea === 'cost-product' ? '제품별원가' :
+        areaCtx.subArea === 'cost-dept'    ? '부서별원가' :
+        areaCtx.subArea === 'cost-machine' ? '호기별원가' : areaCtx.subArea
+      );
+      const filterNote = (
+        areaCtx.subArea === 'cost-dept'
+          ? '- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n'
+          : areaCtx.subArea === 'cost-machine'
+          ? '- 호기(설비) COSTCENTER 코드만 대상으로 백엔드가 자동 필터링합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n'
+          : ''
+      );
+      subAreaDirective = `\n[★★★ 세부업무영역 = ${subAreaLabel} (${targetTable}) — 전체 합계 요청 ★★★]\n` +
         `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
-        `- 사용자가 "제품별" 이라 언급하지 않았어도 dimension 에 반드시 [MATERIAL, MATERIAL_NM] 을 포함하여 제품별 집계로 답하세요 (columns=["MATERIAL","MATERIAL_NM"]).\n` +
-        `- 결과는 절대 1행 총합이 아니라 제품 여러 행이 나와야 합니다.\n`;
-    } else if (areaCtx.subArea === 'cost-dept') {
-      subAreaDirective = `\n[★★★ 세부업무영역 = 부서별원가 (${targetTable}) ★★★]\n` +
-        `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
-        `- 사용자가 "부서별" 이라 언급하지 않았어도 dimension 에 반드시 [COSTCENTER, COSTCENTER_NM] 을 포함하여 부서별 집계로 답하세요 (COSTCENTER_NM 이 없다면 [COSTCENTER] 단독).\n` +
-        `- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n` +
-        `- 결과는 절대 1행 총합이 아니라 부서 여러 행이 나와야 합니다.\n`;
-    } else if (areaCtx.subArea === 'cost-machine') {
-      subAreaDirective = `\n[★★★ 세부업무영역 = 호기별원가 (${targetTable}) ★★★]\n` +
-        `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
-        `- 사용자가 "호기별" 이라 언급하지 않았어도 dimension 에 반드시 [COSTCENTER, COSTCENTER_NM] 을 포함하여 호기별 집계로 답하세요 (COSTCENTER_NM 이 없다면 [COSTCENTER] 단독).\n` +
-        `- 호기(설비) COSTCENTER 코드만 대상으로 백엔드가 자동 필터링합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n` +
-        `- 결과는 절대 1행 총합이 아니라 호기 여러 행이 나와야 합니다.\n`;
+        `- 사용자가 "${overallIntent.matchedKeyword}" 표현을 사용하여 **전체 합계(1행)** 를 요청했습니다.\n` +
+        `- dimensions 배열은 반드시 [] (빈 배열) 로 두세요. MATERIAL/COSTCENTER 등 세부 축을 포함하지 마세요.\n` +
+        `- GROUP BY 절이 없는 SUM(...) 단독 SELECT 로 만드세요 → 결과 1행.\n` +
+        `- 조회 범위(테이블·부서/호기 코드 대상)는 세부업무영역이 결정하며, forcedFilter 로 서버가 자동 주입합니다.\n` +
+        filterNote;
+    } else {
+      // 기본 모드: subArea 자연 축으로 GROUP BY 강제 (여러 행).
+      if (areaCtx.subArea === 'cost-product') {
+        subAreaDirective = `\n[★★★ 세부업무영역 = 제품별원가 (${targetTable}) ★★★]\n` +
+          `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+          `- 사용자가 "제품별" 이라 언급하지 않았어도 dimension 에 반드시 [MATERIAL, MATERIAL_NM] 을 포함하여 제품별 집계로 답하세요 (columns=["MATERIAL","MATERIAL_NM"]).\n` +
+          `- 결과는 절대 1행 총합이 아니라 제품 여러 행이 나와야 합니다.\n`;
+      } else if (areaCtx.subArea === 'cost-dept') {
+        subAreaDirective = `\n[★★★ 세부업무영역 = 부서별원가 (${targetTable}) ★★★]\n` +
+          `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+          `- 사용자가 "부서별" 이라 언급하지 않았어도 dimension 에 반드시 [COSTCENTER, COSTCENTER_NM] 을 포함하여 부서별 집계로 답하세요 (COSTCENTER_NM 이 없다면 [COSTCENTER] 단독).\n` +
+          `- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n` +
+          `- 결과는 절대 1행 총합이 아니라 부서 여러 행이 나와야 합니다.\n`;
+      } else if (areaCtx.subArea === 'cost-machine') {
+        subAreaDirective = `\n[★★★ 세부업무영역 = 호기별원가 (${targetTable}) ★★★]\n` +
+          `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+          `- 사용자가 "호기별" 이라 언급하지 않았어도 dimension 에 반드시 [COSTCENTER, COSTCENTER_NM] 을 포함하여 호기별 집계로 답하세요 (COSTCENTER_NM 이 없다면 [COSTCENTER] 단독).\n` +
+          `- 호기(설비) COSTCENTER 코드만 대상으로 백엔드가 자동 필터링합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n` +
+          `- 결과는 절대 1행 총합이 아니라 호기 여러 행이 나와야 합니다.\n`;
+      }
     }
   }
 
@@ -7189,6 +7222,94 @@ function applyDomainFilter(inputSql, domainCodeOrCodes) {
 }
 
 // ═════════════════════════════════════════════════════════════════
+// [2026-09-01] 제조원가 전용 — 전체 합계 의도 감지
+// ─────────────────────────────────────────────────────────────────
+// 사용자 자연어에서 "총 / 합 / 합계 / 총합 / 전체 합 / 전체 합계 /
+// 모두 합한 금액 / 다 더한 금액" 같은 **전체 합계 의도** 표현을 감지해
+// outputGranularity=OVERALL 로 처리하도록 subArea directive 를 조건부로
+// 발동/해제한다.
+//
+// 정책 (사용자 요구사항 반영):
+//   1) 매칭되면 subArea 의 자연 GROUP BY 축(COSTCENTER/MATERIAL) 강제
+//      지시를 해제하고, "결과는 반드시 1행 전체 합계" 지시로 교체한다.
+//   2) 매칭되지 않으면 종전과 동일: subArea 자연 축으로 GROUP BY (여러 행).
+//   3) subArea 의 테이블 격리(targetTable) 와 forcedFilter (COSTCENTER
+//      IN/NOT IN 23개 호기 코드) 는 **유지** — "조회 범위" 는 subArea 가
+//      결정하고, "출력 집계 수준(granularity)" 은 자연어 표현이 결정한다.
+//   4) 제조원가 영역(area === 'manufacturing-cost')에만 적용.
+//      기존 수익성분석 자연어 판단 로직에는 영향 없음.
+//   5) 형태소 경계 규칙 — 사용자 지적:
+//      "합" 은 단순 substring 매칭 금지. "종합", "종합적", "복합" 등
+//      다른 단어의 일부인 "합"까지 오탐하지 않도록 반드시 어절 경계를
+//      확인한다 (bare "합" 은 앞이 공백/시작이면서 뒤가 공백/문장부호/끝일 때만 매칭).
+//      "합계" 는 어절 시작만 확인 (뒤에 조사/공백/문장부호 허용).
+//      "총" 은 사용자 요구사항 #5 에 따라 항상 매칭 (지표 수식어로도 총합 의도).
+//
+// 감지 어휘 및 판정 규칙 (전체 어절 boundary 를 반드시 지킴):
+//   [A] "총"       — 지표 수식어로도 총합 의도 (사용자 명시). "총합" 도 포괄.
+//   [B] "합계"     — 어절 시작 위치의 "합계" (예: "인건비 합계", "합계 알려줘")
+//   [C] "합"       — bare "합" (앞·뒤 어절 경계). "종합"·"복합"·"조합"·"연합"
+//                    등 접미사·접두사로 붙은 "합" 은 제외.
+//   [D] "전체 합" / "전체 합계"
+//   [E] "모두 합한 금액" / "모두 합한"
+//   [F] "다 더한 금액" / "다 더한"
+//
+// @param {string} query  사용자 자연어 원문
+// @returns {{isOverall: boolean, matchedKeyword: string|null}}
+// ═════════════════════════════════════════════════════════════════
+function detectOverallTotalIntent(query) {
+  if (!query || typeof query !== 'string') {
+    return { isOverall: false, matchedKeyword: null };
+  }
+  const q = query.trim();
+  if (!q) return { isOverall: false, matchedKeyword: null };
+
+  // 어절 경계 helper — "합" 앞뒤가 [공백/시작/문장부호/끝] 인지 검사.
+  //   앞경계 문자군: 시작, 공백, 문장부호, 숫자, 괄호
+  //   뒤경계 문자군: 끝, 공백, 문장부호, 조사(만/의/은/는/이/가/도/을/를/과/와/에/의)
+  //   → 이렇게 하면 "인건비 합 알려줘", "합 알려줘", "인건비 합만" 은 매칭되고
+  //      "종합", "복합", "조합", "연합", "합계", "합산" 은 매칭 안됨(합계는 별도 규칙).
+  const LEFT_BOUNDARY  = '(?:^|[\\s\\d.,!?()\\[\\]{}\\-—:;/])';
+  const RIGHT_BOUNDARY_STRICT = '(?=$|[\\s.,!?()\\[\\]{}\\-—:;/]|만|의|은|는|이|가|도|을|를|과|와|에)';
+  // "합계" 는 어절 시작 boundary 만 확인 (뒤엔 자유 — "합계를", "합계는" 등 조사 허용)
+  const RIGHT_BOUNDARY_LOOSE  = '(?=$|[\\s.,!?()\\[\\]{}\\-—:;/]|[가-힣])';
+
+  // 순서 중요: 더 긴 매칭 먼저 시도 → 짧은 것으로 fallback
+  const patterns = [
+    // [E] "모두 합한" (사용자 요구사항 명시 어휘)
+    { re: /(?:^|[^가-힣])모두\s*합한(?:\s*금액)?/,     kw: '모두 합한' },
+    // [F] "다 더한"   (사용자 요구사항 명시 어휘)
+    { re: /(?:^|[^가-힣])다\s*더한(?:\s*금액)?/,       kw: '다 더한' },
+    // [D] "전체 합계" / "전체 합"  (합계는 loose boundary, 합은 strict boundary)
+    { re: new RegExp(`(?:^|[^가-힣])전체\\s*합계${RIGHT_BOUNDARY_LOOSE}`),  kw: '전체 합계' },
+    { re: new RegExp(`(?:^|[^가-힣])전체\\s*합${RIGHT_BOUNDARY_STRICT}`),   kw: '전체 합' },
+    // [B] "합계" — 어절 시작 boundary + loose right boundary
+    //     "종합계", "복합계" 같이 앞에 한글이 붙어 있으면 매칭 안 함 (LEFT_BOUNDARY 로 앞을 확인)
+    { re: new RegExp(`${LEFT_BOUNDARY}합계${RIGHT_BOUNDARY_LOOSE}`),        kw: '합계' },
+    // [A] "총합" (합계보다 뒤에 두어 겹침 방지)
+    { re: new RegExp(`${LEFT_BOUNDARY}총합${RIGHT_BOUNDARY_LOOSE}`),        kw: '총합' },
+    // [A] "총" — 지표 수식어로 항상 매칭. "총매출", "총 인건비", "총액", "총원가" 등 광범위.
+    //     단 "이총", "회총"(오타/붙임) 같이 앞에 한글이 붙으면 매칭 안 함.
+    //     "총" 뒤에는 아무거나 올 수 있음 (한글 명사가 이어지는 게 정상 케이스).
+    //     이 규칙이 지나치게 광범위해 보이지만, 사용자 요구사항 #5 에 명시적으로
+    //     "'총'을 단순한 지표 수식어로 무시하지 않는다. '총 인건비'는 전체 조회 대상의
+    //      인건비 합계를 요청한 것으로 해석한다" 라고 규정되어 있음.
+    { re: /(?:^|[^가-힣])총(?=[\s가-힣])/,                                  kw: '총' },
+    // [C] "합" — bare "합" 어절 경계.
+    //     앞뒤 모두 strict boundary → "종합", "복합", "조합", "연합", "합의", "합격",
+    //     "합병" 등 모두 제외됨.
+    { re: new RegExp(`${LEFT_BOUNDARY}합${RIGHT_BOUNDARY_STRICT}`),         kw: '합' },
+  ];
+
+  for (const { re, kw } of patterns) {
+    if (re.test(q)) {
+      return { isOverall: true, matchedKeyword: kw };
+    }
+  }
+  return { isOverall: false, matchedKeyword: null };
+}
+
+// ═════════════════════════════════════════════════════════════════
 // [2026-08-25] 제조원가 세부업무영역용 강제 필터 자동 주입
 // ─────────────────────────────────────────────────────────────────
 // - sys_aimd_cot043 은 부서별원가(cost-dept) 와 호기별원가(cost-machine) 가
@@ -9173,6 +9294,35 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 - 사용자가 답변 유형 라디오에서 "분석질문"을 명시적으로 선택했습니다.
 - 따라서 이 질문은 표/차트 없이 텍스트 분석 답변만 생성해야 합니다 (analysisRequired: true).`;
       }
+
+      // [2026-08-31] 전체 합계(OVERALL) 의도 처리 — 제조원가 영역 전용
+      //   Q3: analysis / aggregate 두 모드 모두 동일 규칙 적용 (라우팅 모드에 따라 결과 형태가 달라지면 안 됨)
+      //   제한: 제조원가(manufacturing-cost) 영역 + subArea 지정된 경우에만 적용.
+      //         기존 수익성분석의 자연어 집계 판단 로직에는 영향을 주지 않음.
+      //   판별: detectOverallTotalIntent(query) — 형태소 경계 기반 정규식 (종합/복합/조합 등 오탐 방지)
+      //   효과: LLM이 GROUP BY 없이 SUM(...) 1행만 반환하도록 강제
+      if (areaCtx?.area === 'manufacturing-cost' && areaCtx?.subArea) {
+        const overallIntent = detectOverallTotalIntent(query);
+        if (overallIntent.isOverall) {
+          console.log(`[NLQ:OverallTotalIntent] mode=${userQueryMode} subArea=${areaCtx.subArea} matchedKeyword="${overallIntent.matchedKeyword}" → GROUP BY 해제, 1행 전체 합계 요청`);
+          const subAreaLabel = (
+            areaCtx.subArea === 'cost-product' ? '제품별원가' :
+            areaCtx.subArea === 'cost-dept'    ? '부서별원가' :
+            areaCtx.subArea === 'cost-machine' ? '호기별원가' : areaCtx.subArea
+          );
+          const filterNote = (
+            areaCtx.subArea === 'cost-dept'    ? '\n- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. WHERE 절에 COSTCENTER 조건을 넣지 마세요.' :
+            areaCtx.subArea === 'cost-machine' ? '\n- 호기(설비) COSTCENTER 코드만 백엔드가 자동 필터링합니다. WHERE 절에 COSTCENTER 조건을 넣지 마세요.' : ''
+          );
+          systemPrompt += `\n\n[★★★ 세부업무영역 = ${subAreaLabel} — 전체 합계 요청 ★★★]
+- 사용자가 "${overallIntent.matchedKeyword}" 표현을 사용하여 **전체 합계(1행)** 를 요청했습니다.
+- 반드시 **GROUP BY 절 없이** SUM(...) 단독 SELECT 로 작성하세요. 결과는 정확히 1행이어야 합니다.
+- SELECT 절에 MATERIAL / MATERIAL_NM / COSTCENTER / COSTCENTER_NM 등 세부 분류 컬럼을 포함하지 마세요.
+- 조회 범위(테이블·부서/호기 코드 대상)는 세부업무영역이 결정하며, 서버가 자동 주입합니다.${filterNote}
+- 예) "총 인건비 알려줘" → SELECT FORMAT(SUM(...),0) AS '인건비(원)' FROM ... WHERE ... (GROUP BY X, 1행)`;
+        }
+      }
+
       console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady}, 모드: ${userQueryMode})`);
 
       // RAG 검색 상세 정보 수집
