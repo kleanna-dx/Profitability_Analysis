@@ -1694,6 +1694,182 @@ const GPT_MODEL = process.env.GPT_MODEL || 'gpt-5.5';
 
 console.log(`[NLQ] AI 설정: model=${GPT_MODEL}, baseURL=${process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'}`);
 
+// ═════════════════════════════════════════════════════════════════
+// [2026-08-25] 제조원가 세부영역 자동 라우터 (UI 세부탭 통합 대응)
+// ─────────────────────────────────────────────────────────────────
+// 배경:
+//   - 제조원가 화면에서 3개 세부탭(제품별/부서별/호기별)이 UI 통합됨.
+//   - 이제 사용자는 하나의 자연어 질의창에서 모든 제조원가 데이터를 조회.
+//   - subArea 컨텍스트는 GPT 가 자연어에서 추론해야 함.
+//
+// 라우팅 원칙 (사용자 확정):
+//   1) 규칙 기반 키워드 매칭 (빠르고 결정론적)
+//      - cost-product : 제품, 품목, 자재, SKU, 제품별
+//      - cost-dept    : 부서, 부서별, 팀, 조직, 팀별
+//      - cost-machine : 설비, 라인, 기계, 장비
+//        (※ '호기'/'호기별'은 사용자 지시로 제외 — 데이터에 '호기' 표기가
+//            혼재하여 오탐 소지가 있고, '설비/라인/기계/장비' 로 커버 가능)
+//   2) 정확히 1개 매칭 → 결정
+//   3) 0개 또는 2개 이상 매칭 → LLM 보조 라우터 (AMBIGUOUS 허용)
+//   4) LLM 도 판단 불가 → AMBIGUOUS → 사용자에게 3개 버튼 명확화 질문
+//
+// ⚠️ 임의 선택 금지: 요구사항 5번 (모호 상태에서 임의 SQL 실행 금지)
+// ═════════════════════════════════════════════════════════════════
+const MFG_SUBAREA_KEYWORDS = {
+  'cost-product': ['제품별', '제품', '품목', '자재', 'SKU'],
+  'cost-dept':    ['부서별', '팀별', '부서', '조직', '팀'],
+  'cost-machine': ['설비', '라인', '기계', '장비'],
+};
+
+/**
+ * 규칙 기반 subArea 매칭.
+ * 우선순위: 긴 키워드 먼저 매칭 (예: '제품별'이 '제품'보다 먼저 시도).
+ * @param {string} query
+ * @returns {{ matches: string[], reason: string }}
+ *   matches: 매칭된 subArea 키 배열 (0/1/2/3개)
+ *   reason:  매칭된 키워드 요약 (로그용)
+ */
+function matchMfgSubAreaByKeywords(query) {
+  const q = String(query || '');
+  if (!q.trim()) return { matches: [], reason: '(empty)' };
+  const matched = new Set();
+  const matchedKw = [];
+  for (const [subKey, kws] of Object.entries(MFG_SUBAREA_KEYWORDS)) {
+    // 긴 키워드부터 시도 (definiteness 확보)
+    const sorted = [...kws].sort((a, b) => b.length - a.length);
+    for (const kw of sorted) {
+      if (q.includes(kw)) {
+        matched.add(subKey);
+        matchedKw.push(`${subKey}:${kw}`);
+        break;   // 이 subArea 는 이미 매칭됨, 다음 subArea 로
+      }
+    }
+  }
+  return {
+    matches: [...matched],
+    reason: matchedKw.length ? matchedKw.join(', ') : '(no keyword match)',
+  };
+}
+
+/**
+ * LLM 보조 라우터 — 규칙 매칭이 애매할 때 GPT 로 재판정.
+ * ⚠️ 강제 선택하지 않음: 명확한 근거가 없으면 AMBIGUOUS 반환 허용.
+ *
+ * @param {string} query
+ * @returns {Promise<{ subArea: string|null, ambiguous: boolean, rationale: string }>}
+ *   - subArea: 'cost-product' | 'cost-dept' | 'cost-machine' | null (ambiguous 시)
+ *   - ambiguous: true 면 사용자에게 명확화 질문 필요
+ *   - rationale: LLM 판단 근거 (로그/디버깅용)
+ */
+async function llmClassifyMfgSubArea(query) {
+  const sysPrompt = [
+    '너는 제조원가 자연어 질의를 3개 세부영역 중 하나로 분류하는 라우터다.',
+    '',
+    '세부영역:',
+    '  - cost-product : 제품/품목/자재/SKU 단위 원가 (테이블 sys_aimd_cot015)',
+    '  - cost-dept    : 부서/팀/조직 단위 원가 (테이블 sys_aimd_cot043, 호기 코드 제외)',
+    '  - cost-machine : 설비/라인/기계/장비 단위 원가 (테이블 sys_aimd_cot043, 호기 코드만)',
+    '',
+    '중요 규칙:',
+    '  1) 사용자 질문에 명확한 근거(예: "제품별", "부서별", "설비", "라인" 등)가 있을 때만 분류한다.',
+    '  2) 근거가 없거나, 2개 이상 세부영역에 모두 해당할 수 있다면 반드시 "AMBIGUOUS" 로 답한다.',
+    '  3) 임의로 세부영역을 선택하지 마라. 모호하면 반드시 AMBIGUOUS.',
+    '  4) sys_aimd_cot015 와 sys_aimd_cot043 은 JOIN KEY 가 없으므로 반드시 하나만 선택해야 한다.',
+    '',
+    '출력 형식(JSON 만):',
+    '  {"subArea": "cost-product" | "cost-dept" | "cost-machine" | "AMBIGUOUS", "rationale": "판단 근거 한 줄"}',
+  ].join('\n');
+  try {
+    const completion = await openai.chat.completions.create({
+      model: GPT_MODEL,
+      messages: [
+        { role: 'system', content: sysPrompt },
+        { role: 'user', content: String(query) },
+      ],
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      max_tokens: 200,
+    });
+    const raw = completion.choices?.[0]?.message?.content || '{}';
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (e) {
+      return { subArea: null, ambiguous: true, rationale: `(LLM 응답 파싱 실패: ${raw.slice(0, 80)})` };
+    }
+    const sub = String(parsed.subArea || '').trim();
+    const rationale = String(parsed.rationale || '').slice(0, 200);
+    if (sub === 'cost-product' || sub === 'cost-dept' || sub === 'cost-machine') {
+      return { subArea: sub, ambiguous: false, rationale };
+    }
+    // AMBIGUOUS 또는 기타 값 → 모호 판정
+    return { subArea: null, ambiguous: true, rationale: rationale || '(LLM: AMBIGUOUS)' };
+  } catch (e) {
+    console.warn(`[MfgRouter:LLM] 호출 실패 → AMBIGUOUS 로 처리: ${e.message}`);
+    return { subArea: null, ambiguous: true, rationale: `(LLM 호출 실패: ${e.message})` };
+  }
+}
+
+/**
+ * 제조원가 세부영역 통합 라우터.
+ * 1) 프론트가 이미 subArea 를 명시적으로 보내면 → 존중 (명확화 응답 이후 재요청 케이스)
+ * 2) 규칙 매칭 정확히 1개 → 결정
+ * 3) 0개 or 다중 매칭 → LLM 보조 라우터
+ * 4) LLM 도 판단 불가 → AMBIGUOUS
+ *
+ * @param {string} query
+ * @param {string|null} explicitSubArea  프론트가 명시적으로 보낸 subArea (재요청 시)
+ * @returns {Promise<{
+ *   subArea: string|null,
+ *   ambiguous: boolean,
+ *   source: 'explicit'|'rule'|'llm'|'ambiguous',
+ *   matched: string[],
+ *   rationale: string
+ * }>}
+ */
+async function inferManufacturingCostSubArea(query, explicitSubArea) {
+  // 1) 프론트가 명시적으로 보낸 subArea (예: 명확화 응답 후 사용자가 버튼 클릭한 케이스)
+  const explicit = String(explicitSubArea || '').toLowerCase().trim();
+  if (explicit === 'cost-product' || explicit === 'cost-dept' || explicit === 'cost-machine') {
+    return {
+      subArea: explicit,
+      ambiguous: false,
+      source: 'explicit',
+      matched: [explicit],
+      rationale: '프론트가 명시적으로 지정 (명확화 응답 후 재요청)',
+    };
+  }
+  // 2) 규칙 매칭
+  const ruleResult = matchMfgSubAreaByKeywords(query);
+  if (ruleResult.matches.length === 1) {
+    return {
+      subArea: ruleResult.matches[0],
+      ambiguous: false,
+      source: 'rule',
+      matched: ruleResult.matches,
+      rationale: `규칙 매칭: ${ruleResult.reason}`,
+    };
+  }
+  // 3) 0개 또는 다중 매칭 → LLM 보조
+  console.log(`[MfgRouter] 규칙 매칭 ${ruleResult.matches.length}개 (${ruleResult.reason}) → LLM 보조 라우터 호출`);
+  const llmResult = await llmClassifyMfgSubArea(query);
+  if (!llmResult.ambiguous && llmResult.subArea) {
+    return {
+      subArea: llmResult.subArea,
+      ambiguous: false,
+      source: 'llm',
+      matched: [llmResult.subArea],
+      rationale: `LLM 판단: ${llmResult.rationale}`,
+    };
+  }
+  // 4) LLM 도 판단 불가 → AMBIGUOUS
+  return {
+    subArea: null,
+    ambiguous: true,
+    source: 'ambiguous',
+    matched: ruleResult.matches,   // 규칙 매칭 결과(있으면 참고용)
+    rationale: `규칙 매칭 ${ruleResult.matches.length}개 + LLM: ${llmResult.rationale}`,
+  };
+}
+
 // ============================================================
 // MariaDB 커넥션 풀
 // ============================================================
@@ -4651,9 +4827,127 @@ async function runAnalysisSqls(safeQueries) {
 // ────────────────────────────────────────────────────────────
 // [1] generateAnalysisPlan — LLM이 사용자 질문을 문맥 전체로 판단하여
 //     실행 계획을 생성. 특정 키워드에 의존하지 않고 목적을 추론.
+//
+// [2026-08-28] areaCtx 지원:
+//   options.areaCtx = { area, subArea, table, tableWhitelist, forcedFilter }
+//   - table 이 지정되면 컬럼 카탈로그·프롬프트·SQL 빌더가 그 테이블 기준으로 동작.
+//   - 미지정(레거시) 시 기존 동작 유지 (bw_profitability_data).
 // ────────────────────────────────────────────────────────────
 async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationContext, options = {}) {
   const dc = activeDomain || 'PS';
+
+  // [2026-08-28] 세부업무영역 컨텍스트 (없으면 기본 수익성분석 테이블)
+  const areaCtx = options.areaCtx || null;
+  const targetTable = (areaCtx && areaCtx.table) || 'bw_profitability_data';
+  const isMfgCost = areaCtx && areaCtx.area === 'manufacturing-cost';
+  // 세부영역별 GROUP BY 힌트 (사용자 요구사항: 명확화 버튼 = 분석 차원 추가)
+  //   cost-product : MATERIAL / MATERIAL_NM   (제품별)
+  //   cost-dept    : COSTCENTER               (부서별, 호기 COSTCENTER 제외)
+  //   cost-machine : COSTCENTER               (호기별, 호기 COSTCENTER만)
+  //
+  // [2026-09-01] 전체 합계 의도 (outputGranularity=OVERALL) 처리:
+  //   사용자 자연어에 "총 / 합 / 합계 / 총합 / 전체 합계 / 모두 합한 / 다 더한"
+  //   같은 총합 표현이 있으면 subArea 자연 축 GROUP BY 강제 지시를 해제하고
+  //   대신 "1행 전체 합계" 지시로 교체한다.
+  //   테이블 격리(targetTable) 와 forcedFilter(COSTCENTER 필터) 는 유지.
+  let subAreaDirective = '';
+  if (isMfgCost && areaCtx.subArea) {
+    const overallIntent = detectOverallTotalIntent(query);
+    if (overallIntent.isOverall) {
+      // OVERALL 모드: subArea 는 조회 범위(테이블/COSTCENTER 필터)만 결정.
+      //   GROUP BY 강제 없음 → SUM(...) 단독 SELECT 로 1행 결과.
+      console.log(`[NLQ:OverallTotalIntent] mode=analysis subArea=${areaCtx.subArea} matchedKeyword="${overallIntent.matchedKeyword}" → dimension 강제 해제, 1행 전체 합계 요청`);
+      const subAreaLabel = (
+        areaCtx.subArea === 'cost-product' ? '제품별원가' :
+        areaCtx.subArea === 'cost-dept'    ? '부서별원가' :
+        areaCtx.subArea === 'cost-machine' ? '호기별원가' : areaCtx.subArea
+      );
+      const filterNote = (
+        areaCtx.subArea === 'cost-dept'
+          ? '- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n'
+          : areaCtx.subArea === 'cost-machine'
+          ? '- 호기(설비) COSTCENTER 코드만 대상으로 백엔드가 자동 필터링합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n'
+          : ''
+      );
+      subAreaDirective = `\n[★★★ 세부업무영역 = ${subAreaLabel} (${targetTable}) — 전체 합계 요청 ★★★]\n` +
+        `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+        `- 사용자가 "${overallIntent.matchedKeyword}" 표현을 사용하여 **전체 합계(1행)** 를 요청했습니다.\n` +
+        `- dimensions 배열은 반드시 [] (빈 배열) 로 두세요. MATERIAL/COSTCENTER 등 세부 축을 포함하지 마세요.\n` +
+        `- GROUP BY 절이 없는 SUM(...) 단독 SELECT 로 만드세요 → 결과 1행.\n` +
+        `- 조회 범위(테이블·부서/호기 코드 대상)는 세부업무영역이 결정하며, forcedFilter 로 서버가 자동 주입합니다.\n` +
+        filterNote;
+    } else {
+      // 기본 모드: subArea 자연 축으로 GROUP BY 강제 (여러 행).
+      if (areaCtx.subArea === 'cost-product') {
+        subAreaDirective = `\n[★★★ 세부업무영역 = 제품별원가 (${targetTable}) ★★★]\n` +
+          `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+          `- 사용자가 "제품별" 이라 언급하지 않았어도 dimension 에 반드시 [MATERIAL, MATERIAL_NM] 을 포함하여 제품별 집계로 답하세요 (columns=["MATERIAL","MATERIAL_NM"]).\n` +
+          `- 결과는 절대 1행 총합이 아니라 제품 여러 행이 나와야 합니다.\n`;
+      } else if (areaCtx.subArea === 'cost-dept') {
+        subAreaDirective = `\n[★★★ 세부업무영역 = 부서별원가 (${targetTable}) ★★★]\n` +
+          `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+          `- 사용자가 "부서별" 이라 언급하지 않았어도 dimension 에 반드시 [COSTCENTER, COSTCENTER_NM] 을 포함하여 부서별 집계로 답하세요 (COSTCENTER_NM 이 없다면 [COSTCENTER] 단독).\n` +
+          `- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n` +
+          `- 결과는 절대 1행 총합이 아니라 부서 여러 행이 나와야 합니다.\n`;
+      } else if (areaCtx.subArea === 'cost-machine') {
+        subAreaDirective = `\n[★★★ 세부업무영역 = 호기별원가 (${targetTable}) ★★★]\n` +
+          `- 이 질의는 반드시 ${targetTable} 테이블만 사용합니다.\n` +
+          `- 사용자가 "호기별" 이라 언급하지 않았어도 dimension 에 반드시 [COSTCENTER, COSTCENTER_NM] 을 포함하여 호기별 집계로 답하세요 (COSTCENTER_NM 이 없다면 [COSTCENTER] 단독).\n` +
+          `- 호기(설비) COSTCENTER 코드만 대상으로 백엔드가 자동 필터링합니다. filter 에 COSTCENTER 조건을 넣지 마세요.\n` +
+          `- 결과는 절대 1행 총합이 아니라 호기 여러 행이 나와야 합니다.\n`;
+      }
+    }
+  }
+
+  // ── [2026-08-31] 원가구성요소(ZCOSTCOMP_NM) 명확화 확정 시 plan-phase LLM 제약
+  //
+  //   배경 (근본 원인):
+  //     사용자가 명확화 UI 에서 원가구성요소 버튼을 클릭하면 프론트가
+  //     forcedCostComp = { values: [<사용자선택값>], op: '=' } 를 재요청 payload 에
+  //     실어 서버에 다시 보냅니다. 서버는 이 값을 이용해 SQL 에 결정적으로
+  //     "ZCOSTCOMP_NM = <선택값>" WHERE 조건을 주입합니다 (applyForcedCostCompFilter).
+  //     또한 COSTELMNT_NM 을 통한 부수적 재해석 조건은 _removeCollateralCostElmntConds
+  //     가 사후에 자동 제거합니다. 즉 **백엔드 방어망만으로 결정적 SQL 이 완성**됩니다.
+  //
+  //   PR #402 회고 (이 블록의 이전 버전):
+  //     이전 버전 costCompDirective 는 LLM 에게 "노무비/재료비/경비 등으로 재해석하지
+  //     마" 라고 지시하기 위해 프롬프트에 **부정 어휘(노무비/재료비/경비 등) 를
+  //     직접 명시**했습니다. 그 결과 LLM 이 이 부정 어휘를 응답 explanation 에
+  //     그대로 뱉어내는 역효과가 발생:
+  //       "'인건비'가 ... 등록되어 있지 않아 임의로 '노무비' 등으로 해석하지 않았습니다"
+  //     이 응답이 aggregate route 의 isUnknownTerm 감지기(등록되어 있지 않/알 수 없/
+  //     관리자/학습관리) 에 걸려 사용자에게는 노란 "알 수 없는 용어" 경고 박스로 표시.
+  //     (호기별 vs 부서별 케이스가 갈린 이유: cost-machine 은 COSTCENTER IN 필터로
+  //      LLM 이 SQL 생성에 집중, cost-dept 은 조회 범위가 넓어 LLM 이 부정 어휘에
+  //      더 잘 이끌려 refusal 응답 확률이 높아짐.)
+  //
+  //   이번 수정 (근본 원인 차단):
+  //     LLM 프롬프트에서 원가구성요소 부정 어휘를 완전히 제거하고, 사용자 선택값
+  //     하나만 담백하게 알려줍니다. "노무비/재료비/경비 로 확장하지 마" 라는 부정적
+  //     지시는 서버 방어망(applyForcedCostCompFilter + _removeCollateralCostElmntConds)
+  //     이 이미 결정적으로 처리하므로 LLM 에게는 이 어휘를 노출할 필요가 없습니다.
+  let costCompDirective = '';
+  if (areaCtx && areaCtx.forcedCostComp
+      && Array.isArray(areaCtx.forcedCostComp.values)
+      && areaCtx.forcedCostComp.values.length > 0) {
+    const fcc = areaCtx.forcedCostComp;
+    const vals = fcc.values.slice();
+    const op = fcc.op || (vals.length === 1 ? '=' : 'IN');
+    const valuesText = vals.map(v => `'${v}'`).join(', ');
+    const whereClauseText = op === 'IN' || vals.length > 1
+      ? `ZCOSTCOMP_NM IN (${valuesText})`
+      : `ZCOSTCOMP_NM = ${valuesText}`;
+    costCompDirective = `\n[★★★ 원가구성요소(ZCOSTCOMP_NM) — 사용자가 명확화 UI 에서 이미 선택 완료 ★★★]\n` +
+      `사용자는 이미 원가구성요소 값을 확정했습니다. 서버가 최종 SQL 에 다음 조건을 결정적으로 주입합니다:\n` +
+      `  WHERE ${whereClauseText}\n\n` +
+      `[plan 작성 규칙]\n` +
+      `  1. filters 배열에 ZCOSTCOMP_NM 조건을 넣지 마세요. 서버가 자동 주입합니다.\n` +
+      `  2. dimensions 에 원가구성요소 축(ZCOSTCOMP_NM) 을 넣지 마세요. 이미 단일 값으로 확정되었습니다.\n` +
+      `  3. 나머지는 사용자 질의(기간·부서·호기 등) 에만 집중하여 정상적으로 plan 을 작성하세요.\n` +
+      `  4. explanation 에는 사용자가 확정한 값(${valuesText})을 그대로 사용하세요.\n` +
+      `     사용자는 이미 명확화 UI 로 값을 확정했으므로, 그 값이 유일한 정답이며\n` +
+      `     "다른 값으로 해석했다" 같은 부연 설명은 붙이지 마세요.\n`;
+  }
 
   // ── [2026-08-07] 사업부 표현 결정적 감지 (aggregate 모드와 동일 정책 이식)
   //   배경: 분석질문 파이프라인은 그동안 사업부 표현(HL/HL사업부/홈앤라이프 등)
@@ -4714,13 +5008,17 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   }
 
   // ── 컬럼 카탈로그
+  // [2026-08-28] targetTable 을 기준으로 컬럼 카탈로그 조회.
+  //   세부업무영역이 지정되면 그 테이블(sys_aimd_cot015/043)의 컬럼만 카탈로그에 포함.
+  //   미지정 시 기본 bw_profitability_data.
   let columnCatalog = '';
   try {
     const [actualCols] = await pool.query(
       `SELECT COLUMN_NAME, COLUMN_COMMENT
          FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME='bw_profitability_data'
-        ORDER BY ORDINAL_POSITION`
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME=?
+        ORDER BY ORDINAL_POSITION`,
+      [targetTable]
     );
     const ontoDesc = {};
     try {
@@ -4821,8 +5119,21 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   const prevLabel = prevCm ? `${prevCm.substring(0,4)}년 ${parseInt(prevCm.substring(4,6))}월` : '';
 
   // 대화 컨텍스트 (직전 턴 SQL/답변 참조)
+  //
+  // [2026-08-31] ZCOSTCOMP_NM 명확화 재요청 시 conversationContext 무시
+  //   ─ generateAnalysisPlan 도 sync route (L9395) 와 동일한 오염 경로를 가짐:
+  //     직전 turn 의 SQL/설명이 프롬프트에 [직전 턴 참조] 로 들어가면 LLM 이 그 표현을 재사용
+  //     → alias/설명에 이전 질의 어휘("통신비 우편/택배") 유출, 현재 turn 의 dimension 필터 누락.
+  //   ─ 명확화 재요청은 "동일 원 질문의 재실행" 이므로 이전 대화 문맥이 필요 없다.
   let convCtx = '';
-  if (Array.isArray(conversationContext) && conversationContext.length > 0) {
+  const isClarifyResubmitPlan = !!(
+    areaCtx && areaCtx.forcedCostComp
+    && Array.isArray(areaCtx.forcedCostComp.values)
+    && areaCtx.forcedCostComp.values.length > 0
+  );
+  if (isClarifyResubmitPlan) {
+    console.log(`[AnalysisPlan:ClarifyReset] ZCOSTCOMP_NM 명확화 재요청 감지 → conversationContext 무시. forcedCostComp.values=[${areaCtx.forcedCostComp.values.join(', ')}]`);
+  } else if (Array.isArray(conversationContext) && conversationContext.length > 0) {
     const last = [...conversationContext].reverse().find(c => c && (c.sql || c.explanation));
     if (last) {
       convCtx = `\n[직전 턴 참조]\n${last.sql ? `- 직전 SQL: ${String(last.sql).substring(0, 300)}` : ''}${last.explanation ? `\n- 직전 답변 요지: ${String(last.explanation).substring(0, 200)}` : ''}`;
@@ -4836,10 +5147,13 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 
     // 재시도 시에만 활성 도메인 + 활성 기간에서 ZAMT 컬럼들의 실제 값 유무를 진단해 프롬프트에 첨부
     //  → 값이 모두 0/NULL 인 컬럼은 어느 것인지 LLM이 알 수 있어야 대체 공식 선택 가능
+    //
+    // [2026-08-28] ZAMT 진단은 bw_profitability_data 전용. 세부업무영역 테이블
+    //   (sys_aimd_cot015/043) 에서는 ZAMT 컬럼이 없으므로 스킵.
     try {
       const div = dc === 'PS' ? '10' : (dc === 'HL' ? '20' : null);
       const cmForDiag = (options.previousPlan?.period?.from) || cm;
-      if (div && cmForDiag) {
+      if (div && cmForDiag && targetTable === 'bw_profitability_data') {
         const zamtCols = [];
         for (let i = 1; i <= 55; i++) zamtCols.push('ZAMT' + String(i).padStart(3, '0'));
         const selectParts = zamtCols.map(c => `SUM(${c}) AS \`${c}\``).join(', ');
@@ -5107,11 +5421,12 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
 - 당월: ${cmLabel} (CALMONTH='${cm}')
 - 전월: ${prevLabel} (CALMONTH='${prevCm}')
 - 활성 도메인 (UI 필터): ${dc}
-${divisionDirective}${synonymDirective}
+- 대상 테이블: ${targetTable}
+${subAreaDirective}${costCompDirective}${divisionDirective}${synonymDirective}
 [★ 학습관리 등록 지표 (지표성 컬럼은 반드시 이 산식 사용)]
 ${metricCatalog || '(없음)'}
 
-[★ 사용 가능 실제 컬럼 — 이 목록에 없는 컬럼명 만들지 말 것]
+[★ 사용 가능 실제 컬럼 (테이블 ${targetTable}) — 이 목록에 없는 컬럼명 만들지 말 것]
 ${columnCatalog || '(없음)'}
 ${convCtx}${retryHint}
 
@@ -5262,7 +5577,10 @@ ${convCtx}${retryHint}
 // [2-a] buildAggregationSqlFromPlan — plan의 dimensions/metrics/filters
 //        로 GROUP BY SELECT 자동 생성 (LLM이 SQL 문법을 직접 작성하지 않도록)
 // ────────────────────────────────────────────────────────────
-function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
+// [2026-08-28] targetTable 파라미터 추가 (기본값 하위호환).
+//   세부업무영역이 있는 경우 executeAnalysisPlan 이 areaCtx.table 을 넘겨
+//   FROM 절이 sys_aimd_cot015 / sys_aimd_cot043 로 생성되도록 함.
+function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo, targetTable = 'bw_profitability_data') {
   const dims = Array.isArray(plan.dimensions) ? plan.dimensions : [];
   const mets = Array.isArray(plan.metrics) ? plan.metrics : [];
   const filters = Array.isArray(plan.filters) ? plan.filters : [];
@@ -5465,7 +5783,7 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
     const rankAlias = '순위';
     const cteSql =
       `WITH _base AS (` +
-        `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause}` +
+        `SELECT ${selectClause} FROM ${targetTable} WHERE ${whereClause}${groupByClause}` +
       `), ` +
       `_ranked AS (` +
         `SELECT _base.*, ` +
@@ -5507,7 +5825,7 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   if (!useCte && topOp && topN !== null && !partitionColSql && orderColAlias && groupByParts.length > 0) {
     const buffer = 20;
     const dbLimit = Math.min(50000, topN + buffer);
-    const sql = `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause} ORDER BY ${orderColAlias} ${orderDirSql} LIMIT ${dbLimit}`;
+    const sql = `SELECT ${selectClause} FROM ${targetTable} WHERE ${whereClause}${groupByClause} ORDER BY ${orderColAlias} ${orderDirSql} LIMIT ${dbLimit}`;
     return {
       sql,
       dimAliasByName,
@@ -5530,7 +5848,7 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo) {
   // ────────────────────────────────────────────────────────
   const limit = groupByParts.length > 0 ? 50000 : 1;
 
-  const sql = `SELECT ${selectClause} FROM bw_profitability_data WHERE ${whereClause}${groupByClause} LIMIT ${limit}`;
+  const sql = `SELECT ${selectClause} FROM ${targetTable} WHERE ${whereClause}${groupByClause} LIMIT ${limit}`;
 
   return { sql, dimAliasByName, metricAliasByName };
 }
@@ -5879,11 +6197,19 @@ function runPostOperations(plan, baseRows) {
 
 // ────────────────────────────────────────────────────────────
 // [2-c] executeAnalysisPlan — plan 을 실제 DB 로 실행
+//
+// [2026-08-28] areaCtx 파라미터 추가:
+//   - areaCtx.table       : FROM 절 대상 테이블 (sys_aimd_cot015/043 등)
+//   - areaCtx.forcedFilter: 실행 직전 SQL 에 자동 주입할 강제 필터
+//                          (예: cost-dept 는 COSTCENTER NOT IN (23개 호기),
+//                               cost-machine 은 COSTCENTER IN (23개 호기))
+//   - 미지정(레거시) 시 기존 동작 유지 (bw_profitability_data).
 // ────────────────────────────────────────────────────────────
-async function executeAnalysisPlan(plan, activeDomain, query = '') {
+async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = null) {
   const domain = (plan.domain && plan.domain.value) || activeDomain || 'PS';
   const calmonth = (plan.period && plan.period.from) || '';
   const calmonthTo = (plan.period && plan.period.to) || calmonth;
+  const targetTable = (areaCtx && areaCtx.table) || 'bw_profitability_data';
 
   const execRecord = {
     baseSql: null,
@@ -5898,7 +6224,7 @@ async function executeAnalysisPlan(plan, activeDomain, query = '') {
   };
 
   // ── base SQL 생성 및 실행
-  const built = buildAggregationSqlFromPlan(plan, calmonth, calmonthTo);
+  const built = buildAggregationSqlFromPlan(plan, calmonth, calmonthTo, targetTable);
   // ── [2026-08-07] 사업부 필터 3중 방어 (aggregate 모드와 동일 정책 이식)
   //   기존: applyDomainFilter 만 호출 → plan.domain.value 만 참조하므로
   //         LLM 이 filter 에 DIVISION_NM='HL사업부' 같은 잘못된 조건을
@@ -5913,10 +6239,25 @@ async function executeAnalysisPlan(plan, activeDomain, query = '') {
   //   ※ plan 생성 단계에서 이미 domain 이 감지값으로 재작성되었지만,
   //     이 3중 방어는 aggregate 모드와 동일한 안전망을 제공하여
   //     "표현이 달라도 결과가 같음" 을 보장.
+  //   ※ applyDomainFilter/applyDivisionFromQuery/normalizeDivisionFilter 는
+  //     모두 bw_profitability_data 참조 SQL 에만 적용되므로,
+  //     sys_aimd_cot015/043 대상 SQL 에서는 자연스럽게 no-op 로 스킵됨.
   let baseSql = built.sql;
   baseSql = normalizeDivisionFilter(baseSql);
   baseSql = applyDomainFilter(baseSql, domain);
   baseSql = applyDivisionFromQuery(baseSql, query || '');
+  // ── [2026-08-28] 세부업무영역 강제 필터 (COSTCENTER IN/NOT IN 23개 호기 코드)
+  //   applyForcedTableFilter 는 대상 테이블(sys_aimd_cot043) 참조 SQL 에만 주입.
+  //   sys_aimd_cot015 (제품별) / bw_profitability_data 대상 SQL 에서는 no-op.
+  if (areaCtx && areaCtx.forcedFilter && areaCtx.table) {
+    baseSql = applyForcedTableFilter(baseSql, areaCtx.forcedFilter, areaCtx.table);
+  }
+  // [2026-08-28] ZCOSTCOMP_NM 명확화 강제 필터 (sys_aimd_cot043 만)
+  //   - LLM 이 임의로 LIKE '%인건비%' 넣었어도 확정된 값 = 또는 IN 으로 치환
+  //   - sys_aimd_cot043 참조 SQL 이 아니면 자동 no-op
+  if (areaCtx && areaCtx.forcedCostComp) {
+    baseSql = applyForcedCostCompFilter(baseSql, areaCtx.forcedCostComp);
+  }
   execRecord.baseSql = baseSql;
   // [2026-08-07] (Task 6) TOP N 진단 정보 노출: DB 단 ORDER BY LIMIT 적용 여부 등
   //   - built.rankInfo:  partitionBy 있는 CTE 경로 (기존)
@@ -5965,12 +6306,19 @@ async function executeAnalysisPlan(plan, activeDomain, query = '') {
   const cmpOp = (plan.operations || []).find(o => String(o.type).toUpperCase() === 'COMPARE_PERIODS');
   if (cmpOp && cmpOp.prior) {
     const priorPlan = { ...plan, period: { ...plan.period, from: cmpOp.prior, to: cmpOp.prior } };
-    const priorBuilt = buildAggregationSqlFromPlan(priorPlan, cmpOp.prior);
-    // [2026-08-07] prior SQL 에도 base SQL 과 동일한 3중 방어 적용
+    const priorBuilt = buildAggregationSqlFromPlan(priorPlan, cmpOp.prior, cmpOp.prior, targetTable);
+    // [2026-08-07] prior SQL 에도 base SQL 과 동일한 3중 방어 + 세부업무영역 강제 필터 적용
     let priorSql = priorBuilt.sql;
     priorSql = normalizeDivisionFilter(priorSql);
     priorSql = applyDomainFilter(priorSql, domain);
     priorSql = applyDivisionFromQuery(priorSql, query || '');
+    if (areaCtx && areaCtx.forcedFilter && areaCtx.table) {
+      priorSql = applyForcedTableFilter(priorSql, areaCtx.forcedFilter, areaCtx.table);
+    }
+    // [2026-08-28] ZCOSTCOMP_NM 명확화 강제 필터 (prior SQL 에도 동일 적용)
+    if (areaCtx && areaCtx.forcedCostComp) {
+      priorSql = applyForcedCostCompFilter(priorSql, areaCtx.forcedCostComp);
+    }
     execRecord.priorSql = priorSql;
     try {
       // [2026-07-22 PR #247] prior 기간 SQL 도 동일 statement timeout 적용
@@ -6143,7 +6491,7 @@ function inferAnalysisUnit(plan) {
 // ────────────────────────────────────────────────────────────
 // [4] generateFinalAnalysisAnswer — 제한된 컨텍스트로 최종 답변 생성
 // ────────────────────────────────────────────────────────────
-async function generateFinalAnalysisAnswer(query, plan, execRecord) {
+async function generateFinalAnalysisAnswer(query, plan, execRecord, areaCtx = null) {
   const cm = (plan.period && plan.period.from) || '';
   const cmTo = (plan.period && plan.period.to) || cm;
   const fmtYm = (v) => v ? `${v.substring(0,4)}년 ${parseInt(v.substring(4,6))}월` : '';
@@ -6176,6 +6524,20 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
       phrase: unit.unitLabelPhrase,                  // "분석 대상 거래처"
     },
   };
+
+  // [2026-08-31] 사용자가 명확화 UI 에서 확정한 ZCOSTCOMP_NM 값 (있으면 답변 설명에 강제 반영)
+  //   - LLM 이 "노무비" 같은 임의 동의어 확장을 답변 설명에 넣지 못하도록 명시적 constraint 로 전달
+  const forcedCostComp = (areaCtx && areaCtx.forcedCostComp) || null;
+  if (forcedCostComp && Array.isArray(forcedCostComp.values) && forcedCostComp.values.length > 0) {
+    summary.selectedCostComponent = {
+      op: forcedCostComp.op || (forcedCostComp.values.length === 1 ? '=' : 'IN'),
+      values: forcedCostComp.values.slice(),
+      // 답변 설명에 그대로 넣을 수 있는 조건 표현 (LLM 용 힌트)
+      conditionText: forcedCostComp.values.length === 1
+        ? `ZCOSTCOMP_NM = '${forcedCostComp.values[0]}'`
+        : `ZCOSTCOMP_NM IN (${forcedCostComp.values.map(v => `'${v}'`).join(', ')})`,
+    };
+  }
 
   const computed = (execRecord.postOps && execRecord.postOps.computed) || {};
 
@@ -6375,6 +6737,38 @@ async function generateFinalAnalysisAnswer(query, plan, execRecord) {
     (4) 필요 시 짧은 해석 보조 문장 (사용자 이해를 돕는 결론)
     → 상세 계산 결과 표는 별도 UI에서 표시되므로 텍스트에 포함하지 않음.`;
 
+  // [2026-08-31] 사용자가 명확화 UI 에서 확정한 ZCOSTCOMP_NM 값이 있으면 —
+  //   LLM 이 답변 설명에서 임의 동의어 확장을 하지 못하도록 명시적 규칙 추가.
+  //   (예: 사용자가 '인건비' 만 선택 → LLM 이 "노무비도 포함해서..." 로 오해석 금지)
+  const costCompConstraint = (forcedCostComp && summary.selectedCostComponent)
+    ? `
+
+[★★★ 원가구성요소(ZCOSTCOMP_NM) 사용자 확정값 준수 규칙 — 매우 중요 ★★★]
+사용자가 명확화 UI 에서 원가구성요소 값을 직접 선택했습니다.
+확정된 조건: **${summary.selectedCostComponent.conditionText}**
+
+절대 지켜야 할 규칙:
+1. 답변 설명에서 원가구성요소를 언급할 때는 **위 확정값만** 사용하세요.
+   - 사용자가 선택한 값: [${summary.selectedCostComponent.values.map(v => `"${v}"`).join(', ')}]
+2. 위 목록에 **없는 원가구성요소 이름을 절대 답변에 넣지 마세요**.
+   - ✗ 금지: 사용자가 "인건비" 선택했는데 답변에 "노무비", "인건비_경비", "인건비_기타" 등을 언급
+   - ✗ 금지: "인건비를 노무비로 보고" / "인건비에 관련 항목을 포함해서" 같은 의미 확장
+   - ✓ 권장: "원가구성요소명(ZCOSTCOMP_NM)이 '인건비'인 항목만 조회하여..."
+3. 사용자 원 질문에 "총 인건비" 처럼 "총" 이 붙어 있어도, 이는 **SUM(AMOUNT)** 를 의미하는 것이지
+   원가구성요소를 여러 개 합산한다는 뜻이 **아닙니다**. 확정값 하나만 사용하세요.
+4. 사용자 원 질문의 자연어 표현("인건비", "재료비" 등) 을 다시 해석해서 다른 ZCOSTCOMP_NM 값을
+   추론하지 마세요. 사용자 확정값이 이미 정답입니다.
+5. 답변의 조건 설명은 **실제 실행된 SQL 의 조건과 일치**해야 합니다. 실제 SQL 은 아래 조건을 사용:
+   \`${summary.selectedCostComponent.conditionText}\`
+6. **부수 컬럼 재해석 금지**: 원가요소명(COSTELMNT_NM), 원가요소코드(COSTELMNT) 등 다른 컬럼을
+   원가구성요소 어휘(인건비/노무비/재료비/경비 등)로 다시 필터링·언급하지 마세요.
+   - ✗ 금지: "COSTELMNT_NM 이 노무비/인건비인 항목을 합산하여..."
+   - ✗ 금지: "인건비 관련 요소로 노무비도 포함하여..."
+   서버는 이러한 부수 조건을 자동으로 제거하므로, 답변도 확정된 ZCOSTCOMP_NM 조건만 언급하세요.`
+    : '';
+
+  const finalSystemPrompt = systemPrompt + costCompConstraint;
+
   const userContent = `[사용자 원문 질문]
 ${query}
 
@@ -6396,7 +6790,7 @@ ${plan.userGoal || ''}
   const completion = await openai.chat.completions.create({
     model: GPT_MODEL,
     messages: [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: finalSystemPrompt },
       { role: 'user', content: userContent },
     ],
     temperature: 0.3,
@@ -6841,6 +7235,94 @@ function applyDomainFilter(inputSql, domainCodeOrCodes) {
 }
 
 // ═════════════════════════════════════════════════════════════════
+// [2026-09-01] 제조원가 전용 — 전체 합계 의도 감지
+// ─────────────────────────────────────────────────────────────────
+// 사용자 자연어에서 "총 / 합 / 합계 / 총합 / 전체 합 / 전체 합계 /
+// 모두 합한 금액 / 다 더한 금액" 같은 **전체 합계 의도** 표현을 감지해
+// outputGranularity=OVERALL 로 처리하도록 subArea directive 를 조건부로
+// 발동/해제한다.
+//
+// 정책 (사용자 요구사항 반영):
+//   1) 매칭되면 subArea 의 자연 GROUP BY 축(COSTCENTER/MATERIAL) 강제
+//      지시를 해제하고, "결과는 반드시 1행 전체 합계" 지시로 교체한다.
+//   2) 매칭되지 않으면 종전과 동일: subArea 자연 축으로 GROUP BY (여러 행).
+//   3) subArea 의 테이블 격리(targetTable) 와 forcedFilter (COSTCENTER
+//      IN/NOT IN 23개 호기 코드) 는 **유지** — "조회 범위" 는 subArea 가
+//      결정하고, "출력 집계 수준(granularity)" 은 자연어 표현이 결정한다.
+//   4) 제조원가 영역(area === 'manufacturing-cost')에만 적용.
+//      기존 수익성분석 자연어 판단 로직에는 영향 없음.
+//   5) 형태소 경계 규칙 — 사용자 지적:
+//      "합" 은 단순 substring 매칭 금지. "종합", "종합적", "복합" 등
+//      다른 단어의 일부인 "합"까지 오탐하지 않도록 반드시 어절 경계를
+//      확인한다 (bare "합" 은 앞이 공백/시작이면서 뒤가 공백/문장부호/끝일 때만 매칭).
+//      "합계" 는 어절 시작만 확인 (뒤에 조사/공백/문장부호 허용).
+//      "총" 은 사용자 요구사항 #5 에 따라 항상 매칭 (지표 수식어로도 총합 의도).
+//
+// 감지 어휘 및 판정 규칙 (전체 어절 boundary 를 반드시 지킴):
+//   [A] "총"       — 지표 수식어로도 총합 의도 (사용자 명시). "총합" 도 포괄.
+//   [B] "합계"     — 어절 시작 위치의 "합계" (예: "인건비 합계", "합계 알려줘")
+//   [C] "합"       — bare "합" (앞·뒤 어절 경계). "종합"·"복합"·"조합"·"연합"
+//                    등 접미사·접두사로 붙은 "합" 은 제외.
+//   [D] "전체 합" / "전체 합계"
+//   [E] "모두 합한 금액" / "모두 합한"
+//   [F] "다 더한 금액" / "다 더한"
+//
+// @param {string} query  사용자 자연어 원문
+// @returns {{isOverall: boolean, matchedKeyword: string|null}}
+// ═════════════════════════════════════════════════════════════════
+function detectOverallTotalIntent(query) {
+  if (!query || typeof query !== 'string') {
+    return { isOverall: false, matchedKeyword: null };
+  }
+  const q = query.trim();
+  if (!q) return { isOverall: false, matchedKeyword: null };
+
+  // 어절 경계 helper — "합" 앞뒤가 [공백/시작/문장부호/끝] 인지 검사.
+  //   앞경계 문자군: 시작, 공백, 문장부호, 숫자, 괄호
+  //   뒤경계 문자군: 끝, 공백, 문장부호, 조사(만/의/은/는/이/가/도/을/를/과/와/에/의)
+  //   → 이렇게 하면 "인건비 합 알려줘", "합 알려줘", "인건비 합만" 은 매칭되고
+  //      "종합", "복합", "조합", "연합", "합계", "합산" 은 매칭 안됨(합계는 별도 규칙).
+  const LEFT_BOUNDARY  = '(?:^|[\\s\\d.,!?()\\[\\]{}\\-—:;/])';
+  const RIGHT_BOUNDARY_STRICT = '(?=$|[\\s.,!?()\\[\\]{}\\-—:;/]|만|의|은|는|이|가|도|을|를|과|와|에)';
+  // "합계" 는 어절 시작 boundary 만 확인 (뒤엔 자유 — "합계를", "합계는" 등 조사 허용)
+  const RIGHT_BOUNDARY_LOOSE  = '(?=$|[\\s.,!?()\\[\\]{}\\-—:;/]|[가-힣])';
+
+  // 순서 중요: 더 긴 매칭 먼저 시도 → 짧은 것으로 fallback
+  const patterns = [
+    // [E] "모두 합한" (사용자 요구사항 명시 어휘)
+    { re: /(?:^|[^가-힣])모두\s*합한(?:\s*금액)?/,     kw: '모두 합한' },
+    // [F] "다 더한"   (사용자 요구사항 명시 어휘)
+    { re: /(?:^|[^가-힣])다\s*더한(?:\s*금액)?/,       kw: '다 더한' },
+    // [D] "전체 합계" / "전체 합"  (합계는 loose boundary, 합은 strict boundary)
+    { re: new RegExp(`(?:^|[^가-힣])전체\\s*합계${RIGHT_BOUNDARY_LOOSE}`),  kw: '전체 합계' },
+    { re: new RegExp(`(?:^|[^가-힣])전체\\s*합${RIGHT_BOUNDARY_STRICT}`),   kw: '전체 합' },
+    // [B] "합계" — 어절 시작 boundary + loose right boundary
+    //     "종합계", "복합계" 같이 앞에 한글이 붙어 있으면 매칭 안 함 (LEFT_BOUNDARY 로 앞을 확인)
+    { re: new RegExp(`${LEFT_BOUNDARY}합계${RIGHT_BOUNDARY_LOOSE}`),        kw: '합계' },
+    // [A] "총합" (합계보다 뒤에 두어 겹침 방지)
+    { re: new RegExp(`${LEFT_BOUNDARY}총합${RIGHT_BOUNDARY_LOOSE}`),        kw: '총합' },
+    // [A] "총" — 지표 수식어로 항상 매칭. "총매출", "총 인건비", "총액", "총원가" 등 광범위.
+    //     단 "이총", "회총"(오타/붙임) 같이 앞에 한글이 붙으면 매칭 안 함.
+    //     "총" 뒤에는 아무거나 올 수 있음 (한글 명사가 이어지는 게 정상 케이스).
+    //     이 규칙이 지나치게 광범위해 보이지만, 사용자 요구사항 #5 에 명시적으로
+    //     "'총'을 단순한 지표 수식어로 무시하지 않는다. '총 인건비'는 전체 조회 대상의
+    //      인건비 합계를 요청한 것으로 해석한다" 라고 규정되어 있음.
+    { re: /(?:^|[^가-힣])총(?=[\s가-힣])/,                                  kw: '총' },
+    // [C] "합" — bare "합" 어절 경계.
+    //     앞뒤 모두 strict boundary → "종합", "복합", "조합", "연합", "합의", "합격",
+    //     "합병" 등 모두 제외됨.
+    { re: new RegExp(`${LEFT_BOUNDARY}합${RIGHT_BOUNDARY_STRICT}`),         kw: '합' },
+  ];
+
+  for (const { re, kw } of patterns) {
+    if (re.test(q)) {
+      return { isOverall: true, matchedKeyword: kw };
+    }
+  }
+  return { isOverall: false, matchedKeyword: null };
+}
+
+// ═════════════════════════════════════════════════════════════════
 // [2026-08-25] 제조원가 세부업무영역용 강제 필터 자동 주입
 // ─────────────────────────────────────────────────────────────────
 // - sys_aimd_cot043 은 부서별원가(cost-dept) 와 호기별원가(cost-machine) 가
@@ -6953,6 +7435,860 @@ function applyForcedTableFilter(inputSql, forcedFilter, targetTable) {
   if (result !== inputSql) {
     console.log(`[NLQ] 세부업무영역 강제 필터 자동 주입 (${targetTable}: ${col} ${op} ${forcedFilter.values.length}개)`);
   }
+  return result;
+}
+
+// ═════════════════════════════════════════════════════════════════
+// [2026-08-28] 제조원가(sys_aimd_cot043) ZCOSTCOMP_NM 명확화 지원 헬퍼
+// ─────────────────────────────────────────────────────────────────
+// 배경:
+//   - sys_aimd_cot043 에는 원가구성요소(ZCOSTCOMP_NM) 값이 여러 개 존재.
+//     예: '인건비', '인건비_경비', '인건비_기타'
+//   - 사용자가 "인건비 알려줘" 라고만 하면 어느 것인지 특정 불가.
+//   - LLM 이 임의로 LIKE '%인건비%' 로 합산하지 못하도록 서버가 사전 차단.
+//
+// 정책 (사용자 요구 원칙):
+//   1) 사용자 확인 없이 LIKE 로 합산하지 않는다 (탐색용으로만 사용)
+//   2) 후보 다수면 명확화 질문 후 = 또는 명시적 IN 으로 재조회
+//   3) 정확한 세부항목이 매칭되면 명확화 스킵
+//   4) '관련 항목 전체' 선택 시에도 미리 확인된 후보 리스트를 그대로 IN 에 사용
+//
+// 적용 범위: sys_aimd_cot043 만. bw_profitability_data / sys_aimd_cot015 는 무관.
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * 문자열을 정규화 (공백·언더스코어·전각공백 제거 + 소문자화).
+ * "인건비 경비" == "인건비_경비" == "인건비경비" 를 동치로 처리하기 위함.
+ * @param {string} s
+ * @returns {string}
+ */
+function _normalizeCostCompText(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/[\s_\u3000]+/g, '')  // 공백/언더스코어/전각공백 제거
+    .toLowerCase();
+}
+
+/**
+ * 사용자 질의에서 원가 관련 후보 용어(들)를 추출.
+ * - "XX비", "XX비용", "XX원가", "XX가액", "XX경비" 형태를 후보로 수집.
+ * - 라이브 DB DISTINCT 값과 매칭할 재료가 될 후보 문자열들.
+ * - 하드코딩된 원가 용어 리스트는 사용하지 않음 (요구사항 Q3).
+ *
+ * @param {string} query 사용자 자연어 질의
+ * @returns {string[]}   후보 용어들 (원문 그대로, 길이 내림차순 = 더 구체적인 것 우선)
+ *
+ * 예:
+ *   "2026년 7월의 인건비 알려줘"          → ["인건비"]
+ *   "인건비 경비 알려줘"                   → ["인건비 경비", "인건비"]
+ *   "재료비 총합"                          → ["재료비"]
+ */
+function extractCostTermsFromQuery(query) {
+  if (!query) return [];
+  const q = String(query);
+  const terms = new Set();
+  // ① "XX비", "XX원가", "XX가액" 등 원가 관련 접미어를 가진 어절
+  //    한글/영숫자 1~10자 + (비|비용|경비|원가|가액|금액)
+  const re1 = /([가-힣A-Za-z0-9]{1,10}(?:비용|경비|원가|가액|금액|비))/g;
+  let m;
+  while ((m = re1.exec(q)) !== null) terms.add(m[1]);
+  // ② "XX비 경비", "XX비 기타" 같이 공백으로 분리된 세부 항목 표현도 후보로 추가
+  //    예: "인건비 경비" → "인건비 경비" 를 통째로 후보에 넣어 정확 매칭 유도.
+  //    ⚠️ 뒤 단어는 원가 세부 항목으로 알려진 짧은 접미 후보로만 한정
+  //       (안 그러면 "인건비 알려줘" → "인건비 알려줘" 같은 노이즈 후보 생성됨)
+  //    실제 DB DISTINCT 값에서 자주 나타나는 세부 접미어들 (하드코딩 아님, 형태 필터일 뿐).
+  //    "관련"·"경비"·"기타"·"외"·"등" 같은 표현이 이어질 때만 통째 후보로 승격.
+  const detailSuffix = '(?:경비|기타|외|등|기본|공통|간접|직접|본사|공장)';
+  const re2 = new RegExp(`([가-힣A-Za-z0-9]{1,10}비)\\s+(${detailSuffix})`, 'g');
+  while ((m = re2.exec(q)) !== null) terms.add(`${m[1]} ${m[2]}`);
+  // 길이 내림차순 (더 구체적인 것 우선 매칭)
+  return Array.from(terms).sort((a, b) => b.length - a.length);
+}
+
+/**
+ * DB 에서 sys_aimd_cot043.ZCOSTCOMP_NM 후보값을 조회.
+ * - LIKE '%용어%' 는 오직 후보 탐색용도로만 사용 (요구사항 원칙).
+ * - 후보값은 반환 후 서버가 명확화 질문 or 정확 매칭에 사용.
+ *
+ * @param {string} rawTerm 사용자 질의에서 추출한 원가 용어 (예: "인건비")
+ * @returns {Promise<string[]>} ZCOSTCOMP_NM 후보값 리스트 (알파벳순)
+ */
+async function searchCostCompCandidates(rawTerm) {
+  if (!rawTerm) return [];
+  const term = String(rawTerm).trim();
+  if (!term) return [];
+  // 정규화된 용어로도 후보 확장 (예: "인건비 경비" → "%인건비%경비%" 는 하지 않음.
+  //   대신 공백 제거해서 "인건비경비" 로도 검색 → LIKE '%인건비경비%' 는 DB 에 저장된 값이
+  //   보통 언더스코어 포함이므로 매칭 안 될 수 있음. 따라서 최소 공통 어근으로 잘라 검색.
+  //   여기서는 첫 번째 원가 접미어까지만 잘라 후보 확장 검색을 넓게 잡음).
+  const normFull = _normalizeCostCompText(term);
+  // "인건비 경비" → 첫 번째 "비" 로 자른 어근 "인건비" 로도 검색
+  const rootMatch = term.match(/^([가-힣A-Za-z0-9]{1,10}비)/);
+  const searchTerms = new Set([term]);
+  if (rootMatch && rootMatch[1] !== term) searchTerms.add(rootMatch[1]);
+  try {
+    const results = new Map(); // normalized → raw (dedup 유지)
+    for (const st of searchTerms) {
+      const [rows] = await pool.query(
+        `SELECT DISTINCT ZCOSTCOMP_NM
+           FROM sys_aimd_cot043
+          WHERE ZCOSTCOMP_NM LIKE ?
+          ORDER BY ZCOSTCOMP_NM`,
+        [`%${st}%`]
+      );
+      for (const r of rows) {
+        if (!r.ZCOSTCOMP_NM) continue;
+        const norm = _normalizeCostCompText(r.ZCOSTCOMP_NM);
+        if (!results.has(norm)) results.set(norm, r.ZCOSTCOMP_NM);
+      }
+    }
+    const list = Array.from(results.values()).sort((a, b) => a.localeCompare(b, 'ko'));
+    console.log(`[CostCompClarify] searchCostCompCandidates("${term}") → ${list.length}건: [${list.join(', ')}]`);
+    return list;
+  } catch (e) {
+    // sandbox 환경 등에서 sys_aimd_cot043 이 없거나 접근 실패 → 후보 없음으로 반환 (기존 흐름 유지)
+    console.warn(`[CostCompClarify] searchCostCompCandidates 실패 (fallback to empty): ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * 사용자 용어가 후보 목록 중 정확히 하나와 매칭되는지 확인.
+ *
+ * 요구사항 Q5 (정확한 세부항목 매칭 우선):
+ *   - "인건비 경비" → 후보 ["인건비","인건비_경비","인건비_기타"] 에서 "인건비_경비" 로 정확히 특정
+ *   - 이 경우 명확화 스킵하고 바로 조회
+ *
+ * ⚠️ 하지만 상위 카테고리 자체가 후보로 있을 때 (사용자가 "인건비"라고만 하고
+ *   후보에 "인건비"·"인건비_경비"·"인건비_기타" 가 모두 있는 경우) 는
+ *   정확 매칭으로 처리하면 안 됨 → 사용자 의도가 상위 카테고리인지 세부 항목인지 모호하므로
+ *   명확화 게이트를 태워야 함.
+ *
+ * 판정 규칙 (모두 만족 시 정확 매칭 확정):
+ *   1) 정규화된 사용자 용어와 완전 일치하는 후보가 정확히 1개 있어야 함
+ *   2) 다른 후보 중 정규화된 사용자 용어를 **접두어로 포함**하는 것이 없어야 함
+ *      (예: 사용자 "인건비" + 후보에 "인건비_경비" 존재 → 사용자가 상위 카테고리를
+ *       가리켰는지 세부 항목을 가리켰는지 판단 불가 → 명확화 필요)
+ *
+ * @param {string} userTerm 사용자가 입력한 용어
+ * @param {string[]} candidates DB 후보 리스트
+ * @returns {string|null} 정확히 매칭된 ZCOSTCOMP_NM 값 (없으면 null)
+ */
+function findExactCostCompMatch(userTerm, candidates) {
+  if (!userTerm || !Array.isArray(candidates) || candidates.length === 0) return null;
+  const normUser = _normalizeCostCompText(userTerm);
+  if (!normUser) return null;
+  let hit = null;
+  for (const c of candidates) {
+    if (_normalizeCostCompText(c) === normUser) {
+      if (hit) return null; // 중복 매칭 방어 (거의 발생 불가)
+      hit = c;
+    }
+  }
+  if (!hit) return null;
+  // hit 이 다른 후보들의 접두어 문자열이면 → 상위 카테고리로 간주, 명확화 필요
+  for (const c of candidates) {
+    if (c === hit) continue;
+    const normC = _normalizeCostCompText(c);
+    if (normC.startsWith(normUser) && normC !== normUser) {
+      // 예: 사용자 "인건비" + 후보 "인건비_경비" → hit="인건비" 이지만 세부 항목 존재 → null 반환
+      console.log(`[CostCompClarify] 정확 매칭 후보 "${hit}" 발견했으나 세부 항목 "${c}" 도 존재 → 명확화 필요`);
+      return null;
+    }
+  }
+  return hit;
+}
+
+/**
+ * SQL 에 원가구성요소 강제 필터를 주입 (ZCOSTCOMP_NM = 'X' 또는 IN (...)).
+ * applyForcedTableFilter 와 유사하지만 sys_aimd_cot043 전용이고 = 도 지원.
+ *
+ * 정책:
+ *   1) forcedCostComp 가 null 이거나 values 가 비어있으면 no-op
+ *   2) SQL 이 sys_aimd_cot043 을 참조하지 않으면 no-op
+ *   3) 이미 ZCOSTCOMP_NM 조건이 있으면 그것을 강제 필터로 **치환** (LLM 이 임의 LIKE 넣은 경우 방어)
+ *   4) WHERE 절 있음: `<filterClause> AND (기존조건)` 으로 감쌈 (치환 후에는 그대로 유지)
+ *   5) WHERE 절 없음: FROM sys_aimd_cot043 뒤에 WHERE 추가
+ *
+ * @param {string} inputSql
+ * @param {{values: string[]} | null} forcedCostComp
+ * @returns {string}
+ */
+
+// ============================================================
+// [2026-09-02 PR #408] Phase 1 — 테이블 컬럼 화이트리스트 검증 가드
+// ------------------------------------------------------------
+// 배경:
+//   analyticsdev 로그 req-20260902-142729-2a0cfe 에서, RAG 검색이
+//   [RAG] 검색 결과: schema=0, ontology=0 을 반환하여 프롬프트 컨텍스트가
+//   0 자가 되었고, GPT 가 baseline system prompt 의 bw_profitability_data
+//   예시로부터 ZAMT001 을 학습해 sys_aimd_cot043 SQL 에 사용 →
+//   "Unknown column 'ZAMT001' in 'SELECT'" DB 에러 발생.
+//   applyForcedCostCompFilter 는 WHERE 절만 정정할 뿐 SELECT 컬럼이
+//   FROM 테이블에 실존하는지 검증하지 않음.
+//
+// 방어 전략 (manufacturing-cost 영역만, 요구사항 #8 스코프 준수):
+//   1) 서버 부팅 시 INFORMATION_SCHEMA.COLUMNS 를 조회하여
+//      manufacturing-cost 관련 테이블(sys_aimd_cot043, sys_aimd_cot015)
+//      과 profitability 관련 테이블(bw_profitability_data) 의 실제 컬럼
+//      목록을 캐싱 (첫 요청 시 lazy load).
+//   2) 실행 직전 SQL 에서 참조 컬럼을 추출하여, FROM 테이블의 실 컬럼
+//      집합과 대조. 미존재 컬럼(예: sys_aimd_cot043 SQL 에 ZAMT001)
+//      감지 시 { valid:false, unknownCols, tableColsHint } 반환.
+//   3) 호출부(aggregate route) 는 unknownCols 감지 시 기존
+//      validateSqlPreExecution 재생성 루프에 컬럼 힌트를 얹어 재요청 (1회).
+//
+// 스코프 (요구사항 #8):
+//   - manufacturing-cost 영역에서만 발동 (areaCtx.forcedCostComp 존재 시)
+//   - 수익성분석(bw_profitability_data) 로직은 변경 없음
+// ============================================================
+const _TABLE_COL_WHITELIST_CACHE = new Map();  // tableName(lower) → Set<colNameUpper>
+let _tableColWhitelistLoadedAt = 0;
+const _TABLE_COL_WHITELIST_TTL_MS = 60 * 60 * 1000;  // 1시간
+
+async function _loadTableColumnWhitelist() {
+  // 재로딩 조건: 캐시 비어있음 OR TTL 초과
+  const now = Date.now();
+  if (_TABLE_COL_WHITELIST_CACHE.size > 0 &&
+      (now - _tableColWhitelistLoadedAt) < _TABLE_COL_WHITELIST_TTL_MS) {
+    return;
+  }
+  // 대상 테이블 — manufacturing-cost + profitability 양쪽 모두 로드하여
+  // 향후 profitability 영역에 동일 가드가 필요할 경우 재사용 가능.
+  const targets = ['sys_aimd_cot043', 'sys_aimd_cot015', 'bw_profitability_data'];
+  try {
+    const [rows] = await pool.query(
+      `SELECT TABLE_NAME, COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME IN (?)`,
+      [process.env.DB_NAME || 'company_board', targets]
+    );
+    _TABLE_COL_WHITELIST_CACHE.clear();
+    for (const r of rows) {
+      const t = String(r.TABLE_NAME).toLowerCase();
+      if (!_TABLE_COL_WHITELIST_CACHE.has(t)) _TABLE_COL_WHITELIST_CACHE.set(t, new Set());
+      _TABLE_COL_WHITELIST_CACHE.get(t).add(String(r.COLUMN_NAME).toUpperCase());
+    }
+    _tableColWhitelistLoadedAt = now;
+    const summary = targets.map(t => {
+      const s = _TABLE_COL_WHITELIST_CACHE.get(t.toLowerCase());
+      return `${t}=${s ? s.size : 0}`;
+    }).join(', ');
+    console.log(`[SchemaGuard] 컬럼 화이트리스트 로드 완료: ${summary}`);
+  } catch (e) {
+    console.warn(`[SchemaGuard] 컬럼 화이트리스트 로드 실패 (검증 스킵): ${e.message}`);
+  }
+}
+
+/**
+ * SQL 이 참조하는 FROM 테이블에 대해 SELECT/기타 절의 컬럼 참조가 실존하는지 검증.
+ *
+ * 매우 보수적 정책 — 오탐(false-positive)이 나면 정상 SQL 이 재생성 루프로 빠져
+ * 지연/비용이 커지므로, 다음 경우에는 valid:true(skip) 반환:
+ *   - 캐시가 비어있음 (로드 실패)
+ *   - 대상 테이블(sys_aimd_cot043/sys_aimd_cot015/bw_profitability_data) 이 FROM 에 없음
+ *   - 여러 대상 테이블이 동시에 FROM/JOIN 됨 (컬럼 소속 판별 불가)
+ *   - SQL 이 SELECT 로 시작하지 않음 (WITH/서브쿼리 등 복잡 케이스는 skip)
+ *
+ * 발동 조건:
+ *   - 단일 대상 테이블만 FROM 에 있음
+ *   - 정규식으로 컬럼 심볼(대문자 알파벳/숫자/언더바로 구성된 SQL 식별자) 추출
+ *   - SQL 예약어·집계함수·상수·별칭 제외 후, 대상 테이블 컬럼 집합에 없는 심볼 검출
+ *
+ * @param {string} sql
+ * @returns {{valid: true} | {valid: false, unknownCols: string[], targetTable: string, tableCols: string[]}}
+ */
+function _validateSqlColumnsAgainstSchema(sql) {
+  if (!sql || typeof sql !== 'string') return { valid: true };
+  const sqlTrim = sql.trim();
+  const sqlUpper = sqlTrim.toUpperCase();
+  // SELECT 로 시작하는 단순 쿼리만 대상 (WITH/CTE, 서브쿼리 복잡 케이스는 스킵)
+  if (!sqlUpper.startsWith('SELECT ')) return { valid: true };
+  if (_TABLE_COL_WHITELIST_CACHE.size === 0) return { valid: true };
+
+  // FROM/JOIN 에 등장하는 대상 테이블 수집
+  const targets = ['sys_aimd_cot043', 'sys_aimd_cot015', 'bw_profitability_data'];
+  const found = [];
+  for (const t of targets) {
+    const re = new RegExp(`\\b${t}\\b`, 'i');
+    if (re.test(sql)) found.push(t);
+  }
+  // 대상 테이블 0개 또는 2개 이상 → 스킵 (컬럼 소속 판별 어려움)
+  if (found.length !== 1) return { valid: true };
+  const targetTable = found[0];
+  const allowed = _TABLE_COL_WHITELIST_CACHE.get(targetTable.toLowerCase());
+  if (!allowed || allowed.size === 0) return { valid: true };
+
+  // 문자열 리터럴 제거 (컬럼처럼 보이는 리터럴 오탐 방지)
+  //   - '...' / "..." 리터럴을 모두 공백으로 치환
+  const stripped = sql
+    .replace(/'(?:[^']|'')*'/g, ' ')     // '…' (SQL escape '' 허용)
+    .replace(/"(?:[^"]|"")*"/g, ' ');    // "…"
+
+  // 대문자 식별자 추출 — 컬럼명은 통상 대문자(ZAMT001/AMOUNT/COSTCENTER_NM 등)
+  //   패턴: 대문자로 시작, 대문자·숫자·언더바만, 3자 이상
+  //   AS 별칭·서브쿼리 명·테이블명·MySQL 예약어 필터링
+  const identRe = /\b([A-Z][A-Z0-9_]{2,})\b/g;
+  const found2 = new Set();
+  let m;
+  while ((m = identRe.exec(stripped)) !== null) {
+    found2.add(m[1]);
+  }
+
+  // 필터링 세트 — SQL 예약어 + 집계함수 + 자주 쓰는 키워드
+  const RESERVED = new Set([
+    'SELECT','FROM','WHERE','GROUP','BY','ORDER','HAVING','LIMIT','OFFSET',
+    'AND','OR','NOT','IN','IS','NULL','LIKE','BETWEEN','EXISTS','AS','ON',
+    'JOIN','LEFT','RIGHT','INNER','OUTER','FULL','CROSS','UNION','ALL','DISTINCT',
+    'SUM','AVG','COUNT','MAX','MIN','ROUND','FORMAT','CAST','CONVERT','COALESCE','IFNULL','NULLIF',
+    'CASE','WHEN','THEN','ELSE','END','IF','DATE','MONTH','YEAR','DAY','NOW','CURDATE','CURRENT_DATE',
+    'DATE_FORMAT','STR_TO_DATE','SUBSTRING','CONCAT','TRIM','UPPER','LOWER','LENGTH','REPLACE',
+    'ASC','DESC','WITH','RECURSIVE','TRUE','FALSE','DUAL','USING','SET',
+    // 자주 쓰는 별칭·SQL 리터럴 (컬럼과 겹칠 가능성 낮음)
+    'INT','BIGINT','VARCHAR','DECIMAL','FLOAT','DOUBLE','TEXT',
+  ]);
+  // 대상 테이블 이름 자체와 다른 대상 테이블 이름도 제외 (대문자 변환 후)
+  const targetTableUpper = targetTable.toUpperCase();
+  for (const t of targets) RESERVED.add(t.toUpperCase());
+
+  const unknownCols = [];
+  for (const sym of found2) {
+    if (RESERVED.has(sym)) continue;
+    if (sym === targetTableUpper) continue;
+    // 순수 숫자로 끝나는 짧은 별칭 (T1, R2 등) 제외 — 통상 컬럼은 3자+긴 이름
+    if (/^[A-Z][0-9]$/.test(sym)) continue;
+    if (!allowed.has(sym)) {
+      // 다른 대상 테이블의 컬럼인지 확인 (교차 컬럼 유출 여부 진단 용도)
+      unknownCols.push(sym);
+    }
+  }
+
+  if (unknownCols.length === 0) return { valid: true };
+  return {
+    valid: false,
+    unknownCols,
+    targetTable,
+    tableCols: [...allowed].sort(),
+  };
+}
+
+function applyForcedCostCompFilter(inputSql, forcedCostComp) {
+  if (!inputSql) return inputSql;
+  if (!forcedCostComp || !Array.isArray(forcedCostComp.values) || forcedCostComp.values.length === 0) {
+    return inputSql;
+  }
+  const targetTable = 'sys_aimd_cot043';
+  const tableRe = new RegExp(`\\b${targetTable}\\b`, 'i');
+  if (!tableRe.test(inputSql)) return inputSql;
+
+  const values = forcedCostComp.values;
+  const valuesClause = values.map(v => `'${String(v).replace(/'/g, "''")}'`).join(', ');
+  // 값이 1개면 = , 여러 개면 IN — 사용자 선택값만 정확히 반영 (deterministic)
+  const filterClause = values.length === 1
+    ? `ZCOSTCOMP_NM = '${String(values[0]).replace(/'/g, "''")}'`
+    : `ZCOSTCOMP_NM IN (${valuesClause})`;
+
+  // ────────────────────────────────────────────────────────────
+  // [2026-08-31] 강력한 방어: LLM 이 생성한 ZCOSTCOMP_NM 관련 조건을
+  //   값 리터럴까지 통째로 **완전 제거**한 뒤, 서버가 확정한 값만
+  //   deterministic 하게 주입한다.
+  //
+  //   과거 버그:
+  //     - LLM 이 `ZCOSTCOMP_NM = '인건비' '노무비'` 처럼 잘못된 SQL 생성
+  //     - 기존 정규식은 `ZCOSTCOMP_NM =` 만 매치 → 값 리터럴이 남아 문법 오류
+  //     - 또는 LLM 이 동의어 확장으로 `ZCOSTCOMP_NM IN ('인건비','노무비')` 생성
+  //
+  //   해결:
+  //     1) 정규식이 값 리터럴 (반복 리터럴 포함) 을 통째로 삼킴
+  //     2) 반복 매치로 모든 ZCOSTCOMP_NM 조건 제거
+  //     3) 앞·뒤 AND/OR 잔여 및 잔여 괄호 정리
+  //     4) 마지막에 filterClause 를 WHERE 절 맨 앞에 주입
+  // ────────────────────────────────────────────────────────────
+
+  //   패턴 A: `ZCOSTCOMP_NM (=|<>|!=|<|>|<=|>=|LIKE|NOT LIKE)  '…'  ('…')*`
+  //     - 연산자 뒤 첫 문자열 리터럴 필수
+  //     - 이어지는 (공백/쉼표 없이 또는 있으면서) 문자열 리터럴이 붙어 있으면 함께 흡수
+  //       ("인건비" '노무비' 같은 LLM 오류 SQL 대응)
+  //   패턴 B: `ZCOSTCOMP_NM  (NOT )?IN  ( ... )` — 괄호 내용 모두 흡수
+  //   패턴 C: `ZCOSTCOMP_NM  IS  (NOT )?NULL`
+  //
+  //   [2026-08-31] LLM 이 컬럼명을 backtick 으로 감싼 경우도 대응:
+  //     `ZCOSTCOMP_NM` LIKE '%인건비%'  →  매치
+  const condPattern = new RegExp(
+    // 앞 boundary (WORD_BOUNDARY 만으로 충분)
+    '`?\\bZCOSTCOMP_NM\\b`?\\s*' +
+    '(?:' +
+      // A) 비교/LIKE + 값 리터럴 (연속 리터럴 흡수)
+      '(?:=|<>|!=|<=?|>=?|\\s+(?:NOT\\s+)?LIKE)\\s*' +
+      "'(?:[^']|'')*'" +           // 첫 문자열 리터럴
+      "(?:\\s*,?\\s*'(?:[^']|'')*')*" +  // (오류 케이스) 이어지는 연속 문자열 리터럴
+    '|' +
+      // B) (NOT) IN ( ... )
+      '\\s+(?:NOT\\s+)?IN\\s*\\([^)]*\\)' +
+    '|' +
+      // C) IS (NOT) NULL
+      '\\s+IS\\s+(?:NOT\\s+)?NULL' +
+    ')',
+    'gi'
+  );
+
+  // 반복 매치로 모든 ZCOSTCOMP_NM 관련 조건 제거
+  //   추적: 각 매치 위치 앞뒤의 AND/OR 연결자도 정리
+  let working = inputSql;
+  let removeCount = 0;
+  let iterationGuard = 0;
+  while (iterationGuard++ < 10) {
+    condPattern.lastIndex = 0;
+    const m = condPattern.exec(working);
+    if (!m) break;
+    const start = m.index;
+    const end = m.index + m[0].length;
+    // 앞쪽 AND/OR 연결자 흡수 (있다면 함께 제거)
+    //   예: "... AND ZCOSTCOMP_NM = '노무비' AND ..." → 앞의 AND 제거
+    //   예: "WHERE ZCOSTCOMP_NM = '노무비' AND ..." → 뒤의 AND 제거
+    let cutStart = start;
+    let cutEnd = end;
+    // 앞쪽에 " AND " 또는 " OR " 있는지 확인 (공백 포함)
+    const beforeText = working.slice(0, start).replace(/\s+$/, '');
+    const afterText = working.slice(end);
+    const andPrefixMatch = /(?:\bAND\b|\bOR\b)\s*$/i.exec(beforeText);
+    const andSuffixMatch = /^\s*(?:AND\b|OR\b)/i.exec(afterText);
+    if (andPrefixMatch) {
+      // 앞쪽 AND/OR 제거 (WHERE 절 중간 또는 끝에 걸린 경우)
+      cutStart = beforeText.length - andPrefixMatch[0].length;
+      // trailing whitespace 도 원본에 있었으므로 cutStart 를 원본 좌표계로 계산
+      // (beforeText 는 rtrim 했으므로 원본에서 그만큼 공백이 추가로 있음)
+      const trimmedLen = start - working.slice(0, start).length;  // 항상 0 이지만 명시
+      void trimmedLen;
+    } else if (andSuffixMatch) {
+      // WHERE 절 시작 조건이었던 경우: 뒤쪽 AND/OR 를 제거
+      cutEnd = end + andSuffixMatch[0].length;
+    }
+    working = working.slice(0, cutStart) + working.slice(cutEnd);
+    removeCount++;
+  }
+  if (removeCount > 0) {
+    console.log(`[CostCompClarify] SQL 내 기존 ZCOSTCOMP_NM 조건 ${removeCount}건 제거 (LLM 자유 생성 방어)`);
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // [2026-08-31 확장] 부수 조건 방어: COSTELMNT_NM 관련 자유 조건 제거
+  //
+  //   과거 버그:
+  //     사용자: "총 인건비" + [인건비] 선택
+  //     LLM 이 생성한 SQL:
+  //       WHERE ZCOSTCOMP_NM = '인건비'   -- ✅ 올바름
+  //         AND (COSTELMNT_NM LIKE '%노무비%' OR COSTELMNT_NM LIKE '%인건비%')
+  //                            -- ❌ 사용자 확정값과 무관한 재해석 (노무비 유입)
+  //
+  //   원인:
+  //     - LLM 이 "총 인건비 = 인건비 + 노무비" 같은 의미 확장을 시도.
+  //     - ZCOSTCOMP_NM 방어만으로는 COSTELMNT_NM 자유 필터가 남음.
+  //
+  //   정책:
+  //     forcedCostComp 가 활성인 경우 (= 사용자가 원가구성요소 값을 확정)
+  //     LLM 이 임의로 넣은 COSTELMNT_NM 필터가 "원가구성요소 개념 어휘" (인건비/
+  //     노무비/재료비/경비 등 ZCOSTCOMP_NM 카테고리) 를 포함하면 그 조건도 제거.
+  //     ⚠️ COSTELMNT_NM 자체를 직접 쓰는 정당한 케이스 (예: "기본급 얼마?" →
+  //        COSTELMNT_NM = '기본급') 는 값이 원가구성요소 어휘와 겹치지 않으므로
+  //        그대로 통과 → 이 방어는 오탐 위험이 낮음.
+  //
+  //   방어 어휘 (하드코딩 최소):
+  //     - 사용자 확정값 자체 (forcedCostComp.values) → 필터가 필요 없는 중복
+  //     - 그리고 잘 알려진 ZCOSTCOMP_NM 상위 카테고리 어휘.
+  //       (실제 DB DISTINCT 조회 없이 서버가 stable 하게 판단할 수 있는 범위)
+  // ────────────────────────────────────────────────────────────
+  const collateralResult = _removeCollateralCostElmntConds(working, values);
+  working = collateralResult.sql;
+  if (collateralResult.removed > 0) {
+    console.log(`[CostCompClarify] SQL 내 부수 COSTELMNT_NM 재해석 조건 ${collateralResult.removed}건 제거 (동일 개념 확장 방어)`);
+  }
+
+  // WHERE 절 스캔 (applyForcedTableFilter 와 동일 로직)
+  const whereEndKeywords = /^(GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION)\b/i;
+  function findWhereEnd(rest) {
+    let depth = 0, inStr = false, strCh = null;
+    for (let i = 0; i < rest.length; i++) {
+      const ch = rest[i];
+      if (inStr) {
+        if (ch === strCh) {
+          if (rest[i + 1] === strCh) { i++; continue; }
+          inStr = false; strCh = null;
+        }
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') { inStr = true; strCh = ch; continue; }
+      if (ch === '(') { depth++; continue; }
+      if (ch === ')') {
+        if (depth === 0) return i;
+        depth--; continue;
+      }
+      if (depth !== 0) continue;
+      if (ch === ';') return i;
+      if (whereEndKeywords.test(rest.slice(i))) return i;
+    }
+    return -1;
+  }
+
+  const whereRegex = /\bWHERE\b\s+/i;
+  const whereMatch = whereRegex.exec(working);
+  let result;
+  if (whereMatch) {
+    const before = working.slice(0, whereMatch.index + whereMatch[0].length);
+    const rest = working.slice(whereMatch.index + whereMatch[0].length);
+    const endIdx = findWhereEnd(rest);
+    let cond, tail;
+    if (endIdx >= 0) { cond = rest.slice(0, endIdx).trim(); tail = rest.slice(endIdx); }
+    else { cond = rest.trim(); tail = ''; }
+    // 조건 앞뒤 잔여 AND/OR 및 빈 괄호 정리
+    cond = _sanitizeWhereCond(cond);
+    const wrapped = cond ? `${filterClause} AND (${cond})` : filterClause;
+    const sep = tail && !tail.startsWith(' ') && !tail.startsWith(';') && !tail.startsWith(')') ? ' ' : '';
+    result = `${before}${wrapped}${sep}${tail}`;
+  } else {
+    const reservedAfterFrom = /^(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|ON)$/i;
+    const fromRegex = new RegExp(`\\bFROM\\s+${targetTable}\\b(\\s+(?:AS\\s+)?([A-Za-z_][A-Za-z0-9_]*))?`, 'i');
+    const fromMatch = fromRegex.exec(working);
+    if (!fromMatch) return working;
+    let matchLen = fromMatch[0].length;
+    if (fromMatch[2] && reservedAfterFrom.test(fromMatch[2])) {
+      matchLen = fromMatch[0].length - fromMatch[1].length;
+    }
+    const insertPos = fromMatch.index + matchLen;
+    const before = working.slice(0, insertPos);
+    const rest = working.slice(insertPos);
+    const endIdx = findWhereEnd(rest);
+    if (endIdx > 0) {
+      const head = rest.slice(0, endIdx);
+      const tail = rest.slice(endIdx);
+      result = `${before}${head} WHERE ${filterClause} ${tail}`;
+    } else if (endIdx === 0) {
+      result = `${before} WHERE ${filterClause} ${rest}`;
+    } else {
+      result = `${before} WHERE ${filterClause}${rest}`;
+    }
+  }
+
+  if (result !== inputSql) {
+    console.log(`[CostCompClarify] SQL 에 ZCOSTCOMP_NM 강제 필터 주입 (values=${values.length}개, op=${values.length === 1 ? '=' : 'IN'}, removed=${removeCount})`);
+  }
+  return result;
+}
+
+/**
+ * WHERE 조건 문자열에서 잔여 AND/OR, 빈 괄호, 연속 AND 등을 정리.
+ * ZCOSTCOMP_NM 조건 제거 후 발생하는 문법 오류 방어용.
+ */
+function _sanitizeWhereCond(cond) {
+  if (!cond) return cond;
+  let s = String(cond);
+  // 연속 AND/OR 정리
+  s = s.replace(/\bAND\s+AND\b/gi, 'AND');
+  s = s.replace(/\bOR\s+OR\b/gi, 'OR');
+  s = s.replace(/\bAND\s+OR\b/gi, 'OR');
+  s = s.replace(/\bOR\s+AND\b/gi, 'AND');
+  // 시작·끝의 AND/OR 제거
+  s = s.replace(/^\s*(?:AND|OR)\s+/i, '');
+  s = s.replace(/\s+(?:AND|OR)\s*$/i, '');
+  // 빈 괄호 제거: "( )" or "()"
+  s = s.replace(/\(\s*\)/g, '');
+  // 괄호 안 시작·끝 AND/OR 제거: "( AND cond )" → "( cond )"
+  s = s.replace(/\(\s*(?:AND|OR)\s+/gi, '(');
+  s = s.replace(/\s+(?:AND|OR)\s*\)/gi, ')');
+  s = s.trim();
+  return s;
+}
+
+/**
+ * forcedCostComp 활성 시 SQL 내 COSTELMNT_NM 관련 자유 조건 중
+ * "원가구성요소 어휘" 를 값으로 가진 것들을 제거.
+ *
+ * 배경:
+ *   - LLM 이 "총 인건비" 같은 표현을 "인건비 관련 원가요소 전체" 로 재해석하여
+ *     `COSTELMNT_NM LIKE '%노무비%' OR COSTELMNT_NM LIKE '%인건비%'` 를
+ *     ZCOSTCOMP_NM 필터와 별개로 덧붙이는 문제 발견.
+ *   - 사용자는 이미 ZCOSTCOMP_NM 값을 명확화 UI 로 확정했으므로,
+ *     동일 개념에 대한 COSTELMNT_NM 재해석은 항상 잘못이다.
+ *
+ * 스코프:
+ *   - COSTELMNT_NM 필터의 값(리터럴) 이 "원가구성요소 어휘" 를 포함할 때만 제거.
+ *     원가구성요소 어휘 = 사용자 확정값(values) + 잘 알려진 상위 카테고리
+ *                        ('인건비', '노무비', '재료비', '경비', '제조경비').
+ *   - COSTELMNT_NM = '기본급' 같은 정당한 하위 항목명 필터는 값이 이 어휘 목록에
+ *     들어있지 않으므로 그대로 통과한다.
+ *
+ * 제거 대상 패턴:
+ *   패턴 A: `COSTELMNT_NM  (=|<>|!=|<|>|<=|>=|LIKE|NOT LIKE)  '값'  ('값')*`
+ *     - 값에 대상 어휘가 포함된 경우에만 제거
+ *   패턴 B: `COSTELMNT_NM  (NOT )?IN ( '값','값', ... )`
+ *     - 괄호 내 값들이 모두 대상 어휘 (또는 그 부분 문자열) 인 경우에만 제거
+ *   패턴 C: `COSTELMNT_NM  IS  (NOT )?NULL`
+ *     - 값 판단 불가 → 제거하지 않음 (보수적)
+ *
+ * 부가 처리:
+ *   - 매치 대상은 OR/AND 로 묶여있을 수 있으므로 조건 하나만 제거하면 문법이
+ *     깨질 수 있음. 그래서 다음 방식을 사용:
+ *       1) 각 매치를 __PLACEHOLDER__ 로 치환
+ *       2) OR-그룹, AND 연결자, 빈 괄호를 정리
+ *       3) 최종적으로 sanitize
+ *
+ * @param {string} sql
+ * @param {string[]} values  사용자 확정 ZCOSTCOMP_NM 값들
+ * @returns {{sql: string, removed: number}}
+ */
+function _removeCollateralCostElmntConds(sql, values) {
+  if (!sql) return { sql, removed: 0 };
+  // 원가구성요소 어휘 (대상 판정용). 정규화(공백/언더스코어 제거 + 소문자) 후 비교.
+  const knownCostCompCategories = ['인건비', '노무비', '재료비', '경비', '제조경비', '판관비'];
+  const targetVocab = new Set();
+  for (const v of (values || [])) {
+    if (v) targetVocab.add(_normalizeCostCompText(v));
+  }
+  for (const c of knownCostCompCategories) {
+    targetVocab.add(_normalizeCostCompText(c));
+  }
+
+  /**
+   * 리터럴 값이 원가구성요소 어휘를 포함하는지 판정.
+   *   - LLM 이 LIKE '%인건비%' 처럼 % 감쌈 → 정규화된 값의 substring 매칭
+   *   - 정확 일치 (예: '인건비') 도 매칭.
+   * @param {string} literal  SQL 문자열 리터럴 내부 값 (따옴표 제외)
+   */
+  function _literalIsCostCompVocab(literal) {
+    const norm = _normalizeCostCompText(literal.replace(/%/g, ''));
+    if (!norm) return false;
+    for (const term of targetVocab) {
+      if (!term) continue;
+      // 정규화 값이 어휘와 정확히 같거나, 어휘를 substring 으로 포함 (LIKE 확장 대응)
+      if (norm === term || norm.includes(term) || term.includes(norm)) return true;
+    }
+    return false;
+  }
+
+  // 패턴 A: 비교/LIKE (연속 리터럴까지 흡수) — 백틱 컬럼명 지원
+  const patternA = new RegExp(
+    '`?\\bCOSTELMNT_NM\\b`?\\s*' +
+    '(?:=|<>|!=|<=?|>=?|\\s+(?:NOT\\s+)?LIKE)\\s*' +
+    "'((?:[^']|'')*)'" +                       // group 1: 첫 리터럴 값
+    "((?:\\s*,?\\s*'(?:[^']|'')*')*)",         // group 2: 이어지는 연속 리터럴
+    'gi'
+  );
+  // 패턴 B: (NOT) IN ( ... )
+  const patternB = new RegExp(
+    '`?\\bCOSTELMNT_NM\\b`?\\s+(?:NOT\\s+)?IN\\s*\\(([^)]*)\\)',
+    'gi'
+  );
+
+  let working = String(sql);
+  let removed = 0;
+
+  // 패턴 A 처리
+  working = working.replace(patternA, (full, firstLit, restLits) => {
+    if (_literalIsCostCompVocab(firstLit)) {
+      removed++;
+      return '__REMOVED_COSTELMNT_COND__';
+    }
+    return full;
+  });
+
+  // 패턴 B 처리 - 괄호 내 값들이 모두 어휘일 때만 제거
+  working = working.replace(patternB, (full, inside) => {
+    const lits = [];
+    const litRe = /'((?:[^']|'')*)'/g;
+    let mm;
+    while ((mm = litRe.exec(inside)) !== null) lits.push(mm[1]);
+    if (lits.length === 0) return full;
+    const allMatch = lits.every(_literalIsCostCompVocab);
+    if (allMatch) {
+      removed++;
+      return '__REMOVED_COSTELMNT_COND__';
+    }
+    return full;
+  });
+
+  if (removed === 0) return { sql: working, removed: 0 };
+
+  // 플레이스홀더 앞뒤의 AND/OR 연결자와 빈 괄호를 정리.
+  //   Case 1: "(A OR __PH__ OR B)" → "(A OR B)"
+  //   Case 2: "(__PH__ OR B)"      → "(B)"
+  //   Case 3: "(A OR __PH__)"      → "(A)"
+  //   Case 4: "(__PH__)"           → 빈 괄호 → 제거
+  //   Case 5: "AND __PH__ AND ..." → "AND ..."
+  //   Case 6: "... AND __PH__"     → "..."
+  //
+  //   먼저 플레이스홀더 좌우의 연결자를 흡수.
+  let prev = null;
+  let guard = 0;
+  while (prev !== working && guard++ < 20) {
+    prev = working;
+    // (A OR __PH__ ...) / (A AND __PH__ ...) → 앞쪽 연결자 함께 제거
+    working = working.replace(/\s+(?:AND|OR)\s+__REMOVED_COSTELMNT_COND__/gi, '');
+    // (__PH__ OR B ...) / (__PH__ AND B ...) → 뒤쪽 연결자 함께 제거
+    working = working.replace(/__REMOVED_COSTELMNT_COND__\s+(?:AND|OR)\s+/gi, '');
+    // "AND __PH__" / "OR __PH__" (더 이상 뒤에 연결자 없음)
+    working = working.replace(/\s+(?:AND|OR)\s+__REMOVED_COSTELMNT_COND__/gi, '');
+    // "__PH__ AND" / "__PH__ OR"
+    working = working.replace(/__REMOVED_COSTELMNT_COND__\s+(?:AND|OR)\s+/gi, '');
+    // 남은 홀로 플레이스홀더 → 빈 문자열
+    working = working.replace(/__REMOVED_COSTELMNT_COND__/g, '');
+    // 빈 괄호 제거 및 잔여 연결자 정리
+    working = working.replace(/\(\s*\)/g, '');
+    working = working.replace(/\(\s*(?:AND|OR)\s+/gi, '(');
+    working = working.replace(/\s+(?:AND|OR)\s*\)/gi, ')');
+    working = working.replace(/\bAND\s+AND\b/gi, 'AND');
+    working = working.replace(/\bOR\s+OR\b/gi, 'OR');
+    working = working.replace(/\bAND\s+OR\b/gi, 'OR');
+    working = working.replace(/\bOR\s+AND\b/gi, 'AND');
+  }
+
+  return { sql: working, removed };
+}
+
+// ============================================================
+// [2026-08-31] Post-SQL 오염 감지 & 정정
+// ------------------------------------------------------------
+// 배경:
+//   ZCOSTCOMP_NM 명확화 재요청 시 conversationContext 를 무시하도록 방어를 걸었지만,
+//   그럼에도 다음 경우 LLM 이 이전 어휘를 유출할 가능성이 있다:
+//     - 학습 SQL 재사용 (이전 SQL 에 alias 가 박혀 있음)
+//     - 세션 내부 캐시 / 부분 매칭
+//     - 사용자가 conversationContext 없이 재요청했으나 LLM 이 프롬프트 잔여 어휘 흡수
+//   → 최종 SQL/alias/explanation 이 현재 질의 + 확정된 forcedCostComp.values 에
+//     맞는지 사후 검증하고, 유출된 이전 어휘가 있으면 explanation 을 서버가 재작성한다.
+//
+// 정책:
+//   1) forcedCostComp 확정값 (values) 이 있을 때만 동작
+//   2) SQL 은 이미 applyForcedCostCompFilter 로 정확히 주입됨 → SQL 자체 오염 검사는 최소
+//   3) explanation / alias 에 다음이 포함되어 있으면 오염 판정:
+//      - "통신비 우편/택배" 같은 forcedCostComp.values 에 없는 원가구성요소 어휘
+//      - 원 질의에도 없는 어휘
+//   4) 오염 감지 시:
+//      a) 서버 로그로 원인 (어떤 어휘가 어디에 유출) 기록
+//      b) explanation 을 서버가 재작성 (확정된 필터 조합을 서술)
+//      c) SELECT alias 도 확정값 기준으로 교체
+//
+// @param {object} params
+//   sql              : 최종 SQL (applyForcedCostCompFilter 이후)
+//   explanation      : LLM 이 생성한 설명 텍스트
+//   query            : 현재 사용자 질의 (원 질문)
+//   forcedCostComp   : { values: string[], op: '=' | 'IN' }
+//   knownCostCompVocab : (선택) 이전 turn 들에서 자주 등장한 원가구성요소 어휘 목록 (감지 강화용)
+// @returns {{
+//   sql: string,
+//   explanation: string,
+//   contaminated: boolean,
+//   leakedTerms: string[],
+//   reasons: string[]
+// }}
+// ============================================================
+function validateAndSanitizeCostCompOutput({ sql, explanation, query, forcedCostComp, knownCostCompVocab = [] }) {
+  const result = {
+    sql: sql,
+    explanation: explanation,
+    contaminated: false,
+    leakedTerms: [],
+    reasons: [],
+  };
+  if (!forcedCostComp || !Array.isArray(forcedCostComp.values) || forcedCostComp.values.length === 0) {
+    return result;
+  }
+  const values = forcedCostComp.values.map(v => String(v));
+  const queryStr = String(query || '');
+  const explStr = String(explanation || '');
+  const sqlStr = String(sql || '');
+
+  // ── 1) 오염 후보 어휘 수집: sys_aimd_cot043 원가구성요소 자주 쓰이는 표현들 + knownCostCompVocab
+  //    Hardcoded 리스트는 최소화 (실제 DB 값은 sys_aimd_cot043.ZCOSTCOMP_NM 에 있으나
+  //    이 함수는 동기 컨텍스트에서 호출되므로 정적 목록으로 대응).
+  //    누락되는 어휘가 있을 수 있지만, 로그로 원인 추적 가능.
+  const commonCostCompVocab = [
+    '인건비', '인건비_경비', '인건비_기타', '노무비',
+    '재료비', '경비', '감가상각비', '연구개발비',
+    '동력비', '수도광열비', '전력비',
+    '통신비', '통신비 우편/택배', '수선비', '보험료', '임차료',
+    '외주가공비', '외주비', '지급수수료', '수출제비',
+    '판매촉진비', '광고선전비', '접대비',
+    '여비교통비', '교육훈련비', '복리후생비',
+    '세금과공과', '지급이자',
+    '기타경비', '기타판관비',
+  ];
+  const vocab = new Set([...commonCostCompVocab, ...knownCostCompVocab.map(v => String(v))]);
+  // forcedCostComp.values 자체는 정상 값이므로 후보에서 제외
+  //   추가: forced 값 안에 포함된 부분 어휘도 오탐 소지가 있으므로 제외
+  //         예: forced=['인건비_경비'] → "경비" 는 forced 의 substring 이므로 오탐 회피
+  for (const v of values) {
+    vocab.delete(v);
+    for (const w of Array.from(vocab)) {
+      if (v.includes(w)) vocab.delete(w);
+    }
+  }
+
+  // ── 2) explanation / SQL alias 에서 유출 어휘 감지
+  //    ⚠️ 긴 어휘부터 먼저 감지·정정해야 substring 겹침으로 인한 오정정 방지.
+  //       예: leakedTerms 에 "통신비" 와 "통신비 우편/택배" 가 모두 있을 때,
+  //           "통신비" 를 먼저 치환하면 "인건비 우편/택배 원가" 라는 이상한 alias 가 남는다.
+  const vocabList = Array.from(vocab).sort((a, b) => b.length - a.length);
+  const leaked = new Set();
+  const reasons = [];
+  const scanBlobs = [
+    { name: 'explanation', text: explStr },
+    // SQL 자체는 WHERE 조건이 이미 교정되어 있으나 alias 부분에 유출 가능
+    { name: 'sql_alias',   text: sqlStr },
+  ];
+  for (const term of vocabList) {
+    if (!term) continue;
+    // 현재 사용자 질의에 그 어휘가 있으면 정상 (사용자가 언급한 것)
+    if (queryStr.includes(term)) continue;
+    for (const blob of scanBlobs) {
+      if (blob.text && blob.text.includes(term)) {
+        leaked.add(term);
+        reasons.push(`${blob.name} 에 "${term}" 유입 (현재 질의에 없음)`);
+      }
+    }
+  }
+
+  if (leaked.size === 0) {
+    return result;
+  }
+
+  // ── 3) 오염 감지 → 사후 정정
+  result.contaminated = true;
+  result.leakedTerms = Array.from(leaked);
+  result.reasons = reasons;
+
+  const forcedLabel = values.length === 1 ? values[0] : values.join(', ');
+  console.warn(`[CostCompPostValidate] 오염 감지 → 정정 수행. leakedTerms=[${result.leakedTerms.join(', ')}] forcedValues=[${forcedLabel}] reasons=${JSON.stringify(reasons)}`);
+  console.warn(`[CostCompPostValidate] 원본 explanation: ${explStr.substring(0, 300)}`);
+
+  // ── 3a) SELECT alias 에서 유출 어휘를 확정값으로 교체
+  //    예:  SUM(AMOUNT) AS '통신비 우편/택배 원가 합계(원)'
+  //      →  SUM(AMOUNT) AS '인건비 원가 합계(원)'
+  //   ⚠️ 긴 어휘부터 먼저 치환. "통신비" 를 먼저 치환하면 "통신비 우편/택배" 안의 "통신비" 만
+  //       바뀌어 "인건비 우편/택배" 라는 잘못된 alias 가 남는다.
+  let sanitizedSql = sqlStr;
+  const leakedSorted = Array.from(leaked).sort((a, b) => b.length - a.length);
+  for (const term of leakedSorted) {
+    // 작은따옴표 alias 내부 치환
+    const singleQuoteRe = new RegExp(`'([^']*)${escapeRegex(term)}([^']*)'`, 'g');
+    sanitizedSql = sanitizedSql.replace(singleQuoteRe, (m, pre, post) => `'${pre}${forcedLabel}${post}'`);
+    // 이중따옴표 alias 내부 치환
+    const doubleQuoteRe = new RegExp(`"([^"]*)${escapeRegex(term)}([^"]*)"`, 'g');
+    sanitizedSql = sanitizedSql.replace(doubleQuoteRe, (m, pre, post) => `"${pre}${forcedLabel}${post}"`);
+    // backtick alias 내부 치환
+    const backtickRe = new RegExp('`([^`]*)' + escapeRegex(term) + '([^`]*)`', 'g');
+    sanitizedSql = sanitizedSql.replace(backtickRe, (m, pre, post) => '`' + pre + forcedLabel + post + '`');
+  }
+  result.sql = sanitizedSql;
+
+  // ── 3b) explanation 재작성:
+  //    LLM 원문이 이전 turn 어휘를 사용하고 있으므로 그것 자체를 신뢰할 수 없음.
+  //    서버가 확정 조건만으로 간결하게 재작성한다.
+  const opText = values.length === 1
+    ? `ZCOSTCOMP_NM = '${values[0]}'`
+    : `ZCOSTCOMP_NM IN (${values.map(v => `'${v}'`).join(', ')})`;
+  result.explanation = `사용자 확정 원가구성요소 조건(${opText})으로 sys_aimd_cot043 에서 원가 데이터를 조회했습니다. (서버 정정: 이전 대화 문맥에서 유입된 어휘 "${result.leakedTerms.join(', ')}" 는 현재 질의와 무관하여 제거되었습니다.)`;
+
   return result;
 }
 
@@ -7548,6 +8884,24 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
   }
   // ─────────────────────────────────────────────────────────────────
+  // [2026-08-31 PR #407] 명확화 chip 수신 (제조원가 UI 전용)
+  //   - 프론트가 [부서별 원가] / [인건비] 등 명확화 버튼을 누르면 chip 이 누적되어
+  //     이 필드로 전송됨. 이 서버는 SQL 라우팅 로직에 이 값을 사용하지 않음
+  //     (라우팅은 여전히 area/subArea/forcedCostComp 기반).
+  //   - 유일한 사용처: saveHistory 에서 chart_config._clarificationSelections 로
+  //     저장하여, 히스토리 재조회 시 프론트가 chip 을 복원할 수 있게 함.
+  //   - 최대 20개까지만 신뢰 (방어적 상한).
+  //   - 각 항목은 {type: 'subArea'|'costComponent', label: string} 형태.
+  const clarificationSelectionsRaw = Array.isArray(req.body?.clarificationSelections)
+    ? req.body.clarificationSelections.slice(0, 20)
+    : [];
+  const clarificationSelections = clarificationSelectionsRaw
+    .filter(it => it && typeof it === 'object' && typeof it.type === 'string' && typeof it.label === 'string')
+    .map(it => ({ type: String(it.type).slice(0, 32), label: String(it.label).slice(0, 128) }));
+  if (clarificationSelections.length > 0) {
+    console.log(`[NLQ:ClarifyChips] 수신: ${JSON.stringify(clarificationSelections)}`);
+  }
+  // ─────────────────────────────────────────────────────────────────
   // [2026-08-25] area/subArea/table 수신 (async self-fetch 로부터 전달됨)
   //
   //   - /api/nlq/async 가 이미 화이트리스트 검증한 값을 body 에 실어 보냄
@@ -7558,6 +8912,23 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   //       · SQL 실행 전 applyCostCenterFilter(sql, areaCtx.forcedFilter)
   // ─────────────────────────────────────────────────────────────────
   const areaCtx = resolveAreaContext(req.body?.area, req.body?.subArea);
+  // [2026-08-28] async 경로에서 forcedCostComp 확정값을 body 로 실어보냈으면 areaCtx 에 병합.
+  //   - executeAnalysisPlan / SQL 실행 직전 applyForcedCostCompFilter 가 참조.
+  //   - sys_aimd_cot043 참조 SQL 에만 주입 → 다른 테이블은 자연스럽게 no-op.
+  //   - values 는 최대 20개까지만 신뢰 (방어적 상한, 실사용은 후보 몇 개 수준).
+  if (req.body?.forcedCostComp && Array.isArray(req.body.forcedCostComp.values) && req.body.forcedCostComp.values.length > 0) {
+    const vs = req.body.forcedCostComp.values.slice(0, 20).map(v => String(v));
+    areaCtx.forcedCostComp = {
+      values: vs,
+      op: (req.body.forcedCostComp.op === 'IN' || vs.length > 1) ? 'IN' : '=',
+    };
+    console.log(`[NLQ:CostCompForced] forcedCostComp 수신 → op=${areaCtx.forcedCostComp.op} values=[${areaCtx.forcedCostComp.values.join(', ')}]`);
+    // [2026-08-31] Fix 3: 명확화 재요청의 structured plan 진단 로그
+    //   - 사용자 요구사항 #6, #8: 명확화 재요청 시 원 질의의 조건이 각 단계에서 유지되는지 추적.
+    //   - conversationContext 는 위에서 무시되지만, 만약 프론트가 보냈다면 크기만 로그.
+    const _ctxLen = Array.isArray(conversationContext) ? conversationContext.length : 0;
+    console.log(`[NLQ:ClarifyStructuredPlan] stage=receive query="${String(query).substring(0, 120)}" area=${areaCtx.area} subArea=${areaCtx.subArea || '(none)'} forcedCostComp=[${areaCtx.forcedCostComp.values.join(', ')}] conversationContextLen=${_ctxLen} (재요청은 conversationContext 무시)`);
+  }
   // 서브영역 vs 질의 불일치 감지 (sync 경로 방어 — async 경로에서 이미 걸러졌겠지만 2중 방어)
   const subAreaMismatchSync = detectSubAreaMismatch(areaCtx.subArea, query);
   if (subAreaMismatchSync) {
@@ -7740,7 +9111,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           session_id || null,                              // session_id
           activeDomain,                                    // domain_code
           // [2026-08-25] 사이드바 [질의 이력] 배지용 area code (수익/제조)
-          { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
+          // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
         );
       } catch (histErr) {
         console.error('[NLQ:Intent] saveHistory 실패 (응답에는 영향 없음):', histErr.message);
@@ -7849,7 +9221,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         dateContext = dc;
 
         // ── [1] AnalysisPlan 생성 (1차)
-        let plan = await generateAnalysisPlan(query, activeDomain, dc, conversationContext);
+        // [2026-08-28] areaCtx 전달: 세부업무영역이 지정되면 그 테이블 기준으로
+        //   컬럼 카탈로그·프롬프트가 동작하고, executeAnalysisPlan 이 그 테이블 FROM 을 생성.
+        let plan = await generateAnalysisPlan(query, activeDomain, dc, conversationContext, { areaCtx });
         console.log(`[AnalysisPlan] 1차 생성 완료: requiresDataExecution=${plan.requiresDataExecution}, ` +
           `answerMode=${plan.answerMode}, dims=${(plan.dimensions||[]).length}, ` +
           `metrics=${(plan.metrics||[]).length}, ops=${(plan.operations||[]).length}, ` +
@@ -7865,7 +9239,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             nlqUserIdConcept, query, null,
             conceptAnswer, 'analysis', {}, [],
             0, 0, 'SUCCESS', null, session_id || null, activeDomain,
-            { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
+            // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
+            { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
           ).catch(e => console.error('[History] 저장 실패:', e.message));
           return res.json({
             success: true,
@@ -7887,7 +9262,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         setRequestStage('analysis_execute');
         // [2026-08-07] query 전달: executeAnalysisPlan 내부 3중 방어
         //   (normalizeDivisionFilter + applyDivisionFromQuery) 를 위해 필요
-        let execRecord = await executeAnalysisPlan(plan, activeDomain, query);
+        // [2026-08-28] areaCtx 전달: 세부업무영역별 FROM 테이블 + 강제 필터 주입
+        let execRecord = await executeAnalysisPlan(plan, activeDomain, query, areaCtx);
         console.log(`[AnalysisPlan] 1차 실행: baseRows=${execRecord.baseRowCount}, ` +
           `err=${execRecord.baseError || '-'}, ops_diag=${execRecord.diagnostics.length}`);
 
@@ -7910,8 +9286,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             plan = await generateAnalysisPlan(query, activeDomain, dc, conversationContext, {
               retryReason: reason,
               previousPlan: plan,
+              areaCtx,  // [2026-08-28] 재시도에도 areaCtx 유지
             });
-            execRecord = await executeAnalysisPlan(plan, activeDomain, query);
+            execRecord = await executeAnalysisPlan(plan, activeDomain, query, areaCtx);
             validation = validateAnalysisResults(plan, execRecord);
             console.log(`[AnalysisPlan] 2차 실행: baseRows=${execRecord.baseRowCount}, err=${execRecord.baseError || '-'}, validation.ok=${validation.ok}`);
           } catch (retryErr) {
@@ -7998,7 +9375,7 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 
         // ── [5] 최종 답변 생성 (실제 결과만)
         setRequestStage('analysis_answer_generate');
-        const { answer: analysis, summary } = await generateFinalAnalysisAnswer(query, plan, execRecord);
+        const { answer: analysis, summary } = await generateFinalAnalysisAnswer(query, plan, execRecord, areaCtx);
 
         // ── [5-b] 분석 결과 상세표(거래처별/품목별/기간별 1행씩 집계) 프론트에 노출
         //   - 이전에는 rows:[] 로 텍스트만 반환했으나, 사용자 요청에 따라
@@ -8110,7 +9487,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           nlqUserIdAnalysis, query, execRecord.baseSql,
           analysis, 'analysis', analysisChartConfig, detailRows,
           execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain,
-          { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
+          // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
         // [2026-07-31] 분석 결과 상세표 옆에 실제 조회 기간 표시.
@@ -8241,12 +9619,73 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       //   - cost-product    → sys_aimd_cot015
       //   - cost-dept/machine → sys_aimd_cot043
       //   - 미지정(레거시)  → [] (전체 조회, 하위호환)
-      const buildResult = await buildRAGSystemPrompt(query, activeDomain, areaCtx.tableWhitelist);
+      //
+      // [2026-09-02 PR #408] Phase 2 — RAG 검색 시드 augmentation
+      //   analyticsdev req-20260902-142729-2a0cfe 회귀 근본원인:
+      //     짧은 질의("2026년 7월 베트남지사의 인건비를 알려줘") 가 sys_aimd_cot043
+      //     스키마·온톨로지 청크와 코사인 유사도 0.25 임계값 미달 → schema=0,
+      //     ontology=0, metric=0 반환 → LLM 이 컬럼 정보 없이 SQL 생성 → 환각.
+      //   동일 파일 라인 98 성공 요청(질의문에 "(부서별 원가)" 접미어 포함) 은
+      //     ontology=9, rule=1 회복 → subArea 라벨 문자열이 유사도 상승에 기여.
+      //   해결: manufacturing-cost 영역에서만, RAG 검색 시드에만 subAreaLabel 을
+      //     접미. LLM 에 전달되는 사용자 질의문(query) 이나 최종 SQL 은 무변경 —
+      //     rag.mjs 의 searchRelevantMeta() 에 넘어가는 검색 쿼리 문자열만 보강.
+      let _ragSeedQuery = query;
+      if (areaCtx.area === 'manufacturing-cost' && areaCtx.subAreaLabel) {
+        // 이미 subAreaLabel 이 질의문에 포함된 경우(성공 사례 재현 시)는 no-op
+        if (!query.includes(areaCtx.subAreaLabel)) {
+          _ragSeedQuery = `${query} (${areaCtx.subAreaLabel})`;
+          console.log(`[RAG:SeedAugment] manufacturing-cost subArea=${areaCtx.subArea} → 검색 시드에만 라벨 "${areaCtx.subAreaLabel}" 접미 (원 질의·SQL 무변경)`);
+        }
+      }
+      const buildResult = await buildRAGSystemPrompt(_ragSeedQuery, activeDomain, areaCtx.tableWhitelist);
       // [2026-08-21] BUG B 수정: 상위 스코프의 systemPrompt 에 재할당 (재선언 X)
       //   → else 블록 밖의 SQL 재생성 로직에서도 참조 가능
       systemPrompt = buildResult.prompt;
       const ragContext = buildResult.ragContext;
       dateContext = buildResult.dateContext;
+
+      // ─────────────────────────────────────────────────────────────
+      // [2026-09-02 PR #408] Phase 3 — AnalysisPlan 트레이스 로그
+      //   요구사항 #5: measureColumn 이 AMOUNT → ZAMT001 로 바뀌는 경로를
+      //   추적할 수 있도록, LLM 호출 직전 서버가 확정·전달하는 컨텍스트 요약을
+      //   단일 로그 라인으로 남긴다. requestId 로 grep 하여 전체 흐름 재구성 가능.
+      //   RAG 카테고리별 히트 수를 함께 기록 → RAG 미스와 컬럼 환각의 인과 판단.
+      // ─────────────────────────────────────────────────────────────
+      try {
+        const _rc = ragContext || {};
+        const _ragCounts = {
+          schema:       Array.isArray(_rc.schema)       ? _rc.schema.length       : 0,
+          ontology:     Array.isArray(_rc.ontology)     ? _rc.ontology.length     : 0,
+          metric:       Array.isArray(_rc.metric)       ? _rc.metric.length       : 0,
+          code_mapping: Array.isArray(_rc.code_mapping) ? _rc.code_mapping.length : 0,
+          feedback:     Array.isArray(_rc.feedback)     ? _rc.feedback.length     : 0,
+          rule:         Array.isArray(_rc.rule)         ? _rc.rule.length         : 0,
+        };
+        const _forcedVals = (areaCtx.forcedCostComp && Array.isArray(areaCtx.forcedCostComp.values))
+          ? areaCtx.forcedCostComp.values : [];
+        console.log(`[NLQ:AnalysisPlanTrace] ${JSON.stringify({
+          area: areaCtx.area || null,
+          subArea: areaCtx.subArea || null,
+          subAreaLabel: areaCtx.subAreaLabel || null,
+          queryMode: userQueryMode || null,
+          domain: activeDomain || null,
+          targetTable: areaCtx.table || null,
+          tableWhitelist: areaCtx.tableWhitelist || [],
+          forcedCostComp: _forcedVals.length > 0
+            ? { op: areaCtx.forcedCostComp.op || '=', values: _forcedVals }
+            : null,
+          // 요구사항 #6/#7 확정 measure — sys_aimd_cot043 은 AMOUNT (환각 감시 대상)
+          expectedMeasureColumn: areaCtx.table === 'sys_aimd_cot043' ? 'AMOUNT'
+                               : (areaCtx.table === 'bw_profitability_data' ? 'ZAMT001~ZAMT033' : null),
+          ragCounts: _ragCounts,
+          ragContextChars: (_rc._contextChars != null) ? _rc._contextChars : null,
+          systemPromptChars: systemPrompt ? systemPrompt.length : 0,
+          ragSeedAugmented: (_ragSeedQuery !== query),
+        })}`);
+      } catch (_traceErr) {
+        console.warn(`[NLQ:AnalysisPlanTrace] 로그 생성 실패 (무시): ${_traceErr.message}`);
+      }
       // ★ 사용자가 '현황집계' 라디오를 선택한 경우: 시스템 프롬프트에 명시적 지시 추가
       //   → GPT가 "알려줘" 같은 단어 때문에 analysisRequired:true로 응답하지 않도록 강제
       if (userQueryMode === 'aggregate') {
@@ -8261,6 +9700,95 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 - 사용자가 답변 유형 라디오에서 "분석질문"을 명시적으로 선택했습니다.
 - 따라서 이 질문은 표/차트 없이 텍스트 분석 답변만 생성해야 합니다 (analysisRequired: true).`;
       }
+
+      // ─────────────────────────────────────────────────────────────────
+      // [2026-08-31] Fix 4 — forcedCostComp 확정 시 aggregate route refusal 우회 지시
+      //
+      //   배경 (PR #405 이후 잔존 버그):
+      //     PR #402/#403 는 analysis route (generateAnalysisPlan L4929) 에만
+      //     costCompDirective 를 주입했고, PR #405 는 context pollution 만 처리.
+      //     aggregate route 의 buildRAGSystemPrompt 결과에는 forcedCostComp
+      //     관련 지시가 없어, 사용자가 명확화 UI 에서 [인건비] 를 클릭해
+      //     forcedCostComp={values:['인건비'], op:'='} 를 payload 로 실어 보내도
+      //     LLM 은 여전히 원 프롬프트 규칙 18 ("알 수 없는 용어 처리",
+      //     server.mjs L2693-2698) 에 걸려 SQL 생성을 거부:
+      //       → "'인건비'가 제공된 동의어 매칭 결과, RAG 컨텍스트, 허용 컬럼
+      //          목록의 명확한 지표 정의와 대응되지 않아 …" refusal 응답.
+      //
+      //   실제 사용자 시나리오 (2026-08-31 재현):
+      //     Q: "2026년 7월 베트남지사의 인건비를 알려줘"
+      //     Step 1: 명확화 응답 [인건비] [인건비_경비] [인건비_기타] [관련 항목 전체]
+      //     Step 2: 사용자가 [인건비] 클릭 → forcedCostComp 실은 재요청
+      //     Step 3: 여전히 "알 수 없는 용어입니다" refusal
+      //     (사용자 확인: sys_aimd_cot043 에 CALMONTH=202607, ZCOSTCOMP_NM='인건비',
+      //      COSTCENTER_NM='베트남지사' 인 실제 데이터 2행 존재)
+      //
+      //   수정 방침 (analysis route 의 costCompDirective 와 대칭):
+      //     - "이 값은 이미 확정된 필터이며, 서버가 결정적으로 주입한다" 를
+      //       프롬프트에 명시 → LLM 이 refusal 규칙 18 을 이 값에 적용하지 않음.
+      //     - LLM 이 원 질의 조건(기간·부서명 등) 은 그대로 유지하여 정상 SQL 생성.
+      //     - "노무비/인건비_경비" 등 부정 어휘를 프롬프트에 넣지 않음 (PR #403
+      //       회귀 방지) — 서버 방어망(applyForcedCostCompFilter +
+      //       validateAndSanitizeCostCompOutput) 이 이미 결정적으로 처리.
+      //
+      //   범위:
+      //     areaCtx.forcedCostComp 이 실제로 있을 때만 지시 추가 → 정상 refusal
+      //     경로(forcedCostComp 부재 시) 는 종전대로 유지.
+      // ─────────────────────────────────────────────────────────────────
+      if (areaCtx && areaCtx.forcedCostComp
+          && Array.isArray(areaCtx.forcedCostComp.values)
+          && areaCtx.forcedCostComp.values.length > 0) {
+        const _fcc = areaCtx.forcedCostComp;
+        const _vals = _fcc.values.slice();
+        const _op = _fcc.op || (_vals.length === 1 ? '=' : 'IN');
+        const _valuesText = _vals.map(v => `'${v}'`).join(', ');
+        const _whereClauseText = (_op === 'IN' || _vals.length > 1)
+          ? `ZCOSTCOMP_NM IN (${_valuesText})`
+          : `ZCOSTCOMP_NM = ${_valuesText}`;
+        systemPrompt += `\n\n[★★★ 원가구성요소(ZCOSTCOMP_NM) — 사용자가 명확화 UI 에서 이미 선택 완료 ★★★]\n` +
+          `사용자는 이미 원가구성요소 값을 확정했습니다. 서버가 최종 SQL 에 다음 조건을 결정적으로 주입합니다:\n` +
+          `  WHERE ${_whereClauseText}\n\n` +
+          `[SQL 작성 규칙]\n` +
+          `  1. 이 값(${_valuesText}) 은 학습관리 등록 여부·동의어 매칭 결과·RAG 컨텍스트와 무관하게 사용자가 명시적으로 확정한 필터입니다.\n` +
+          `  2. "알 수 없는 용어 처리" 규칙(위 규칙 18)을 이 값에는 적용하지 마세요. 반드시 정상 SELECT SQL 을 생성해야 합니다.\n` +
+          `  3. SQL 은 반드시 sys_aimd_cot043 을 FROM 하고, WHERE 절에 ${_whereClauseText} 를 포함하세요. (서버가 재주입하지만 LLM 이 함께 넣는 것이 안전)\n` +
+          `  4. 사용자 원 질문의 다른 조건은 그대로 유지하세요:\n` +
+          `     · 기간 → CALMONTH 조건 (예: "2026년 7월" → CALMONTH = '202607')\n` +
+          `     · 부서명 → COSTCENTER_NM LIKE '%<부서명>%' (예: "베트남지사" → COSTCENTER_NM LIKE '%베트남지사%')\n` +
+          `     · 그 외 사용자 명시 조건도 누락 없이 반영.\n` +
+          `  5. 원가구성요소 어휘를 다른 값(예: 노무비, 인건비_경비, 재료비 등)으로 확장·재해석하지 마세요. 확정값(${_valuesText}) 만 사용하세요.\n` +
+          `  6. SELECT 절 컬럼 별칭·설명(explanation) 에도 확정값(${_valuesText}) 을 그대로 사용하세요. "다른 값으로 해석" 같은 부연 설명은 붙이지 마세요.\n`;
+        console.log(`[NLQ:CostCompDirective:Aggregate] 명확화 확정값 프롬프트 주입: ${_whereClauseText} (query="${String(query).substring(0, 80)}")`);
+      }
+
+      // [2026-08-31] 전체 합계(OVERALL) 의도 처리 — 제조원가 영역 전용
+      //   Q3: analysis / aggregate 두 모드 모두 동일 규칙 적용 (라우팅 모드에 따라 결과 형태가 달라지면 안 됨)
+      //   제한: 제조원가(manufacturing-cost) 영역 + subArea 지정된 경우에만 적용.
+      //         기존 수익성분석의 자연어 집계 판단 로직에는 영향을 주지 않음.
+      //   판별: detectOverallTotalIntent(query) — 형태소 경계 기반 정규식 (종합/복합/조합 등 오탐 방지)
+      //   효과: LLM이 GROUP BY 없이 SUM(...) 1행만 반환하도록 강제
+      if (areaCtx?.area === 'manufacturing-cost' && areaCtx?.subArea) {
+        const overallIntent = detectOverallTotalIntent(query);
+        if (overallIntent.isOverall) {
+          console.log(`[NLQ:OverallTotalIntent] mode=${userQueryMode} subArea=${areaCtx.subArea} matchedKeyword="${overallIntent.matchedKeyword}" → GROUP BY 해제, 1행 전체 합계 요청`);
+          const subAreaLabel = (
+            areaCtx.subArea === 'cost-product' ? '제품별원가' :
+            areaCtx.subArea === 'cost-dept'    ? '부서별원가' :
+            areaCtx.subArea === 'cost-machine' ? '호기별원가' : areaCtx.subArea
+          );
+          const filterNote = (
+            areaCtx.subArea === 'cost-dept'    ? '\n- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. WHERE 절에 COSTCENTER 조건을 넣지 마세요.' :
+            areaCtx.subArea === 'cost-machine' ? '\n- 호기(설비) COSTCENTER 코드만 백엔드가 자동 필터링합니다. WHERE 절에 COSTCENTER 조건을 넣지 마세요.' : ''
+          );
+          systemPrompt += `\n\n[★★★ 세부업무영역 = ${subAreaLabel} — 전체 합계 요청 ★★★]
+- 사용자가 "${overallIntent.matchedKeyword}" 표현을 사용하여 **전체 합계(1행)** 를 요청했습니다.
+- 반드시 **GROUP BY 절 없이** SUM(...) 단독 SELECT 로 작성하세요. 결과는 정확히 1행이어야 합니다.
+- SELECT 절에 MATERIAL / MATERIAL_NM / COSTCENTER / COSTCENTER_NM 등 세부 분류 컬럼을 포함하지 마세요.
+- 조회 범위(테이블·부서/호기 코드 대상)는 세부업무영역이 결정하며, 서버가 자동 주입합니다.${filterNote}
+- 예) "총 인건비 알려줘" → SELECT FORMAT(SUM(...),0) AS '인건비(원)' FROM ... WHERE ... (GROUP BY X, 1행)`;
+        }
+      }
+
       console.log(`[NLQ] RAG 프롬프트 길이: ${systemPrompt.length}자 (RAG 활성: ${ragReady}, 모드: ${userQueryMode})`);
 
       // RAG 검색 상세 정보 수집
@@ -8330,8 +9858,30 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       //     LLM이 그 잘못된 SQL을 "정답"으로 인식하여 재생산(회귀)함.
       //   - 따라서 이전 턴은 사용자 질의(role=user)만 포함하고, assistant 응답은 주지 않음.
       //   - 후속 질문의 맥락("그 중에서 5월만", "그래프로 보여줘")은 user 질의 흐름만으로 충분.
+      //
+      // [2026-08-31] ZCOSTCOMP_NM 명확화 재요청 시 conversationContext 강제 무시
+      //   ─ 재현 시나리오 (버그):
+      //     1) 사용자: "2026년 7월 통신비 우편/택배 알려줘" → COSTELMNT_NM LIKE '%통신비 우편/택배%' 로 정상 처리
+      //     2) 사용자: "2026년 7월 AX운영팀의 인건비를 알려줘" → ZCOSTCOMP_NM 후보 [인건비], [인건비_경비], [인건비_기타] ... 명확화 요청
+      //     3) 사용자: [인건비] 버튼 클릭 → forcedCostComp={values:['인건비'], op:'='} 실은 재요청
+      //     4) 서버가 conversationContext.slice(-3) 로 최근 3턴 query 를 그대로 messages 에 push
+      //        → messages = [system, "통신비 우편/택배 알려줘"(이전 turn), "AX운영팀 인건비 알려줘"(현재 turn)]
+      //     5) LLM 이 두 user 메시지를 함께 해석 → alias/설명에 "통신비 우편/택배" 재사용,
+      //        현재 turn 의 "AX운영팀" dimension 필터는 첫 turn 어휘에 밀려 누락됨.
+      //   ─ 방어 정책:
+      //     명확화 재요청은 "동일한 원 질문의 재실행" 이다. 이전 대화 문맥이 필요 없을 뿐 아니라,
+      //     함께 실리면 이전 질의 어휘가 새 SQL 로 유입되어 필터/alias/설명이 오염된다.
+      //     → forcedCostComp 이 payload 에 실려온 경우 conversationContext 를 완전히 무시하고
+      //       현재 query 만 LLM 에 전달한다.
       const messages = [{ role: 'system', content: systemPrompt }];
-      if (Array.isArray(conversationContext) && conversationContext.length > 0) {
+      const isClarifyResubmit = !!(
+        areaCtx && areaCtx.forcedCostComp
+        && Array.isArray(areaCtx.forcedCostComp.values)
+        && areaCtx.forcedCostComp.values.length > 0
+      );
+      if (isClarifyResubmit) {
+        console.log(`[NLQ:ClarifyReset] ZCOSTCOMP_NM 명확화 재요청 감지 → conversationContext 무시 (이전 turn 어휘 오염 차단). forcedCostComp.values=[${areaCtx.forcedCostComp.values.join(', ')}], query="${String(query).substring(0, 100)}"`);
+      } else if (Array.isArray(conversationContext) && conversationContext.length > 0) {
         // 최근 3턴만 사용 (토큰 절약 + 오염 최소화)
         const recentCtx = conversationContext.slice(-3);
         for (const turn of recentCtx) {
@@ -8463,6 +10013,112 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     if (areaCtx.forcedFilter && areaCtx.table) {
       sql = applyForcedTableFilter(sql, areaCtx.forcedFilter, areaCtx.table);
     }
+    // [2026-08-28] ZCOSTCOMP_NM 명확화 강제 필터 (sys_aimd_cot043 전용)
+    //   - aggregate 경로에서도 확정된 원가구성요소 = 또는 IN 을 강제 주입
+    //   - sys_aimd_cot043 참조 SQL 이 아니면 자동 no-op
+    if (areaCtx.forcedCostComp) {
+      sql = applyForcedCostCompFilter(sql, areaCtx.forcedCostComp);
+
+      // [2026-08-31] Post-SQL 오염 감지 & 정정 (Fix 2)
+      //   applyForcedCostCompFilter 는 WHERE 절만 정정한다. LLM 이 이전 turn 어휘를
+      //   SELECT alias 나 explanation 텍스트로 유출한 경우는 여기서 감지·정정한다.
+      const _postValidate = validateAndSanitizeCostCompOutput({
+        sql, explanation, query, forcedCostComp: areaCtx.forcedCostComp,
+      });
+      if (_postValidate.contaminated) {
+        sql = _postValidate.sql;
+        explanation = _postValidate.explanation;
+        console.warn(`[NLQ:CostCompPostValidate] 오염 정정 완료. SQL alias·explanation 재작성됨.`);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // [2026-09-02 PR #408] Phase 1 — 컬럼 화이트리스트 검증 가드
+      //   analyticsdev req-20260902-142729-2a0cfe 회귀 방지:
+      //     LLM 이 sys_aimd_cot043 SQL 에 ZAMT001(수익성분석 컬럼) 을 사용해
+      //     "Unknown column 'ZAMT001'" DB 에러 발생. RAG 컨텍스트 0자 상황에서
+      //     baseline system prompt 의 bw_profitability_data 예시로부터 환각.
+      //   본 가드는 forcedCostComp 존재 시 (=manufacturing-cost 명확화 경로) 만
+      //   발동하여 요구사항 #8 스코프(수익성분석 로직 불변) 를 준수한다.
+      //   미존재 컬럼 감지 시: 재생성 프롬프트에 실 컬럼 목록 힌트를 얹어
+      //   LLM 에 1회 재요청. validateSqlPreExecution 재생성과 별개의 정정 루프.
+      // ─────────────────────────────────────────────────────────────
+      await _loadTableColumnWhitelist();
+      const _colCheck = _validateSqlColumnsAgainstSchema(sql);
+      if (!_colCheck.valid) {
+        console.warn(`[SchemaGuard] 컬럼 미존재 감지: table=${_colCheck.targetTable} unknown=[${_colCheck.unknownCols.join(', ')}]`);
+        console.warn(`[SchemaGuard] 실패 SQL: ${sql}`);
+        if (systemPrompt) {
+          try {
+            const _colHintList = _colCheck.tableCols.join(', ');
+            const _fixColPrompt = `이전에 생성한 SQL 이 ${_colCheck.targetTable} 테이블에 존재하지 않는 컬럼을 사용했습니다.
+
+[잘못된 SQL]
+${sql}
+
+[문제 컬럼]
+${_colCheck.unknownCols.join(', ')} — ${_colCheck.targetTable} 테이블에 존재하지 않습니다.
+
+[사용 가능한 컬럼 (${_colCheck.targetTable})]
+${_colHintList}
+
+[수정 규칙]
+- 위 "사용 가능한 컬럼" 목록에 있는 컬럼만 사용하세요.
+- ${_colCheck.targetTable} 의 금액 합계는 SUM(AMOUNT) 로 조회합니다 (ZAMT001~ZAMT033 은 다른 테이블 컬럼이며 사용 금지).
+- 원 질의의 조건(기간·부서·원가구성요소 등) 은 그대로 유지하세요.
+
+응답 형식은 동일하게 JSON: {"sql": "...", "answer": "...", "explanation": "...", "chartType": "...", "chartConfig": {...}, "analysisRequired": ${analysisRequired}}`;
+
+            const _colRetry = await openai.chat.completions.create({
+              model: GPT_MODEL,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: query },
+                { role: 'assistant', content: JSON.stringify({ sql }) },
+                { role: 'user', content: _fixColPrompt },
+              ],
+              temperature: 0.1,
+              response_format: { type: 'json_object' },
+            });
+            const _colRetryRaw = _colRetry.choices[0].message.content;
+            console.log(`[SchemaGuard] 컬럼 재생성 응답: ${_colRetryRaw}`);
+            const _colRetryParsed = JSON.parse(_colRetryRaw);
+            if (_colRetryParsed.sql) {
+              let _newSql = await applyMetricFormulaReplacement(_colRetryParsed.sql, activeDomain);
+              _newSql = normalizeDivisionFilter(_newSql);
+              _newSql = applyDomainFilter(_newSql, activeDomain);
+              _newSql = applyDivisionFromQuery(_newSql, query);
+              _newSql = normalizeNameSearchFilter(_newSql);
+              if (areaCtx.forcedFilter && areaCtx.table) {
+                _newSql = applyForcedTableFilter(_newSql, areaCtx.forcedFilter, areaCtx.table);
+              }
+              if (areaCtx.forcedCostComp) {
+                _newSql = applyForcedCostCompFilter(_newSql, areaCtx.forcedCostComp);
+                const _pv2 = validateAndSanitizeCostCompOutput({
+                  sql: _newSql, explanation, query, forcedCostComp: areaCtx.forcedCostComp,
+                });
+                if (_pv2.contaminated) {
+                  _newSql = _pv2.sql;
+                  explanation = _pv2.explanation;
+                }
+              }
+              // 재검증 (무한루프 방지: 1회만)
+              const _recheck = _validateSqlColumnsAgainstSchema(_newSql);
+              if (_recheck.valid) {
+                sql = _newSql;
+                console.log(`[SchemaGuard] 컬럼 자동 복구 성공 → SQL 재작성 완료`);
+              } else {
+                console.error(`[SchemaGuard] 재생성 SQL 도 컬럼 검증 실패: unknown=[${_recheck.unknownCols.join(', ')}] — 원 SQL 유지 (DB 에러 응답으로 진행)`);
+              }
+            }
+          } catch (_colRetryErr) {
+            console.error(`[SchemaGuard] 컬럼 재생성 실패:`, _colRetryErr.message);
+            if (_colRetryErr && _colRetryErr.stack) console.error(_colRetryErr.stack);
+          }
+        } else {
+          console.warn(`[SchemaGuard] systemPrompt 비어있음 → 재생성 스킵`);
+        }
+      }
+    }
 
     // [2026-08-21] SQL Validator 개선 — CTE(WITH ... SELECT) 허용
     // 기존: sqlUpper.startsWith('SELECT') + forbidden.includes(kw)
@@ -8560,6 +10216,19 @@ ${sqlValidation.reason}
           // [2026-08-25] 재생성 SQL 에도 세부업무영역 강제 필터 주입
           if (areaCtx.forcedFilter && areaCtx.table) {
             sql = applyForcedTableFilter(sql, areaCtx.forcedFilter, areaCtx.table);
+          }
+          // [2026-08-28] 재생성 SQL 에도 ZCOSTCOMP_NM 강제 필터 주입
+          if (areaCtx.forcedCostComp) {
+            sql = applyForcedCostCompFilter(sql, areaCtx.forcedCostComp);
+            // [2026-08-31] 재생성 SQL 에도 Post-SQL 오염 감지 & 정정
+            const _postValidate = validateAndSanitizeCostCompOutput({
+              sql, explanation, query, forcedCostComp: areaCtx.forcedCostComp,
+            });
+            if (_postValidate.contaminated) {
+              sql = _postValidate.sql;
+              explanation = _postValidate.explanation;
+              console.warn(`[NLQ:CostCompPostValidate] (재생성 SQL) 오염 정정 완료.`);
+            }
           }
           // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
           // 재생성된 SQL도 한 번 더 검증 (무한루프 방지를 위해 1회만)
@@ -8967,7 +10636,8 @@ ${formatRule}
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
     const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain, { businessAreaCode: areaKeyToDbCode(areaCtx.area) })
+    // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
+    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain, { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections })
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
     // [PR #335] aggregate 정상 종료 타이밍 로그
@@ -8995,7 +10665,8 @@ ${formatRule}
     saveHistory(
       nlqUserId, query, null, null, null, null, null, 0, 0,
       'FAILED', msg, session_id || null, activeDomain,
-      { requestId: errorDetail.requestId || null, errorType: 'system', businessAreaCode: areaKeyToDbCode(areaCtx.area) }
+      // [2026-08-31 PR #407] 실패 이력에도 chip 저장 (사용자 선택 흔적 보존)
+      { requestId: errorDetail.requestId || null, errorType: 'system', businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
     ).catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
     return res.status(500).json({
@@ -9252,6 +10923,12 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
       area: job.area || null,
       subArea: job.subArea || null,
       table: job.table || null,
+      // [2026-08-28] ZCOSTCOMP_NM 명확화 확정값 전달 (있는 경우만)
+      //   /api/nlq 핸들러가 SQL 실행 전 applyForcedCostCompFilter 로 강제 주입
+      forcedCostComp: job.forcedCostComp || null,
+      // [2026-08-31 PR #407] 명확화 chip 목록 전달 (제조원가 UI 전용)
+      //   /api/nlq 핸들러 → saveHistory 로 흘려서 chart_config._clarificationSelections 저장
+      clarificationSelections: Array.isArray(job.clarificationSelections) ? job.clarificationSelections : [],
     });
     const headers = { 'Content-Type': 'application/json' };
     if (forwardedCookie) headers['Cookie'] = forwardedCookie;
@@ -9429,7 +11106,97 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
   //   보안: 프론트가 임의 값을 보내도 resolveAreaContext 가 화이트리스트 밖은
   //         모두 null 로 정규화한다.
   // ─────────────────────────────────────────────────────────────────
-  const areaCtx = resolveAreaContext(req.body?.area, req.body?.subArea);
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-25] 제조원가 세부탭 UI 통합 대응 — 자동 라우터
+  //
+  //   프론트가 세부탭을 제거하고 subArea 를 보내지 않으면(빈 문자열/null/undefined),
+  //   자연어 질의에서 자동으로 subArea 를 추론한다.
+  //   1) 규칙 매칭 정확히 1개 → 결정
+  //   2) 0개 or 다중 매칭 → LLM 보조 라우터 (AMBIGUOUS 허용)
+  //   3) LLM 도 판단 불가 → AMBIGUOUS → 프론트에 명확화 응답
+  //      (subareaClarification 필드 포함, done 상태의 job 으로 즉시 반환)
+  //
+  //   ⚠️ 순서 중요:
+  //     - resolveAreaContext 는 subArea 가 비어있으면 defaultSubArea 로 자동 fallback 하므로
+  //       라우터를 태우려면 raw 값을 먼저 확인해야 함.
+  //     - 프론트가 이미 subArea 를 명시적으로 보낸 경우 (예: 명확화 응답
+  //       이후 사용자가 [부서별 원가] 버튼을 눌러 재요청한 케이스)에는
+  //       resolveAreaContext 를 그대로 사용 (자동 라우팅 스킵).
+  // ─────────────────────────────────────────────────────────────────
+  const rawAreaKey    = String(req.body?.area || '').toLowerCase().trim();
+  const rawSubAreaKey = String(req.body?.subArea || '').toLowerCase().trim();
+  const needsRouting  = (rawAreaKey === 'manufacturing-cost') && !rawSubAreaKey;
+  let areaCtx = resolveAreaContext(req.body?.area, needsRouting ? '__skip__' : req.body?.subArea);
+  // needsRouting=true 인 경우: resolveAreaContext 에 '__skip__' 을 넘겨서 매핑 실패 → area 만 세팅됨
+  if (needsRouting) {
+    // 매핑 실패 시 area 만 유지, 나머지는 empty. 아래에서 라우터 태움.
+    areaCtx = { area: 'manufacturing-cost', subArea: null, subAreaLabel: null, table: null, tableWhitelist: [], forcedFilter: null };
+  }
+  if (needsRouting) {
+    const routed = await inferManufacturingCostSubArea(query, req.body?.subArea);
+    console.log(`[MfgRouter] userId=${userId} query="${String(query).slice(0, 60)}" → source=${routed.source} subArea=${routed.subArea || 'AMBIGUOUS'} rationale="${routed.rationale}"`);
+    if (routed.ambiguous) {
+      // 명확화 응답 — 프론트가 3개 버튼을 렌더링하여 사용자에게 재질문
+      const jobId = generateNlqJobId();
+      const requestId = getCurrentRequestId();
+      const clarifyMsg = '조회하시려는 데이터 기준을 선택해 주세요.';
+      const finishedJob = {
+        jobId,
+        status: 'done',
+        userId,
+        userRole: req.session.user.role || 'user',
+        requestId,
+        query: String(query),
+        queryMode: queryMode || 'analysis',
+        conversationContext: conversationContext || null,
+        session_id: session_id || null,
+        area: 'manufacturing-cost',
+        subArea: null,
+        table: null,
+        startedAt: Date.now(),
+        runningAt: Date.now(),
+        finishedAt: Date.now(),
+        result: {
+          success: true,
+          rows: [], rowCount: 0, sql: null,
+          explanation: clarifyMsg,
+          answer: clarifyMsg,
+          isUnknownTerm: false,
+          // 프론트가 이 필드를 보고 3개 버튼을 렌더링하고 원 질의 + 선택된 subArea 로 재요청
+          subareaClarification: {
+            originalQuery: String(query),
+            options: [
+              { subArea: 'cost-product', label: '제품별 원가' },
+              { subArea: 'cost-dept',    label: '부서별 원가' },
+              { subArea: 'cost-machine', label: '호기별 원가' },
+            ],
+            rationale: routed.rationale,
+          },
+          requestId,
+        },
+        error: null,
+        statusCode: 200,
+        innerRequestId: null,
+        timings: null,
+      };
+      nlqJobs.set(jobId, finishedJob);
+      return res.json({
+        success: true,
+        jobId,
+        status: 'pending',
+        requestId,
+        asyncRequestId: requestId,
+        startedAt: new Date(finishedJob.startedAt).toISOString(),
+        pollUrl: `/api/nlq/job/${jobId}`,
+        recommendedPollIntervalMs: 500,
+      });
+    }
+    // 라우팅 성공 → areaCtx 를 새 subArea 로 재계산
+    if (routed.subArea) {
+      areaCtx = resolveAreaContext('manufacturing-cost', routed.subArea);
+      console.log(`[MfgRouter] 라우팅 확정: subArea=${routed.subArea} table=${areaCtx.table} forcedFilter=${areaCtx.forcedFilter ? `${areaCtx.forcedFilter.column} ${areaCtx.forcedFilter.op}(${areaCtx.forcedFilter.values.length})` : '-'}`);
+    }
+  }
   const selectedArea    = areaCtx.area;
   const selectedSubArea = areaCtx.subArea;
   const selectedTable   = areaCtx.table;
@@ -9510,6 +11277,113 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-28] 제조원가 ZCOSTCOMP_NM 명확화 게이트 (sys_aimd_cot043 전용)
+  //
+  //   요구사항: 사용자 확인 없이 LIKE '%인건비%' 로 여러 값 자동 합산 금지.
+  //   후보가 여러 개인 경우 명확화 응답을 반환하여 재요청 유도.
+  //
+  //   적용 조건:
+  //     1. selectedTable === 'sys_aimd_cot043' (부서별/호기별 원가 경로)
+  //     2. 재요청이 아님 (forcedCostComp 가 이미 실려있으면 스킵)
+  //     3. 사용자 질의에서 원가 용어 추출 성공
+  //     4. LLM/DB 호출 전에 수행 → credit 낭비 방지
+  //
+  //   결과 분기:
+  //     - 후보 0개  → 게이트 통과 (기존 자연어 흐름, LLM 이 처리)
+  //     - 정확 매칭 → 단일 값으로 forcedCostComp 확정 → 게이트 통과 (LLM 이 실행)
+  //     - 후보 1개  → 그 값으로 forcedCostComp 확정 → 게이트 통과 (LLM 이 실행)
+  //     - 후보 2개+ → 명확화 응답 (프론트가 버튼 렌더 → 재요청)
+  //
+  //   ⚠️ 범위 제한: sys_aimd_cot043 만. bw_profitability_data(수익성분석) 미영향.
+  // ─────────────────────────────────────────────────────────────────
+  const alreadyClarifiedCostComp = !!(req.body?.forcedCostComp && Array.isArray(req.body.forcedCostComp.values) && req.body.forcedCostComp.values.length > 0);
+  let confirmedForcedCostComp = null; // 이 아래에서 확정되면 job 에 실림
+  if (selectedTable === 'sys_aimd_cot043' && !alreadyClarifiedCostComp) {
+    const costTerms = extractCostTermsFromQuery(query);
+    // 후보 조회는 가장 구체적인 용어부터 시도 (예: "인건비 경비" > "인건비")
+    let matchedTerm = null;
+    let candidates = [];
+    for (const term of costTerms) {
+      const found = await searchCostCompCandidates(term);
+      if (found.length > 0) {
+        matchedTerm = term;
+        candidates = found;
+        break;
+      }
+    }
+    if (matchedTerm && candidates.length > 0) {
+      // 정확 매칭 (공백/언더스코어 정규화 후 완전 일치) 시도 → 명확화 스킵
+      const exact = findExactCostCompMatch(matchedTerm, candidates);
+      if (exact) {
+        confirmedForcedCostComp = { values: [exact], op: '=', source: 'exact_match' };
+        console.log(`[CostCompClarify] 정확 매칭 → 명확화 스킵. userTerm="${matchedTerm}" → "${exact}"`);
+      } else if (candidates.length === 1) {
+        // 후보가 1개면 그것으로 확정 (명확화 필요 없음)
+        confirmedForcedCostComp = { values: [candidates[0]], op: '=', source: 'single_candidate' };
+        console.log(`[CostCompClarify] 후보 1개 → 자동 확정. userTerm="${matchedTerm}" → "${candidates[0]}"`);
+      } else {
+        // 후보 2개 이상 & 정확 매칭 없음 → 명확화 응답 반환
+        console.log(`[CostCompClarify] 후보 다수 → 명확화 응답 반환. userTerm="${matchedTerm}" candidates=[${candidates.join(', ')}]`);
+        const jobId = generateNlqJobId();
+        const requestId = getCurrentRequestId();
+        const clarifyMsg = `${matchedTerm}와(과) 관련된 원가구성요소가 여러 개 있습니다. 어떤 항목을 조회할까요?`;
+        // 옵션: 각 후보 + "관련 항목 전체"
+        const options = candidates.map(c => ({ value: c, label: c }));
+        options.push({ value: '__ALL__', label: '관련 항목 전체', allValues: candidates.slice() });
+        const finishedJob = {
+          jobId,
+          status: 'done',
+          userId,
+          userRole: req.session.user.role || 'user',
+          requestId,
+          query: String(query),
+          queryMode: queryMode || 'analysis',
+          conversationContext: conversationContext || null,
+          session_id: session_id || null,
+          area: selectedArea,
+          subArea: selectedSubArea,
+          table: selectedTable,
+          startedAt: Date.now(),
+          runningAt: Date.now(),
+          finishedAt: Date.now(),
+          result: {
+            success: true,
+            rows: [], rowCount: 0, sql: null,
+            explanation: clarifyMsg,
+            answer: clarifyMsg,
+            isUnknownTerm: false,
+            // 프론트는 이 필드를 보고 명확화 버튼을 렌더 → 재요청 시 forcedCostComp 실어서 보냄
+            costcompClarification: {
+              originalQuery: String(query),
+              searchTerm: matchedTerm,
+              options,
+              area: selectedArea,
+              subArea: selectedSubArea,
+            },
+            requestId,
+          },
+          error: null,
+          statusCode: 200,
+          innerRequestId: null,
+          timings: null,
+        };
+        nlqJobs.set(jobId, finishedJob);
+        return res.json({
+          success: true,
+          jobId,
+          status: 'pending',
+          requestId,
+          asyncRequestId: requestId,
+          startedAt: new Date(finishedJob.startedAt).toISOString(),
+          pollUrl: `/api/nlq/job/${jobId}`,
+          recommendedPollIntervalMs: 500,
+        });
+      }
+    }
+    // 후보 0개 (또는 costTerms 자체가 0개) → 게이트 통과, 기존 자연어 흐름 유지
+  }
+
   setRequestStage('async_job_accepted');
   const jobId = generateNlqJobId();
   const requestId = getCurrentRequestId();
@@ -9527,6 +11401,21 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     area:    selectedArea,      // 'profitability' | 'manufacturing-cost' | null
     subArea: selectedSubArea,   // 'cost-product' | 'cost-dept' | 'cost-machine' | null
     table:   selectedTable,     // 화이트리스트 검증 완료된 참조 테이블 (또는 null)
+    // [2026-08-28] sys_aimd_cot043 ZCOSTCOMP_NM 명확화 확정값 (있으면 SQL 실행 전 강제 주입)
+    //   우선순위:
+    //     1) 이 request 안에서 서버가 정확 매칭/후보 1개로 자동 확정한 값 (confirmedForcedCostComp)
+    //     2) 프론트가 명확화 응답 후 재요청 시 body 로 실어보낸 값 (req.body.forcedCostComp)
+    //   둘 다 없으면 null → 강제 필터 미주입 (기존 흐름)
+    forcedCostComp: confirmedForcedCostComp || (
+      (req.body?.forcedCostComp && Array.isArray(req.body.forcedCostComp.values) && req.body.forcedCostComp.values.length > 0)
+        ? { values: req.body.forcedCostComp.values.slice(), op: req.body.forcedCostComp.op || (req.body.forcedCostComp.values.length === 1 ? '=' : 'IN'), source: 'client_selection' }
+        : null
+    ),
+    // [2026-08-31 PR #407] 명확화 chip 목록 (제조원가 UI 전용, 히스토리 재조회용 저장)
+    //   최대 20개까지만 신뢰. 각 항목: {type, label}.
+    clarificationSelections: (Array.isArray(req.body?.clarificationSelections) ? req.body.clarificationSelections.slice(0, 20) : [])
+      .filter(it => it && typeof it === 'object' && typeof it.type === 'string' && typeof it.label === 'string')
+      .map(it => ({ type: String(it.type).slice(0, 32), label: String(it.label).slice(0, 128) })),
     startedAt: Date.now(),
     runningAt: null,
     finishedAt: null,
@@ -9817,7 +11706,25 @@ function saveHistorySafe(...args) {
 async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId, domainCode, options) {
   // result_data는 최대 100행만 저장 (DB 용량 절약)
   const trimmedData = resultData ? JSON.stringify(resultData.slice(0, 100)) : null;
-  const configJson = chartConfig ? JSON.stringify(chartConfig) : null;
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-31 PR #407] 명확화 chip 목록을 chart_config._clarificationSelections 로 병합
+  //   - 스키마 변경 없이 기존 chart_config JSON 필드에 언더스코어 prefix 로 저장
+  //   - _ 접두어는 "차트 렌더에 사용되지 않는 메타" 규약
+  //   - 히스토리 재조회 시 프론트가 이 필드를 읽어 chip 복원
+  //   - options.clarificationSelections 는 sync route 에서 검증된 배열이 흘러옴
+  //   - 제조원가(MFG) 이외 area 에서는 자연스럽게 빈 배열이라 저장되지 않음
+  // ─────────────────────────────────────────────────────────────────
+  const _clarChips = (options && Array.isArray(options.clarificationSelections))
+    ? options.clarificationSelections
+        .filter(it => it && typeof it === 'object' && typeof it.type === 'string' && typeof it.label === 'string')
+        .map(it => ({ type: String(it.type).slice(0, 32), label: String(it.label).slice(0, 128) }))
+    : [];
+  let _cfgToPersist = chartConfig;
+  if (_clarChips.length > 0) {
+    _cfgToPersist = { ...(chartConfig || {}), _clarificationSelections: _clarChips };
+    console.log(`[History:ClarifyChips] 저장 병합: ${JSON.stringify(_clarChips)}`);
+  }
+  const configJson = _cfgToPersist ? JSON.stringify(_cfgToPersist) : null;
   const requestId = (options && options.requestId) ? String(options.requestId).slice(0, 64) : null;
   const errorType = (options && options.errorType) ? String(options.errorType).slice(0, 50) : null;
   // [2026-08-25] business_area_code 는 options.businessAreaCode 로 전달 (하위호환 - 기본 null)
