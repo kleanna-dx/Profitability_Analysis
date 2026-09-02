@@ -8725,6 +8725,24 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
   }
   // ─────────────────────────────────────────────────────────────────
+  // [2026-08-31 PR #407] 명확화 chip 수신 (제조원가 UI 전용)
+  //   - 프론트가 [부서별 원가] / [인건비] 등 명확화 버튼을 누르면 chip 이 누적되어
+  //     이 필드로 전송됨. 이 서버는 SQL 라우팅 로직에 이 값을 사용하지 않음
+  //     (라우팅은 여전히 area/subArea/forcedCostComp 기반).
+  //   - 유일한 사용처: saveHistory 에서 chart_config._clarificationSelections 로
+  //     저장하여, 히스토리 재조회 시 프론트가 chip 을 복원할 수 있게 함.
+  //   - 최대 20개까지만 신뢰 (방어적 상한).
+  //   - 각 항목은 {type: 'subArea'|'costComponent', label: string} 형태.
+  const clarificationSelectionsRaw = Array.isArray(req.body?.clarificationSelections)
+    ? req.body.clarificationSelections.slice(0, 20)
+    : [];
+  const clarificationSelections = clarificationSelectionsRaw
+    .filter(it => it && typeof it === 'object' && typeof it.type === 'string' && typeof it.label === 'string')
+    .map(it => ({ type: String(it.type).slice(0, 32), label: String(it.label).slice(0, 128) }));
+  if (clarificationSelections.length > 0) {
+    console.log(`[NLQ:ClarifyChips] 수신: ${JSON.stringify(clarificationSelections)}`);
+  }
+  // ─────────────────────────────────────────────────────────────────
   // [2026-08-25] area/subArea/table 수신 (async self-fetch 로부터 전달됨)
   //
   //   - /api/nlq/async 가 이미 화이트리스트 검증한 값을 body 에 실어 보냄
@@ -8934,7 +8952,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           session_id || null,                              // session_id
           activeDomain,                                    // domain_code
           // [2026-08-25] 사이드바 [질의 이력] 배지용 area code (수익/제조)
-          { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
+          // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
         );
       } catch (histErr) {
         console.error('[NLQ:Intent] saveHistory 실패 (응답에는 영향 없음):', histErr.message);
@@ -9061,7 +9080,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
             nlqUserIdConcept, query, null,
             conceptAnswer, 'analysis', {}, [],
             0, 0, 'SUCCESS', null, session_id || null, activeDomain,
-            { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
+            // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
+            { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
           ).catch(e => console.error('[History] 저장 실패:', e.message));
           return res.json({
             success: true,
@@ -9308,7 +9328,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           nlqUserIdAnalysis, query, execRecord.baseSql,
           analysis, 'analysis', analysisChartConfig, detailRows,
           execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain,
-          { businessAreaCode: areaKeyToDbCode(areaCtx.area) }
+          // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
         // [2026-07-31] 분석 결과 상세표 옆에 실제 조회 기간 표시.
@@ -10307,7 +10328,8 @@ ${formatRule}
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
     const nlqUserId = req.session?.user?.id || null;
-    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain, { businessAreaCode: areaKeyToDbCode(areaCtx.area) })
+    // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
+    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain, { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections })
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
     // [PR #335] aggregate 정상 종료 타이밍 로그
@@ -10335,7 +10357,8 @@ ${formatRule}
     saveHistory(
       nlqUserId, query, null, null, null, null, null, 0, 0,
       'FAILED', msg, session_id || null, activeDomain,
-      { requestId: errorDetail.requestId || null, errorType: 'system', businessAreaCode: areaKeyToDbCode(areaCtx.area) }
+      // [2026-08-31 PR #407] 실패 이력에도 chip 저장 (사용자 선택 흔적 보존)
+      { requestId: errorDetail.requestId || null, errorType: 'system', businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
     ).catch(e => console.error('[History] 실패이력 저장 실패:', e.message));
 
     return res.status(500).json({
@@ -10595,6 +10618,9 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
       // [2026-08-28] ZCOSTCOMP_NM 명확화 확정값 전달 (있는 경우만)
       //   /api/nlq 핸들러가 SQL 실행 전 applyForcedCostCompFilter 로 강제 주입
       forcedCostComp: job.forcedCostComp || null,
+      // [2026-08-31 PR #407] 명확화 chip 목록 전달 (제조원가 UI 전용)
+      //   /api/nlq 핸들러 → saveHistory 로 흘려서 chart_config._clarificationSelections 저장
+      clarificationSelections: Array.isArray(job.clarificationSelections) ? job.clarificationSelections : [],
     });
     const headers = { 'Content-Type': 'application/json' };
     if (forwardedCookie) headers['Cookie'] = forwardedCookie;
@@ -11077,6 +11103,11 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
         ? { values: req.body.forcedCostComp.values.slice(), op: req.body.forcedCostComp.op || (req.body.forcedCostComp.values.length === 1 ? '=' : 'IN'), source: 'client_selection' }
         : null
     ),
+    // [2026-08-31 PR #407] 명확화 chip 목록 (제조원가 UI 전용, 히스토리 재조회용 저장)
+    //   최대 20개까지만 신뢰. 각 항목: {type, label}.
+    clarificationSelections: (Array.isArray(req.body?.clarificationSelections) ? req.body.clarificationSelections.slice(0, 20) : [])
+      .filter(it => it && typeof it === 'object' && typeof it.type === 'string' && typeof it.label === 'string')
+      .map(it => ({ type: String(it.type).slice(0, 32), label: String(it.label).slice(0, 128) })),
     startedAt: Date.now(),
     runningAt: null,
     finishedAt: null,
@@ -11367,7 +11398,25 @@ function saveHistorySafe(...args) {
 async function saveHistory(userId, queryText, sql, explanation, chartType, chartConfig, resultData, rowCount, execTime, status, errorMsg, sessionId, domainCode, options) {
   // result_data는 최대 100행만 저장 (DB 용량 절약)
   const trimmedData = resultData ? JSON.stringify(resultData.slice(0, 100)) : null;
-  const configJson = chartConfig ? JSON.stringify(chartConfig) : null;
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-08-31 PR #407] 명확화 chip 목록을 chart_config._clarificationSelections 로 병합
+  //   - 스키마 변경 없이 기존 chart_config JSON 필드에 언더스코어 prefix 로 저장
+  //   - _ 접두어는 "차트 렌더에 사용되지 않는 메타" 규약
+  //   - 히스토리 재조회 시 프론트가 이 필드를 읽어 chip 복원
+  //   - options.clarificationSelections 는 sync route 에서 검증된 배열이 흘러옴
+  //   - 제조원가(MFG) 이외 area 에서는 자연스럽게 빈 배열이라 저장되지 않음
+  // ─────────────────────────────────────────────────────────────────
+  const _clarChips = (options && Array.isArray(options.clarificationSelections))
+    ? options.clarificationSelections
+        .filter(it => it && typeof it === 'object' && typeof it.type === 'string' && typeof it.label === 'string')
+        .map(it => ({ type: String(it.type).slice(0, 32), label: String(it.label).slice(0, 128) }))
+    : [];
+  let _cfgToPersist = chartConfig;
+  if (_clarChips.length > 0) {
+    _cfgToPersist = { ...(chartConfig || {}), _clarificationSelections: _clarChips };
+    console.log(`[History:ClarifyChips] 저장 병합: ${JSON.stringify(_clarChips)}`);
+  }
+  const configJson = _cfgToPersist ? JSON.stringify(_cfgToPersist) : null;
   const requestId = (options && options.requestId) ? String(options.requestId).slice(0, 64) : null;
   const errorType = (options && options.errorType) ? String(options.errorType).slice(0, 50) : null;
   // [2026-08-25] business_area_code 는 options.businessAreaCode 로 전달 (하위호환 - 기본 null)

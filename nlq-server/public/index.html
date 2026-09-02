@@ -183,6 +183,48 @@
             align-self:flex-end;display:flex;align-items:center;gap:8px;
             max-width:calc(600px + 40px);
         }
+        /* ------------------------------------------------------------
+           [2026-08-31] 제조원가 명확화 조회조건 chip (PR #407)
+           ------------------------------------------------------------
+           - 사용자 말풍선 하단에 부착되는 단계별 조회조건 태그.
+           - 원 질문 텍스트는 절대 변경하지 않고, 별도 컨테이너에 chip append.
+           - 제조원가 영역(area === 'manufacturing-cost') 에서만 표시.
+           - 여러 단계 명확화 시 chip 누적 (동일 값 중복 표시 방지).
+           ------------------------------------------------------------ */
+        .msg-user-col{
+            /* 사용자 말풍선을 세로 방향으로 쌓는 컨테이너
+               (기본 msg-user 는 그대로 두고, chip 을 아래에 붙일 때만 사용) */
+            display:flex;flex-direction:column;align-items:flex-end;gap:6px;
+            max-width:600px;
+        }
+        .clarify-chips-container{
+            display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+            padding:4px 2px;
+            /* 말풍선과 살짝 붙되 시각적으로 별도 영역임을 알 수 있게 */
+        }
+        .clarify-chips-label{
+            font-size:11px;color:#64748b;font-weight:600;
+            margin-right:2px;letter-spacing:0.02em;
+        }
+        .clarify-chip{
+            display:inline-flex;align-items:center;gap:4px;
+            padding:3px 10px;border-radius:12px;
+            background:rgba(99,102,241,0.10);color:#4338ca;
+            border:1px solid rgba(99,102,241,0.25);
+            font-size:11px;font-weight:600;
+            white-space:nowrap;line-height:1.4;
+        }
+        .clarify-chip .clarify-chip-icon{
+            font-size:9px;opacity:0.7;
+        }
+        .clarify-chip.type-subArea{
+            background:rgba(14,165,233,0.10);color:#0369a1;
+            border-color:rgba(14,165,233,0.30);
+        }
+        .clarify-chip.type-costComponent{
+            background:rgba(168,85,247,0.10);color:#7e22ce;
+            border-color:rgba(168,85,247,0.30);
+        }
         .fav-heart-btn{
             width:30px;height:30px;border-radius:50%;
             display:flex;align-items:center;justify-content:center;
@@ -1460,6 +1502,28 @@ let historyCache = []; // 이력 캐시
 let chatSessionId = crypto.randomUUID();
 let dataDateContext = null;  // 마감 최신월 컨텍스트 (서버에서 조회)
 
+// ─────────────────────────────────────────────────────────────
+// [2026-08-31] 제조원가 명확화 조회조건 chip 상태 (PR #407)
+// ─────────────────────────────────────────────────────────────
+// 사용자가 명확화 버튼(subArea/costComponent)을 클릭할 때마다 chip 을 누적한다.
+// sendQuery() 첫 호출 시 초기화, 명확화 재요청 시 push, 최종 SUCCESS 응답 후
+// history 저장 payload 에 함께 전달되어 chart_config._clarificationSelections 로 영속화된다.
+//
+// 구조:
+//   __currentClarifications = [
+//     { type: 'subArea',       label: '부서별 원가' },
+//     { type: 'costComponent', label: '인건비' }
+//   ]
+//
+// __currentUserBubbleRow 는 옵션 Y 의 핵심:
+//   명확화 재요청 시 새 사용자 말풍선을 만들지 않고 기존 말풍선의 chip 컨테이너에 append.
+//   → 대화 로그 / 히스토리에 같은 질문이 중복 저장되지 않음.
+//
+// 범위 격리 (수익성분석 무영향):
+//   chip 부착 로직은 반드시 area === 'manufacturing-cost' 가드를 통과할 때만 발동.
+window.__currentClarifications = window.__currentClarifications || [];
+window.__currentUserBubbleRow = window.__currentUserBubbleRow || null;
+
 // 도메인별 예시 질문 (fallback 은 PS)
 // ─────────────────────────────────────────────────────────────
 // [수익성분석 영역] 도메인(PS/HL) 기반 예시 (기존 로직 그대로 유지).
@@ -2706,6 +2770,18 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
                 console.log(`[CostCompClarify] 재요청 forcedCostComp: op=${asyncPayload.forcedCostComp.op} values=[${asyncPayload.forcedCostComp.values.join(', ')}]`);
             }
         } catch (_) {}
+        // [2026-08-31 PR #407] 명확화 chip 목록을 서버로 전송
+        //   - 서버는 이 값을 chart_config._clarificationSelections 에 병합하여 히스토리에 저장
+        //   - 재조회 시 sendQuery 를 재실행하지 않고 chip 만 복원 (Q3-a)
+        //   - 제조원가 area 만 이 UI 를 발생시키므로 다른 area 에서는 자연스럽게 빈 배열
+        try {
+            if (Array.isArray(window.__currentClarifications) && window.__currentClarifications.length > 0) {
+                asyncPayload.clarificationSelections = window.__currentClarifications
+                    .filter(it => it && it.type && it.label)
+                    .map(it => ({ type: String(it.type), label: String(it.label) }));
+                console.log(`[ClarifyChips] 재요청 chip 전송: ${JSON.stringify(asyncPayload.clarificationSelections)}`);
+            }
+        } catch (_) {}
         const r = await fetch('/api/nlq/async', {
             method: 'POST',
             headers: acceptHeaders,
@@ -3122,8 +3198,26 @@ function appendDomainMismatchNotice(selectedDomain, questionDivision) {
     scrollToBottom && scrollToBottom();
 }
 
-async function sendQuery(query) {
+async function sendQuery(query, opts) {
     if (isLoading) return;
+
+    // ============================================================
+    // [2026-08-31] 옵션 Y (PR #407) — clarifyResend 플래그
+    // ------------------------------------------------------------
+    // opts.clarifyResend === true 이면 이번 호출은 "제조원가 명확화 버튼 클릭
+    // 후 재요청" 이다. 이 경우:
+    //   1) 새 사용자 말풍선(buildUserMessageRow)을 만들지 않는다.
+    //   2) 기존 __currentUserBubbleRow 를 재사용하여 chip 만 누적한다.
+    //   3) __currentClarifications 배열은 유지 (호출 측에서 이미 push 완료).
+    // opts.clarifyResend 가 falsy 이면 이번 호출은 "완전히 새로운 질문" 이다.
+    //   → __currentClarifications 초기화, __currentUserBubbleRow 는 아래에서 새로 세팅.
+    // ============================================================
+    const _isClarifyResend = !!(opts && opts.clarifyResend);
+    if (!_isClarifyResend) {
+        // 새 질문 시작 — 이전 chip 상태 초기화
+        window.__currentClarifications = [];
+        window.__currentUserBubbleRow = null;
+    }
 
     // ============================================================
     // [2026-08-07] 선택 도메인 vs 질문 사업부 불일치 사전 검증
@@ -3180,7 +3274,15 @@ async function sendQuery(query) {
     const chatArea = document.getElementById('chatArea');
 
     // User message (말풍선 + 자주질문 하트)
-    chatArea.appendChild(buildUserMessageRow(query, queryMode, currentDomain));
+    // [2026-08-31] PR #407 옵션 Y:
+    //   _isClarifyResend === true 인 경우 새 말풍선을 만들지 않고 기존 것을 재사용.
+    //   (기존 __currentUserBubbleRow 는 명확화 버튼 클릭 직후 chip 이 이미 부착된 상태)
+    //   _isClarifyResend === false 인 경우 새 말풍선을 만들고 현재 참조로 저장.
+    if (!_isClarifyResend) {
+        const _userRow = buildUserMessageRow(query, queryMode, currentDomain);
+        chatArea.appendChild(_userRow);
+        window.__currentUserBubbleRow = _userRow;
+    }
 
     // Typing indicator
     const typingEl = document.createElement('div');
@@ -4226,6 +4328,7 @@ function appendSubareaClarificationMessage(data) {
         });
         btn.addEventListener('click', async () => {
             const chosenSubArea = btn.dataset.subarea;
+            const chosenLabel = btn.textContent.trim();
             // 모든 버튼 비활성화 (중복 클릭 방지)
             el.querySelectorAll('.subarea-clarify-btn').forEach(b => {
                 b.disabled = true;
@@ -4237,7 +4340,18 @@ function appendSubareaClarificationMessage(data) {
             btn.style.background = '#0369a1';
             btn.style.color = '#fff';
             btn.style.opacity = '1';
-            btn.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>${btn.textContent.trim()}`;
+            btn.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>${chosenLabel}`;
+            // [2026-08-31 PR #407] 명확화 선택을 chip 으로 원 사용자 말풍선에 부착
+            //   - 사용자가 어떤 조건을 선택했는지 즉시 UI 로 표시
+            //   - opts.clarifyResend=true 로 sendQuery 재호출 시 새 말풍선 생성 스킵
+            //   - 제조원가 area 만 이 UI 를 발생시키므로 area 가드는 caller-side 로 충분
+            try {
+                if (typeof appendClarificationChip === 'function') {
+                    appendClarificationChip('subArea', chosenLabel);
+                }
+            } catch (chipErr) {
+                console.warn('[SubareaClarify] chip 부착 실패(비치명):', chipErr);
+            }
             // 재요청 — sendQuery 우회하여 payload 에 subArea 명시적으로 삽입
             try {
                 await resendQueryWithSubArea(originalQuery, chosenSubArea);
@@ -4366,8 +4480,11 @@ async function resendQueryWithSubArea(originalQuery, subArea) {
         if (typeof sendQuery === 'function') {
             // ⚠️ 반드시 파라미터로 (증강된) 질의를 전달 — 파라미터 없이 호출하면
             //    query=undefined 로 서버 400 발생.
-            // 사용자 말풍선/이력에 증강된 텍스트가 자연스럽게 표시됨.
-            await sendQuery(augmentedQuery);
+            // [2026-08-31 PR #407] opts.clarifyResend=true → 새 사용자 말풍선 생성 스킵
+            //   기존 말풍선(window.__currentUserBubbleRow)에 chip 만 누적됨.
+            //   서버 payload 는 증강된 텍스트(subArea 힌트 포함) 그대로 전송하여
+            //   라우팅 안정성 유지 ("화면만 원문, 서버 payload 는 augment 유지").
+            await sendQuery(augmentedQuery, { clarifyResend: true });
         }
     } finally {
         // 재요청 완료 후 플래그 해제 (다음 자유 질의에서 자동 라우팅 재개)
@@ -4504,6 +4621,21 @@ function appendCostcompClarificationMessage(data) {
                 console.warn('[CostCompClarify] 선택 값이 비어있어 재요청을 중단합니다.');
                 return;
             }
+            // [2026-08-31 PR #407] 명확화 선택을 chip 으로 원 사용자 말풍선에 부착
+            //   - Q2(a) 정책: [관련 항목 전체] 선택 시 개별 값별로 chip 을 생성
+            //     예) [인건비] [인건비_경비] [인건비_기타] 3개 chip 이 각각 렌더
+            //   - 단일 값 선택 시 chip 1개
+            //   - 제조원가 area 만 이 UI 를 발생시키므로 area 가드는 caller-side 로 충분
+            try {
+                if (typeof appendClarificationChip === 'function') {
+                    for (const v of values) {
+                        const label = String(v || '').trim();
+                        if (label) appendClarificationChip('costComponent', label);
+                    }
+                }
+            } catch (chipErr) {
+                console.warn('[CostCompClarify] chip 부착 실패(비치명):', chipErr);
+            }
             try {
                 await resendQueryWithForcedCostComp(originalQuery, subArea, { values, op });
             } catch (e) {
@@ -4542,7 +4674,10 @@ async function resendQueryWithForcedCostComp(originalQuery, subArea, forcedCostC
     window.__forceCostComp = { values: forcedCostComp.values.slice(), op: forcedCostComp.op };
     try {
         if (typeof sendQuery === 'function') {
-            await sendQuery(trimmedQuery);
+            // [2026-08-31 PR #407] opts.clarifyResend=true → 새 사용자 말풍선 생성 스킵
+            //   기존 말풍선에 costComponent chip 이 이미 부착된 상태에서
+            //   재질의를 전송해도 사용자 UI 는 chip 만 누적됨 (단일 대화 흐름 유지).
+            await sendQuery(trimmedQuery, { clarifyResend: true });
         }
     } finally {
         setTimeout(() => {
@@ -5839,14 +5974,31 @@ async function refreshFavoriteIndex() {
 }
 
 // 사용자 질문 말풍선 row 빌더 — 말풍선 + 우측 하트
+//
+// [2026-08-31] PR #407 확장:
+//   - 말풍선 아래에 명확화 조회조건 chip 컨테이너(.clarify-chips-container)를 함께 생성.
+//   - 컨테이너는 기본 hidden (chip 이 없으면 표시되지 않음).
+//   - 제조원가 명확화 확정 시 renderClarificationChips() 가 이 컨테이너를 찾아 chip 을 채운다.
+//   - 이력 재조회 시에도 chart_config._clarificationSelections 로부터 복원 가능.
 function buildUserMessageRow(query, qMode, domainCode) {
     const row = document.createElement('div');
     row.className = 'msg-user-row fade-in';
     row.dataset.queryText = query;
 
+    // 사용자 말풍선 + chip 컨테이너를 세로로 쌓는 컬럼
+    const col = document.createElement('div');
+    col.className = 'msg-user-col';
+
     const bubble = document.createElement('div');
     bubble.className = 'msg-user';
     bubble.textContent = query;
+    col.appendChild(bubble);
+
+    // 명확화 조회조건 chip 컨테이너 (기본 hidden; renderClarificationChips 가 채움)
+    const chipsWrap = document.createElement('div');
+    chipsWrap.className = 'clarify-chips-container';
+    chipsWrap.style.display = 'none';   // 초기 hidden
+    col.appendChild(chipsWrap);
 
     const heart = document.createElement('div');
     heart.className = 'fav-heart-btn';
@@ -5875,11 +6027,88 @@ function buildUserMessageRow(query, qMode, domainCode) {
         await toggleFavoriteQuestionFromBubble(heart, query, qMode, domainCode);
     });
 
-    // 사용자 메시지는 우측 정렬 → row 안에서 [말풍선][하트] 순서로 두면
+    // 사용자 메시지는 우측 정렬 → row 안에서 [말풍선컬럼][하트] 순서로 두면
     // 시각상 "말풍선 우측에 하트"가 됨 (사용자 요구사항 1번)
-    row.appendChild(bubble);
+    // [2026-08-31] col 은 [말풍선][chip 컨테이너] 를 세로로 담는다.
+    row.appendChild(col);
     row.appendChild(heart);
     return row;
+}
+
+// ============================================================
+// [2026-08-31] 제조원가 명확화 조회조건 chip 렌더 (PR #407)
+// ------------------------------------------------------------
+// 주어진 사용자 말풍선 row 안의 .clarify-chips-container 를 찾아
+// selections 배열을 chip 형태로 채운다. 동일 (type, label) 조합은
+// 중복 표시하지 않음. 빈 배열이면 컨테이너를 hidden 처리.
+//
+// 호출 시점:
+//   1) resendQueryWithSubArea      - subArea 명확화 버튼 클릭 직후
+//   2) resendQueryWithForcedCostComp - costComponent 명확화 버튼 클릭 직후
+//   3) loadSessionMessages         - 히스토리 재조회 시 chart_config 복원
+//
+// 인자:
+//   row        : buildUserMessageRow 가 반환한 .msg-user-row DOM
+//   selections : [{ type: 'subArea'|'costComponent', label: string }, ...]
+// ============================================================
+function renderClarificationChips(row, selections) {
+    if (!row) return;
+    const wrap = row.querySelector('.clarify-chips-container');
+    if (!wrap) return;
+    // 빈/무효 selections → hidden
+    if (!Array.isArray(selections) || selections.length === 0) {
+        wrap.style.display = 'none';
+        wrap.innerHTML = '';
+        return;
+    }
+    // 동일 (type, label) 중복 제거 (accumulate 시 안전망)
+    const seen = new Set();
+    const uniq = [];
+    for (const it of selections) {
+        if (!it || !it.type || !it.label) continue;
+        const key = `${it.type}::${it.label}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        uniq.push(it);
+    }
+    if (uniq.length === 0) {
+        wrap.style.display = 'none';
+        wrap.innerHTML = '';
+        return;
+    }
+    // 렌더 — 라벨 + chip 들
+    // 아이콘: subArea = fa-layer-group, costComponent = fa-tag
+    const iconOf = t => t === 'subArea' ? 'fa-layer-group'
+                     : t === 'costComponent' ? 'fa-tag'
+                     : 'fa-check';
+    const chipsHtml = uniq.map(it =>
+        `<span class="clarify-chip type-${esc(it.type)}">
+            <i class="fas ${iconOf(it.type)} clarify-chip-icon"></i>${esc(it.label)}
+        </span>`
+    ).join('');
+    wrap.innerHTML = `<span class="clarify-chips-label">조회조건</span>${chipsHtml}`;
+    wrap.style.display = 'flex';
+}
+
+// ============================================================
+// [2026-08-31] 명확화 chip 상태 누적 유틸 (PR #407)
+// ------------------------------------------------------------
+// __currentClarifications 배열에 새 선택값을 push 하되 동일 (type, label)
+// 중복은 무시. 현재 사용자 말풍선(__currentUserBubbleRow)이 있으면 즉시 갱신.
+//
+// area === 'manufacturing-cost' 격리:
+//   호출 측에서 이미 제조원가 명확화 경로임을 보장하므로 여기서는 area 체크 불필요.
+// ============================================================
+function appendClarificationChip(type, label) {
+    if (!type || !label) return;
+    const arr = window.__currentClarifications || (window.__currentClarifications = []);
+    // 중복 방지
+    if (arr.some(it => it && it.type === type && it.label === label)) return;
+    arr.push({ type, label });
+    // 현재 진행 중 말풍선에 즉시 반영
+    if (window.__currentUserBubbleRow) {
+        renderClarificationChips(window.__currentUserBubbleRow, arr);
+    }
 }
 
 // 하트 토글 — 즉시 UI 반응 + 서버 동기화
@@ -6308,11 +6537,25 @@ async function restoreSession(sessionKey, hintDomain) {
 
         items.forEach(item => {
             // 사용자 질문 말풍선 + 자주질문 하트 (이력 복원 시에도 동일하게)
-            chatArea.appendChild(buildUserMessageRow(
+            const _userRow = buildUserMessageRow(
                 item.query_text || '',
                 item.query_mode || null,
                 item.domain_code || null
-            ));
+            );
+            chatArea.appendChild(_userRow);
+            // [2026-08-31 PR #407] chart_config._clarificationSelections 로부터 chip 복원
+            //   - Q3(a): 히스토리 재조회 시 chip 만 복원, 재실행하지 않음
+            //   - 저장 스키마: chart_config = { ..., _clarificationSelections: [{type, label}, ...] }
+            //   - 제조원가 이외 area 이거나 chip 이 없는 이력은 자연스럽게 no-op
+            try {
+                const _cfg = item.chart_config || {};
+                const _chips = Array.isArray(_cfg._clarificationSelections) ? _cfg._clarificationSelections : null;
+                if (_chips && _chips.length > 0 && typeof renderClarificationChips === 'function') {
+                    renderClarificationChips(_userRow, _chips);
+                }
+            } catch (chipRestoreErr) {
+                console.warn('[History:ClarifyChips] chip 복원 실패(비치명):', chipRestoreErr);
+            }
 
             // [2026-06-30] status 비교 — 대소문자 무관 (기존 'SUCCESS' / 신규 intent 핸들러가 잠깐 'success'로 저장한 이력 모두 매치)
             //   - 'SUCCESS' / 'FAILED' (대문자) = 기존 컨벤션
