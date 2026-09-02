@@ -7614,6 +7614,165 @@ function findExactCostCompMatch(userTerm, candidates) {
  * @param {{values: string[]} | null} forcedCostComp
  * @returns {string}
  */
+
+// ============================================================
+// [2026-09-02 PR #408] Phase 1 — 테이블 컬럼 화이트리스트 검증 가드
+// ------------------------------------------------------------
+// 배경:
+//   analyticsdev 로그 req-20260902-142729-2a0cfe 에서, RAG 검색이
+//   [RAG] 검색 결과: schema=0, ontology=0 을 반환하여 프롬프트 컨텍스트가
+//   0 자가 되었고, GPT 가 baseline system prompt 의 bw_profitability_data
+//   예시로부터 ZAMT001 을 학습해 sys_aimd_cot043 SQL 에 사용 →
+//   "Unknown column 'ZAMT001' in 'SELECT'" DB 에러 발생.
+//   applyForcedCostCompFilter 는 WHERE 절만 정정할 뿐 SELECT 컬럼이
+//   FROM 테이블에 실존하는지 검증하지 않음.
+//
+// 방어 전략 (manufacturing-cost 영역만, 요구사항 #8 스코프 준수):
+//   1) 서버 부팅 시 INFORMATION_SCHEMA.COLUMNS 를 조회하여
+//      manufacturing-cost 관련 테이블(sys_aimd_cot043, sys_aimd_cot015)
+//      과 profitability 관련 테이블(bw_profitability_data) 의 실제 컬럼
+//      목록을 캐싱 (첫 요청 시 lazy load).
+//   2) 실행 직전 SQL 에서 참조 컬럼을 추출하여, FROM 테이블의 실 컬럼
+//      집합과 대조. 미존재 컬럼(예: sys_aimd_cot043 SQL 에 ZAMT001)
+//      감지 시 { valid:false, unknownCols, tableColsHint } 반환.
+//   3) 호출부(aggregate route) 는 unknownCols 감지 시 기존
+//      validateSqlPreExecution 재생성 루프에 컬럼 힌트를 얹어 재요청 (1회).
+//
+// 스코프 (요구사항 #8):
+//   - manufacturing-cost 영역에서만 발동 (areaCtx.forcedCostComp 존재 시)
+//   - 수익성분석(bw_profitability_data) 로직은 변경 없음
+// ============================================================
+const _TABLE_COL_WHITELIST_CACHE = new Map();  // tableName(lower) → Set<colNameUpper>
+let _tableColWhitelistLoadedAt = 0;
+const _TABLE_COL_WHITELIST_TTL_MS = 60 * 60 * 1000;  // 1시간
+
+async function _loadTableColumnWhitelist() {
+  // 재로딩 조건: 캐시 비어있음 OR TTL 초과
+  const now = Date.now();
+  if (_TABLE_COL_WHITELIST_CACHE.size > 0 &&
+      (now - _tableColWhitelistLoadedAt) < _TABLE_COL_WHITELIST_TTL_MS) {
+    return;
+  }
+  // 대상 테이블 — manufacturing-cost + profitability 양쪽 모두 로드하여
+  // 향후 profitability 영역에 동일 가드가 필요할 경우 재사용 가능.
+  const targets = ['sys_aimd_cot043', 'sys_aimd_cot015', 'bw_profitability_data'];
+  try {
+    const [rows] = await pool.query(
+      `SELECT TABLE_NAME, COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME IN (?)`,
+      [process.env.DB_NAME || 'company_board', targets]
+    );
+    _TABLE_COL_WHITELIST_CACHE.clear();
+    for (const r of rows) {
+      const t = String(r.TABLE_NAME).toLowerCase();
+      if (!_TABLE_COL_WHITELIST_CACHE.has(t)) _TABLE_COL_WHITELIST_CACHE.set(t, new Set());
+      _TABLE_COL_WHITELIST_CACHE.get(t).add(String(r.COLUMN_NAME).toUpperCase());
+    }
+    _tableColWhitelistLoadedAt = now;
+    const summary = targets.map(t => {
+      const s = _TABLE_COL_WHITELIST_CACHE.get(t.toLowerCase());
+      return `${t}=${s ? s.size : 0}`;
+    }).join(', ');
+    console.log(`[SchemaGuard] 컬럼 화이트리스트 로드 완료: ${summary}`);
+  } catch (e) {
+    console.warn(`[SchemaGuard] 컬럼 화이트리스트 로드 실패 (검증 스킵): ${e.message}`);
+  }
+}
+
+/**
+ * SQL 이 참조하는 FROM 테이블에 대해 SELECT/기타 절의 컬럼 참조가 실존하는지 검증.
+ *
+ * 매우 보수적 정책 — 오탐(false-positive)이 나면 정상 SQL 이 재생성 루프로 빠져
+ * 지연/비용이 커지므로, 다음 경우에는 valid:true(skip) 반환:
+ *   - 캐시가 비어있음 (로드 실패)
+ *   - 대상 테이블(sys_aimd_cot043/sys_aimd_cot015/bw_profitability_data) 이 FROM 에 없음
+ *   - 여러 대상 테이블이 동시에 FROM/JOIN 됨 (컬럼 소속 판별 불가)
+ *   - SQL 이 SELECT 로 시작하지 않음 (WITH/서브쿼리 등 복잡 케이스는 skip)
+ *
+ * 발동 조건:
+ *   - 단일 대상 테이블만 FROM 에 있음
+ *   - 정규식으로 컬럼 심볼(대문자 알파벳/숫자/언더바로 구성된 SQL 식별자) 추출
+ *   - SQL 예약어·집계함수·상수·별칭 제외 후, 대상 테이블 컬럼 집합에 없는 심볼 검출
+ *
+ * @param {string} sql
+ * @returns {{valid: true} | {valid: false, unknownCols: string[], targetTable: string, tableCols: string[]}}
+ */
+function _validateSqlColumnsAgainstSchema(sql) {
+  if (!sql || typeof sql !== 'string') return { valid: true };
+  const sqlTrim = sql.trim();
+  const sqlUpper = sqlTrim.toUpperCase();
+  // SELECT 로 시작하는 단순 쿼리만 대상 (WITH/CTE, 서브쿼리 복잡 케이스는 스킵)
+  if (!sqlUpper.startsWith('SELECT ')) return { valid: true };
+  if (_TABLE_COL_WHITELIST_CACHE.size === 0) return { valid: true };
+
+  // FROM/JOIN 에 등장하는 대상 테이블 수집
+  const targets = ['sys_aimd_cot043', 'sys_aimd_cot015', 'bw_profitability_data'];
+  const found = [];
+  for (const t of targets) {
+    const re = new RegExp(`\\b${t}\\b`, 'i');
+    if (re.test(sql)) found.push(t);
+  }
+  // 대상 테이블 0개 또는 2개 이상 → 스킵 (컬럼 소속 판별 어려움)
+  if (found.length !== 1) return { valid: true };
+  const targetTable = found[0];
+  const allowed = _TABLE_COL_WHITELIST_CACHE.get(targetTable.toLowerCase());
+  if (!allowed || allowed.size === 0) return { valid: true };
+
+  // 문자열 리터럴 제거 (컬럼처럼 보이는 리터럴 오탐 방지)
+  //   - '...' / "..." 리터럴을 모두 공백으로 치환
+  const stripped = sql
+    .replace(/'(?:[^']|'')*'/g, ' ')     // '…' (SQL escape '' 허용)
+    .replace(/"(?:[^"]|"")*"/g, ' ');    // "…"
+
+  // 대문자 식별자 추출 — 컬럼명은 통상 대문자(ZAMT001/AMOUNT/COSTCENTER_NM 등)
+  //   패턴: 대문자로 시작, 대문자·숫자·언더바만, 3자 이상
+  //   AS 별칭·서브쿼리 명·테이블명·MySQL 예약어 필터링
+  const identRe = /\b([A-Z][A-Z0-9_]{2,})\b/g;
+  const found2 = new Set();
+  let m;
+  while ((m = identRe.exec(stripped)) !== null) {
+    found2.add(m[1]);
+  }
+
+  // 필터링 세트 — SQL 예약어 + 집계함수 + 자주 쓰는 키워드
+  const RESERVED = new Set([
+    'SELECT','FROM','WHERE','GROUP','BY','ORDER','HAVING','LIMIT','OFFSET',
+    'AND','OR','NOT','IN','IS','NULL','LIKE','BETWEEN','EXISTS','AS','ON',
+    'JOIN','LEFT','RIGHT','INNER','OUTER','FULL','CROSS','UNION','ALL','DISTINCT',
+    'SUM','AVG','COUNT','MAX','MIN','ROUND','FORMAT','CAST','CONVERT','COALESCE','IFNULL','NULLIF',
+    'CASE','WHEN','THEN','ELSE','END','IF','DATE','MONTH','YEAR','DAY','NOW','CURDATE','CURRENT_DATE',
+    'DATE_FORMAT','STR_TO_DATE','SUBSTRING','CONCAT','TRIM','UPPER','LOWER','LENGTH','REPLACE',
+    'ASC','DESC','WITH','RECURSIVE','TRUE','FALSE','DUAL','USING','SET',
+    // 자주 쓰는 별칭·SQL 리터럴 (컬럼과 겹칠 가능성 낮음)
+    'INT','BIGINT','VARCHAR','DECIMAL','FLOAT','DOUBLE','TEXT',
+  ]);
+  // 대상 테이블 이름 자체와 다른 대상 테이블 이름도 제외 (대문자 변환 후)
+  const targetTableUpper = targetTable.toUpperCase();
+  for (const t of targets) RESERVED.add(t.toUpperCase());
+
+  const unknownCols = [];
+  for (const sym of found2) {
+    if (RESERVED.has(sym)) continue;
+    if (sym === targetTableUpper) continue;
+    // 순수 숫자로 끝나는 짧은 별칭 (T1, R2 등) 제외 — 통상 컬럼은 3자+긴 이름
+    if (/^[A-Z][0-9]$/.test(sym)) continue;
+    if (!allowed.has(sym)) {
+      // 다른 대상 테이블의 컬럼인지 확인 (교차 컬럼 유출 여부 진단 용도)
+      unknownCols.push(sym);
+    }
+  }
+
+  if (unknownCols.length === 0) return { valid: true };
+  return {
+    valid: false,
+    unknownCols,
+    targetTable,
+    tableCols: [...allowed].sort(),
+  };
+}
+
 function applyForcedCostCompFilter(inputSql, forcedCostComp) {
   if (!inputSql) return inputSql;
   if (!forcedCostComp || !Array.isArray(forcedCostComp.values) || forcedCostComp.values.length === 0) {
@@ -9460,12 +9619,73 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       //   - cost-product    → sys_aimd_cot015
       //   - cost-dept/machine → sys_aimd_cot043
       //   - 미지정(레거시)  → [] (전체 조회, 하위호환)
-      const buildResult = await buildRAGSystemPrompt(query, activeDomain, areaCtx.tableWhitelist);
+      //
+      // [2026-09-02 PR #408] Phase 2 — RAG 검색 시드 augmentation
+      //   analyticsdev req-20260902-142729-2a0cfe 회귀 근본원인:
+      //     짧은 질의("2026년 7월 베트남지사의 인건비를 알려줘") 가 sys_aimd_cot043
+      //     스키마·온톨로지 청크와 코사인 유사도 0.25 임계값 미달 → schema=0,
+      //     ontology=0, metric=0 반환 → LLM 이 컬럼 정보 없이 SQL 생성 → 환각.
+      //   동일 파일 라인 98 성공 요청(질의문에 "(부서별 원가)" 접미어 포함) 은
+      //     ontology=9, rule=1 회복 → subArea 라벨 문자열이 유사도 상승에 기여.
+      //   해결: manufacturing-cost 영역에서만, RAG 검색 시드에만 subAreaLabel 을
+      //     접미. LLM 에 전달되는 사용자 질의문(query) 이나 최종 SQL 은 무변경 —
+      //     rag.mjs 의 searchRelevantMeta() 에 넘어가는 검색 쿼리 문자열만 보강.
+      let _ragSeedQuery = query;
+      if (areaCtx.area === 'manufacturing-cost' && areaCtx.subAreaLabel) {
+        // 이미 subAreaLabel 이 질의문에 포함된 경우(성공 사례 재현 시)는 no-op
+        if (!query.includes(areaCtx.subAreaLabel)) {
+          _ragSeedQuery = `${query} (${areaCtx.subAreaLabel})`;
+          console.log(`[RAG:SeedAugment] manufacturing-cost subArea=${areaCtx.subArea} → 검색 시드에만 라벨 "${areaCtx.subAreaLabel}" 접미 (원 질의·SQL 무변경)`);
+        }
+      }
+      const buildResult = await buildRAGSystemPrompt(_ragSeedQuery, activeDomain, areaCtx.tableWhitelist);
       // [2026-08-21] BUG B 수정: 상위 스코프의 systemPrompt 에 재할당 (재선언 X)
       //   → else 블록 밖의 SQL 재생성 로직에서도 참조 가능
       systemPrompt = buildResult.prompt;
       const ragContext = buildResult.ragContext;
       dateContext = buildResult.dateContext;
+
+      // ─────────────────────────────────────────────────────────────
+      // [2026-09-02 PR #408] Phase 3 — AnalysisPlan 트레이스 로그
+      //   요구사항 #5: measureColumn 이 AMOUNT → ZAMT001 로 바뀌는 경로를
+      //   추적할 수 있도록, LLM 호출 직전 서버가 확정·전달하는 컨텍스트 요약을
+      //   단일 로그 라인으로 남긴다. requestId 로 grep 하여 전체 흐름 재구성 가능.
+      //   RAG 카테고리별 히트 수를 함께 기록 → RAG 미스와 컬럼 환각의 인과 판단.
+      // ─────────────────────────────────────────────────────────────
+      try {
+        const _rc = ragContext || {};
+        const _ragCounts = {
+          schema:       Array.isArray(_rc.schema)       ? _rc.schema.length       : 0,
+          ontology:     Array.isArray(_rc.ontology)     ? _rc.ontology.length     : 0,
+          metric:       Array.isArray(_rc.metric)       ? _rc.metric.length       : 0,
+          code_mapping: Array.isArray(_rc.code_mapping) ? _rc.code_mapping.length : 0,
+          feedback:     Array.isArray(_rc.feedback)     ? _rc.feedback.length     : 0,
+          rule:         Array.isArray(_rc.rule)         ? _rc.rule.length         : 0,
+        };
+        const _forcedVals = (areaCtx.forcedCostComp && Array.isArray(areaCtx.forcedCostComp.values))
+          ? areaCtx.forcedCostComp.values : [];
+        console.log(`[NLQ:AnalysisPlanTrace] ${JSON.stringify({
+          area: areaCtx.area || null,
+          subArea: areaCtx.subArea || null,
+          subAreaLabel: areaCtx.subAreaLabel || null,
+          queryMode: userQueryMode || null,
+          domain: activeDomain || null,
+          targetTable: areaCtx.table || null,
+          tableWhitelist: areaCtx.tableWhitelist || [],
+          forcedCostComp: _forcedVals.length > 0
+            ? { op: areaCtx.forcedCostComp.op || '=', values: _forcedVals }
+            : null,
+          // 요구사항 #6/#7 확정 measure — sys_aimd_cot043 은 AMOUNT (환각 감시 대상)
+          expectedMeasureColumn: areaCtx.table === 'sys_aimd_cot043' ? 'AMOUNT'
+                               : (areaCtx.table === 'bw_profitability_data' ? 'ZAMT001~ZAMT033' : null),
+          ragCounts: _ragCounts,
+          ragContextChars: (_rc._contextChars != null) ? _rc._contextChars : null,
+          systemPromptChars: systemPrompt ? systemPrompt.length : 0,
+          ragSeedAugmented: (_ragSeedQuery !== query),
+        })}`);
+      } catch (_traceErr) {
+        console.warn(`[NLQ:AnalysisPlanTrace] 로그 생성 실패 (무시): ${_traceErr.message}`);
+      }
       // ★ 사용자가 '현황집계' 라디오를 선택한 경우: 시스템 프롬프트에 명시적 지시 추가
       //   → GPT가 "알려줘" 같은 단어 때문에 analysisRequired:true로 응답하지 않도록 강제
       if (userQueryMode === 'aggregate') {
@@ -9809,6 +10029,94 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         sql = _postValidate.sql;
         explanation = _postValidate.explanation;
         console.warn(`[NLQ:CostCompPostValidate] 오염 정정 완료. SQL alias·explanation 재작성됨.`);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // [2026-09-02 PR #408] Phase 1 — 컬럼 화이트리스트 검증 가드
+      //   analyticsdev req-20260902-142729-2a0cfe 회귀 방지:
+      //     LLM 이 sys_aimd_cot043 SQL 에 ZAMT001(수익성분석 컬럼) 을 사용해
+      //     "Unknown column 'ZAMT001'" DB 에러 발생. RAG 컨텍스트 0자 상황에서
+      //     baseline system prompt 의 bw_profitability_data 예시로부터 환각.
+      //   본 가드는 forcedCostComp 존재 시 (=manufacturing-cost 명확화 경로) 만
+      //   발동하여 요구사항 #8 스코프(수익성분석 로직 불변) 를 준수한다.
+      //   미존재 컬럼 감지 시: 재생성 프롬프트에 실 컬럼 목록 힌트를 얹어
+      //   LLM 에 1회 재요청. validateSqlPreExecution 재생성과 별개의 정정 루프.
+      // ─────────────────────────────────────────────────────────────
+      await _loadTableColumnWhitelist();
+      const _colCheck = _validateSqlColumnsAgainstSchema(sql);
+      if (!_colCheck.valid) {
+        console.warn(`[SchemaGuard] 컬럼 미존재 감지: table=${_colCheck.targetTable} unknown=[${_colCheck.unknownCols.join(', ')}]`);
+        console.warn(`[SchemaGuard] 실패 SQL: ${sql}`);
+        if (systemPrompt) {
+          try {
+            const _colHintList = _colCheck.tableCols.join(', ');
+            const _fixColPrompt = `이전에 생성한 SQL 이 ${_colCheck.targetTable} 테이블에 존재하지 않는 컬럼을 사용했습니다.
+
+[잘못된 SQL]
+${sql}
+
+[문제 컬럼]
+${_colCheck.unknownCols.join(', ')} — ${_colCheck.targetTable} 테이블에 존재하지 않습니다.
+
+[사용 가능한 컬럼 (${_colCheck.targetTable})]
+${_colHintList}
+
+[수정 규칙]
+- 위 "사용 가능한 컬럼" 목록에 있는 컬럼만 사용하세요.
+- ${_colCheck.targetTable} 의 금액 합계는 SUM(AMOUNT) 로 조회합니다 (ZAMT001~ZAMT033 은 다른 테이블 컬럼이며 사용 금지).
+- 원 질의의 조건(기간·부서·원가구성요소 등) 은 그대로 유지하세요.
+
+응답 형식은 동일하게 JSON: {"sql": "...", "answer": "...", "explanation": "...", "chartType": "...", "chartConfig": {...}, "analysisRequired": ${analysisRequired}}`;
+
+            const _colRetry = await openai.chat.completions.create({
+              model: GPT_MODEL,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: query },
+                { role: 'assistant', content: JSON.stringify({ sql }) },
+                { role: 'user', content: _fixColPrompt },
+              ],
+              temperature: 0.1,
+              response_format: { type: 'json_object' },
+            });
+            const _colRetryRaw = _colRetry.choices[0].message.content;
+            console.log(`[SchemaGuard] 컬럼 재생성 응답: ${_colRetryRaw}`);
+            const _colRetryParsed = JSON.parse(_colRetryRaw);
+            if (_colRetryParsed.sql) {
+              let _newSql = await applyMetricFormulaReplacement(_colRetryParsed.sql, activeDomain);
+              _newSql = normalizeDivisionFilter(_newSql);
+              _newSql = applyDomainFilter(_newSql, activeDomain);
+              _newSql = applyDivisionFromQuery(_newSql, query);
+              _newSql = normalizeNameSearchFilter(_newSql);
+              if (areaCtx.forcedFilter && areaCtx.table) {
+                _newSql = applyForcedTableFilter(_newSql, areaCtx.forcedFilter, areaCtx.table);
+              }
+              if (areaCtx.forcedCostComp) {
+                _newSql = applyForcedCostCompFilter(_newSql, areaCtx.forcedCostComp);
+                const _pv2 = validateAndSanitizeCostCompOutput({
+                  sql: _newSql, explanation, query, forcedCostComp: areaCtx.forcedCostComp,
+                });
+                if (_pv2.contaminated) {
+                  _newSql = _pv2.sql;
+                  explanation = _pv2.explanation;
+                }
+              }
+              // 재검증 (무한루프 방지: 1회만)
+              const _recheck = _validateSqlColumnsAgainstSchema(_newSql);
+              if (_recheck.valid) {
+                sql = _newSql;
+                console.log(`[SchemaGuard] 컬럼 자동 복구 성공 → SQL 재작성 완료`);
+              } else {
+                console.error(`[SchemaGuard] 재생성 SQL 도 컬럼 검증 실패: unknown=[${_recheck.unknownCols.join(', ')}] — 원 SQL 유지 (DB 에러 응답으로 진행)`);
+              }
+            }
+          } catch (_colRetryErr) {
+            console.error(`[SchemaGuard] 컬럼 재생성 실패:`, _colRetryErr.message);
+            if (_colRetryErr && _colRetryErr.stack) console.error(_colRetryErr.stack);
+          }
+        } else {
+          console.warn(`[SchemaGuard] systemPrompt 비어있음 → 재생성 스킵`);
+        }
       }
     }
 
