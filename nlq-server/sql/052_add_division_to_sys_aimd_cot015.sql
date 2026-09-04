@@ -16,12 +16,13 @@
 --   → 원본 sql/043_create_sys_aimd_cot015.sql 의 컬럼 순서와 논리적으로
 --     "자재 → 자재명 → 사업부 → 사업부명 → …" 흐름이 이어지도록.
 --
--- 타입 결정 근거 (bw_profitability_data 스키마와 동일):
---   DIVISION     VARCHAR(5)   NULL COMMENT '사업부(제품군) 코드'
---   DIVISION_NM  VARCHAR(100) NULL COMMENT '사업부(제품군)명'
+-- 타입 결정 근거 (SAP RFC 원본 정의 기준):
+--   DIVISION     VARCHAR(2)  NULL COMMENT '제품군'          (SAP CHAR 2)
+--   DIVISION_NM  VARCHAR(40) NULL COMMENT '제품군 명'       (SAP CHAR 40)
 --
---   * bw_profitability_data 의 DIVISION 정의(sql/010_seed_learning_data.sql:19-20)
---     와 동일 타입을 유지하여 두 테이블 간 코드/명칭 매핑을 그대로 재사용.
+--   * SAP BW RFC (Z_BI_WEB_EX_BL_4) 필드 정의 그대로 반영.
+--     bw_profitability_data 의 DIVISION 은 varchar(5)/varchar(100) 로 여유있게
+--     정의되어 있으나, sys_aimd_cot015 는 SAP 원본 정의(CHAR 2/40) 를 그대로 사용.
 --
 -- 데이터 보정:
 --   기존 행(row) 에 대해서는 NULL 로 채워지며, 이후 RFC 재적재 시 SAP BW
@@ -46,7 +47,7 @@ SET @col_exists := (
      AND COLUMN_NAME  = 'DIVISION'
 );
 SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE sys_aimd_cot015 ADD COLUMN DIVISION VARCHAR(5) NULL COMMENT ''사업부(제품군) 코드 (CHAR 5, bw_profitability_data 와 동일)'' AFTER MATERIAL_NM',
+  'ALTER TABLE sys_aimd_cot015 ADD COLUMN DIVISION VARCHAR(2) NULL COMMENT ''제품군 (SAP CHAR 2)'' AFTER MATERIAL_NM',
   'SELECT ''DIVISION already exists — skip'' AS msg'
 );
 PREPARE stmt FROM @sql;
@@ -63,7 +64,7 @@ SET @col_exists := (
      AND COLUMN_NAME  = 'DIVISION_NM'
 );
 SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE sys_aimd_cot015 ADD COLUMN DIVISION_NM VARCHAR(100) NULL COMMENT ''사업부(제품군)명 (CHAR 100, ⚠️ 필터엔 사용 금지 — DIVISION 코드 사용)'' AFTER DIVISION',
+  'ALTER TABLE sys_aimd_cot015 ADD COLUMN DIVISION_NM VARCHAR(40) NULL COMMENT ''제품군 명 (SAP CHAR 40, ⚠️ 필터엔 사용 금지 — DIVISION 코드 사용)'' AFTER DIVISION',
   'SELECT ''DIVISION_NM already exists — skip'' AS msg'
 );
 PREPARE stmt FROM @sql;

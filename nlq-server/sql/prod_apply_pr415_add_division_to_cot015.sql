@@ -40,9 +40,13 @@
 --     · 시드  : UNIQUE KEY (domain_code, column_name, table_name) + INSERT IGNORE
 --
 -- ▣ 본 스크립트가 수행하는 작업 (요약)
---   1) sys_aimd_cot015 에 DIVISION      VARCHAR(5)   NULL AFTER MATERIAL_NM
---   2) sys_aimd_cot015 에 DIVISION_NM   VARCHAR(100) NULL AFTER DIVISION
+--   1) sys_aimd_cot015 에 DIVISION      VARCHAR(2)  NULL AFTER MATERIAL_NM   (SAP CHAR 2)
+--   2) sys_aimd_cot015 에 DIVISION_NM   VARCHAR(40) NULL AFTER DIVISION      (SAP CHAR 40)
 --   3) ontology_column 에 3도메인 (PS/HL/MGMT) × 2컬럼 = 6행 시드
+--
+--   ⚠️ 타입 정정 이력:
+--     - 최초안: VARCHAR(5) / VARCHAR(100) (bw_profitability_data 참조)
+--     - 최종안: VARCHAR(2) / VARCHAR(40)  ← SAP RFC 원본 정의(CHAR 2/40) 기준
 --
 -- 스키마 변경: YES (DDL 추가)
 -- 데이터 변경: YES (ontology_column 6행 추가)
@@ -69,8 +73,9 @@ SELECT
 
 -- ═══════════════════════════════════════════════════════════
 -- 1) sys_aimd_cot015 에 DIVISION 컬럼 추가 (없을 때만)
---    타입: VARCHAR(5) — bw_profitability_data 의 DIVISION 과 동일
+--    타입: VARCHAR(2) — SAP RFC 원본 정의 CHAR 2 그대로
 --    위치: AFTER MATERIAL_NM
+--    코멘트: '제품군'
 -- ═══════════════════════════════════════════════════════════
 SET @col_exists := (
   SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
@@ -79,7 +84,7 @@ SET @col_exists := (
      AND COLUMN_NAME  = 'DIVISION'
 );
 SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE sys_aimd_cot015 ADD COLUMN DIVISION VARCHAR(5) NULL COMMENT ''사업부(제품군) 코드 (CHAR 5, bw_profitability_data 와 동일)'' AFTER MATERIAL_NM',
+  'ALTER TABLE sys_aimd_cot015 ADD COLUMN DIVISION VARCHAR(2) NULL COMMENT ''제품군 (SAP CHAR 2)'' AFTER MATERIAL_NM',
   'SELECT ''DIVISION already exists — skip'' AS msg'
 );
 PREPARE stmt FROM @sql;
@@ -89,8 +94,9 @@ DEALLOCATE PREPARE stmt;
 
 -- ═══════════════════════════════════════════════════════════
 -- 2) sys_aimd_cot015 에 DIVISION_NM 컬럼 추가 (없을 때만)
---    타입: VARCHAR(100) — bw_profitability_data 의 DIVISION_NM 과 동일
+--    타입: VARCHAR(40) — SAP RFC 원본 정의 CHAR 40 그대로
 --    위치: AFTER DIVISION
+--    코멘트: '제품군 명'
 --    ⚠️ 필터엔 사용 금지 — DIVISION 코드로 필터하세요
 -- ═══════════════════════════════════════════════════════════
 SET @col_exists := (
@@ -100,7 +106,7 @@ SET @col_exists := (
      AND COLUMN_NAME  = 'DIVISION_NM'
 );
 SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE sys_aimd_cot015 ADD COLUMN DIVISION_NM VARCHAR(100) NULL COMMENT ''사업부(제품군)명 (CHAR 100, ⚠️ 필터엔 사용 금지 — DIVISION 코드 사용)'' AFTER DIVISION',
+  'ALTER TABLE sys_aimd_cot015 ADD COLUMN DIVISION_NM VARCHAR(40) NULL COMMENT ''제품군 명 (SAP CHAR 40, ⚠️ 필터엔 사용 금지 — DIVISION 코드 사용)'' AFTER DIVISION',
   'SELECT ''DIVISION_NM already exists — skip'' AS msg'
 );
 PREPARE stmt FROM @sql;
@@ -119,14 +125,14 @@ DEALLOCATE PREPARE stmt;
 -- ═══════════════════════════════════════════════════════════
 INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, description, data_type) VALUES
 -- PS 도메인 (페이퍼솔루션)
-('PS',   'DIVISION',    'sys_aimd_cot015', '사업부(제품군) 코드',                                        'varchar(5)'),
-('PS',   'DIVISION_NM', 'sys_aimd_cot015', '사업부(제품군)명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(100)'),
+('PS',   'DIVISION',    'sys_aimd_cot015', '제품군',                                            'varchar(2)'),
+('PS',   'DIVISION_NM', 'sys_aimd_cot015', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)'),
 -- HL 도메인 (홈앤라이프)
-('HL',   'DIVISION',    'sys_aimd_cot015', '사업부(제품군) 코드',                                        'varchar(5)'),
-('HL',   'DIVISION_NM', 'sys_aimd_cot015', '사업부(제품군)명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(100)'),
+('HL',   'DIVISION',    'sys_aimd_cot015', '제품군',                                            'varchar(2)'),
+('HL',   'DIVISION_NM', 'sys_aimd_cot015', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)'),
 -- MGMT 도메인 (경영관리)
-('MGMT', 'DIVISION',    'sys_aimd_cot015', '사업부(제품군) 코드',                                        'varchar(5)'),
-('MGMT', 'DIVISION_NM', 'sys_aimd_cot015', '사업부(제품군)명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(100)');
+('MGMT', 'DIVISION',    'sys_aimd_cot015', '제품군',                                            'varchar(2)'),
+('MGMT', 'DIVISION_NM', 'sys_aimd_cot015', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)');
 
 
 -- ============================================================
