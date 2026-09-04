@@ -9,7 +9,9 @@
 -- 필드 원천:
 --   깨끗한나라_BW 원가요소별 원가 필드 리스트_20260731 (첨부 엑셀 ZCOT015)
 --   ZCOT015 원본 35개 필드 + DB 자체 채번 seq 1개 = 총 36개 컬럼
---   [2026-09-04 sql/052] 사업부 분석 지원 위해 DIVISION / DIVISION_NM 2개 추가 = 총 38개 컬럼
+--   [2026-09-04 sql/052] 제품군 분석 지원 위해 DIVISION / DIVISION_NM 2개 추가 = 총 38개 컬럼
+--     · DIVISION     CHAR(2)  — SAP RFC 원본 CHAR 2
+--     · DIVISION_NM  CHAR(40) — SAP RFC 원본 CHAR 40
 --
 -- SAP 타입 → DB 타입 변환 기준 (사용자 스펙 명시):
 --   NUMC → VARCHAR   (연월 등 숫자 문자열은 문자열로 저장)
