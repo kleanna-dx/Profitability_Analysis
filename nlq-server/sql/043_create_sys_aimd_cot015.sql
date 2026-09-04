@@ -9,6 +9,7 @@
 -- 필드 원천:
 --   깨끗한나라_BW 원가요소별 원가 필드 리스트_20260731 (첨부 엑셀 ZCOT015)
 --   ZCOT015 원본 35개 필드 + DB 자체 채번 seq 1개 = 총 36개 컬럼
+--   [2026-09-04 sql/052] 사업부 분석 지원 위해 DIVISION / DIVISION_NM 2개 추가 = 총 38개 컬럼
 --
 -- SAP 타입 → DB 타입 변환 기준 (사용자 스펙 명시):
 --   NUMC → VARCHAR   (연월 등 숫자 문자열은 문자열로 저장)
@@ -43,6 +44,9 @@ CREATE TABLE IF NOT EXISTS sys_aimd_cot015 (
   PLANT_NM     VARCHAR(40)  NULL COMMENT '플랜트명 (CHAR 40)',
   MATERIAL     VARCHAR(18)  NULL COMMENT '자재 (CHAR 18)',
   MATERIAL_NM  VARCHAR(40)  NULL COMMENT '자재명 (CHAR 40)',
+  -- [2026-09-04 sql/052] 사업부(제품군) 코드/명칭 — bw_profitability_data 동일 컨벤션
+  DIVISION     VARCHAR(5)   NULL COMMENT '사업부(제품군) 코드 (CHAR 5, bw_profitability_data 와 동일)',
+  DIVISION_NM  VARCHAR(100) NULL COMMENT '사업부(제품군)명 (CHAR 100, ⚠️ 필터엔 사용 금지 — DIVISION 코드 사용)',
   ZCGUBUN_D    VARCHAR(20)  NULL COMMENT '표준원가추정(대구분) (CHAR 20)',
   ZCGUBUN      VARCHAR(20)  NULL COMMENT '원가구분(구분) (CHAR 20)',
   BASE_UOM     VARCHAR(3)   NULL COMMENT '기본 단위 (UNIT 3)',
@@ -83,7 +87,7 @@ CREATE TABLE IF NOT EXISTS sys_aimd_cot015 (
   INDEX idx_cot015_calmonth_plant        (CALMONTH, PLANT),
   INDEX idx_cot015_calmonth_plant_matl   (CALMONTH, PLANT, MATERIAL)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='SAP BW ZCOT015 RFC 연계 - 원가요소별 원가 (seq + 35 필드)';
+  COMMENT='SAP BW ZCOT015 RFC 연계 - 원가요소별 원가 (seq + 35 필드 + DIVISION/DIVISION_NM 2개 = 총 38)';
 
 -- ============================================================
 -- 검증 쿼리 (운영 반영 후 실행하여 결과 확인)
@@ -94,7 +98,7 @@ CREATE TABLE IF NOT EXISTS sys_aimd_cot015 (
 -- 2) 스키마 확인 (컬럼/타입/길이/코멘트)
 --    SHOW CREATE TABLE sys_aimd_cot015\G
 --
--- 3) 컬럼 개수 확인 (기대: 36개 = seq + 35개 필드)
+-- 3) 컬럼 개수 확인 (기대: 38개 = seq + 35개 원본 필드 + DIVISION/DIVISION_NM 2개)
 --    SELECT COUNT(*) AS col_count
 --      FROM INFORMATION_SCHEMA.COLUMNS
 --     WHERE TABLE_SCHEMA = DATABASE()
