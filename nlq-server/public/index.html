@@ -6533,7 +6533,33 @@ async function restoreSession(sessionKey, hintDomain) {
         // [2026-08-24] 이력 복원 시에도 업무영역/세부업무영역 잠금 유지
         //   현재 채팅 세션에서 이미 질의가 완료된 이력을 보고 있는 상태이므로
         //   상위/하위 영역 변경을 허용하면 세션 정합성이 깨짐.
-        try { if (window.AreaTabs && typeof window.AreaTabs.lock === 'function') window.AreaTabs.lock(); } catch (_) {}
+        //
+        // [2026-09-04 fix/history-restore-area-lock] 히스토리 클릭 시 area 복원 원칙:
+        //   기준은 "현재 UI에 선택된 area" 가 아니라 "클릭한 이력이 저장하고 있는 원래 area".
+        //   우선순위:  historyItem.business_area_code  >  현재 currentArea 유지
+        //
+        //   [수익] 뱃지 = business_area_code = 'PROFITABILITY'      → 'profitability'
+        //   [제조] 뱃지 = business_area_code = 'MANUFACTURING_COST' → 'manufacturing-cost'
+        //   NULL/누락 이력(옛날 데이터) 은 area 강제 전환 없이 현재 잠금만 수행 (기존 동작 유지).
+        //
+        //   순서: unlock → set(force:true) → lock 로 alert 회피 (setArea 는 lock 상태에서
+        //   force 없이는 confirm alert 뜨고 return 함 · area-tabs.js:1156).
+        try {
+            if (window.AreaTabs) {
+                const _bacFromItems = (items.find(it => it && it.business_area_code) || {}).business_area_code || null;
+                const _AREA_CODE_TO_KEY = { 'PROFITABILITY': 'profitability', 'MANUFACTURING_COST': 'manufacturing-cost' };
+                const _targetAreaKey = _bacFromItems ? _AREA_CODE_TO_KEY[_bacFromItems] : null;
+
+                if (_targetAreaKey && typeof window.AreaTabs.set === 'function' && window.AreaTabs.current !== _targetAreaKey) {
+                    // 다른 area 로 전환 필요 → unlock 후 강제 set
+                    if (typeof window.AreaTabs.unlock === 'function') window.AreaTabs.unlock();
+                    window.AreaTabs.set(_targetAreaKey, { force: true });
+                    console.log(`[History:AreaRestore] area 복원: ${_bacFromItems} → ${_targetAreaKey}`);
+                }
+                // area 가 이미 일치하거나 canonical 값이 없어도 lock 은 항상 수행
+                if (typeof window.AreaTabs.lock === 'function') window.AreaTabs.lock();
+            }
+        } catch (_) {}
 
         items.forEach(item => {
             // 사용자 질문 말풍선 + 자주질문 하트 (이력 복원 시에도 동일하게)
