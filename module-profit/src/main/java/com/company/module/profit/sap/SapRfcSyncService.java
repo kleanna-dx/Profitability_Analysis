@@ -183,9 +183,19 @@ public class SapRfcSyncService {
     //     정확히 일치.
     // ================================================================
 
-    /** sys_aimd_cot015 컬럼 목록 (seq 제외, INSERT 순서). 총 35 컬럼. */
+    /**
+     * sys_aimd_cot015 컬럼 목록 (seq 제외, INSERT 순서). 총 37 컬럼.
+     *
+     * [2026-09-04 PR #415~] MATERIAL_NM 뒤에 DIVISION / DIVISION_NM (제품군 코드/명) 추가.
+     *   - SAP RFC Z_BI_WEB_EX_BL_4 에 두 필드가 추가되어 응답으로 수신됨.
+     *   - 필드명이 SAP 원본과 동일 (DIVISION, DIVISION_NM) 이라
+     *     normalizeSapFieldName 의 기본 대문자화 규칙으로 자동 매핑됨.
+     *   - DIVISION: SAP CHAR 2 → VARCHAR(2), DIVISION_NM: SAP CHAR 40 → VARCHAR(40).
+     *   - 문자열 컬럼이므로 NUMERIC_COLUMNS / DECIMAL_COLUMNS 에는 추가하지 않음.
+     */
     private static final List<String> DB_COLUMNS_COT015 = List.of(
             "CALMONTH", "PLANT", "PLANT_NM", "MATERIAL", "MATERIAL_NM",
+            "DIVISION", "DIVISION_NM",
             "ZCGUBUN_D", "ZCGUBUN", "BASE_UOM", "LBKUM", "CURRENCY",
             "TOTAL", "KST_V", "KST_F",
             "KST001", "KST002", "KST004", "KST006", "KST008", "KST010",

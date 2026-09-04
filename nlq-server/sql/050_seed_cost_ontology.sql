@@ -57,6 +57,9 @@ INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, descri
 ('PS',   'PLANT_NM',    'sys_aimd_cot015', '플랜트명',                    'varchar(40)'),
 ('PS',   'MATERIAL',    'sys_aimd_cot015', '자재 코드 (제품 코드)',        'varchar(18)'),
 ('PS',   'MATERIAL_NM', 'sys_aimd_cot015', '자재명 (제품명)',              'varchar(40)'),
+-- [2026-09-04 sql/052] 제품군 코드/명칭 — SAP CHAR 2/40 (Z_BI_WEB_EX_BL_4 원본 정의)
+('PS',   'DIVISION',    'sys_aimd_cot015', '제품군',                                            'varchar(2)'),
+('PS',   'DIVISION_NM', 'sys_aimd_cot015', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)'),
 ('PS',   'ZCGUBUN_D',   'sys_aimd_cot015', '표준원가추정 대구분 (실적/추정 등)', 'varchar(20)'),
 ('PS',   'ZCGUBUN',     'sys_aimd_cot015', '원가구분 (실제원가/표준원가 등)',    'varchar(20)'),
 ('PS',   'BASE_UOM',    'sys_aimd_cot015', '기본 단위 (KG/EA 등)',         'varchar(3)'),
@@ -94,6 +97,9 @@ INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, descri
 ('HL',   'PLANT_NM',    'sys_aimd_cot015', '플랜트명',                    'varchar(40)'),
 ('HL',   'MATERIAL',    'sys_aimd_cot015', '자재 코드 (제품 코드)',        'varchar(18)'),
 ('HL',   'MATERIAL_NM', 'sys_aimd_cot015', '자재명 (제품명)',              'varchar(40)'),
+-- [2026-09-04 sql/052] 제품군 코드/명칭 — SAP CHAR 2/40 (Z_BI_WEB_EX_BL_4 원본 정의)
+('HL',   'DIVISION',    'sys_aimd_cot015', '제품군',                                            'varchar(2)'),
+('HL',   'DIVISION_NM', 'sys_aimd_cot015', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)'),
 ('HL',   'ZCGUBUN_D',   'sys_aimd_cot015', '표준원가추정 대구분 (실적/추정 등)', 'varchar(20)'),
 ('HL',   'ZCGUBUN',     'sys_aimd_cot015', '원가구분 (실제원가/표준원가 등)',    'varchar(20)'),
 ('HL',   'BASE_UOM',    'sys_aimd_cot015', '기본 단위 (KG/EA 등)',         'varchar(3)'),
@@ -130,6 +136,9 @@ INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, descri
 ('MGMT', 'PLANT_NM',    'sys_aimd_cot015', '플랜트명',                    'varchar(40)'),
 ('MGMT', 'MATERIAL',    'sys_aimd_cot015', '자재 코드 (제품 코드)',        'varchar(18)'),
 ('MGMT', 'MATERIAL_NM', 'sys_aimd_cot015', '자재명 (제품명)',              'varchar(40)'),
+-- [2026-09-04 sql/052] 제품군 코드/명칭 — SAP CHAR 2/40 (Z_BI_WEB_EX_BL_4 원본 정의)
+('MGMT', 'DIVISION',    'sys_aimd_cot015', '제품군',                                            'varchar(2)'),
+('MGMT', 'DIVISION_NM', 'sys_aimd_cot015', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)'),
 ('MGMT', 'ZCGUBUN_D',   'sys_aimd_cot015', '표준원가추정 대구분 (실적/추정 등)', 'varchar(20)'),
 ('MGMT', 'ZCGUBUN',     'sys_aimd_cot015', '원가구분 (실제원가/표준원가 등)',    'varchar(20)'),
 ('MGMT', 'BASE_UOM',    'sys_aimd_cot015', '기본 단위 (KG/EA 등)',         'varchar(3)'),
