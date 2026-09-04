@@ -12,7 +12,8 @@ RFC 함수: Z_BI_WEB_EX_BL_4  (수익성분석 Z_BI_WEB_EX_BL 과 시그니처�
   입력: I_CMONTH (YYYYMM)
   출력: T_DATA (테이블)
 
-대상 DB 테이블: sys_aimd_cot015 (seq AUTO_INCREMENT + 35 원본 필드 = 36 컬럼)
+대상 DB 테이블: sys_aimd_cot015 (seq AUTO_INCREMENT + 37 필드 = 38 컬럼)
+  ※ 37 = 원본 35 + DIVISION/DIVISION_NM 2 (2026-09-04 PR #415~ 추가)
 
 ────────────────────────────────────────────────────────────
 분리 원칙 (수익성분석 sap_rfc_sync.py 와의 관계)
@@ -77,9 +78,12 @@ INTERFACE_ID = 'NLP_RFC_002'
 
 # ── sys_aimd_cot015 컬럼 정의 (seq 제외, INSERT 순서) ──
 # 043_create_sys_aimd_cot015.sql 스키마와 정확히 일치해야 함.
+# [2026-09-04 PR #415~] MATERIAL_NM 뒤에 DIVISION / DIVISION_NM (제품군 코드/명) 추가.
 DB_COLUMNS = [
     # 기본 정보
     'CALMONTH', 'PLANT', 'PLANT_NM', 'MATERIAL', 'MATERIAL_NM',
+    # [2026-09-04] 제품군 (SAP CHAR 2/40) — RFC Z_BI_WEB_EX_BL_4 에 신규 추가
+    'DIVISION', 'DIVISION_NM',
     'ZCGUBUN_D', 'ZCGUBUN', 'BASE_UOM', 'LBKUM', 'CURRENCY',
     # 원가 합계
     'TOTAL', 'KST_V', 'KST_F',
@@ -90,7 +94,7 @@ DB_COLUMNS = [
     'KST037', 'KST039',
     # 표준가
     'TOTAL1', 'TOTAL2',
-]  # 총 35 컬럼 (seq 제외)
+]  # 총 37 컬럼 (seq 제외; 원본 35 + DIVISION/DIVISION_NM 2)
 
 # ── 숫자형 컬럼 분류 ──
 #   LBKUM (QUAN, DECIMAL 17,3) : 소수 3자리 유지

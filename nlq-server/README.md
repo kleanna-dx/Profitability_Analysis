@@ -113,7 +113,7 @@
 | `batch_master` | 인터페이스 마스터 (rfc_name, rfc_param, IFTBL) | NLP_RFC_001/002 등 |
 | `batch_schedule` | 인터페이스 수행관리 (스케줄) | 자동 증가 |
 | `batch_jobs` | 인터페이스 이력관리 (실행 이력) | 자동 증가 |
-| `sys_aimd_cot015` | 제조원가 RFC 적재 테이블 (seq + 35 필드) | RFC 적재량 |
+| `sys_aimd_cot015` | 제조원가 RFC 적재 테이블 (seq + 37 필드; DIVISION/DIVISION_NM 포함) | RFC 적재량 |
 
 ### bw_profitability_data 인덱스
 - PRIMARY (SEQ), CALMONTH, CALDAY, PROFIT_CTR, MATERIAL, CUSTOMER
