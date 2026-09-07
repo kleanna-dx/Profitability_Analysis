@@ -183,6 +183,9 @@ INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, descri
 ('PS',   'ZCOSTCOMP_NM',  'sys_aimd_cot043', '원가 구성요소명 (재료비/노무비 등)', 'varchar(40)'),
 ('PS',   'COSTELMNT',     'sys_aimd_cot043', '원가 요소 코드',              'varchar(10)'),
 ('PS',   'COSTELMNT_NM',  'sys_aimd_cot043', '원가 요소명',                 'varchar(40)'),
+-- [2026-09-04 sql/053] 제품군 코드/명칭 — SAP CHAR 2/40 (Z_BI_WEB_EX_BL_5 원본 정의)
+('PS',   'DIVISION',      'sys_aimd_cot043', '제품군',                                            'varchar(2)'),
+('PS',   'DIVISION_NM',   'sys_aimd_cot043', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)'),
 ('PS',   'COSTCENTER',    'sys_aimd_cot043', '코스트센터 코드 (부서/호기 구분자)', 'varchar(10)'),
 ('PS',   'COSTCENTER_NM', 'sys_aimd_cot043', '코스트센터명 (부서명 또는 호기명)',  'varchar(20)'),
 ('PS',   'CURRENCY',      'sys_aimd_cot043', '통화 코드',                   'varchar(5)'),
@@ -193,6 +196,9 @@ INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, descri
 ('HL',   'ZCOSTCOMP_NM',  'sys_aimd_cot043', '원가 구성요소명 (재료비/노무비 등)', 'varchar(40)'),
 ('HL',   'COSTELMNT',     'sys_aimd_cot043', '원가 요소 코드',              'varchar(10)'),
 ('HL',   'COSTELMNT_NM',  'sys_aimd_cot043', '원가 요소명',                 'varchar(40)'),
+-- [2026-09-04 sql/053] 제품군 코드/명칭 — SAP CHAR 2/40 (Z_BI_WEB_EX_BL_5 원본 정의)
+('HL',   'DIVISION',      'sys_aimd_cot043', '제품군',                                            'varchar(2)'),
+('HL',   'DIVISION_NM',   'sys_aimd_cot043', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)'),
 ('HL',   'COSTCENTER',    'sys_aimd_cot043', '코스트센터 코드 (부서/호기 구분자)', 'varchar(10)'),
 ('HL',   'COSTCENTER_NM', 'sys_aimd_cot043', '코스트센터명 (부서명 또는 호기명)',  'varchar(20)'),
 ('HL',   'CURRENCY',      'sys_aimd_cot043', '통화 코드',                   'varchar(5)'),
@@ -203,6 +209,9 @@ INSERT IGNORE INTO ontology_column (domain_code, column_name, table_name, descri
 ('MGMT', 'ZCOSTCOMP_NM',  'sys_aimd_cot043', '원가 구성요소명 (재료비/노무비 등)', 'varchar(40)'),
 ('MGMT', 'COSTELMNT',     'sys_aimd_cot043', '원가 요소 코드',              'varchar(10)'),
 ('MGMT', 'COSTELMNT_NM',  'sys_aimd_cot043', '원가 요소명',                 'varchar(40)'),
+-- [2026-09-04 sql/053] 제품군 코드/명칭 — SAP CHAR 2/40 (Z_BI_WEB_EX_BL_5 원본 정의)
+('MGMT', 'DIVISION',      'sys_aimd_cot043', '제품군',                                            'varchar(2)'),
+('MGMT', 'DIVISION_NM',   'sys_aimd_cot043', '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)', 'varchar(40)'),
 ('MGMT', 'COSTCENTER',    'sys_aimd_cot043', '코스트센터 코드 (부서/호기 구분자)', 'varchar(10)'),
 ('MGMT', 'COSTCENTER_NM', 'sys_aimd_cot043', '코스트센터명 (부서명 또는 호기명)',  'varchar(20)'),
 ('MGMT', 'CURRENCY',      'sys_aimd_cot043', '통화 코드',                   'varchar(5)'),
