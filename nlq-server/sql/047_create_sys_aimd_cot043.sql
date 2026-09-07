@@ -8,7 +8,10 @@
 --
 -- 필드 원천:
 --   사용자 제공 필드 정의서 (원본 9개 필드)
---   원본 9개 필드 + DB 자체 채번 seq 1개 = 총 10개 컬럼
+--   [2026-09-04 sql/053] 제품군 분석 지원 위해 DIVISION / DIVISION_NM 2개 추가
+--     · DIVISION     CHAR(2)  — SAP RFC 원본 CHAR 2
+--     · DIVISION_NM  CHAR(40) — SAP RFC 원본 CHAR 40
+--   원본 9개 + DIVISION/DIVISION_NM 2개 + seq 1개 = 총 12개 컬럼
 --
 -- SAP 타입 → DB 타입 변환 기준 (사용자 스펙 명시):
 --   NUMC → VARCHAR   (연월/코드 값은 앞자리 0 보존 위해 문자열로 저장)
@@ -52,6 +55,8 @@ CREATE TABLE IF NOT EXISTS sys_aimd_cot043 (
   ZCOSTCOMP_NM    VARCHAR(40)  NULL COMMENT '원가 구성요소명 (CHAR 40)',
   COSTELMNT       VARCHAR(10)  NULL COMMENT '원가 요소 (CHAR 10)',
   COSTELMNT_NM    VARCHAR(40)  NULL COMMENT '원가 요소명 (CHAR 40)',
+  DIVISION        VARCHAR(2)   NULL COMMENT '제품군 (SAP CHAR 2)',
+  DIVISION_NM     VARCHAR(40)  NULL COMMENT '제품군 명 (SAP CHAR 40, ⚠️ 필터엔 사용 금지 — DIVISION 코드 사용)',
   COSTCENTER      VARCHAR(10)  NULL COMMENT '코스트 센터 (CHAR 10)',
   COSTCENTER_NM   VARCHAR(20)  NULL COMMENT '코스트 센터명 (CHAR 20)',
   CURRENCY        VARCHAR(5)   NULL COMMENT '통화 (CUKY 5)',
@@ -64,7 +69,7 @@ CREATE TABLE IF NOT EXISTS sys_aimd_cot043 (
   INDEX idx_cot043_costelmnt             (COSTELMNT),
   INDEX idx_cot043_calmonth_costcenter   (CALMONTH, COSTCENTER)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='SAP RFC 연계 - 원가요소별 금액 (seq + 9 필드)';
+  COMMENT='SAP RFC 연계 - 원가요소별 금액 (seq + 9 필드 + DIVISION/DIVISION_NM 2개 = 총 12)';
 
 -- ============================================================
 -- 검증 쿼리 (운영 반영 후 실행하여 결과 확인)
@@ -75,7 +80,7 @@ CREATE TABLE IF NOT EXISTS sys_aimd_cot043 (
 -- 2) 스키마 확인 (컬럼/타입/길이/코멘트)
 --    SHOW CREATE TABLE sys_aimd_cot043\G
 --
--- 3) 컬럼 개수 확인 (기대: 10개 = seq + 9개 필드)
+-- 3) 컬럼 개수 확인 (기대: 12개 = seq + 9개 원본 필드 + DIVISION/DIVISION_NM 2개)
 --    SELECT COUNT(*) AS col_count
 --      FROM INFORMATION_SCHEMA.COLUMNS
 --     WHERE TABLE_SCHEMA = DATABASE()

@@ -244,17 +244,30 @@ public class SapRfcSyncService {
     //     ZCOSTCOMP_NM    VARCHAR(40)  — SAP CHAR 40 → VARCHAR
     //     COSTELMNT       VARCHAR(10)  — SAP CHAR 10 → VARCHAR
     //     COSTELMNT_NM    VARCHAR(40)  — SAP CHAR 40 → VARCHAR
+    //     DIVISION        VARCHAR(2)   — SAP CHAR 2  → VARCHAR  [2026-09-04 PR #420]
+    //     DIVISION_NM     VARCHAR(40)  — SAP CHAR 40 → VARCHAR  [2026-09-04 PR #420, ⚠️ 필터 금지]
     //     COSTCENTER      VARCHAR(10)  — SAP CHAR 10 → VARCHAR
     //     COSTCENTER_NM   VARCHAR(20)  — SAP CHAR 20 → VARCHAR
     //     CURRENCY        VARCHAR(5)   — SAP CUKY 5  → VARCHAR
     //     AMOUNT          BIGINT       — SAP CURR 17,2 → BIGINT (원단위 정수)
     // ================================================================
 
-    /** sys_aimd_cot043 컬럼 목록 (seq 제외, INSERT 순서). 총 9 컬럼. */
+    /**
+     * sys_aimd_cot043 컬럼 목록 (seq 제외, INSERT 순서). 총 11 컬럼.
+     *
+     * [2026-09-04 PR #420~] COSTELMNT_NM 뒤에 DIVISION / DIVISION_NM (제품군 코드/명) 추가.
+     *   - SAP RFC Z_BI_WEB_EX_BL_5 에 두 필드가 추가되어 응답으로 수신됨.
+     *   - 필드명이 SAP 원본과 동일 (DIVISION, DIVISION_NM) 이라
+     *     normalizeSapFieldName 의 기본 대문자화 규칙으로 자동 매핑됨.
+     *   - DIVISION: SAP CHAR 2 → VARCHAR(2), DIVISION_NM: SAP CHAR 40 → VARCHAR(40).
+     *   - 문자열 컬럼이므로 NUMERIC_COLUMNS / DECIMAL_COLUMNS 에는 추가하지 않음.
+     *   - sys_aimd_cot015 의 DIVISION / DIVISION_NM 과 완전히 동일 컨벤션.
+     */
     private static final List<String> DB_COLUMNS_COT043 = List.of(
             "CALMONTH",
             "ZCOSTCOMP", "ZCOSTCOMP_NM",
             "COSTELMNT", "COSTELMNT_NM",
+            "DIVISION", "DIVISION_NM",
             "COSTCENTER", "COSTCENTER_NM",
             "CURRENCY",
             "AMOUNT"
