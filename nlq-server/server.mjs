@@ -4215,9 +4215,14 @@ async function applyMetricFormulaReplacement(inputSql, _domainCode) {
 // Helper: 도메인 자동 WHERE 조건 주입
 // - PS 도메인 → AND DIVISION = '10'
 // - HL 도메인 → AND DIVISION = '20'
-// - MGMT/기타 → no-op (전체 조회)
-// - 적용 대상: bw_profitability_data 테이블을 참조하는 SQL
+// - MGMT/기타/통합 → no-op (전체 조회, 기존 정책 유지)
+// - 적용 대상 테이블 (DIVISION 컬럼이 존재하는 테이블만):
+//     · bw_profitability_data  (수익성분석)
+//     · sys_aimd_cot015        (제조원가 - 제품별원가; PR #419 로 컬럼 추가)
+//     · sys_aimd_cot043        (제조원가 - 부서별/호기별원가; PR #421 로 컬럼 추가)
+//   → 실제 판별은 DIVISION_ENABLED_TABLES_RE (server.mjs 내부) 로 처리.
 // - 중복 방지: SQL 어딘가에 이미 DIVISION 비교 조건이 있으면 추가하지 않음
+//   (도메인 변경으로 재주입이 필요한 경우 호출측에서 scrubDivisionFilter() 로 먼저 제거)
 // ============================================================
 
 // ============================================================
@@ -7029,9 +7034,20 @@ function truncateAnswerAtSentenceBoundary(text, maxChars) {
   return candidate.trim() + ' ...';
 }
 
+// ============================================================
+// [2026-09-04 PR #420~] DIVISION 자동 주입 대상 테이블 whitelist
+// ------------------------------------------------------------
+// - bw_profitability_data : 수익성분석 (원본, 오래 존재)
+// - sys_aimd_cot015       : 제품별원가 (PR #419 로 DIVISION 컬럼 추가)
+// - sys_aimd_cot043       : 부서별/호기별원가 (PR #421 로 DIVISION 컬럼 추가)
+// 이 whitelist 는 applyDomainFilter / scrubDivisionFilter 양쪽에서 함께
+// 사용되어 학습 SQL 재사용/도메인 재적용 시 정합성을 보장한다.
+// ============================================================
+const DIVISION_ENABLED_TABLES_RE = /\b(bw_profitability_data|sys_aimd_cot015|sys_aimd_cot043)\b/i;
+
 function scrubDivisionFilter(inputSql) {
   if (!inputSql) return inputSql;
-  if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
+  if (!DIVISION_ENABLED_TABLES_RE.test(inputSql)) return inputSql;
   if (!/\bDIVISION\b/i.test(inputSql)) return inputSql;
 
   let s = inputSql;
@@ -7092,6 +7108,12 @@ function scrubDivisionFilter(inputSql) {
  *   - 문자열 'MGMT'/기타/null → no-op
  *   - 배열이지만 요소 1개 → 단일 조건으로 축약
  *   - 배열이지만 유효 요소 없음 → no-op
+ *
+ * 대상 테이블 (DIVISION_ENABLED_TABLES_RE):
+ *   - bw_profitability_data  (수익성분석)
+ *   - sys_aimd_cot015        (제품별원가; PR #419 로 DIVISION 컬럼 추가됨)
+ *   - sys_aimd_cot043        (부서별/호기별원가; PR #421 로 DIVISION 컬럼 추가됨)
+ *   위 세 테이블 중 하나라도 SQL 에 참조되면 자동 주입한다.
  */
 function applyDomainFilter(inputSql, domainCodeOrCodes) {
   if (!inputSql) return inputSql;
@@ -7111,8 +7133,8 @@ function applyDomainFilter(inputSql, domainCodeOrCodes) {
   }
   if (codes.length === 0) return inputSql;
 
-  // 대상 테이블을 참조하지 않으면 적용 안 함
-  if (!/\bbw_profitability_data\b/i.test(inputSql)) return inputSql;
+  // 대상 테이블(DIVISION 컬럼이 존재하는 3개 테이블) 을 참조하지 않으면 적용 안 함
+  if (!DIVISION_ENABLED_TABLES_RE.test(inputSql)) return inputSql;
 
   // 이미 DIVISION 조건이 SQL 어딘가에 있으면 중복 추가 금지
   // (DIVISION_NM 같은 다른 컬럼은 단어경계로 구분되므로 영향 없음)
@@ -7194,10 +7216,11 @@ function applyDomainFilter(inputSql, domainCodeOrCodes) {
     const sep = tail && !tail.startsWith(' ') && !tail.startsWith(';') && !tail.startsWith(')') ? ' ' : '';
     result = `${before}${wrapped}${sep}${tail}`;
   } else {
-    // WHERE가 없으면 FROM bw_profitability_data [별칭?] 뒤에 WHERE 추가
+    // WHERE 가 없으면 대상 테이블 [별칭?] 뒤에 WHERE 추가
+    // 대상 테이블: bw_profitability_data / sys_aimd_cot015 / sys_aimd_cot043
     // 별칭은 SQL 예약어(WHERE/GROUP/HAVING/ORDER/LIMIT/UNION/JOIN/ON 등)가 아니어야 함
     const reservedAfterFrom = /^(?:WHERE|GROUP|HAVING|ORDER|LIMIT|UNION|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|ON)$/i;
-    const fromRegex = /\bFROM\s+bw_profitability_data\b(\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/i;
+    const fromRegex = /\bFROM\s+(?:bw_profitability_data|sys_aimd_cot015|sys_aimd_cot043)\b(\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/i;
     const fromMatch = fromRegex.exec(inputSql);
     if (!fromMatch) return inputSql; // 이상 케이스: 안전하게 원본 반환
     // 캡처된 별칭이 SQL 예약어이면 별칭이 아니라 다음 절이므로 매치 길이를 조정
