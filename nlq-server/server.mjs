@@ -3022,6 +3022,306 @@ async function loadMetricMap(domainCode, tableWhitelist) {
 }
 
 // ============================================================
+// [Metric Determinism 2026-09-04] 공통 헬퍼 3종
+// ------------------------------------------------------------
+// Metric.formula 를 실행 경로 (analysisPlan / analysisSqls / aggregate)
+// 전체에서 결정론적으로 관리하기 위한 헬퍼 모음.
+//
+// 원칙:
+//   1) DB metric 테이블에 formula 가 등록되어 있으면 그것이 Single Source of Truth
+//   2) LLM 이 만든 formula 는 DB canonical 과 다르면 항상 canonical 로 대체
+//   3) DB 미등록 metric 은 LLM formula 그대로 사용 (하위호환, 즉석 산식 지원)
+//   4) SQL 실행 직전 formula validation 을 통해 오염이 있으면 자동 치환 + 로그
+// ============================================================
+
+/**
+ * metricSqlMap 생성 (description → 집계 적용 완료된 SQL 표현식).
+ * 여러 함수에서 중복되던 로직을 하나로 통합.
+ *
+ * @param {Object} metricMap - loadMetricMap 결과
+ * @returns {Object} { description: sqlExpr, ... }
+ */
+function buildCanonicalMetricSqlMap(metricMap) {
+  const out = {};
+  if (!metricMap || typeof metricMap !== 'object') return out;
+  for (const [code, meta] of Object.entries(metricMap)) {
+    if (!meta || !meta.description) continue;
+    const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
+    let sqlExpr;
+    if (meta.aggregation === 'CALC') {
+      sqlExpr = expanded;
+    } else if (meta.aggregation === 'SUM') {
+      sqlExpr = `SUM(${expanded})`;
+    } else if (['AVG', 'COUNT', 'MAX', 'MIN'].includes(meta.aggregation)) {
+      sqlExpr = `${meta.aggregation}(${expanded})`;
+    } else {
+      sqlExpr = expanded;
+    }
+    out[meta.description] = sqlExpr;
+  }
+  return out;
+}
+
+/**
+ * Metric formula 정규화 — 두 산식이 "구조적으로 동일" 한지 비교하기 위한 canonical form.
+ *
+ * 허용되는 차이 (동일로 취급):
+ *   - 공백 (다중 공백, 탭, 개행)
+ *   - 외곽 괄호 (`(A+B)` == `A+B`)
+ *   - 연산자 주변 공백 (`A + B` == `A+B`)
+ *
+ * 감지되는 차이 (다름으로 취급):
+ *   - 컬럼 이름 (`ZAMT037` != `ZAMT047`)
+ *   - 컬럼 집합 (한쪽에만 있는 컬럼)
+ *   - 연산자 (`+` vs `-`)
+ *   - 산식 구조 (다른 metric 산식이 삽입되면 컬럼 집합이 달라짐)
+ *
+ * @param {string} formula
+ * @returns {string} 정규화된 문자열 (비교용)
+ */
+function normalizeMetricFormula(formula) {
+  if (!formula || typeof formula !== 'string') return '';
+  let s = String(formula);
+  // 1) 모든 공백 제거
+  s = s.replace(/\s+/g, '');
+  // 2) 대소문자 통일 (SQL 컬럼명은 대소문자 무관)
+  s = s.toUpperCase();
+  // 3) 외곽 괄호 반복 제거 — "((A+B))" → "A+B"
+  //    (내부 괄호는 유지 — 연산 우선순위에 영향)
+  while (s.length >= 2 && s.startsWith('(') && s.endsWith(')')) {
+    // 시작 괄호와 끝 괄호가 정말 한 쌍인지 확인 (예: "(A)+(B)" 는 외곽 아님)
+    let depth = 0;
+    let pairFound = true;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '(') depth++;
+      else if (s[i] === ')') depth--;
+      if (depth === 0 && i < s.length - 1) { pairFound = false; break; }
+    }
+    if (!pairFound) break;
+    s = s.slice(1, -1);
+  }
+  return s;
+}
+
+/**
+ * 두 formula 가 구조적으로 동일한지 판정.
+ * 공백/외곽괄호 차이는 허용, 컬럼·연산자·구조 차이는 감지.
+ */
+function areFormulasEquivalent(a, b) {
+  return normalizeMetricFormula(a) === normalizeMetricFormula(b);
+}
+
+/**
+ * SQL 안의 metric alias 를 감지해 canonical formula 로 강제 대체.
+ * generateAnalysisSqls (interpretation) / aggregate 경로에서 LLM 이 직접 만든 SQL 을
+ * 후처리로 결정론화하기 위한 함수.
+ *
+ * 지원 패턴:
+ *   - `(...expr...) AS '판매관리비'`
+ *   - `(...expr...) AS "판매관리비"`
+ *   - `(...expr...) AS \`판매관리비\``
+ *   - `SUM(...) AS 판매관리비`  (백틱/따옴표 없이 한글 별칭)
+ *
+ * @param {string} sql
+ * @param {Object} canonicalMap - { description: canonicalSqlExpr }
+ * @param {Object} [traceCtx] - { requestId, phase } — 변형 감지 시 로그용
+ * @returns {{sql:string, replacements:Array<{name,before,after}>}}
+ */
+function replaceMetricExpressionsInSql(sql, canonicalMap, traceCtx) {
+  if (!sql || !canonicalMap || Object.keys(canonicalMap).length === 0) {
+    return { sql, replacements: [] };
+  }
+  const replacements = [];
+  let result = String(sql);
+
+  // 정렬: 이름이 긴 것 먼저 (부분매치 방지 — "매출총이익률" 과 "매출총이익")
+  const names = Object.keys(canonicalMap).sort((a, b) => b.length - a.length);
+
+  for (const name of names) {
+    const canonical = canonicalMap[name];
+    if (!canonical) continue;
+
+    // metric alias 를 SELECT 절에서 찾음.
+    // 형태: <expr> AS ['"`]?<name>['"`]?
+    //   <expr> 는 SELECT 절 요소 하나 (콤마 밖의 균형잡힌 괄호 표현식).
+    //
+    // 방식: name 을 백틱/따옴표/무엇 없이 매칭하는 정규식 + 앞의 표현식 파싱
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const aliasPattern = new RegExp(
+      `AS\\s+(['"\`])${escapedName}\\1|AS\\s+${escapedName}(?=\\s*(,|FROM|$|\\)))`,
+      'gi'
+    );
+
+    let m;
+    // 매치를 뒤에서 앞으로 처리해야 인덱스가 안 밀림
+    const matches = [];
+    while ((m = aliasPattern.exec(result)) !== null) {
+      matches.push({ index: m.index, length: m[0].length });
+    }
+
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const { index: aliasIdx } = matches[i];
+
+      // aliasIdx 앞의 표현식 (SELECT 요소 하나) 을 파싱
+      // 뒤에서 앞으로 스캔하면서 콤마 또는 SELECT 키워드 경계를 만날 때까지, 괄호 균형 유지
+      let depth = 0;
+      let inStr = false;
+      let strCh = null;
+      let exprStart = -1;
+      let skipDueToNested = false;
+
+      for (let j = aliasIdx - 1; j >= 0; j--) {
+        const ch = result[j];
+        if (inStr) {
+          if (ch === strCh) {
+            if (result[j - 1] === strCh) { j--; continue; }
+            inStr = false;
+            strCh = null;
+          }
+          continue;
+        }
+        if (ch === "'" || ch === '"' || ch === '`') {
+          inStr = true; strCh = ch; continue;
+        }
+        if (ch === ')') { depth++; continue; }
+        if (ch === '(') {
+          if (depth === 0) {
+            // 열림 괄호를 depth 0 에서 만남 → top-level SELECT 요소가 아님 (함수 인자 안 alias 등)
+            skipDueToNested = true;
+            break;
+          }
+          depth--;
+          continue;
+        }
+        if (depth !== 0) continue;
+        if (ch === ',') { exprStart = j + 1; break; }
+        // SELECT 키워드 경계 감지: 단어 경계 포함해서 정확히 매칭
+        //   조건: j-5 부터 j 까지가 'SELECT' 이고 (대소문자 무관),
+        //         j-6 위치가 문자열 시작 or 공백/괄호/개행 등 non-identifier
+        if (j >= 5) {
+          const candidate = result.slice(j - 5, j + 1).toUpperCase();
+          if (candidate === 'SELECT') {
+            const boundaryCh = j - 6 >= 0 ? result[j - 6] : null;
+            const isBoundary = boundaryCh === null || /[\s(,]/.test(boundaryCh);
+            if (isBoundary) {
+              // exprStart 는 SELECT 다음 위치 (j+1) — 앞 공백은 표현식에 안 포함
+              exprStart = j + 1;
+              break;
+            }
+          }
+        }
+      }
+
+      if (skipDueToNested) continue; // 함수 인자 안 alias — top-level SELECT 요소 아님
+      if (exprStart < 0) continue;   // 안전: 경계를 못 찾으면 건드리지 않음
+
+      // exprStart ~ aliasIdx 사이가 표현식 (앞뒤 공백 포함)
+      const rawExpr = result.slice(exprStart, aliasIdx);
+      const trimmed = rawExpr.trim();
+      const before = trimmed;
+      if (areFormulasEquivalent(before, canonical)) continue; // 이미 동일 → skip
+
+      // 대체: 표현식을 canonical 로 교체
+      // (canonical 은 이미 SUM/CASE 등 aggregation 이 적용된 형태)
+      // canonical 이 SUM(...) / CASE ... END 처럼 이미 완결된 표현이면 그대로 삽입,
+      // 아니면 괄호로 감싸서 연산자 우선순위 방어
+      const canonicalWrapped = /^(SUM|AVG|COUNT|MAX|MIN)\s*\(/i.test(canonical) || /^CASE\b/i.test(canonical)
+        ? canonical
+        : `(${canonical})`;
+      // exprStart 뒤에 leading 공백을 유지하려면 rawExpr 의 앞 공백 폭 보존
+      const leadingWs = rawExpr.match(/^\s*/)[0];
+      const trailingWs = rawExpr.match(/\s*$/)[0];
+      result = result.slice(0, exprStart) + leadingWs + canonicalWrapped + trailingWs + result.slice(aliasIdx);
+
+      replacements.push({ name, before, after: canonical });
+    }
+  }
+
+  if (replacements.length > 0 && traceCtx && traceCtx.requestId) {
+    for (const r of replacements) {
+      console.warn(
+        `[MetricGuard reqId=${traceCtx.requestId} phase=${traceCtx.phase || 'unknown'}] ` +
+        `Metric SQL 표현식 변형 감지 → canonical 로 대체. name="${r.name}"`
+      );
+      console.warn(`  before: ${r.before}`);
+      console.warn(`  after:  ${r.after}`);
+    }
+  }
+  return { sql: result, replacements };
+}
+
+/**
+ * plan.metrics[] 배열의 formula 를 canonical 로 강제 정규화.
+ * `plan.metrics[i]` 형태:
+ *   { name: '판매관리비', formula: 'ZAMT037+ZAMT038+...' }
+ *
+ * 규칙:
+ *   - m.name 이 canonicalMap 에 있으면 → m.formula 를 canonical 로 강제 대체
+ *     (LLM 이 formula 를 채웠어도 무시, 다르면 경고 로그)
+ *   - m.name 이 canonicalMap 에 없으면 → LLM formula 그대로 (즉석 산식 지원)
+ *
+ * @param {Object} plan
+ * @param {Object} canonicalMap - { description: canonicalSqlExpr }
+ * @param {Object} [traceCtx] - { requestId, phase }
+ * @returns {{plan:Object, changes:Array<{name,before,after}>}}
+ */
+function enforceCanonicalMetricsInPlan(plan, canonicalMap, traceCtx) {
+  const changes = [];
+  if (!plan || !Array.isArray(plan.metrics) || !canonicalMap) {
+    return { plan, changes };
+  }
+  for (const m of plan.metrics) {
+    if (!m || !m.name) continue;
+    const canonical = canonicalMap[m.name];
+    if (!canonical) continue; // DB 미등록 metric → LLM formula 유지
+    const before = m.formula || '';
+    if (before && !areFormulasEquivalent(before, canonical)) {
+      changes.push({ name: m.name, before, after: canonical });
+    }
+    m.formula = canonical; // 등록 metric 은 항상 canonical 로 대체
+  }
+  if (changes.length > 0 && traceCtx && traceCtx.requestId) {
+    for (const c of changes) {
+      console.warn(
+        `[MetricGuard reqId=${traceCtx.requestId} phase=${traceCtx.phase || 'analysisPlan'}] ` +
+        `plan.metrics[] formula 변형 감지 → canonical 로 강제 대체. name="${c.name}"`
+      );
+      console.warn(`  LLM:       ${c.before}`);
+      console.warn(`  Canonical: ${c.after}`);
+    }
+  }
+  return { plan, changes };
+}
+
+/**
+ * SQL 실행 직전 최종 검증 게이트 (요구사항 #9).
+ * SQL 안에서 등록된 metric alias 를 찾아 canonical 과 구조 비교.
+ * 다르면 자동 치환 (요구사항 결정 2 = 옵션 B) + 로그.
+ *
+ * @param {string} sql
+ * @param {Object} canonicalMap
+ * @param {Object} [traceCtx]
+ * @returns {{sql:string, ok:boolean, replaced:number}}
+ */
+function validateAndFixMetricFormulas(sql, canonicalMap, traceCtx) {
+  if (!sql || !canonicalMap || Object.keys(canonicalMap).length === 0) {
+    return { sql, ok: true, replaced: 0 };
+  }
+  const { sql: fixed, replacements } = replaceMetricExpressionsInSql(sql, canonicalMap, traceCtx);
+  if (replacements.length > 0 && traceCtx && traceCtx.requestId) {
+    console.warn(
+      `[MetricGuard reqId=${traceCtx.requestId}] ` +
+      `SQL 실행 직전 validation 게이트에서 metric ${replacements.length}건 자동 치환됨 (결정 2 옵션 B)`
+    );
+  }
+  return { sql: fixed, ok: true, replaced: replacements.length };
+}
+
+// ============================================================
+// [Metric Determinism] 헬퍼 끝
+// ============================================================
+
+// ============================================================
 // [2026-08-25] "정렬 의도" 감지 — TOP N / 상위 N / 랭킹 / 순위 / 많은 / 높은 등
 //   ORDER BY <숫자 컬럼> 이 필요한 질문인지 판정.
 //   → matchSynonymsDirectly 에서 이 정렬 의도가 있고 metric 매칭이 0건일 때만
@@ -4169,10 +4469,29 @@ function wrapPercentRoundWithFormat(sql) {
   return out;
 }
 
-async function applyMetricFormulaReplacement(inputSql, _domainCode) {
+async function applyMetricFormulaReplacement(inputSql, _domainCode, _traceCtx) {
   if (!inputSql) return inputSql;
   try {
     let result = inputSql;
+
+    // ★ [Metric Determinism 2026-09-04] canonical formula 강제 치환 (신규)
+    //   aggregate / interpretation / retry 등 LLM 이 SQL 을 직접 생성하는 경로에서
+    //   metric alias 를 감지해 학습관리 DB 의 canonical formula 로 치환.
+    //   등록되지 않은 metric 이면 원본 유지 (즉석 산식 지원).
+    if (_domainCode) {
+      try {
+        const _mgMap = await loadMetricMap(_domainCode);
+        const _mgCanonical = buildCanonicalMetricSqlMap(_mgMap);
+        const _mgTrace = _traceCtx || { requestId: null, phase: 'applyMetricFormulaReplacement' };
+        const _mgResult = validateAndFixMetricFormulas(result, _mgCanonical, _mgTrace);
+        if (_mgResult.replaced > 0) {
+          console.log(`[MetricGuard phase=${_mgTrace.phase}] metric ${_mgResult.replaced}건 canonical 로 자동 치환`);
+          result = _mgResult.sql;
+        }
+      } catch (_mgErr) {
+        console.warn(`[MetricGuard] applyMetricFormulaReplacement 치환 스킵: ${_mgErr.message}`);
+      }
+    }
 
     // FORMAT() 인자 누락 같은 명백한 오류 SQL 사전 차단
     // 예: FORMAT(SUM(ZAMT035))  → 두 번째 인자 없음 → 운영에서 "Incorrect parameter count" 에러
@@ -5510,15 +5829,15 @@ ${convCtx}${retryHint}
   }
   plan = parsed.value;
 
-  // metric formula 를 실제 SQL 표현식으로 재확인 (LLM이 학습관리 산식을 잘 옮겼는지)
-  // — 사용자 산식이 명시된 경우는 존중, 이름만 참조한 경우는 metricSqlMap 으로 교체
-  if (Array.isArray(plan.metrics)) {
-    for (const m of plan.metrics) {
-      if (!m.formula && m.name && metricSqlMap[m.name]) {
-        m.formula = metricSqlMap[m.name];
-      }
-    }
-  }
+  // ★ [Metric Determinism 2026-09-04] canonical formula 강제 대체
+  //   기존: LLM 이 formula 를 채웠으면 존중, 이름만 있을 때만 metricSqlMap 으로 교체
+  //   변경: 학습관리 DB 에 등록된 metric name 이면 LLM formula 를 항상 무시하고 canonical 사용.
+  //         (LLM 이 산식을 부분 변형하거나 다른 metric 산식을 섞어넣는 확률적 오류 원천 차단)
+  //   DB 미등록 metric 은 LLM formula 그대로 사용 (즉석 산식 지원, 하위호환).
+  //
+  //   변형이 감지되면 [MetricGuard] 로그로 requestId 와 함께 남김.
+  const _mgTraceCtx = { requestId: options.requestId || null, phase: 'analysisPlan' };
+  enforceCanonicalMetricsInPlan(plan, metricSqlMap, _mgTraceCtx);
 
   // 도메인·기간 기본값 채움
   plan.domain = plan.domain || { value: dc, source: 'UI_FILTER' };
@@ -5686,7 +6005,11 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo, targetTable = '
     dimCodeColByName[d.name] = codeCol;
   }
 
-  // metrics — alias 는 한글 name, SQL 은 산식 그대로 (metricSqlMap 로 이미 산식 채워짐)
+  // metrics — alias 는 한글 name, SQL 은 산식 그대로
+  // ★ [Metric Determinism 2026-09-04] plan.metrics[].formula 는 generateAnalysisPlan 에서
+  //   이미 enforceCanonicalMetricsInPlan 을 거쳐 canonical 로 정규화되어 있어야 함.
+  //   여기서는 정규화된 formula 를 그대로 SELECT 절에 삽입.
+  //   (canonical 재대체는 상위 흐름에서 처리 — 이 함수는 SQL builder 역할만)
   const metricAliasByName = {};
   for (const m of mets) {
     if (!m.formula) continue;
@@ -6263,6 +6586,28 @@ async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = nul
   if (areaCtx && areaCtx.forcedCostComp) {
     baseSql = applyForcedCostCompFilter(baseSql, areaCtx.forcedCostComp);
   }
+
+  // ★ [Metric Determinism 2026-09-04] SQL 실행 직전 최종 검증 게이트
+  //   plan → buildAggregationSqlFromPlan 을 거친 SQL 에 metric alias 가 있는 경우,
+  //   canonical formula 와 구조가 다르면 자동 치환 (결정 2 옵션 B).
+  //   plan 단계에서 이미 enforceCanonicalMetricsInPlan 을 거쳤어도 이중 안전망으로
+  //   여기서 다시 검증한다 (retry / replan 등에서 canonical 이 다시 소실될 수 있음).
+  try {
+    const _mgMap = await loadMetricMap(domain, areaCtx?.tableWhitelist);
+    const _mgCanonical = buildCanonicalMetricSqlMap(_mgMap);
+    const _mgTrace = { requestId: null, phase: 'executeAnalysisPlan' };
+    const _mgResult = validateAndFixMetricFormulas(baseSql, _mgCanonical, _mgTrace);
+    if (_mgResult.replaced > 0) {
+      execRecord.diagnostics.push(
+        `[MetricGuard] SQL 실행 직전 metric ${_mgResult.replaced}건 자동 치환 (canonical 강제)`
+      );
+      baseSql = _mgResult.sql;
+    }
+  } catch (_mgErr) {
+    // metric validation 실패해도 SQL 실행은 계속 (기존 하위호환)
+    console.warn(`[MetricGuard] validation 스킵 (예외 무시): ${_mgErr.message}`);
+  }
+
   execRecord.baseSql = baseSql;
   // [2026-08-07] (Task 6) TOP N 진단 정보 노출: DB 단 ORDER BY LIMIT 적용 여부 등
   //   - built.rankInfo:  partitionBy 있는 CTE 경로 (기존)
