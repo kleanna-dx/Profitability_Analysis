@@ -4858,5 +4858,282 @@ async function clearAllBuilderHistory() {
 </div>
 <!-- [2026-07-23] 업무영역(수익성분석/제조원가) 탭 UI — 프론트 프리뷰. 서버 API/데이터 미변경. -->
 <script src="/area-tabs.js"></script>
+
+<!--
+    ─────────────────────────────────────────────────────────────────────────
+    [2026-09-10] 제조원가 비주얼쿼리빌더 "준비중 / 프리뷰" 안내 모달
+    ─────────────────────────────────────────────────────────────────────────
+    - 상단 area 탭에서 [제조원가] 선택 시 큰 모달 오버레이로 화면을 덮어
+      실제 쿼리빌더 기능(필드 드래그/추가/필터/피벗 생성/SQL 실행/조회)을
+      사용할 수 없음을 명확히 안내한다.
+    - 오버레이 뒤 화면은 "프리뷰" 용도로 시각적으로 남아있음.
+    - 모달을 닫아도 실제 액션 함수(executeQuery, addField, addConditionRow,
+      handleFieldDrop, handleCondDrop, executeEditedSql) 는 area 재확인 후
+      다시 모달을 띄우고 동작을 차단한다.
+    - [수익성분석] 영역은 완전히 무영향 (모달이 뜨지 않고 기존 기능 그대로).
+-->
+<div id="mfgPreviewModal" class="mfg-preview-modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="mfgPreviewModalTitle">
+    <div class="mfg-preview-modal-card">
+        <div class="mfg-preview-modal-icon" aria-hidden="true">
+            <i class="fas fa-tools"></i>
+        </div>
+        <h2 id="mfgPreviewModalTitle" class="mfg-preview-modal-title">제조원가 비주얼쿼리빌더 준비중</h2>
+        <p class="mfg-preview-modal-body">
+            현재 제조원가 비주얼쿼리빌더는 <strong>프리뷰 단계</strong>입니다.<br>
+            제조원가 전용 필드 및 조회 기능을 준비 중이며,<br>
+            완료 후 이용할 수 있습니다.
+        </p>
+        <p class="mfg-preview-modal-hint">
+            <i class="fas fa-info-circle" style="margin-right:6px;"></i>
+            지금은 화면 구성만 프리뷰로 확인할 수 있으며,
+            필드 선택 · 필터 · 피벗 · SQL 생성 · 데이터 조회는 실행되지 않습니다.
+        </p>
+        <div class="mfg-preview-modal-actions">
+            <button type="button" class="mfg-preview-btn primary" id="mfgPreviewBackToProfit">
+                <i class="fas fa-chart-line" style="margin-right:6px;"></i>수익성분석으로 이동
+            </button>
+            <button type="button" class="mfg-preview-btn secondary" id="mfgPreviewCloseBtn">
+                프리뷰만 보기
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* [2026-09-10] 제조원가 프리뷰 모달 스타일 */
+    .mfg-preview-modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.55);
+        backdrop-filter: blur(3px);
+        -webkit-backdrop-filter: blur(3px);
+        z-index: 9998;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        animation: mfgPreviewFadeIn 0.18s ease-out;
+    }
+    @keyframes mfgPreviewFadeIn {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+    }
+    .mfg-preview-modal-card {
+        background: #ffffff;
+        border-radius: 16px;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.08);
+        max-width: 520px;
+        width: 100%;
+        padding: 36px 32px 28px;
+        text-align: center;
+        animation: mfgPreviewSlideUp 0.22s ease-out;
+    }
+    @keyframes mfgPreviewSlideUp {
+        from { transform: translateY(12px); opacity: 0; }
+        to   { transform: translateY(0);    opacity: 1; }
+    }
+    .mfg-preview-modal-icon {
+        width: 68px;
+        height: 68px;
+        margin: 0 auto 18px;
+        background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #ffffff;
+        font-size: 28px;
+        box-shadow: 0 6px 16px rgba(234, 88, 12, 0.35);
+    }
+    .mfg-preview-modal-title {
+        font-size: 20px;
+        font-weight: 700;
+        color: #1e293b;
+        margin-bottom: 12px;
+        line-height: 1.35;
+    }
+    .mfg-preview-modal-body {
+        font-size: 14px;
+        line-height: 1.7;
+        color: #475569;
+        margin-bottom: 14px;
+    }
+    .mfg-preview-modal-body strong {
+        color: #ea580c;
+        font-weight: 600;
+    }
+    .mfg-preview-modal-hint {
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: #64748b;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 22px;
+        text-align: left;
+    }
+    .mfg-preview-modal-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+    .mfg-preview-btn {
+        border: none;
+        border-radius: 10px;
+        padding: 10px 20px;
+        font-size: 13.5px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+        transition: all 0.15s ease;
+        min-width: 160px;
+    }
+    .mfg-preview-btn.primary {
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+        color: #ffffff;
+        box-shadow: 0 4px 10px rgba(37, 99, 235, 0.28);
+    }
+    .mfg-preview-btn.primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 14px rgba(37, 99, 235, 0.38);
+    }
+    .mfg-preview-btn.secondary {
+        background: #f1f5f9;
+        color: #475569;
+        border: 1px solid #cbd5e1;
+    }
+    .mfg-preview-btn.secondary:hover {
+        background: #e2e8f0;
+        color: #1e293b;
+    }
+    @media (max-width: 480px) {
+        .mfg-preview-modal-card { padding: 28px 20px 22px; }
+        .mfg-preview-modal-title { font-size: 18px; }
+        .mfg-preview-btn { min-width: 100%; }
+    }
+</style>
+
+<script>
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ * [2026-09-10] 제조원가 비주얼쿼리빌더 게이팅 스크립트
+ * ─────────────────────────────────────────────────────────────────────────
+ * 목적:
+ *   - 상단 area 탭이 [제조원가] 로 전환/진입되는 순간 "준비중" 모달을 표시.
+ *   - 사용자가 모달을 닫아도 (프리뷰만 보기), 실제 쿼리빌더 액션 함수는
+ *     area 를 재검사하여 다시 모달을 띄우고 실행을 차단한다.
+ *
+ * 정책:
+ *   - [수익성분석] 영역: 이 스크립트는 아무 동작도 하지 않음. 기존 기능 그대로.
+ *   - [제조원가]   영역: 화면은 프리뷰용으로 남기고, 액션은 모두 차단.
+ *
+ * 구현:
+ *   - area 판정: window.AreaTabs.current === 'manufacturing-cost'
+ *                (기존 _isManufacturingCostArea 와 동일 로직)
+ *   - 이벤트: 'areatabs:ready' / 'areachange' → area 확인 후 모달 토글
+ *   - 함수 래핑: executeQuery / executeEditedSql / addField /
+ *                 addConditionRow / handleFieldDrop / handleCondDrop 앞단에
+ *                 게이트를 삽입 (원본 함수는 그대로 호출, 제조원가일 때만 차단).
+ */
+(function initMfgPreviewGate() {
+    'use strict';
+
+    const MFG_AREA = 'manufacturing-cost';
+    const PROFIT_AREA = 'profitability';
+
+    function getCurrentArea() {
+        try {
+            return (window.AreaTabs && window.AreaTabs.current)
+                || document.body?.dataset?.area
+                || '';
+        } catch (e) { return ''; }
+    }
+
+    function isMfgArea() { return getCurrentArea() === MFG_AREA; }
+
+    function showMfgPreviewModal() {
+        const el = document.getElementById('mfgPreviewModal');
+        if (el) el.style.display = 'flex';
+    }
+    function hideMfgPreviewModal() {
+        const el = document.getElementById('mfgPreviewModal');
+        if (el) el.style.display = 'none';
+    }
+
+    // area 상태에 맞춰 모달 자동 표시/숨김
+    function syncModalWithArea() {
+        if (isMfgArea()) showMfgPreviewModal();
+        else hideMfgPreviewModal();
+    }
+
+    // ── 이벤트: area 탭 초기화/전환 시 자동 반응 ────────────────────────
+    window.addEventListener('areatabs:ready', syncModalWithArea);
+    window.addEventListener('areachange', syncModalWithArea);
+    // DOMContentLoaded 후에도 한 번 더 확인 (스크립트 로드 순서 안전망)
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', syncModalWithArea, { once: true });
+    } else {
+        // 이미 로드 완료된 경우: area-tabs.js 가 초기화될 시간을 짧게 두고 확인
+        setTimeout(syncModalWithArea, 0);
+    }
+
+    // ── 모달 버튼 핸들러 ───────────────────────────────────────────────
+    document.addEventListener('click', function(e) {
+        // 수익성분석으로 이동
+        if (e.target && e.target.closest && e.target.closest('#mfgPreviewBackToProfit')) {
+            try {
+                if (window.AreaTabs && typeof window.AreaTabs.set === 'function') {
+                    window.AreaTabs.set(PROFIT_AREA);
+                }
+            } catch (err) {}
+            hideMfgPreviewModal();
+            return;
+        }
+        // 프리뷰만 보기 (모달만 닫음. area 는 제조원가 유지)
+        if (e.target && e.target.closest && e.target.closest('#mfgPreviewCloseBtn')) {
+            hideMfgPreviewModal();
+            return;
+        }
+    });
+
+    // ── 액션 함수 게이팅 ───────────────────────────────────────────────
+    // 원본 함수를 감싸서, 제조원가 area 일 때는 모달만 띄우고 원본 실행 차단.
+    // 원본은 삭제/수정하지 않으므로 수익성분석 area 동작은 100% 보존됨.
+    function guardFn(name) {
+        const orig = window[name];
+        if (typeof orig !== 'function') return;    // 함수가 아직 없으면 skip
+        if (orig.__mfgGated) return;                // 이중 래핑 방지
+        const wrapped = function() {
+            if (isMfgArea()) {
+                showMfgPreviewModal();
+                return;                             // 값 반환 없음 (원본 미실행)
+            }
+            return orig.apply(this, arguments);
+        };
+        wrapped.__mfgGated = true;
+        window[name] = wrapped;
+    }
+
+    // 페이지 스크립트가 모두 정의된 후 감싸야 하므로 DOMContentLoaded 이후 한 번 실행
+    function installGates() {
+        [
+            'executeQuery',        // ▶ 피벗 생성 (조회 실행)
+            'executeEditedSql',    // ▶ 편집된 SQL 실행
+            'addField',            //   필드 추가 (드래그/클릭 공통 최종 진입점)
+            'addFieldByClick',     //   좌측 필드 클릭 추가
+            'addConditionRow',     //   필터 조건 추가
+            'handleFieldDrop',     //   조회 필드 영역 드롭
+            'handleCondDrop',      //   조건 영역 드롭
+        ].forEach(guardFn);
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', installGates, { once: true });
+    } else {
+        installGates();
+    }
+})();
+</script>
 </body>
 </html>
