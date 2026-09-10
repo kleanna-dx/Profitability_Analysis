@@ -4086,39 +4086,75 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   }
 
   // ============================================================
-  // [2026-08-25] Numeric Measure Candidate 자동 노출
+  // [2026-08-25 / 2026-09-10 확장] Numeric Measure Candidate 자동 노출
   // ------------------------------------------------------------
-  // 조건 (모두 충족 시 발동):
-  //   1) 정렬 의도(TOP N / 상위 N / 랭킹 / 가장 많은/높은 등) 감지
-  //   2) Metric 매칭이 0건 (스코프 내 metric 이 아직 학습관리에 등록되지 않은 상황)
-  //   3) tableWhitelist 지정됨 (업무영역 탭 컨텍스트 확실할 때만)
+  // 발동 조건 (아래 A 또는 B 중 하나만 만족 + 공통 조건 충족 시):
+  //   [A] 정렬 의도 감지 (TOP N / 상위 N / 랭킹 / 가장 많은·높은 등)
+  //   [B] Ontology 차원값(varchar 계열 코드/분류 컬럼)에 사용자 키워드가 매칭됨
+  //       예: "실제원가" → ZCGUBUN 컬럼 (varchar) 에 동의어 등록되어 있음
+  //       이 경우 사용자는 그 값을 WHERE 필터로 쓰고 싶은 것이며, 조회 대상
+  //       measure 는 별도 컬럼(예: TOTAL) 이 필요하다.
+  //   [공통] Metric 매칭이 0건 + tableWhitelist 지정됨
+  //
+  // 조건 [B] 추가 배경 (사용자 신고 2026-09-10):
+  //   "제품별 실제원가 TOP 5" 는 정상 SQL 생성되는데
+  //   "F2A11220-05000720B 자재 실제원가 알려줘" 는 "알 수 없는 용어" refuse.
+  //   원인: 후자는 rankIntent=false 라 measure candidate 프롬프트가 안 붙고,
+  //         LLM 이 프롬프트 규칙 18 예외 조건 (b) 미충족으로 refuse.
+  //   해결: dimension-value 매칭이 있으면 정렬 의도 없어도 measure 후보 노출.
   //
   // 목적:
-  //   "'실제원가' 가 ZCGUBUN 차원값으로 매칭되었더라도, TOP 5 정렬용 measure 를
-  //    포기하지 말고 스코프 내 숫자 컬럼에서 후보를 자동 발굴하여 LLM 에게 제시" (사용자 요구).
+  //   두 경로(정렬 의도 有/無)에서 동일한 semantic 결과 (WHERE dimension +
+  //   SUM(measure)) 를 얻도록 대칭성 확보.
   //
-  // 하드코딩 금지: TOTAL/TOTAL1 같은 특정 컬럼명이 코드에 등장하지 않음.
-  //                순수 ontology_column.data_type + description + synonym 기반.
+  // 하드코딩 금지:
+  //   - 특정 컬럼명(TOTAL/TOTAL1/ZAMT005 등)이 코드에 등장하지 않음
+  //   - dimension 판별은 columnMatches (ontology_synonym → ontology_column)
+  //     결과의 data_type 이 문자열 계열(varchar/char/text/enum)이면 dimension
   // ============================================================
   const rankIntent = detectRankIntent(query);
   const hasScope = Array.isArray(tableWhitelist) && tableWhitelist.length > 0;
-  if (rankIntent && metricMatches.length === 0 && hasScope) {
+  // [B] dimension-value 매칭 감지: columnMatches 안에 문자열 계열 컬럼이 있으면
+  //     그 매칭은 값 필터(WHERE col='매칭값') 용도로 해석될 여지가 큼.
+  //     (숫자 계열 컬럼은 measure 후보 자체이므로 별도 candidate 노출 불필요)
+  const STRING_DIMENSION_TYPE_RE = /^(varchar|char|text|enum|nchar|nvarchar)/i;
+  const dimensionValueMatches = (columnMatches || []).filter(m =>
+    STRING_DIMENSION_TYPE_RE.test(String(m.data_type || ''))
+  );
+  const hasDimensionValueMatch = dimensionValueMatches.length > 0;
+  const needMeasureCandidate = (rankIntent || hasDimensionValueMatch);
+  if (needMeasureCandidate && metricMatches.length === 0 && hasScope) {
     try {
       const candidates = await discoverNumericMeasureCandidates(query, domainCode, tableWhitelist);
       if (candidates.length > 0) {
-        synonymContext += '\n[★ 정렬용 Measure 자동 후보 — 학습관리에 Metric 이 없어도 SQL 을 만들 수 있게 노출]\n';
-        synonymContext += `사용자 질문에 정렬 의도(TOP N/상위 N/랭킹 등)가 있고, 이 업무영역(테이블: ${tableWhitelist.join(', ')})에 등록된 Metric 산식이 없습니다.\n`;
-        synonymContext += `아래 Ontology 숫자 컬럼 중 사용자 의도에 가장 부합하는 것을 하나 선택하여 SUM(<컬럼>) 형태로 SELECT / ORDER BY 에 사용하세요.\n`;
-        synonymContext += `단, 사용자 질문에서 이미 다른 Ontology 차원값(예: ZCGUBUN='실제원가')이 매칭되어 있다면, 그 차원값 필터는 WHERE 절에 그대로 유지하고, 이 후보 중에서 measure 컬럼을 별도로 선택하세요.\n`;
+        // 발동 이유를 프롬프트에 명시 → LLM 이 왜 이 섹션이 있는지 이해하고
+        // "정렬용" 만이 아니라 "필터 조합용 measure" 로도 사용하도록 유도
+        const triggerReasons = [];
+        if (rankIntent) triggerReasons.push('정렬 의도 감지 (TOP N/상위/랭킹 등)');
+        if (hasDimensionValueMatch) {
+          const dimList = dimensionValueMatches
+            .map(m => `${m.column_name}='${m.matchedKeyword || m.synonym}'`)
+            .join(', ');
+          triggerReasons.push(`차원값 매칭 감지 (${dimList})`);
+        }
+        synonymContext += '\n[★ Measure 자동 후보 — 학습관리에 Metric 이 없어도 SQL 을 만들 수 있게 노출]\n';
+        synonymContext += `발동 사유: ${triggerReasons.join(' / ')}\n`;
+        synonymContext += `업무영역(테이블: ${tableWhitelist.join(', ')})에 등록된 Metric 산식이 없어, 아래 Ontology 숫자 컬럼 후보를 제시합니다.\n`;
+        synonymContext += `아래 후보 중 사용자 의도에 가장 부합하는 것을 하나 선택하여 SUM(<컬럼>) 형태로 SELECT (필요 시 ORDER BY) 에 사용하세요.\n`;
+        if (hasDimensionValueMatch) {
+          synonymContext += `사용자 질문에서 이미 차원값(예: ZCGUBUN='실제원가') 이 매칭되었으므로, 그 차원값을 WHERE 필터로 걸고, 아래 후보 중에서 measure 컬럼을 별도로 골라 SUM 하세요. (정렬 의도가 없어도 measure 는 반드시 선택)\n`;
+        } else {
+          synonymContext += `사용자 질문에서 이미 다른 Ontology 차원값이 매칭되어 있다면, 그 차원값 필터는 WHERE 절에 그대로 유지하고, 이 후보 중에서 measure 컬럼을 별도로 선택하세요.\n`;
+        }
         for (const c of candidates) {
           const synTxt = c.synonyms.length > 0 ? ` (동의어: ${c.synonyms.join(', ')})` : '';
           synonymContext += `- ${c.column_name} [${c.data_type}] — "${c.description}"${synTxt}\n`;
         }
         synonymContext += `▶ 위 후보들이 학습관리에 정식 Metric 으로 등록되기 전까지의 임시 후보입니다.\n`;
-        synonymContext += `▶ 이 후보에서 하나를 골라 SUM(...) 으로 SELECT 및 ORDER BY 에 사용하세요 — 이 정보가 있으므로 "정렬 대상을 알 수 없다"고 답하지 마세요.\n`;
-        console.log(`[NumericCandidate] rank-intent + no-metric + scope=[${tableWhitelist.join(',')}] → ${candidates.length}개 후보 노출: ${candidates.map(c => c.column_name).join(', ')}`);
+        synonymContext += `▶ 이 후보에서 하나를 골라 SUM(...) 으로 SELECT 절에 사용하세요 — 이 정보가 있으므로 "정렬 대상을 알 수 없다" 또는 "실제원가 금액을 계산할 컬럼이 없다" 고 답하지 마세요.\n`;
+        console.log(`[NumericCandidate] triggers=[${triggerReasons.join(' | ')}] + no-metric + scope=[${tableWhitelist.join(',')}] → ${candidates.length}개 후보 노출: ${candidates.map(c => c.column_name).join(', ')}`);
       } else {
-        console.log(`[NumericCandidate] rank-intent 감지되었지만 스코프 내 숫자 후보 컬럼이 0건이라 스킵`);
+        console.log(`[NumericCandidate] 발동 조건 충족하지만 스코프 내 숫자 후보 컬럼이 0건이라 스킵`);
       }
     } catch (e) {
       console.error('[NumericCandidate] 발굴 실패 (무시):', e.message);
