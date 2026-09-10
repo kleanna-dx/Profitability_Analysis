@@ -1397,7 +1397,9 @@
                 <i class="fas fa-robot"></i>
             </div>
             <h2 class="text-xl font-bold text-gray-800 mb-2" style="font-size:21px;">무엇이든 물어보세요</h2>
-            <p class="text-sm text-gray-500 mb-1" style="font-size:15px;">AI가 자사 수익성 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
+            <!-- [영역별 안내 문구] 상단 area 선택에 따라 toggleAreaSpecificText() 가 두 문구 중 하나를 표시 -->
+            <p id="welcomeDescProfitability" class="text-sm text-gray-500 mb-1" style="font-size:15px;">AI가 자사 수익성 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
+            <p id="welcomeDescManufacturingCost" class="text-sm text-gray-500 mb-1" style="font-size:15px;display:none;">AI가 원가 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
             <p class="text-sm text-gray-400" style="font-size:15px;">질문을 입력하면 분석부터 SQL 생성, 시각화까지 자동으로 처리합니다.</p>
             <!-- [안내 박스 그룹] 주황색 박스와 초록색 박스를 같은 너비로 묶는 래퍼.
                  부모 .welcome-section 이 align-items:center 이라 자식 폭이 컨텐츠 크기로 달라지는 문제를
@@ -1417,10 +1419,20 @@
                     </span>
                 </div>
                 <!-- [데이터 기준 안내 박스] 주황색 박스와 완전 동일한 크기/패딩/좌측정렬, 색상만 초록색.
-                     아이콘 제거 요구사항에 따라 i 태그 삭제. -->
+                     아이콘 제거 요구사항에 따라 i 태그 삭제.
+                     [2026-09-04] 영역별로 문구가 달라짐 — toggleAreaSpecificText() 가 두 subblock 중 하나만 표시 -->
                 <div id="welcomeDataBasisInfo" style="width:100%;box-sizing:border-box;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;text-align:left;">
-                    <strong>※ 데이터 기준 안내</strong><br>
-                    <strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>"조정 전" 기준값</strong>입니다.
+                    <div id="welcomeDataBasisProfitability">
+                        <strong>※ 데이터 기준 안내</strong><br>
+                        <strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>"조정 전" 기준값</strong>입니다.
+                    </div>
+                    <div id="welcomeDataBasisManufacturingCost" style="display:none;">
+                        <strong>※ 데이터 기준 안내</strong><br>
+                        <strong>2026년 1월부터 데이터 제공</strong><br>
+                        <strong>2026년 1월~8월</strong>은 <strong>9월 조직개편 기준값</strong>(과거 데이터 일괄 적재),<br>
+                        <strong>2026년 9월 이후</strong>는 각 월 마감 시점의 조직체계를 반영하여<br>
+                        <strong>사업부(PS/HL)가 구분된 값</strong>입니다.
+                    </div>
                 </div>
             </div>
         </div>
@@ -6752,20 +6764,34 @@ function startNewChat() {
                    <span style="opacity:0.6;">잠시만 기다려 주세요.</span>
                  </div>`;
         }
+        // [2026-09-04] 데이터 기준 안내: 영역별로 두 subblock 을 렌더링 후 toggleAreaSpecificText() 로 한쪽만 표시
         const dateInfoHtml =
             `<div style="width:100%;max-width:720px;margin-top:16px;display:flex;flex-direction:column;gap:10px;">
                ${orangeHtml}
                <div style="width:100%;box-sizing:border-box;padding:10px 20px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:14px;color:#166534;line-height:1.7;text-align:left;">
-                 <strong>※ 데이터 기준 안내</strong><br>
-                 <strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>&quot;조정 전&quot; 기준값</strong>입니다.
+                 <div id="welcomeDataBasisProfitability">
+                   <strong>※ 데이터 기준 안내</strong><br>
+                   <strong>2025년 1월~2026년 3월</strong>은 회계 조정 완료값(과거 데이터 일괄 적재), <strong>2026년 4월 이후</strong>는 회계 <strong>&quot;조정 전&quot; 기준값</strong>입니다.
+                 </div>
+                 <div id="welcomeDataBasisManufacturingCost" style="display:none;">
+                   <strong>※ 데이터 기준 안내</strong><br>
+                   <strong>2026년 1월부터 데이터 제공</strong><br>
+                   <strong>2026년 1월~8월</strong>은 <strong>9월 조직개편 기준값</strong>(과거 데이터 일괄 적재),<br>
+                   <strong>2026년 9월 이후</strong>는 각 월 마감 시점의 조직체계를 반영하여<br>
+                   <strong>사업부(PS/HL)가 구분된 값</strong>입니다.
+                 </div>
                </div>
              </div>`;
         chatArea.innerHTML = `<div id="welcomeSection" class="welcome-section">
             <div class="welcome-icon"><i class="fas fa-robot"></i></div>
             <h2 style="margin:0 0 8px;font-size:21px;">무엇이든 물어보세요</h2>
+            <p id="welcomeDescProfitability" style="color:#94a3b8;font-size:14px;">AI가 자사 수익성 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
+            <p id="welcomeDescManufacturingCost" style="color:#94a3b8;font-size:14px;display:none;">AI가 원가 데이터를 바탕으로 근거 있는 답변을 제공합니다.</p>
             <p style="color:#94a3b8;font-size:14px;">자연어로 데이터를 조회하고 분석할 수 있습니다</p>
             ${dateInfoHtml}
         </div>`;
+        // 렌더링 직후 현재 area 에 맞춰 문구 동기화
+        try { if (typeof toggleAreaSpecificText === 'function') toggleAreaSpecificText(); } catch (_) {}
     }
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
 }
@@ -7502,12 +7528,70 @@ window.addEventListener('load', () => {
         if (!mounted) { mounted = true; mount(); afterMount(); }
     }, 500);
 
+    // ─────────────────────────────────────────────────────────
+    // [2026-09-04] 영역별 메인 안내 문구 즉시 동기화
+    // ─────────────────────────────────────────────────────────
+    // 대상 요소:
+    //   - #welcomeDescProfitability          / #welcomeDescManufacturingCost
+    //   - #welcomeDataBasisProfitability     / #welcomeDataBasisManufacturingCost
+    // 판별 기준:
+    //   AreaTabs.snapshot().area === 'profitability'      → profitability 요소 표시
+    //   AreaTabs.snapshot().area === 'manufacturing-cost' → manufacturingCost 요소 표시
+    //   그 외 (알 수 없음/미로드) → profitability 를 기본으로 표시 (기존 하위호환)
+    //
+    // 정책 준수 (사용자 요구사항 #6):
+    //   - 이 함수는 UI 문구 표시만 토글. SQL/RAG/Metric/Ontology 로직에 영향 없음.
+    //   - 수익성분석 기존 문구는 그대로 유지.
+    //   - startNewChat() 후에도 동기화하도록 렌더 직후 호출.
+    function toggleAreaSpecificText() {
+        try {
+            let area = 'profitability';
+            try {
+                if (window.AreaTabs && typeof window.AreaTabs.snapshot === 'function') {
+                    const snap = window.AreaTabs.snapshot();
+                    if (snap && (snap.area === 'profitability' || snap.area === 'manufacturing-cost')) {
+                        area = snap.area;
+                    }
+                }
+            } catch (_) { /* fallback: profitability */ }
+
+            const isMfg = area === 'manufacturing-cost';
+            const pairs = [
+                ['welcomeDescProfitability',      'welcomeDescManufacturingCost'],
+                ['welcomeDataBasisProfitability', 'welcomeDataBasisManufacturingCost'],
+            ];
+            for (const [profId, mfgId] of pairs) {
+                const profEl = document.getElementById(profId);
+                const mfgEl  = document.getElementById(mfgId);
+                if (profEl) profEl.style.display = isMfg ? 'none' : '';
+                if (mfgEl)  mfgEl.style.display  = isMfg ? '' : 'none';
+            }
+        } catch (e) { console.warn('[toggleAreaSpecificText] 실패 (무시):', e && e.message); }
+    }
+    // 전역 노출: startNewChat() 등에서 렌더 직후 호출 가능
+    window.toggleAreaSpecificText = toggleAreaSpecificText;
+
+    // 초기 진입 시 1회 동기화 (AreaTabs 로딩 완료 후)
+    window.addEventListener('areatabs:ready', () => {
+        try { toggleAreaSpecificText(); } catch (_) {}
+    });
+    // AreaTabs 로딩 지연 대비 폴백 — DOM 준비 후에도 1회 시도
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            try { toggleAreaSpecificText(); } catch (_) {}
+        });
+    } else {
+        try { toggleAreaSpecificText(); } catch (_) {}
+    }
+
     // 상위 area 변경 이벤트에 반응해:
     //   1) 하위 탭바 즉시 리프레시 (제조원가↔수익성분석 전환 반영)
     //   2) 예시 질문 칩도 함께 재렌더 (area 별 예시 목록 반영)
+    //   3) [2026-09-04] 메인화면 안내 문구도 즉시 동기화
     window.addEventListener('areachange', () => {
         try { window.AreaTabs && window.AreaTabs.refreshSubAreaBar && window.AreaTabs.refreshSubAreaBar(); } catch (_) {}
         try { if (typeof renderSuggestionChips === 'function') renderSuggestionChips(); } catch (_) {}
+        try { toggleAreaSpecificText(); } catch (_) {}
     });
 
     // [2026-08-24] 세부업무영역 변경 이벤트에 반응해 예시 질문 칩 재렌더.
