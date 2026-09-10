@@ -22,6 +22,13 @@ import { isReadOnlyQuery } from './lib/sqlReadOnlyValidator.mjs';
 //   묶어 검사하여, multi-CTE 의 후속 CTE SELECT 절 SUM 을 "WHERE 안 SUM" 으로
 //   오탐하던 문제 해결. 각 SELECT 노드의 where 서브트리만 정밀 검사.
 import { validateSqlPreExecution as _validateSqlPreExecutionExternal } from './lib/sqlPreExecutionValidator.mjs';
+// [2026-09-10] '기간 미지정 -> 최신 마감월' 공통 정책 게이트 (외부 모듈).
+//   Aggregate route (LLM 직접 SQL 생성) 에는 CALMONTH 방어망이 없었다.
+//   본 모듈이 그 방어망을 담당하며 단위 테스트 가능하도록 별도 분리했다.
+import {
+  ensureCalmonthFilter as _ensureCalmonthFilterExternal,
+  hasExplicitAllPeriodIntent as _hasExplicitAllPeriodIntentExternal,
+} from './lib/calmonthGuard.mjs';
 
 // ════════════════════════════════════════════════════════════════════
 // [2026-07-21 hotfix] undici 글로벌 dispatcher 헤더/바디 타임아웃 확장
@@ -7602,6 +7609,27 @@ function applyDomainFilter(inputSql, domainCodeOrCodes) {
   return result;
 }
 
+// ============================================================
+// [2026-09-10] "기간 미지정 → 최신 마감월" 공통 정책 게이트 wrapper
+// ------------------------------------------------------------
+// 실제 로직은 ./lib/calmonthGuard.mjs 에 있음 (단위 테스트 가능).
+// 여기서는 server.mjs 내부 호출 사이트가 원래 함수 이름을 그대로
+// 쓰도록 wrapper 로 노출하며, 추가로 [NLQ:CalmonthGuard] 로그를
+// injected 시점에만 남긴다 (기존 정책과 동일).
+// ============================================================
+function hasExplicitAllPeriodIntent(userQuery) {
+  return _hasExplicitAllPeriodIntentExternal(userQuery);
+}
+
+function ensureCalmonthFilter(inputSql, latestMonth, userQuery) {
+  const r = _ensureCalmonthFilterExternal(inputSql, latestMonth, userQuery);
+  if (r.injected) {
+    const ym = String(latestMonth || '').replace(/[^0-9]/g, '');
+    console.log(`[NLQ:CalmonthGuard] CALMONTH 자동 주입 (기간 미지정 -> 최신 마감월 ${ym})`);
+  }
+  return r;
+}
+
 // ═════════════════════════════════════════════════════════════════
 // [2026-09-01] 제조원가 전용 — 전체 합계 의도 감지
 // ─────────────────────────────────────────────────────────────────
@@ -10371,6 +10399,32 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     // ※ Dummy 제외 SQL 자동주입 제거 — filterDummyRows() 후필터로만 처리
 
     // ─────────────────────────────────────────────────────────────
+    // [2026-09-10] "기간 미지정 → 최신 마감월" 공통 정책 게이트
+    // -------------------------------------------------------------
+    // 사용자 신고: 제조원가에서 "제품별 실제원가 TOP 5" 같이 기간이
+    // 없는 질의에 대해 LLM 이 CALMONTH 조건을 빠뜨리면 전체 기간 합계가
+    // 나오는 문제. 수익성분석에서도 확률적으로 동일 문제 잠재.
+    //
+    // ensureCalmonthFilter 는 다음 조건을 모두 만족할 때만 CALMONTH 주입:
+    //   - SQL 이 대상 테이블(bw_profitability_data / sys_aimd_cot015 /
+    //     sys_aimd_cot043) 을 참조
+    //   - SQL 에 CALMONTH 조건(=/BETWEEN/IN/LIKE/LEFT) 이 없음
+    //   - SQL 에 CALYEAR 조건도 없음 (연도 단위로 이미 명시된 경우 존중)
+    //   - 사용자 질의에 "전체 기간/전 기간/누적/누계" 등 명시 표현이 없음
+    // 위 조건 중 하나라도 어긋나면 no-op (skipReason 로그).
+    // ─────────────────────────────────────────────────────────────
+    try {
+      if (!dateContext) dateContext = await getDataDateContext();
+      const _calGuard = ensureCalmonthFilter(sql, dateContext.latestMonth, query);
+      if (_calGuard.injected) {
+        sql = _calGuard.sql;
+      }
+    } catch (_calErr) {
+      // 게이트 실패해도 SQL 실행은 계속 (기존 하위호환)
+      console.warn(`[NLQ:CalmonthGuard] 게이트 예외 무시: ${_calErr.message}`);
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // [2026-08-25] 세부업무영역 강제 필터 자동 주입 (COSTCENTER IN/NOT IN)
     //   - cost-dept    → sys_aimd_cot043 + COSTCENTER NOT IN (23개 호기)
     //   - cost-machine → sys_aimd_cot043 + COSTCENTER IN (23개 호기)
@@ -10581,6 +10635,17 @@ ${sqlValidation.reason}
           sql = applyDomainFilter(sql, activeDomain);
           sql = applyDivisionFromQuery(sql, query);
           sql = normalizeNameSearchFilter(sql);
+          // [2026-09-10] 재생성 SQL 에도 "기간 미지정 → 최신 마감월" 게이트 적용
+          //   초기 경로와 동일 정책으로, LLM 재생성 시에도 CALMONTH 누락을 방어.
+          try {
+            if (!dateContext) dateContext = await getDataDateContext();
+            const _calGuardRetry = ensureCalmonthFilter(sql, dateContext.latestMonth, query);
+            if (_calGuardRetry.injected) {
+              sql = _calGuardRetry.sql;
+            }
+          } catch (_calErrRetry) {
+            console.warn(`[NLQ:CalmonthGuard] (재생성) 게이트 예외 무시: ${_calErrRetry.message}`);
+          }
           // [2026-08-25] 재생성 SQL 에도 세부업무영역 강제 필터 주입
           if (areaCtx.forcedFilter && areaCtx.table) {
             sql = applyForcedTableFilter(sql, areaCtx.forcedFilter, areaCtx.table);
