@@ -4220,7 +4220,34 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   const DELTA_INTENT_RE = /(전월\s*대비|전년\s*대비|전년\s*동월\s*대비|전분기\s*대비|MoM|YoY|\d+\s*월\s*대비|\d+\s*년\s*대비|대비|비교|증가액|감소액|증감액|증감|증가율|감소율|차이|변동|상승률|하락률)/i;
   const hasDeltaIntent = DELTA_INTENT_RE.test(String(query || ''));
 
-  if (HAS_COT015_SCOPE && HAS_ZCGUBUN_MATCH && !hasExplicitTotalIntent) {
+  // ────────────────────────────────────────────────────────────────
+  // [2026-09-13] GENERIC 원가 의도 감지 ("원가" / "제조원가" / "자재원가" / "제품원가")
+  // ────────────────────────────────────────────────────────────────
+  // 사용자 신고 케이스: "F2A11220-05000720B 자재 원가 알려줘"
+  //   → 사용자가 특정 ZCGUBUN (실제/표준/매출) 을 명시하지 않고 "원가" 라고만 물음.
+  //   → 이 경우 ZCGUBUN 을 임의 확정하지 말고 존재하는 모든 원가유형(ZCGUBUN_D + ZCGUBUN)
+  //     조합을 전체 노출해야 함 (사용자 요구사항).
+  //
+  // 정규식 설계:
+  //   1) 앞에 한글이 붙지 않은 "원가" (단어 경계) — "실제원가/표준원가/매출원가" 는 앞이
+  //      한글이므로 매칭 안 됨.
+  //   2) 특수 케이스: "제조원가/자재원가/제품원가/그냥 원가" — GENERIC 으로 취급
+  //      (ZCGUBUN 값 아님).
+  //   3) 명확한 ZCGUBUN 값 (실제/표준/매출) 이 columnMatches 에서 매칭되면
+  //      GENERIC 이 아니라 SPECIFIC 으로 이동 (뒤 트리거 분기에서 처리).
+  const GENERIC_COST_INTENT_RE = /(?:^|[^가-힣])(원가|제조원가|자재원가|제품원가)(?![가-힣])/;
+  const hasGenericCostIntent = GENERIC_COST_INTENT_RE.test(String(query || ''));
+
+  // ────────────────────────────────────────────────────────────────
+  // 3분기 트리거 구조:
+  //   [분기 SPECIFIC] : COT015 + ZCGUBUN 구체 매칭 + Delta 없음
+  //   [분기 DELTA]    : COT015 + ZCGUBUN 구체 매칭 + Delta 있음
+  //   [분기 GENERIC]  : COT015 + ZCGUBUN 구체 매칭 없음 + GENERIC 원가 감지 + Delta 없음
+  //   (총액 명시 시 세 분기 모두 스킵 — 사용자가 명시적으로 SUM(TOTAL) 요청함)
+  // ────────────────────────────────────────────────────────────────
+  const canInjectAnyCostHint = HAS_COT015_SCOPE && !hasExplicitTotalIntent;
+
+  if (canInjectAnyCostHint && HAS_ZCGUBUN_MATCH) {
     // 감지된 ZCGUBUN 값 (예: '실제원가')
     const detectedGubun = (columnMatches || [])
       .filter(m => String(m.column_name || '').toUpperCase() === 'ZCGUBUN')
@@ -4319,9 +4346,53 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       synonymContext += `    3~5번 (총액/수량/단위) 은 이 힌트가 명시.\n`;
       console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭 [${detectedGubun.join(',')}] + 총액명시없음 → 4컬럼 세트 프롬프트 힌트 주입`);
     }
-  } else if (HAS_COT015_SCOPE && HAS_ZCGUBUN_MATCH && hasExplicitTotalIntent) {
+  } else if (canInjectAnyCostHint && !HAS_ZCGUBUN_MATCH && hasGenericCostIntent) {
+    // ────────────────────────────────────────────────────────────
+    // [분기 GENERIC] "원가" 단독 조회 — ZCGUBUN 미확정, 전체 원가유형 노출
+    // ────────────────────────────────────────────────────────────
+    // 배경 (사용자 신고 2026-09-13):
+    //   "F2A11220-05000720B 자재 원가 알려줘" 처럼 사용자가 특정 ZCGUBUN 을 명시하지
+    //   않고 "원가/제조원가" 로만 조회한 경우, LLM 이 SUM(TOTAL) 만 반환하거나
+    //   임의로 ZCGUBUN='실제원가' 를 WHERE 절에 넣어 버림.
+    //
+    // 사용자 요구:
+    //   - "원가" → GENERIC_COST → ZCGUBUN 미확정 → 존재하는 원가유형 전체 조회
+    //   - ZCGUBUN_D 로 그룹핑하여 원가쌍 노출 (예: [입고-생산]-실제/표준, [소비-소비]-매출/표준)
+    //   - 표준원가는 각 ZCGUBUN_D 그룹의 마지막에 표시
+    //   - WHERE ZCGUBUN='...' 로 임의 확정 금지
+    //
+    // 프롬프트 힌트 구조 (사용자 요구 6번, 결과 컬럼):
+    //   자재코드 → 자재명 → 원가 대구분 → 원가구분 → 원가 총액 → 생산수량 → 단위 → 원가 단가
+    synonymContext += '\n[★★★ 제품별 원가 GENERIC 조회 — ZCGUBUN 임의 확정 금지 (sys_aimd_cot015) ★★★]\n';
+    synonymContext += `사용자가 특정 원가 유형(실제원가/표준원가/매출원가)을 지정하지 않고 "원가" 또는 "제조원가" 로만 조회했습니다.\n`;
+    synonymContext += `이 경우 ZCGUBUN 을 실제원가나 매출원가 중 하나로 **임의 확정하지 마세요**.\n`;
+    synonymContext += `해당 자재/기간/사업부에 존재하는 모든 ZCGUBUN_D + ZCGUBUN 조합을 전체 조회해야 합니다.\n`;
+    synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지 (8컬럼)]\n`;
+    synonymContext += `  1. MATERIAL          AS '자재코드'\n`;
+    synonymContext += `  2. MAX(MATERIAL_NM)  AS '자재명'\n`;
+    synonymContext += `  3. ZCGUBUN_D         AS '원가 대구분'\n`;
+    synonymContext += `  4. ZCGUBUN           AS '원가구분'\n`;
+    synonymContext += `  5. SUM(TOTAL)        AS '원가 총액'\n`;
+    synonymContext += `  6. SUM(LBKUM)        AS '생산수량'\n`;
+    synonymContext += `  7. MAX(BASE_UOM)     AS '단위'\n`;
+    synonymContext += `  8. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '원가 단가'\n`;
+    synonymContext += `\n[WHERE / GROUP BY / ORDER BY — 반드시 아래 규칙 준수]\n`;
+    synonymContext += `  - WHERE 절에 ZCGUBUN 필터를 **절대 넣지 마세요** (예: WHERE ZCGUBUN='실제원가' 금지).\n`;
+    synonymContext += `    → 사용자가 원가 유형을 명시하지 않았으므로 전체 조회.\n`;
+    synonymContext += `  - GROUP BY MATERIAL, ZCGUBUN_D, ZCGUBUN 필수 (원가유형별 집계).\n`;
+    synonymContext += `  - ORDER BY 는 반드시 아래 순서 유지 (표준원가는 각 ZCGUBUN_D 그룹의 마지막):\n`;
+    synonymContext += `      ORDER BY ZCGUBUN_D, CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END\n`;
+    synonymContext += `  - 그 외 필터 (DIVISION / CALMONTH / MATERIAL) 는 정상적으로 유지.\n`;
+    synonymContext += `\n[중요 규칙]\n`;
+    synonymContext += `  - 원가 단가는 반드시 SUM(TOTAL) / NULLIF(SUM(LBKUM), 0) 형태 (0 나누기 방지).\n`;
+    synonymContext += `  - LBKUM=0 인 행 (예: 표준원가 일부) 은 원가 단가가 NULL 로 반환 → 화면에서 "-" 표시.\n`;
+    synonymContext += `    이때 SUM(TOTAL) 을 "원가 단가" alias 에 넣으면 절대 안 됩니다. 총액과 단가는 별개 컬럼.\n`;
+    synonymContext += `  - AVG(TOTAL / LBKUM) 또는 SUM(TOTAL/LBKUM) 금지 (행별 나눗셈 후 평균은 의미 왜곡).\n`;
+    synonymContext += `  - 결과가 여러 행이 되는 것은 정상 (같은 자재라도 원가유형별 행이 나뉨).\n`;
+    console.log(`[CostBasisHint] sys_aimd_cot015 + GENERIC 원가 감지 (ZCGUBUN 미확정) + 총액명시없음 → 8컬럼 GENERIC 힌트 주입`);
+  } else if (HAS_COT015_SCOPE && (HAS_ZCGUBUN_MATCH || hasGenericCostIntent) && hasExplicitTotalIntent) {
     // 명시적 총액 요청 → 힌트 미주입, 로그만 남김
-    console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭이지만 사용자가 "총액" 명시 → 힌트 스킵 (SUM(TOTAL) 조회 허용)`);
+    console.log(`[CostBasisHint] sys_aimd_cot015 원가 매칭이지만 사용자가 "총액" 명시 → 힌트 스킵 (SUM(TOTAL) 조회 허용)`);
   }
 
 
@@ -8777,6 +8848,145 @@ function _removeCollateralCostElmntConds(sql, values) {
 //   reasons: string[]
 // }}
 // ============================================================
+// ═════════════════════════════════════════════════════════════════════════
+// [2026-09-13] 제품별 원가 (sys_aimd_cot015) SQL 무결성 검증
+// -------------------------------------------------------------------------
+// 목적:
+//   사용자가 "F2A11220-05000720B 자재 원가 알려줘" 처럼 특정 ZCGUBUN 을
+//   명시하지 않고 "원가" 로만 조회했는데, LLM 이 아래처럼 잘못된 SQL 을
+//   생성하는 것을 SQL 실행 전에 감지·거부한다.
+//
+// 검증 항목:
+//   V1) alias 가 원가 계열('원가', '실제원가', '매출원가', '표준원가',
+//       '제조원가', '원가 단가', '단가') 이면서 expression 이 `SUM(TOTAL)`
+//       단독 (즉 SUM(TOTAL)/NULLIF(SUM(LBKUM),0) 형태가 아님) 인 경우
+//       → alias 왜곡. 단, "원가 총액/합계/총금액" alias 는 정상 SUM(TOTAL).
+//   V2) 사용자가 "원가" 단독으로 물었는데 (ZCGUBUN 구체 매칭 없음)
+//       LLM 이 WHERE ZCGUBUN = '실제원가' 등을 넣어 임의 확정한 경우
+//       → GENERIC 원칙 위배.
+//
+// 반환: { valid: boolean, reason: string, violations: string[] }
+//   valid=false 이면 SQL 실행을 거부하고 재생성 또는 fallback.
+//   너무 공격적으로 거부하면 사용자 경험이 나빠지므로 로그에만 남기는
+//   soft-warning 옵션도 지원 (initial: hard-fail=true 로 확실히 잡음).
+// ═════════════════════════════════════════════════════════════════════════
+function validateCostBasisSqlIntegrity({
+  sql, query, columnMatches, tableWhitelist,
+} = {}) {
+  const violations = [];
+  const sqlStr = String(sql || '');
+  const queryStr = String(query || '');
+
+  // sys_aimd_cot015 스코프가 아니면 이 validation 은 무관 → pass
+  const inCot015Scope = Array.isArray(tableWhitelist)
+    && tableWhitelist.includes('sys_aimd_cot015');
+  if (!inCot015Scope) {
+    return { valid: true, reason: 'not_in_scope', violations };
+  }
+  // SQL 이 실제로 sys_aimd_cot015 를 사용하지 않으면 pass
+  if (!/\bsys_aimd_cot015\b/i.test(sqlStr)) {
+    return { valid: true, reason: 'sql_not_using_cot015', violations };
+  }
+
+  // 사용자가 명시적으로 "총액/합계/총금액" 을 요청 → SUM(TOTAL) alias 정상
+  const EXPLICIT_TOTAL_INTENT_RE = /(총액|총금액|총원가|총합|합계|총\s*발생액|총\s*금액)/;
+  const hasExplicitTotalIntent = EXPLICIT_TOTAL_INTENT_RE.test(queryStr);
+
+  // [V1] alias-표현식 무결성
+  //   SELECT 절의 각 항목을 파싱해서 alias 가 원가/실제원가/원가 단가 등이면
+  //   expression 에 반드시 '/ NULLIF(SUM(LBKUM)' 이 포함되어야 함.
+  //   단순 SUM(TOTAL) alias '원가/실제원가/단가' 는 거부.
+  //   구현 접근: SELECT ~ FROM 구간을 잡아 콤마 단위 파싱 + alias 추출.
+  if (!hasExplicitTotalIntent) {
+    const selectMatch = sqlStr.match(/SELECT\s+([\s\S]+?)\s+FROM\s+/i);
+    if (selectMatch) {
+      const selectClause = selectMatch[1];
+      // 콤마로 분리 (괄호 안 콤마 무시)
+      const items = [];
+      let depth = 0, start = 0;
+      for (let i = 0; i < selectClause.length; i++) {
+        const ch = selectClause[i];
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        else if (ch === ',' && depth === 0) {
+          items.push(selectClause.substring(start, i).trim());
+          start = i + 1;
+        }
+      }
+      items.push(selectClause.substring(start).trim());
+
+      // AS 뒤의 alias 문자열 전체를 캡처 (따옴표/백틱 안 문자열 그대로)
+      //   예: AS '원가 총액' → '원가 총액'
+      //       AS "실제원가"  → "실제원가"
+      //       AS `원가 단가` → `원가 단가`
+      //       AS 원가         → 원가 (bareword alias 도 지원)
+      const ALIAS_CAPTURE_RE = /AS\s+(['"`])([^'"`]+)\1|AS\s+([A-Za-z0-9_가-힣]+)/i;
+      // alias 안에 원가 계열 시그널이 있는지
+      const COST_ALIAS_SIGNAL_RE = /(?:^|[\s_])?(원가|실제\s*원가|매출\s*원가|표준\s*원가|제조\s*원가|원가\s*단가|단가|자재\s*원가|제품\s*원가)(?:[\s_(]|$)/;
+      // 총액 계열 (예외 — SUM(TOTAL) 정상 허용)
+      const TOTAL_ALIAS_SIGNAL_RE = /(총액|총금액|합계|총원가|총합)/;
+      // 무결성 표현식: SUM(TOTAL) / NULLIF(SUM(LBKUM), ...) 형태 여부
+      const HAS_UNIT_DIVISION_RE = /SUM\s*\(\s*TOTAL\s*\)\s*\/\s*NULLIF\s*\(\s*SUM\s*\(\s*LBKUM\s*\)/i;
+
+      for (const item of items) {
+        const aliasCap = item.match(ALIAS_CAPTURE_RE);
+        if (!aliasCap) continue;
+        const aliasText = aliasCap[2] || aliasCap[3] || '';
+        // alias 에 "총액/합계/총금액" 이 포함되어 있으면 SUM(TOTAL) 정상 허용
+        if (TOTAL_ALIAS_SIGNAL_RE.test(aliasText)) continue;
+        // alias 에 원가 계열 시그널이 없으면 이 아이템은 검증 대상 아님
+        if (!COST_ALIAS_SIGNAL_RE.test(' ' + aliasText + ' ')) continue;
+
+        // expression 부분 = item 에서 AS 앞부분
+        const aliasIdx = item.search(/\bAS\b/i);
+        const exprPart = aliasIdx > 0 ? item.substring(0, aliasIdx).trim() : item.trim();
+
+        // SUM(TOTAL) 단독인지 검사 (다른 표현이 섞여 있으면 통과)
+        const isPureSumTotal = /^\s*SUM\s*\(\s*TOTAL\s*\)\s*$/i.test(exprPart);
+        // 원가 단가 나눗셈 표현이 있는지
+        const hasUnitDivision = HAS_UNIT_DIVISION_RE.test(exprPart);
+
+        if (isPureSumTotal && !hasUnitDivision) {
+          violations.push(
+            `V1: alias "${aliasText}" 인데 expression 이 SUM(TOTAL) 단독. ` +
+            `원가 단가는 반드시 ROUND(SUM(TOTAL)/NULLIF(SUM(LBKUM),0),0) 형태 사용.`
+          );
+        }
+      }
+    }
+  }
+
+  // [V2] GENERIC 원가 조회에서 ZCGUBUN 임의 확정 감지
+  //   사용자가 "원가" 로만 물었는데 (실제/표준/매출 등 구체 언급 없음) LLM 이
+  //   WHERE ZCGUBUN='실제원가' 등을 넣은 경우 거부.
+  //   → 사용자 쿼리 텍스트만으로 GENERIC 여부 판단 (columnMatches 없이도 동작).
+  const GENERIC_COST_INTENT_RE = /(?:^|[^가-힣])(원가|제조원가|자재원가|제품원가)(?![가-힣])/;
+  const SPECIFIC_ZCGUBUN_IN_QUERY_RE = /(실제\s*원가|표준\s*원가|매출\s*원가)/;
+  const hasGenericCostIntent = GENERIC_COST_INTENT_RE.test(queryStr);
+  const hasSpecificZcgubunInQuery = SPECIFIC_ZCGUBUN_IN_QUERY_RE.test(queryStr);
+  // columnMatches 가 넘어왔으면 그것도 참고 (더 정확한 판단)
+  const hasZcgubunConcreteMatch = Array.isArray(columnMatches)
+    ? columnMatches.some(m => String(m.column_name || '').toUpperCase() === 'ZCGUBUN')
+    : hasSpecificZcgubunInQuery;
+  if (hasGenericCostIntent && !hasZcgubunConcreteMatch && !hasExplicitTotalIntent) {
+    // WHERE 절 안에 ZCGUBUN='실제원가' 형태가 있는지 검사
+    //   (=, IN 두 형태 모두)
+    const ZCGUBUN_FILTER_RE = /\bZCGUBUN\s*(?:=\s*['"][^'"]+['"]|IN\s*\([^)]+\))/i;
+    if (ZCGUBUN_FILTER_RE.test(sqlStr)) {
+      violations.push(
+        'V2: 사용자가 "원가" 로만 조회했는데 WHERE ZCGUBUN 필터가 임의로 추가됨. ' +
+        '전체 원가유형(ZCGUBUN_D + ZCGUBUN) 조회여야 함.'
+      );
+    }
+  }
+
+  return {
+    valid: violations.length === 0,
+    reason: violations.length === 0 ? 'ok' : 'violations',
+    violations,
+  };
+}
+
 function validateAndSanitizeCostCompOutput({ sql, explanation, query, forcedCostComp, knownCostCompVocab = [] }) {
   const result = {
     sql: sql,
@@ -10650,6 +10860,30 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         sql = _postValidate.sql;
         explanation = _postValidate.explanation;
         console.warn(`[NLQ:CostCompPostValidate] 오염 정정 완료. SQL alias·explanation 재작성됨.`);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // [2026-09-13] sys_aimd_cot015 원가 SQL 무결성 검증 (soft-warning)
+      //   V1: alias '원가/실제원가/원가 단가' 인데 expression 이 SUM(TOTAL) 단독
+      //   V2: "원가" 단독 질의인데 WHERE ZCGUBUN 임의 확정
+      //   현재 정책: soft-warning (로그만 남기고 실행 허용).
+      //     LLM 프롬프트 힌트 강화 (3분기 CostBasisHint) 로 충분히 방어되지만,
+      //     LLM 이 힌트를 무시한 경우 운영에서 즉시 감지 가능하도록 로그 태그
+      //     [CostBasisIntegrity] 로 남긴다.
+      //   추후: 재발 시 hard-fail (SQL 실행 거부 + 재생성) 로 승격 가능.
+      // ─────────────────────────────────────────────────────────────
+      try {
+        const _costIntegrity = validateCostBasisSqlIntegrity({
+          sql, query, tableWhitelist,
+        });
+        if (!_costIntegrity.valid) {
+          console.warn(
+            `[CostBasisIntegrity] 위반 감지 (soft-warning, SQL 은 실행 허용): ` +
+            _costIntegrity.violations.join(' | ')
+          );
+        }
+      } catch (e) {
+        console.error('[CostBasisIntegrity] 검증 중 예외 (무시):', e.message);
       }
 
       // ─────────────────────────────────────────────────────────────
