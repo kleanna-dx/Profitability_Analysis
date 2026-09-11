@@ -4792,6 +4792,12 @@ function appendAnalysisOnlyMessage(dataOrText) {
 function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo) {
     // 컬럼 헤더 라벨
     const headers = columnOrder.map(c => (columnLabels && columnLabels[c]) || c);
+    // [2026-09-12] 증감/차이 컬럼 인덱스 사전 계산 → 헤더/셀에 시각 강조
+    const deltaColIdxSet = new Set();
+    columnOrder.forEach((c, idx) => {
+        const lbl = (columnLabels && columnLabels[c]) || c;
+        if (isDeltaColumn(c, lbl)) deltaColIdxSet.add(idx);
+    });
     // [2026-07-21] 이력 재열람 시 하단 안내 문구
     //   - nl_query_history.result_data 는 DB 용량 절약을 위해 최대 100행만 저장됨
     //     (server.mjs saveHistory L6886-6888 slice(0,100))
@@ -4841,11 +4847,19 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
                 <thead style="position:sticky;top:0;background:#f9fafb;z-index:1;">
                     <tr>
                         <th style="padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:right;color:#6b7280;font-weight:600;width:44px;">#</th>
-                        ${headers.map((h, i) => `
-                            <th data-col-idx="${i}" style="padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left;color:#374151;font-weight:600;cursor:pointer;user-select:none;white-space:nowrap;" onclick="sortAnalysisTable('${tableId}', ${i})">
+                        ${headers.map((h, i) => {
+                            // [2026-09-12] 증감/차이 컬럼 헤더는 연한 주황 배경 + 진한 주황 텍스트 + 볼드로 강조
+                            const isDelta = deltaColIdxSet.has(i);
+                            const thBg = isDelta ? '#fff4e6' : '#f9fafb';
+                            const thColor = isDelta ? '#c2410c' : '#374151';
+                            const thWeight = isDelta ? '700' : '600';
+                            const thBorderTop = isDelta ? 'border-top:2px solid #fb923c;' : '';
+                            return `
+                            <th data-col-idx="${i}" data-delta-col="${isDelta ? '1' : '0'}" style="padding:8px 10px;border-bottom:1px solid #e5e7eb;${thBorderTop}text-align:left;color:${thColor};font-weight:${thWeight};background:${thBg};cursor:pointer;user-select:none;white-space:nowrap;" onclick="sortAnalysisTable('${tableId}', ${i})">
                                 <span>${esc(h)}</span>
                                 <i class="fas fa-sort" style="margin-left:4px;color:#9ca3af;font-size:10px;" data-sort-icon></i>
-                            </th>`).join('')}
+                            </th>`;
+                        }).join('')}
                     </tr>
                 </thead>
                 <tbody id="${tableId}_tbody"></tbody>
@@ -4881,6 +4895,12 @@ const analysisTableState = {};
 //   - 검색어 변경 / 페이지 크기 변경 시 재렌더
 // ============================================================
 function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory) {
+    // [2026-09-12] 증감/차이 컬럼 인덱스 집합 (Set of column index) — 셀 렌더 시 시각 강조에 사용
+    const deltaColIdxSet = new Set();
+    (columnOrder || []).forEach((c, idx) => {
+        const lbl = (columnLabels && columnLabels[c]) || c;
+        if (isDeltaColumn(c, lbl)) deltaColIdxSet.add(idx);
+    });
     analysisTableState[tableId] = {
         rows: rows,
         columnOrder: columnOrder,
@@ -4891,6 +4911,7 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
         sortCol: -1,
         sortDir: 0,   // 0=none, 1=asc, -1=desc
         fromHistory: !!fromHistory,   // [2026-07-21] 이력 재열람 여부 (안내 문구 유지용)
+        deltaColIdxSet: deltaColIdxSet,  // [2026-09-12] 증감/차이 컬럼 인덱스 집합
     };
     const st = analysisTableState[tableId];
     const searchEl = document.getElementById(tableId + '_search');
@@ -4972,6 +4993,34 @@ function isCalendarColumn(col, label) {
     if (/^(연월|년월|연도|년도|월|분기|주차|일자)$/.test(labelStr.trim())) return true;
     if (/^\d{4}년/.test(labelStr.trim())) return true;
 
+    return false;
+}
+
+// ============================================================
+// [2026-09-12] "증감/차이" 컬럼 판별 — 시각 강조 대상
+// ------------------------------------------------------------
+// 목적:
+//   전월대비 증가액, 전년대비 감소율, 원가 단가 증가액, 영업이익 차이 등
+//   "비교/증감" 성격의 컬럼을 결과 표에서 시각적으로 강조하기 위함.
+//   - 헤더/셀 배경을 연한 주황 톤으로 구분
+//   - 셀 값의 부호에 따라 양수(빨강)/음수(파랑)/0(회색) 텍스트 색상 적용
+// 매칭 규칙 (컬럼 코드명 or 사용자 표시 라벨):
+//   증가액 / 감소액 / 증감액 / 증감 / 증가율 / 감소율 / 증감률
+//   차이 / 변동 / 상승 / 하락 / 대비 / delta / diff / Δ
+//   ※ "대비" 는 라벨에 매우 흔해 오탐 우려가 있어 "대비" 단독은 매칭하지 않고
+//     "OO 대비 XX" 형태의 다른 시그널(증가/감소/차이 등) 과 동반된 경우만 감지되도록
+//     라벨 기반 판별은 보수적으로 유지.
+// ============================================================
+function isDeltaColumn(col, label) {
+    const s = (String(col || '') + ' ' + String(label || '')).trim();
+    if (!s) return false;
+    // 한국어 시그널
+    if (/증가액|감소액|증감액|증감률|증가율|감소율|변동액|변동률|상승률|하락률/.test(s)) return true;
+    if (/(증감|차이|변동|상승|하락)(\s|$|\(|_)/.test(s)) return true;
+    // 영문 시그널 (컬럼명에 흔한 delta_cost / diff_value / change_rate 형태도 감지)
+    //   단어 시작 경계 (\b) 뒤에 시그널이 오면 매칭 — 뒤가 언더스코어여도 OK
+    if (/\b(delta|diff|change|growth|variation)/i.test(s)) return true;
+    if (/[Δ▲▼]/.test(s)) return true;
     return false;
 }
 
@@ -5207,14 +5256,25 @@ function renderAnalysisTable(tableId) {
     // tbody 갱신
     const cellStyle = 'padding:6px 10px;border-bottom:1px solid #f3f4f6;white-space:nowrap;';
     const numStyle = cellStyle + 'text-align:right;font-family:\'JetBrains Mono\',\'Consolas\',monospace;';
+    // [2026-09-12] 증감/차이 컬럼용 스타일: 연한 주황 배경, 부호별 텍스트 색상
+    //   양수 → 빨강 (#dc2626), 음수 → 파랑 (#2563eb), 0/기타 → 진회색 (#374151)
+    const deltaCellBase = cellStyle + 'text-align:right;font-family:\'JetBrains Mono\',\'Consolas\',monospace;background:#fffaf0;font-weight:600;';
+    const deltaSet = (st.deltaColIdxSet instanceof Set) ? st.deltaColIdxSet : new Set();
     if (pageRows.length === 0) {
         tbody.innerHTML = `<tr><td colspan="${st.columnOrder.length + 1}" style="padding:20px;text-align:center;color:#9ca3af;">검색 결과가 없습니다.</td></tr>`;
     } else {
         tbody.innerHTML = pageRows.map((row, i) => {
             const rowIdx = startIdx + i + 1;
-            const cells = st.columnOrder.map(c => {
+            const cells = st.columnOrder.map((c, colIdx) => {
                 const v = row[c];
-                if (v === null || v === undefined) return `<td style="${cellStyle}color:#9ca3af;">-</td>`;
+                const isDelta = deltaSet.has(colIdx);
+                if (v === null || v === undefined) {
+                    // null 셀도 delta 컬럼이면 배경만 유지 (부호 없음)
+                    const nullStyle = isDelta
+                        ? deltaCellBase + 'color:#9ca3af;font-weight:400;'
+                        : cellStyle + 'color:#9ca3af;';
+                    return `<td style="${nullStyle}">-</td>`;
+                }
                 // [2026-07-21] 컬럼 타입 기반 포맷 (formatCellValue)
                 //   - CALMONTH 같은 시간축 컬럼은 콤마 없이 raw 문자열 (202601)
                 //   - 금액·수량은 천 단위 콤마 (-2,063,050,449)
@@ -5227,9 +5287,20 @@ function renderAnalysisTable(tableId) {
                 if (isCal) {
                     return `<td style="${cellStyle}color:#111827;font-family:'JetBrains Mono','Consolas',monospace;text-align:right;">${shown}</td>`;
                 }
+                // [2026-09-12] Delta 컬럼: 배경 + 부호별 색상 강조
+                if (isDelta && num !== null && typeof v !== 'boolean') {
+                    let signColor = '#374151';   // 0 이나 판별 실패 시 진회색
+                    let signIcon = '';
+                    if (num > 0) { signColor = '#dc2626'; signIcon = '▲ '; }
+                    else if (num < 0) { signColor = '#2563eb'; signIcon = '▼ '; }
+                    return `<td style="${deltaCellBase}color:${signColor};">${signIcon}${shown}</td>`;
+                }
                 if (num !== null && typeof v !== 'boolean') {
+                    // delta 컬럼이지만 값이 숫자가 아닌 경우도 배경만 유지
+                    if (isDelta) return `<td style="${deltaCellBase}color:#111827;">${shown}</td>`;
                     return `<td style="${numStyle}">${shown}</td>`;
                 }
+                if (isDelta) return `<td style="${deltaCellBase}color:#111827;font-weight:400;">${shown}</td>`;
                 return `<td style="${cellStyle}color:#111827;">${shown}</td>`;
             }).join('');
             return `<tr><td style="${cellStyle}color:#9ca3af;text-align:right;">${rowIdx}</td>${cells}</tr>`;
