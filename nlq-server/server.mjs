@@ -9809,7 +9809,47 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       `jobStatusUpdatedAt=${fmt(t.jobStatusUpdatedAt)}`
     );
   };
-  const activeDomain = await getActiveDomain(req);
+  // ═══════════════════════════════════════════════════════════════════
+  // [2026-09-13] activeDomain 결정 — body.domain_code 우선 사용
+  // -------------------------------------------------------------------
+  // 배경: 세션의 active_domain 이 이력 재열람/네트워크 지연 등으로 UI 와
+  //   어긋나는 문제 재발 (사용자 신고). 프론트가 UI 상단에 표시된 도메인을
+  //   매 요청마다 body.domain_code 로 명시 전송하므로, 이를 세션보다 우선
+  //   사용하여 "UI 도메인 = SQL 도메인 = 이력 배지 도메인" 100% 보장.
+  //
+  // 우선순위:
+  //   1) req.body.domain_code (프론트가 명시 전송한 UI 도메인) — 최우선
+  //   2) session.user.active_domain / users.domain_code (기존 fallback)
+  //
+  // 안전:
+  //   - resolveDomainAlias 로 정규화 (통합/mgmt/MGMT → 'MGMT')
+  //   - PS/HL/MGMT 화이트리스트만 허용, 나머지는 무시하고 세션 fallback
+  //   - body 에 domain_code 가 없으면 완전 기존 동작 (하위호환)
+  //   - 세션 값과 다르면 세션에도 갱신 (다음 요청 일관성 확보)
+  // ═══════════════════════════════════════════════════════════════════
+  let activeDomain = null;
+  try {
+    const rawBodyDomain = req.body?.domain_code;
+    if (rawBodyDomain) {
+      const normBody = resolveDomainAlias(String(rawBodyDomain));
+      if (normBody && ['PS', 'HL', 'MGMT'].includes(normBody)) {
+        activeDomain = normBody;
+        // 세션과 다르면 갱신 (self-fetch race condition 방어)
+        if (req.session?.user && req.session.user.active_domain !== normBody) {
+          console.log(
+            `[DomainSync:/api/nlq] userId=${req.session.user.id} body=${normBody} session=${req.session.user.active_domain || 'null'} → 세션 동기화`
+          );
+          req.session.user.active_domain = normBody;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[DomainSync:/api/nlq] body domain_code 파싱 예외 (무시):', e.message);
+  }
+  // body 에 유효한 domain_code 가 없으면 기존 방식 (세션 → DB 순)
+  if (!activeDomain) {
+    activeDomain = await getActiveDomain(req);
+  }
   // ★ 도메인 미설정 방어: users.domain_code가 NULL이고 세션에도 active_domain이 없으면
   //   프론트엔드에서 분석 영역 선택 모달을 띄우도록 안내 (조직도 자동매핑 제거 정책)
   if (!activeDomain) {
@@ -11795,6 +11835,8 @@ async function runNlqJobInBackground(jobId, forwardedCookie, originalRequestId) 
       // [2026-08-31 PR #407] 명확화 chip 목록 전달 (제조원가 UI 전용)
       //   /api/nlq 핸들러 → saveHistory 로 흘려서 chart_config._clarificationSelections 저장
       clarificationSelections: Array.isArray(job.clarificationSelections) ? job.clarificationSelections : [],
+      // [2026-09-13] UI 도메인 (self-fetch body 에도 실어서 세션과 이중 방어)
+      domain_code: job.domain_code || null,
     });
     const headers = { 'Content-Type': 'application/json' };
     if (forwardedCookie) headers['Cookie'] = forwardedCookie;
@@ -11958,6 +12000,46 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
   const { query, queryMode, conversationContext, session_id } = req.body || {};
   if (!query || !String(query).trim()) {
     return res.status(400).json({ error: '질의를 입력하세요.', requestId: getCurrentRequestId() });
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-09-13] UI 도메인과 세션 강제 동기화 (사용자 신고 재발 방지)
+  // -----------------------------------------------------------------
+  // 배경: 이력 재열람 등에서 세션 active_domain 이 UI 표시와 어긋나는 경우가
+  //   확인됨 (UI [통합] → SQL DIVISION='20', 이력 배지 [HL]).
+  //   원인: 프론트 restoreSession 이 /api/me/domain 을 fire-and-forget 으로 호출
+  //         → 실패 시 세션 sync 실패, 다음 질의가 잘못된 도메인으로 실행.
+  //
+  // 해결: 매 요청마다 body.domain_code 를 명시 전송받고 유효하면 세션에 덮어씀.
+  //   → "UI 에 보이는 도메인 = 서버 처리 도메인" 100% 보장.
+  //
+  // 안전장치:
+  //   - resolveDomainAlias 로 정규화 (통합/MGMT/mgmt 모두 → 'MGMT')
+  //   - domain_master 유효값만 허용 (PS/HL/MGMT), 나머지는 무시
+  //   - 유효값이 아니거나 body 에 없으면 기존 세션 값 유지 (하위호환)
+  // ─────────────────────────────────────────────────────────────────
+  try {
+    const rawBodyDomain = req.body?.domain_code;
+    if (rawBodyDomain) {
+      const normalizedDomain = resolveDomainAlias(String(rawBodyDomain));
+      if (normalizedDomain && ['PS', 'HL', 'MGMT'].includes(normalizedDomain)) {
+        const sessionDomain = req.session.user.active_domain || null;
+        if (sessionDomain !== normalizedDomain) {
+          console.log(
+            `[DomainSync] userId=${userId} UI(body)=${normalizedDomain} session=${sessionDomain || 'null'} → 세션 동기화 (${normalizedDomain})`
+          );
+          req.session.user.active_domain = normalizedDomain;
+          // DB users.domain_code 도 함께 동기화 (다음 재접속 시 자동 복원)
+          try {
+            await pool.query('UPDATE users SET domain_code = ? WHERE user_id = ?', [normalizedDomain, req.session.user.user_id || userId]);
+          } catch (dbErr) {
+            console.warn('[DomainSync] users.domain_code UPDATE 실패 (무시):', dbErr.message);
+          }
+        }
+      }
+    }
+  } catch (syncErr) {
+    console.error('[DomainSync] 예외 (무시):', syncErr.message);
   }
   // ─────────────────────────────────────────────────────────────────
   // [2026-08-24 → 2026-08-25 갱신] 업무영역(area) / 세부업무영역(subArea) / 참조 테이블(table) 수신
@@ -12277,6 +12359,17 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
         ? { values: req.body.forcedCostComp.values.slice(), op: req.body.forcedCostComp.op || (req.body.forcedCostComp.values.length === 1 ? '=' : 'IN'), source: 'client_selection' }
         : null
     ),
+    // [2026-09-13] body 로 전달된 UI 도메인 (self-fetch body 에도 다시 실어서 이중 방어)
+    //   이미 위 [DomainSync] 블록에서 세션에 반영했지만, self-fetch 중 세션 상태가
+    //   race condition 으로 흐트러질 가능성에 대비.
+    domain_code: (() => {
+      try {
+        const raw = req.body?.domain_code;
+        if (!raw) return null;
+        const norm = resolveDomainAlias(String(raw));
+        return (norm && ['PS', 'HL', 'MGMT'].includes(norm)) ? norm : null;
+      } catch (_) { return null; }
+    })(),
     // [2026-08-31 PR #407] 명확화 chip 목록 (제조원가 UI 전용, 히스토리 재조회용 저장)
     //   최대 20개까지만 신뢰. 각 항목: {type, label}.
     clarificationSelections: (Array.isArray(req.body?.clarificationSelections) ? req.body.clarificationSelections.slice(0, 20) : [])
