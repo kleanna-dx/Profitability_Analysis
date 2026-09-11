@@ -4160,7 +4160,95 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       console.error('[NumericCandidate] 발굴 실패 (무시):', e.message);
     }
   }
-  
+
+  // ============================================================
+  // [2026-09-11] 제품별 원가 4컬럼 세트 프롬프트 힌트 (sys_aimd_cot015)
+  // ------------------------------------------------------------
+  // 배경 (사용자 신고):
+  //   자재 코드로 실제원가를 조회하는 케이스 등에서 시스템이
+  //   SUM(TOTAL) 총액만 반환. 원가는 총액보다 단위당 원가(단가) 가 더 중요하며,
+  //   사용자가 계산 근거를 이해할 수 있도록 총액/생산수량/단위/단가 4개
+  //   컬럼을 함께 보여야 함.
+  //
+  // 원칙 (사용자 요구):
+  //   "실제원가" / "매출원가" / "원가" / "제조원가" 등을 일반적으로 조회하면
+  //   기본 출력은 아래 4컬럼 세트:
+  //     원가 총액   = SUM(TOTAL)
+  //     생산수량   = SUM(LBKUM)
+  //     단위       = MAX(BASE_UOM)
+  //     원가 단가  = ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0)
+  //   컬럼 순서 고정: 코드 > 명 > 총액 > 수량 > 단위 > 단가
+  //
+  // 예외:
+  //   사용자가 명시적으로 "총액/합계/총금액/총원가" 를 요청한 경우는
+  //   SUM(TOTAL) 만 반환하도록 허용 (사용자 요구 #9).
+  //
+  // 트리거 조건 (모두 만족 시 프롬프트 힌트 주입):
+  //   1) tableWhitelist 에 sys_aimd_cot015 포함
+  //   2) columnMatches 에 column_name='ZCGUBUN' 매칭이 있음
+  //      (즉 사용자가 "실제원가/표준원가/매출원가" 중 하나를 언급)
+  //   3) 사용자 질의에 명시적 총액 표현 없음
+  //
+  // 하드코딩 방지:
+  //   특정 자재코드 (F2A... / H3S...) 는 이 로직 어디에도 없음.
+  //   ZCGUBUN 값 매칭만 확인하고, WHERE MATERIAL=... 은 LLM 이 알아서 만듦.
+  //   TOTAL/LBKUM/BASE_UOM 컬럼명은 sys_aimd_cot015 실제 스키마 그대로.
+  // ============================================================
+  const HAS_COT015_SCOPE = Array.isArray(tableWhitelist)
+    && tableWhitelist.includes('sys_aimd_cot015');
+  // ZCGUBUN 값 매칭 감지 (사용자 질의에 "실제원가"/"매출원가"/"표준원가" 등 등장)
+  const HAS_ZCGUBUN_MATCH = (columnMatches || []).some(m =>
+    String(m.column_name || '').toUpperCase() === 'ZCGUBUN'
+  );
+  // 사용자가 명시적으로 "총액" 요청 → 힌트 미주입 (SUM(TOTAL) 중심 조회 허용)
+  //   경계 검사: "총액/합계/총금액/총원가/총합" 어절 (다른 단어 안의 부분매칭 방지)
+  const EXPLICIT_TOTAL_INTENT_RE = /(총액|총금액|총원가|총합|합계|총\s*발생액|총\s*금액)/;
+  const hasExplicitTotalIntent = EXPLICIT_TOTAL_INTENT_RE.test(String(query || ''));
+
+  if (HAS_COT015_SCOPE && HAS_ZCGUBUN_MATCH && !hasExplicitTotalIntent) {
+    // 감지된 ZCGUBUN 값 (예: '실제원가')
+    const detectedGubun = (columnMatches || [])
+      .filter(m => String(m.column_name || '').toUpperCase() === 'ZCGUBUN')
+      .map(m => m.matchedKeyword || m.synonym)
+      .filter(Boolean);
+    const gubunList = detectedGubun.length > 0
+      ? detectedGubun.map(v => `'${v}'`).join(', ')
+      : "'실제원가' 등";
+    // 정렬 의도 유무에 따라 ORDER BY 지시 분기
+    const orderDirective = rankIntent
+      ? `ORDER BY 는 반드시 ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) DESC (단가 기준). SUM(TOTAL) DESC 로 정렬하지 마세요.`
+      : `단일 제품/자재 조회이면 ORDER BY 절을 아예 만들지 마세요 (불필요).`;
+
+    synonymContext += '\n[★★★ 제품별 원가 조회 — 4컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
+    synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 조회 중입니다.\n`;
+    synonymContext += `사용자 질의에 "총액/합계" 명시가 없으므로 기본 출력은 **총액 단독이 아니라 단가 계산 근거 4컬럼 세트** 입니다.\n`;
+    synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지]\n`;
+    synonymContext += `  1. MATERIAL     AS '제품코드'         (또는 '자재코드')\n`;
+    synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'       (또는 '자재명')\n`;
+    synonymContext += `  3. SUM(TOTAL)   AS '원가 총액(원)'\n`;
+    synonymContext += `  4. SUM(LBKUM)   AS '생산수량'\n`;
+    synonymContext += `  5. MAX(BASE_UOM) AS '단위'\n`;
+    synonymContext += `  6. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '원가 단가'\n`;
+    synonymContext += `\n[GROUP BY / HAVING / ORDER BY]\n`;
+    synonymContext += `  - GROUP BY MATERIAL 필수 (제품별 집계)\n`;
+    synonymContext += `  - TOP N/상위/랭킹 요청이 있으면 HAVING SUM(LBKUM) <> 0 (생산수량 0 제외)\n`;
+    synonymContext += `  - ${orderDirective}\n`;
+    synonymContext += `\n[중요 규칙]\n`;
+    synonymContext += `  - 원가 단가는 반드시 SUM(TOTAL) / SUM(LBKUM) 방식 (합계의 비율).\n`;
+    synonymContext += `    AVG(TOTAL / LBKUM) 이나 SUM(TOTAL/LBKUM) 은 **금지** (행별 나눗셈 후 평균은 의미 왜곡).\n`;
+    synonymContext += `  - NULLIF(SUM(LBKUM), 0) 로 0 나누기 방지 필수.\n`;
+    synonymContext += `  - ROUND(..., 0) 로 원 단위 정수 표시 (소수점 노출 억제).\n`;
+    synonymContext += `  - ZCGUBUN=${gubunList} 필터는 WHERE 절에 그대로 유지 (dimension value).\n`;
+    synonymContext += `  - 기존 필터 (DIVISION / CALMONTH / MATERIAL) 는 그대로 유지.\n`;
+    synonymContext += `  - Metric 산식(COST_ACTUAL_UNIT_PRICE) 이 프롬프트에 노출된 경우, 그 산식과\n`;
+    synonymContext += `    이 4컬럼 세트는 서로 보완 관계: metric 은 6번 컬럼(원가 단가) 을 담당하고,\n`;
+    synonymContext += `    3~5번 (총액/수량/단위) 은 이 힌트가 명시.\n`;
+    console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭 [${detectedGubun.join(',')}] + 총액명시없음 → 4컬럼 세트 프롬프트 힌트 주입`);
+  } else if (HAS_COT015_SCOPE && HAS_ZCGUBUN_MATCH && hasExplicitTotalIntent) {
+    // 명시적 총액 요청 → 힌트 미주입, 로그만 남김
+    console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭이지만 사용자가 "총액" 명시 → 힌트 스킵 (SUM(TOTAL) 조회 허용)`);
+  }
+
 
   // ★ Metric 산식이 매칭된 컬럼 목록 수집 (RAG 컨텍스트에서 해당 단순 컬럼 제거용)
   //   matchSynonymsDirectly에서 이미 수집한 referenced_codes를 그대로 활용
