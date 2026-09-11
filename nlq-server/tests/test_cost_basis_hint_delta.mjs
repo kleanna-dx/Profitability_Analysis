@@ -236,11 +236,11 @@ assert(
 );
 assert(
   serverSrc.includes('제품별 원가 비교 분석'),
-  'D-3: PIVOT 확장 힌트 헤더 문구 존재'
+  'D-3: Delta 분기 힌트 헤더 문구 존재'
 );
 assert(
-  serverSrc.includes('PIVOT 확장 세트'),
-  'D-4: "PIVOT 확장 세트" 문구 존재'
+  serverSrc.includes('심플 6컬럼 세트'),
+  'D-4: "심플 6컬럼 세트" 문구 존재 (옵션 A 축소 반영)'
 );
 assert(
   serverSrc.includes("'원가 단가 증가액'"),
@@ -272,12 +272,60 @@ assert(
 );
 assert(
   serverSrc.includes('[CostBasisHint] sys_aimd_cot015 + ZCGUBUN='),
-  'D-12: PIVOT 분기 로그 태그 존재'
+  'D-12: Delta 분기 로그 태그 존재'
 );
 assert(
-  serverSrc.includes('Delta의도 → PIVOT 확장 힌트 주입'),
-  'D-13: Delta의도 로그 메시지 존재'
+  serverSrc.includes('Delta의도 → 심플 6컬럼 힌트 주입'),
+  'D-13: Delta의도 심플 힌트 로그 메시지 존재'
 );
+
+// [2026-09-12 옵션 A] 6컬럼 축소 관련 assertion 추가
+assert(
+  serverSrc.includes('SELECT 에 절대 넣지 말 것'),
+  'D-14: SELECT 금지 컬럼 섹션 존재'
+);
+assert(
+  serverSrc.includes('SUM(TOTAL) 이나 그 CASE WHEN 변형'),
+  'D-15: SUM(TOTAL) 노출 금지 문구 존재'
+);
+assert(
+  serverSrc.includes('SUM(LBKUM) 이나 그 CASE WHEN 변형'),
+  'D-16: SUM(LBKUM) 노출 금지 문구 존재'
+);
+assert(
+  serverSrc.includes('원가 총액·생산수량 컬럼은 SELECT 에 절대 포함하지 마세요'),
+  'D-17: 총액/수량 SELECT 미포함 명시 존재'
+);
+// Delta 분기 힌트 안에 '원가 총액(원)' alias 정의가 없음을 확인
+//   (기존 10컬럼 힌트 잔재가 남지 않았는지 검증)
+{
+  // Delta 분기 블록만 잘라내서 검사
+  const idxStart = serverSrc.indexOf('제품별 원가 비교 분석 — 심플 6컬럼');
+  const idxEnd = serverSrc.indexOf('} else {', idxStart);
+  const deltaBlock = idxStart >= 0 && idxEnd > idxStart
+    ? serverSrc.substring(idxStart, idxEnd)
+    : '';
+  assert(
+    deltaBlock.length > 0,
+    'D-18: Delta 분기 블록 추출 성공'
+  );
+  assert(
+    !/AS '전월 원가 총액\(원\)'/.test(deltaBlock),
+    'D-19: Delta 분기에 "전월 원가 총액(원)" alias 없음 (10컬럼 잔재 제거)'
+  );
+  assert(
+    !/AS '당월 원가 총액\(원\)'/.test(deltaBlock),
+    'D-20: Delta 분기에 "당월 원가 총액(원)" alias 없음 (10컬럼 잔재 제거)'
+  );
+  assert(
+    !/AS '전월 생산수량'/.test(deltaBlock),
+    'D-21: Delta 분기에 "전월 생산수량" alias 없음 (10컬럼 잔재 제거)'
+  );
+  assert(
+    !/AS '당월 생산수량'/.test(deltaBlock),
+    'D-22: Delta 분기에 "당월 생산수량" alias 없음 (10컬럼 잔재 제거)'
+  );
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // [E] 회귀 안전성 — 기존 4컬럼 세트 힌트 유지
