@@ -4234,36 +4234,39 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       // ────────────────────────────────────────────────────────────
       // [분기 A] 비교/증감 분석 → PIVOT 확장 힌트
       // ────────────────────────────────────────────────────────────
-      // 형태: 기간별 (총액/수량/단가) 3세트 × 2기간 + 단위 + 단가 증가액
+      // [2026-09-12 옵션 A] 컬럼 축소: 원가 총액/생산수량은 표시하지 않음
+      //   배경: 사용자 신고 — 10컬럼은 너무 많아 가독성이 오히려 떨어짐.
+      //   총액/수량이 필요하면 명시 조회 (예: "전월대비 실제원가 총액 증가액").
+      // 형태: (전월 단가) + (당월 단가) + 단위 + (단가 증가액) = 총 6컬럼
       // 정렬 기준: 반드시 "단가 증가액" DESC (총액 증가액 아님!)
-      synonymContext += '\n[★★★ 제품별 원가 비교 분석 — PIVOT 확장 세트 필수 (sys_aimd_cot015) ★★★]\n';
+      // HAVING 은 유지 — 표시는 안 하지만 두 기간 모두 생산수량 > 0 인 제품만 필터
+      synonymContext += '\n[★★★ 제품별 원가 비교 분석 — 심플 6컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
       synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 **기간 비교** 분석 중입니다 (전월대비/전년대비/증가액 등 감지).\n`;
       synonymContext += `총액 증가액이 아니라 **단가(SUM(TOTAL)/SUM(LBKUM)) 증가액** 을 기준으로 비교해야 합니다.\n`;
-      synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지]\n`;
+      synonymContext += `가독성을 위해 원가 총액·생산수량 컬럼은 SELECT 에 절대 포함하지 마세요 (내부 계산에만 사용).\n`;
+      synonymContext += `\n[SELECT 절 구성 — 반드시 이 6컬럼 순서 유지, 그 외 컬럼 추가 금지]\n`;
       synonymContext += `  1. MATERIAL AS '제품코드'\n`;
       synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'\n`;
-      synonymContext += `  -- 전월(이전기간) 3컬럼\n`;
-      synonymContext += `  3. SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END) AS '전월 원가 총액(원)'\n`;
-      synonymContext += `  4. SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN LBKUM ELSE 0 END) AS '전월 생산수량'\n`;
-      synonymContext += `  5. ROUND(\n`;
+      synonymContext += `  3. ROUND(\n`;
       synonymContext += `       SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `       / NULLIF(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN LBKUM ELSE 0 END), 0)\n`;
       synonymContext += `     , 0) AS '전월 원가 단가'\n`;
-      synonymContext += `  -- 당월(현재기간) 3컬럼\n`;
-      synonymContext += `  6. SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END) AS '당월 원가 총액(원)'\n`;
-      synonymContext += `  7. SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END) AS '당월 생산수량'\n`;
-      synonymContext += `  8. ROUND(\n`;
+      synonymContext += `  4. ROUND(\n`;
       synonymContext += `       SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `       / NULLIF(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END), 0)\n`;
       synonymContext += `     , 0) AS '당월 원가 단가'\n`;
-      synonymContext += `  9. MAX(BASE_UOM) AS '단위'\n`;
-      synonymContext += `ㅤ-- 단가 증가액 (핵심 지표) ← 양수는 상승, 음수는 하락\n`;
-      synonymContext += `  10. (\n`;
+      synonymContext += `  5. MAX(BASE_UOM) AS '단위'\n`;
+      synonymContext += `  -- 단가 증가액 (핵심 지표) ← 양수는 상승, 음수는 하락\n`;
+      synonymContext += `  6. (\n`;
       synonymContext += `        ROUND(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `            / NULLIF(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END), 0), 0)\n`;
       synonymContext += `        - ROUND(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `            / NULLIF(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN LBKUM ELSE 0 END), 0), 0)\n`;
       synonymContext += `      ) AS '원가 단가 증가액'\n`;
+      synonymContext += `\n[SELECT 에 절대 넣지 말 것 — 금지 컬럼]\n`;
+      synonymContext += `  - SUM(TOTAL) 이나 그 CASE WHEN 변형 (원가 총액)  ← 사용자가 요청하지 않으면 노출 금지\n`;
+      synonymContext += `  - SUM(LBKUM) 이나 그 CASE WHEN 변형 (생산수량)   ← 사용자가 요청하지 않으면 노출 금지\n`;
+      synonymContext += `  → 위 두 컬럼은 HAVING 절 안에서만 계산 필터로 사용하고, SELECT 에는 드러내지 마세요.\n`;
       synonymContext += `\n[WHERE / GROUP BY / HAVING / ORDER BY]\n`;
       synonymContext += `  - WHERE ZCGUBUN=${gubunList} AND CALMONTH IN ('<전월YYYYMM>', '<당월YYYYMM>')\n`;
       synonymContext += `  - GROUP BY MATERIAL\n`;
@@ -4278,7 +4281,9 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       synonymContext += `  - <전월YYYYMM> / <당월YYYYMM> 은 CALMONTH 컨텍스트 (RAG 상단 [현재 데이터 기준일자]) 기준\n`;
       synonymContext += `    또는 사용자 지정 기간에서 자동 도출.\n`;
       synonymContext += `  - 컬럼명은 사용자 표현에 맞춰 조정 가능 (예: "전년" / "전분기" / "5월"). 순서와 의미는 고정.\n`;
-      console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN=[${detectedGubun.join(',')}] + Delta의도 → PIVOT 확장 힌트 주입`);
+      synonymContext += `  - 사용자가 명시적으로 "원가 총액" 또는 "생산수량" 을 함께 보고 싶다고 요청한 경우에만\n`;
+      synonymContext += `    해당 컬럼을 추가할 수 있습니다. 기본은 6컬럼 심플 세트.\n`;
+      console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN=[${detectedGubun.join(',')}] + Delta의도 → 심플 6컬럼 힌트 주입`);
     } else {
       // ────────────────────────────────────────────────────────────
       // [분기 B] 단순 조회 → 기존 4컬럼 세트 힌트 (PR #437)
