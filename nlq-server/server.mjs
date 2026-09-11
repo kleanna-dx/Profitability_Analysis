@@ -4205,6 +4205,21 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   const EXPLICIT_TOTAL_INTENT_RE = /(총액|총금액|총원가|총합|합계|총\s*발생액|총\s*금액)/;
   const hasExplicitTotalIntent = EXPLICIT_TOTAL_INTENT_RE.test(String(query || ''));
 
+  // ────────────────────────────────────────────────────────────────
+  // [2026-09-12] 비교/증감 의도 감지 (Delta / MoM / YoY / 대비 / 증가액 등)
+  // ────────────────────────────────────────────────────────────────
+  // "전월대비 실제원가 증가액 TOP 10" 같은 비교 분석 쿼리는
+  //   기본 4컬럼 세트를 그대로 붙이면 SELECT 구조가 충돌해서 LLM 이
+  //   대신 익숙한 '월별 PIVOT + 총액 증가액' 패턴을 선택하는 문제 발생.
+  //   → 비교 의도가 감지되면 별도의 "PIVOT 확장 힌트" 로 전환하여
+  //     각 기간별 (총액/수량/단가) 3세트 + 단위 + 단가 증가액 을 명시.
+  // 감지 표현:
+  //   전월대비 / 전년대비 / 전년동월대비 / MoM / YoY / N월대비 / N년대비
+  //   / 대비 / 비교 / 증가액 / 감소액 / 증감 / 증감액 / 차이 / 변동
+  //   / 대비 증가 / 상승 / 하락
+  const DELTA_INTENT_RE = /(전월\s*대비|전년\s*대비|전년\s*동월\s*대비|전분기\s*대비|MoM|YoY|\d+\s*월\s*대비|\d+\s*년\s*대비|대비|비교|증가액|감소액|증감액|증감|증가율|감소율|차이|변동|상승률|하락률)/i;
+  const hasDeltaIntent = DELTA_INTENT_RE.test(String(query || ''));
+
   if (HAS_COT015_SCOPE && HAS_ZCGUBUN_MATCH && !hasExplicitTotalIntent) {
     // 감지된 ZCGUBUN 값 (예: '실제원가')
     const detectedGubun = (columnMatches || [])
@@ -4214,36 +4229,91 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
     const gubunList = detectedGubun.length > 0
       ? detectedGubun.map(v => `'${v}'`).join(', ')
       : "'실제원가' 등";
-    // 정렬 의도 유무에 따라 ORDER BY 지시 분기
-    const orderDirective = rankIntent
-      ? `ORDER BY 는 반드시 ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) DESC (단가 기준). SUM(TOTAL) DESC 로 정렬하지 마세요.`
-      : `단일 제품/자재 조회이면 ORDER BY 절을 아예 만들지 마세요 (불필요).`;
 
-    synonymContext += '\n[★★★ 제품별 원가 조회 — 4컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
-    synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 조회 중입니다.\n`;
-    synonymContext += `사용자 질의에 "총액/합계" 명시가 없으므로 기본 출력은 **총액 단독이 아니라 단가 계산 근거 4컬럼 세트** 입니다.\n`;
-    synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지]\n`;
-    synonymContext += `  1. MATERIAL     AS '제품코드'         (또는 '자재코드')\n`;
-    synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'       (또는 '자재명')\n`;
-    synonymContext += `  3. SUM(TOTAL)   AS '원가 총액(원)'\n`;
-    synonymContext += `  4. SUM(LBKUM)   AS '생산수량'\n`;
-    synonymContext += `  5. MAX(BASE_UOM) AS '단위'\n`;
-    synonymContext += `  6. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '원가 단가'\n`;
-    synonymContext += `\n[GROUP BY / HAVING / ORDER BY]\n`;
-    synonymContext += `  - GROUP BY MATERIAL 필수 (제품별 집계)\n`;
-    synonymContext += `  - TOP N/상위/랭킹 요청이 있으면 HAVING SUM(LBKUM) <> 0 (생산수량 0 제외)\n`;
-    synonymContext += `  - ${orderDirective}\n`;
-    synonymContext += `\n[중요 규칙]\n`;
-    synonymContext += `  - 원가 단가는 반드시 SUM(TOTAL) / SUM(LBKUM) 방식 (합계의 비율).\n`;
-    synonymContext += `    AVG(TOTAL / LBKUM) 이나 SUM(TOTAL/LBKUM) 은 **금지** (행별 나눗셈 후 평균은 의미 왜곡).\n`;
-    synonymContext += `  - NULLIF(SUM(LBKUM), 0) 로 0 나누기 방지 필수.\n`;
-    synonymContext += `  - ROUND(..., 0) 로 원 단위 정수 표시 (소수점 노출 억제).\n`;
-    synonymContext += `  - ZCGUBUN=${gubunList} 필터는 WHERE 절에 그대로 유지 (dimension value).\n`;
-    synonymContext += `  - 기존 필터 (DIVISION / CALMONTH / MATERIAL) 는 그대로 유지.\n`;
-    synonymContext += `  - Metric 산식(COST_ACTUAL_UNIT_PRICE) 이 프롬프트에 노출된 경우, 그 산식과\n`;
-    synonymContext += `    이 4컬럼 세트는 서로 보완 관계: metric 은 6번 컬럼(원가 단가) 을 담당하고,\n`;
-    synonymContext += `    3~5번 (총액/수량/단위) 은 이 힌트가 명시.\n`;
-    console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭 [${detectedGubun.join(',')}] + 총액명시없음 → 4컬럼 세트 프롬프트 힌트 주입`);
+    if (hasDeltaIntent) {
+      // ────────────────────────────────────────────────────────────
+      // [분기 A] 비교/증감 분석 → PIVOT 확장 힌트
+      // ────────────────────────────────────────────────────────────
+      // 형태: 기간별 (총액/수량/단가) 3세트 × 2기간 + 단위 + 단가 증가액
+      // 정렬 기준: 반드시 "단가 증가액" DESC (총액 증가액 아님!)
+      synonymContext += '\n[★★★ 제품별 원가 비교 분석 — PIVOT 확장 세트 필수 (sys_aimd_cot015) ★★★]\n';
+      synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 **기간 비교** 분석 중입니다 (전월대비/전년대비/증가액 등 감지).\n`;
+      synonymContext += `총액 증가액이 아니라 **단가(SUM(TOTAL)/SUM(LBKUM)) 증가액** 을 기준으로 비교해야 합니다.\n`;
+      synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지]\n`;
+      synonymContext += `  1. MATERIAL AS '제품코드'\n`;
+      synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'\n`;
+      synonymContext += `  -- 전월(이전기간) 3컬럼\n`;
+      synonymContext += `  3. SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END) AS '전월 원가 총액(원)'\n`;
+      synonymContext += `  4. SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN LBKUM ELSE 0 END) AS '전월 생산수량'\n`;
+      synonymContext += `  5. ROUND(\n`;
+      synonymContext += `       SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
+      synonymContext += `       / NULLIF(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN LBKUM ELSE 0 END), 0)\n`;
+      synonymContext += `     , 0) AS '전월 원가 단가'\n`;
+      synonymContext += `  -- 당월(현재기간) 3컬럼\n`;
+      synonymContext += `  6. SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END) AS '당월 원가 총액(원)'\n`;
+      synonymContext += `  7. SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END) AS '당월 생산수량'\n`;
+      synonymContext += `  8. ROUND(\n`;
+      synonymContext += `       SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
+      synonymContext += `       / NULLIF(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END), 0)\n`;
+      synonymContext += `     , 0) AS '당월 원가 단가'\n`;
+      synonymContext += `  9. MAX(BASE_UOM) AS '단위'\n`;
+      synonymContext += `ㅤ-- 단가 증가액 (핵심 지표) ← 양수는 상승, 음수는 하락\n`;
+      synonymContext += `  10. (\n`;
+      synonymContext += `        ROUND(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
+      synonymContext += `            / NULLIF(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END), 0), 0)\n`;
+      synonymContext += `        - ROUND(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
+      synonymContext += `            / NULLIF(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN LBKUM ELSE 0 END), 0), 0)\n`;
+      synonymContext += `      ) AS '원가 단가 증가액'\n`;
+      synonymContext += `\n[WHERE / GROUP BY / HAVING / ORDER BY]\n`;
+      synonymContext += `  - WHERE ZCGUBUN=${gubunList} AND CALMONTH IN ('<전월YYYYMM>', '<당월YYYYMM>')\n`;
+      synonymContext += `  - GROUP BY MATERIAL\n`;
+      synonymContext += `  - HAVING: 두 기간 모두 생산수량이 0 이 아닌 제품만 (양쪽 단가 계산 가능)\n`;
+      synonymContext += `      SUM(CASE WHEN CALMONTH='<전월>' THEN LBKUM ELSE 0 END) <> 0\n`;
+      synonymContext += `      AND SUM(CASE WHEN CALMONTH='<당월>' THEN LBKUM ELSE 0 END) <> 0\n`;
+      synonymContext += `  - ORDER BY '원가 단가 증가액' DESC (증가액 큰 순). 총액 증가액 DESC 금지.\n`;
+      synonymContext += `\n[중요 규칙]\n`;
+      synonymContext += `  - 각 기간 단가는 반드시 SUM(TOTAL)/SUM(LBKUM) (합계의 비율). AVG(TOTAL/LBKUM) 금지.\n`;
+      synonymContext += `  - NULLIF(..., 0) 로 0 나누기 방지 필수.\n`;
+      synonymContext += `  - 사용자가 "총액 증가액" 을 명시하지 않았다면 반드시 **단가 증가액** 기준으로 정렬.\n`;
+      synonymContext += `  - <전월YYYYMM> / <당월YYYYMM> 은 CALMONTH 컨텍스트 (RAG 상단 [현재 데이터 기준일자]) 기준\n`;
+      synonymContext += `    또는 사용자 지정 기간에서 자동 도출.\n`;
+      synonymContext += `  - 컬럼명은 사용자 표현에 맞춰 조정 가능 (예: "전년" / "전분기" / "5월"). 순서와 의미는 고정.\n`;
+      console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN=[${detectedGubun.join(',')}] + Delta의도 → PIVOT 확장 힌트 주입`);
+    } else {
+      // ────────────────────────────────────────────────────────────
+      // [분기 B] 단순 조회 → 기존 4컬럼 세트 힌트 (PR #437)
+      // ────────────────────────────────────────────────────────────
+      // 정렬 의도 유무에 따라 ORDER BY 지시 분기
+      const orderDirective = rankIntent
+        ? `ORDER BY 는 반드시 ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) DESC (단가 기준). SUM(TOTAL) DESC 로 정렬하지 마세요.`
+        : `단일 제품/자재 조회이면 ORDER BY 절을 아예 만들지 마세요 (불필요).`;
+
+      synonymContext += '\n[★★★ 제품별 원가 조회 — 4컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
+      synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 조회 중입니다.\n`;
+      synonymContext += `사용자 질의에 "총액/합계" 명시가 없으므로 기본 출력은 **총액 단독이 아니라 단가 계산 근거 4컬럼 세트** 입니다.\n`;
+      synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지]\n`;
+      synonymContext += `  1. MATERIAL     AS '제품코드'         (또는 '자재코드')\n`;
+      synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'       (또는 '자재명')\n`;
+      synonymContext += `  3. SUM(TOTAL)   AS '원가 총액(원)'\n`;
+      synonymContext += `  4. SUM(LBKUM)   AS '생산수량'\n`;
+      synonymContext += `  5. MAX(BASE_UOM) AS '단위'\n`;
+      synonymContext += `  6. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '원가 단가'\n`;
+      synonymContext += `\n[GROUP BY / HAVING / ORDER BY]\n`;
+      synonymContext += `  - GROUP BY MATERIAL 필수 (제품별 집계)\n`;
+      synonymContext += `  - TOP N/상위/랭킹 요청이 있으면 HAVING SUM(LBKUM) <> 0 (생산수량 0 제외)\n`;
+      synonymContext += `  - ${orderDirective}\n`;
+      synonymContext += `\n[중요 규칙]\n`;
+      synonymContext += `  - 원가 단가는 반드시 SUM(TOTAL) / SUM(LBKUM) 방식 (합계의 비율).\n`;
+      synonymContext += `    AVG(TOTAL / LBKUM) 이나 SUM(TOTAL/LBKUM) 은 **금지** (행별 나눗셈 후 평균은 의미 왜곡).\n`;
+      synonymContext += `  - NULLIF(SUM(LBKUM), 0) 로 0 나누기 방지 필수.\n`;
+      synonymContext += `  - ROUND(..., 0) 로 원 단위 정수 표시 (소수점 노출 억제).\n`;
+      synonymContext += `  - ZCGUBUN=${gubunList} 필터는 WHERE 절에 그대로 유지 (dimension value).\n`;
+      synonymContext += `  - 기존 필터 (DIVISION / CALMONTH / MATERIAL) 는 그대로 유지.\n`;
+      synonymContext += `  - Metric 산식(COST_ACTUAL_UNIT_PRICE) 이 프롬프트에 노출된 경우, 그 산식과\n`;
+      synonymContext += `    이 4컬럼 세트는 서로 보완 관계: metric 은 6번 컬럼(원가 단가) 을 담당하고,\n`;
+      synonymContext += `    3~5번 (총액/수량/단위) 은 이 힌트가 명시.\n`;
+      console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭 [${detectedGubun.join(',')}] + 총액명시없음 → 4컬럼 세트 프롬프트 힌트 주입`);
+    }
   } else if (HAS_COT015_SCOPE && HAS_ZCGUBUN_MATCH && hasExplicitTotalIntent) {
     // 명시적 총액 요청 → 힌트 미주입, 로그만 남김
     console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭이지만 사용자가 "총액" 명시 → 힌트 스킵 (SUM(TOTAL) 조회 허용)`);
