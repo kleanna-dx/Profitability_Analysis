@@ -2756,6 +2756,12 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
             conversationContext: _isClarifyResubmit ? [] : conversationContext,
             session_id: chatSessionId,
             queryMode: effectiveQueryMode,
+            // [2026-09-13] UI 상단에 사용자가 실제로 보고 있는 도메인을 매 요청마다 명시 전송.
+            //   배경: 세션의 active_domain 이 이력 재열람/네트워크 지연 등으로 UI 와 어긋나는
+            //   문제가 확인됨 (사용자 신고 — UI [통합]인데 SQL DIVISION='20', 이력 배지 [HL]).
+            //   해결: body 로 명시 전송 → 서버가 이를 우선 사용하고 세션도 동기화 →
+            //         "UI 에 보이는 도메인 = SQL 도메인 = 이력 배지 도메인" 100% 보장.
+            domain_code: currentDomain || null,
         };
         if (areaSnap) {
             asyncPayload.area          = areaSnap.area;
