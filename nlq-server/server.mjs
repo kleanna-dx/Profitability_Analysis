@@ -3020,7 +3020,28 @@ async function loadMetricMap(domainCode, tableWhitelist) {
         formula: r.formula || '',
         aggregation: r.aggregation || 'SUM',
         description: r.description || '',
+        synonyms: [],   // [2026-09-14] synonym 로드 추가 — canonical alias 매칭에 사용
       };
+    }
+    // [2026-09-14] metric_synonym 조회하여 각 metric 에 synonyms 부착.
+    //   목적: LLM 이 "영업이익률" (동의어) 로 plan 을 만들어도
+    //         canonical "영업이익률(%)" 로 매칭되도록 supporting.
+    //   실패해도 map 자체는 반환 (synonym 은 optional).
+    try {
+      const [synRows] = await pool.query(
+        `SELECT m.metric_code, s.synonym_text
+         FROM metric m
+         JOIN metric_synonym s ON s.metric_id = m.id
+         WHERE m.domain_code = ?${wl.fragment.replace(/table_name/g, 'm.table_name')}`,
+        [dc, ...wl.params]
+      );
+      for (const r of synRows) {
+        if (map[r.metric_code] && r.synonym_text) {
+          map[r.metric_code].synonyms.push(String(r.synonym_text));
+        }
+      }
+    } catch (e) {
+      console.warn('[Metric] loadMetricMap synonym 로드 실패 (metric 자체는 사용 가능):', e.message);
     }
   } catch (e) {
     console.error('[Metric] loadMetricMap 실패:', e.message);
@@ -3401,21 +3422,124 @@ function resolveCanonicalMetricExpression(metric, opts = {}) {
   return { ok: true, expr: formula, kind: 'ROW_CALC', wrapped: false };
 }
 
+// ============================================================
+// [Metric Name Normalization 2026-09-14]
+// ------------------------------------------------------------
+// LLM 은 metric name 을 자유롭게 축약/변형함:
+//   "영업이익률(%)" (canonical)  ←→  "영업이익률" (LLM 축약)
+//   "매출총이익률(%)" (canonical) ←→  "매출총이익률" (LLM 축약)
+//   "평균단가(BOX)" (canonical)  ←→  "평균단가" (LLM 축약)
+//
+// 해결 전략:
+//   1) metric_synonym 테이블의 등록 동의어 (loadMetricMap 이 로드)
+//      → canonicalMap 에 동의어들도 함께 등록 (exact match 확대)
+//   2) 그래도 없으면 name 정규화 후 fuzzy match:
+//      - 공백/괄호/단위 접미사 (%, 원, 원/BOX, kg, BOX 등) 제거 후 비교
+//   3) 매칭되면 name 자체를 canonical description 으로 교정 (표시 일관성)
+// ============================================================
+
 /**
- * metricSqlMap 생성 (description → 집계 적용 완료된 SQL 표현식).
+ * Metric alias 를 canonicalMap lookup 용으로 정규화.
+ * - 공백 제거
+ * - 마지막 () 안 내용 제거 (단위/보조 정보)
+ * - 대소문자 통일
+ *
+ * 예:
+ *   "영업이익률(%)"     → "영업이익률"
+ *   "매출총이익률 (%)"  → "매출총이익률"
+ *   "평균단가(BOX)"     → "평균단가"
+ *   "매출원가(제품)"    → "매출원가"
+ *   "판매수량 합계(원)"  → "판매수량합계"
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function normalizeMetricName(name) {
+  if (!name || typeof name !== 'string') return '';
+  let s = String(name);
+  // 1) 마지막 괄호쌍 제거 (외곽 또는 끝부분 단위 접미사)
+  //    복수 괄호는 모두 제거 (예: "A(B)(C)" → "A")
+  //    단, 내부 ()가 산식의 일부일 가능성 있는 경우는 고려 대상 아님 (name 은 label)
+  while (/\([^()]*\)\s*$/.test(s)) {
+    s = s.replace(/\s*\([^()]*\)\s*$/, '');
+  }
+  // 2) 모든 공백 제거
+  s = s.replace(/\s+/g, '');
+  // 3) 대소문자 통일 (한글은 영향 없음, 영문만)
+  s = s.toLowerCase();
+  return s;
+}
+
+/**
+ * canonicalMap 에서 metric name lookup.
+ * 순서:
+ *   1) exact match (canonical description or synonym)
+ *   2) 정규화 후 fuzzy match (접미사 차이 흡수)
+ *
+ * ★ canonicalName 반환 규칙:
+ *   - 항상 canonical description 을 우선 반환 (표시 일관성 확보).
+ *   - synonym 으로 매칭된 경우도 canonicalDescByNormalized 로 원래 description 조회.
+ *   - 조회 실패 (예외 상황) 면 매칭된 key 자체 반환.
+ *
+ * @param {Object} canonicalMap    - { description: sqlExpr, ...synonym: sqlExpr }
+ * @param {Object} canonicalDescByNormalized - { normalizedName: canonicalDescription }
+ * @param {string} name
+ * @returns {{ found: boolean, canonical: string, canonicalName: string }|null}
+ */
+function lookupCanonicalMetric(canonicalMap, canonicalDescByNormalized, name) {
+  if (!name || !canonicalMap) return null;
+  const idx = canonicalDescByNormalized || {};
+
+  // 1) exact match
+  if (Object.prototype.hasOwnProperty.call(canonicalMap, name)) {
+    // 매칭된 key 가 canonical description 인지, synonym 인지 판단.
+    // canonicalDescByNormalized[normalize(name)] 로 canonical description 조회.
+    const norm = normalizeMetricName(name);
+    const canonicalDesc = idx[norm] || name;
+    return { found: true, canonical: canonicalMap[name], canonicalName: canonicalDesc };
+  }
+  // 2) fuzzy match — 정규화 후 lookup
+  const norm = normalizeMetricName(name);
+  if (norm && idx[norm]) {
+    const canonicalName = idx[norm];
+    return { found: true, canonical: canonicalMap[canonicalName], canonicalName };
+  }
+  return null;
+}
+
+/**
+ * metricSqlMap 생성 (description + synonym → 집계 적용 완료된 SQL 표현식).
  * 여러 함수에서 중복되던 로직을 하나로 통합.
  *
  * ★ [2026-09-14] resolveCanonicalMetricExpression 으로 대체 —
  *   ROW_CALC / AGG_CALC / INVALID_MIXED 를 AST 로 판정하여 적절한 runtime wrapping 적용.
  *   더 이상 aggregation='CALC' 를 단순히 "raw formula 그대로" 로 처리하지 않음.
  *
- * @param {Object} metricMap - loadMetricMap 결과
+ * ★ [2026-09-14 v2] synonym 확장 — metric_synonym 테이블의 동의어도 canonicalMap 에 등록.
+ *   목적: LLM 이 "영업이익률" (canonical description "영업이익률(%)" 의 동의어) 로
+ *         plan 을 만들어도 canonical formula (SUM(A)/SUM(B)*100) 로 정확히 매칭됨.
+ *   이번 버그 원인 해결:
+ *     - buggy plan: metrics=[{ name: "영업이익률", formula: "... /NULLIF(...,0)" }] (LLM 이 *100 누락)
+ *     - 기존:  canonicalMap["영업이익률"] 미존재 → enforceCanonicalMetricsInPlan 매칭 실패 → LLM formula 그대로
+ *     - 수정:  canonicalMap["영업이익률"] 도 존재 → 매칭 성공 → canonical formula (*100 포함) 로 강제 대체
+ *
+ * @param {Object} metricMap - loadMetricMap 결과 (synonyms 필드 포함)
  * @param {Object} [traceCtx] - { requestId, phase } 로그용
- * @returns {Object} { description: sqlExpr, ... }
+ * @returns {Object} { description: sqlExpr, ...synonym: sqlExpr }
+ *
+ * 부가 정보: 반환된 map 에 __canonicalDescByNormalized 심볼 붙임 —
+ *   { normalizedName: canonicalDescription } — fuzzy match 용.
+ *   (enumerable=false 로 붙여 Object.keys/values 순회에 영향 없음)
  */
+const __CANONICAL_BY_NORMALIZED = Symbol('canonicalDescByNormalized');
+
 function buildCanonicalMetricSqlMap(metricMap, traceCtx) {
   const out = {};
-  if (!metricMap || typeof metricMap !== 'object') return out;
+  const normalizedIndex = {};   // normalizedName → canonicalDescription
+  if (!metricMap || typeof metricMap !== 'object') {
+    Object.defineProperty(out, __CANONICAL_BY_NORMALIZED, { value: normalizedIndex, enumerable: false });
+    return out;
+  }
   for (const [code, meta] of Object.entries(metricMap)) {
     if (!meta || !meta.description) continue;
     const resolved = resolveCanonicalMetricExpression(
@@ -3423,9 +3547,117 @@ function buildCanonicalMetricSqlMap(metricMap, traceCtx) {
       { queryGrain: 'AGGREGATE', traceCtx }
     );
     if (!resolved.ok) continue;
+
+    // Primary key: canonical description
     out[meta.description] = resolved.expr;
+    const normDesc = normalizeMetricName(meta.description);
+    if (normDesc && !normalizedIndex[normDesc]) {
+      normalizedIndex[normDesc] = meta.description;
+    }
+
+    // Extended keys: synonyms (DB 등록 동의어)
+    if (Array.isArray(meta.synonyms)) {
+      for (const syn of meta.synonyms) {
+        if (!syn || typeof syn !== 'string') continue;
+        // 이미 등록된 키(다른 metric 의 description 등)는 덮어쓰지 않음 (충돌 방지)
+        if (!Object.prototype.hasOwnProperty.call(out, syn)) {
+          out[syn] = resolved.expr;
+        }
+        const normSyn = normalizeMetricName(syn);
+        if (normSyn && !normalizedIndex[normSyn]) {
+          normalizedIndex[normSyn] = meta.description;
+        }
+      }
+    }
   }
+  // fuzzy match 용 index 를 non-enumerable 로 부착
+  Object.defineProperty(out, __CANONICAL_BY_NORMALIZED, {
+    value: normalizedIndex,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
   return out;
+}
+
+/**
+ * 외부에서 canonicalMap 의 fuzzy-match index 를 얻기 위한 헬퍼.
+ * @param {Object} canonicalMap - buildCanonicalMetricSqlMap 반환값
+ * @returns {Object} normalizedIndex ({} if not built)
+ */
+function getCanonicalNormalizedIndex(canonicalMap) {
+  if (!canonicalMap || typeof canonicalMap !== 'object') return {};
+  return canonicalMap[__CANONICAL_BY_NORMALIZED] || {};
+}
+
+// ============================================================
+// [Percent Unit Rule 2026-09-14]
+// ------------------------------------------------------------
+// 사용자 원칙 (2026-09-14 확정):
+//   1) 학습관리 Metric 에 등록된 canonical formula 가 있으면 그대로 사용.
+//      LLM/SQL Builder 가 *100 을 추가/제거하지 않음.
+//   2) 미등록 신규 계산 + 사용자가 "비율", "률", "%" 요청 시:
+//      → 최종 결과를 퍼센트로 표시하기 위해 *100 자동 적용
+//   3) 우선순위:
+//      - 등록 Metric 존재 → canonical formula 그대로
+//      - 등록 Metric 없음 + 비율/률/% 요청 → LLM 계산식 + *100
+//
+// 판정 로직:
+//   - metric.name 에 "비율|률|%|rate|ratio" 포함
+//   - formula 에 이미 "*100" 또는 "* 100" 없음
+//   - 등록 Metric 아님 (canonicalMap 에 매칭 안 됨) — 이건 호출부에서 판단 후 넘김
+// ============================================================
+
+const PERCENT_KEYWORD_PATTERN = /(비율|률|%|\bpercent\b|\brate\b|\bratio\b)/i;
+
+/**
+ * formula 에 * 100 (또는 *100) 이 이미 들어있는지 판정.
+ * 공백/괄호 차이 흡수.
+ *
+ * @param {string} formula
+ * @returns {boolean}
+ */
+function formulaHasMultiplyByHundred(formula) {
+  if (!formula || typeof formula !== 'string') return false;
+  // 공백 제거 후 "*100" 서브스트링 검색
+  const compact = formula.replace(/\s+/g, '');
+  return /\*100\b/.test(compact);
+}
+
+/**
+ * 미등록 metric 에 대한 * 100 자동 보정.
+ *
+ * @param {Object} metric - { name, formula, ... }
+ * @param {Object} [opts]
+ * @param {Object} [opts.traceCtx]
+ * @returns {{ modified: boolean, formula: string, reason?: string }}
+ */
+function applyPercentUnitRuleIfNeeded(metric, opts = {}) {
+  if (!metric || !metric.formula || typeof metric.formula !== 'string') {
+    return { modified: false, formula: metric?.formula || '' };
+  }
+  const name = String(metric.name || metric.description || '');
+  // 1) 이름에 비율/률/% 키워드가 있는가
+  if (!PERCENT_KEYWORD_PATTERN.test(name)) {
+    return { modified: false, formula: metric.formula };
+  }
+  // 2) formula 에 이미 *100 이 있는가
+  if (formulaHasMultiplyByHundred(metric.formula)) {
+    return { modified: false, formula: metric.formula, reason: 'formula already has *100' };
+  }
+  // 3) *100 자동 부착
+  //    괄호로 감싸 우선순위 보호 (예: A/B → (A/B)*100)
+  const trimmed = metric.formula.trim();
+  const newFormula = `(${trimmed}) * 100`;
+  if (opts.traceCtx && opts.traceCtx.requestId) {
+    console.warn(
+      `[PercentRule reqId=${opts.traceCtx.requestId}] ` +
+      `미등록 비율 계산에 *100 자동 보정: name="${name}"`
+    );
+    console.warn(`  before: ${trimmed}`);
+    console.warn(`  after:  ${newFormula}`);
+  }
+  return { modified: true, formula: newFormula, reason: 'percent unit rule applied' };
 }
 
 /**
@@ -3622,38 +3854,86 @@ function replaceMetricExpressionsInSql(sql, canonicalMap, traceCtx) {
  *   { name: '판매관리비', formula: 'ZAMT037+ZAMT038+...' }
  *
  * 규칙:
- *   - m.name 이 canonicalMap 에 있으면 → m.formula 를 canonical 로 강제 대체
- *     (LLM 이 formula 를 채웠어도 무시, 다르면 경고 로그)
- *   - m.name 이 canonicalMap 에 없으면 → LLM formula 그대로 (즉석 산식 지원)
+ *   - m.name lookup:
+ *     1) exact match (canonical description or synonym)
+ *     2) fuzzy match (공백/괄호/단위 접미사 제거 후 비교)
+ *   - 매칭되면:
+ *     - m.formula 를 canonical 로 강제 대체
+ *     - m.name 도 canonical description 으로 교정 (표시 일관성)
+ *   - 매칭 실패 (DB 미등록 metric):
+ *     - "비율/률/%" 이름 + formula 에 *100 없음 → 자동 *100 부착 [Percent Unit Rule]
+ *     - 그 외 → LLM formula 그대로 (즉석 산식 지원)
  *
  * @param {Object} plan
- * @param {Object} canonicalMap - { description: canonicalSqlExpr }
+ * @param {Object} canonicalMap - { description: canonicalSqlExpr, ...synonym: sqlExpr }
+ *                                (buildCanonicalMetricSqlMap 반환값; __CANONICAL_BY_NORMALIZED 심볼 포함)
  * @param {Object} [traceCtx] - { requestId, phase }
- * @returns {{plan:Object, changes:Array<{name,before,after}>}}
+ * @returns {{plan:Object, changes:Array<{name,before,after,kind}>}}
  */
 function enforceCanonicalMetricsInPlan(plan, canonicalMap, traceCtx) {
   const changes = [];
   if (!plan || !Array.isArray(plan.metrics) || !canonicalMap) {
     return { plan, changes };
   }
+  const normIndex = getCanonicalNormalizedIndex(canonicalMap);
+
   for (const m of plan.metrics) {
     if (!m || !m.name) continue;
-    const canonical = canonicalMap[m.name];
-    if (!canonical) continue; // DB 미등록 metric → LLM formula 유지
-    const before = m.formula || '';
-    if (before && !areFormulasEquivalent(before, canonical)) {
-      changes.push({ name: m.name, before, after: canonical });
+
+    // 1) canonical lookup (exact → synonym → fuzzy)
+    const lookup = lookupCanonicalMetric(canonicalMap, normIndex, m.name);
+    if (lookup && lookup.found) {
+      const canonical = lookup.canonical;
+      const before = m.formula || '';
+      const nameBefore = m.name;
+      if (before && !areFormulasEquivalent(before, canonical)) {
+        changes.push({ name: nameBefore, before, after: canonical, kind: 'canonical-formula' });
+      }
+      m.formula = canonical; // 등록 metric 은 항상 canonical 로 대체
+      // name 을 canonical description 으로 교정 (예: "영업이익률" → "영업이익률(%)")
+      if (lookup.canonicalName && lookup.canonicalName !== nameBefore) {
+        changes.push({ name: nameBefore, before: nameBefore, after: lookup.canonicalName, kind: 'canonical-name' });
+        m.name = lookup.canonicalName;
+      }
+      continue;
     }
-    m.formula = canonical; // 등록 metric 은 항상 canonical 로 대체
+
+    // 2) 미등록 metric — Percent Unit Rule 적용 대상 여부 확인
+    const percentResult = applyPercentUnitRuleIfNeeded(m, { traceCtx });
+    if (percentResult.modified) {
+      changes.push({
+        name: m.name,
+        before: m.formula || '',
+        after: percentResult.formula,
+        kind: 'percent-unit-rule',
+      });
+      m.formula = percentResult.formula;
+    }
   }
+
   if (changes.length > 0 && traceCtx && traceCtx.requestId) {
     for (const c of changes) {
-      console.warn(
-        `[MetricGuard reqId=${traceCtx.requestId} phase=${traceCtx.phase || 'analysisPlan'}] ` +
-        `plan.metrics[] formula 변형 감지 → canonical 로 강제 대체. name="${c.name}"`
-      );
-      console.warn(`  LLM:       ${c.before}`);
-      console.warn(`  Canonical: ${c.after}`);
+      const phase = traceCtx.phase || 'analysisPlan';
+      if (c.kind === 'canonical-name') {
+        console.warn(
+          `[MetricGuard reqId=${traceCtx.requestId} phase=${phase}] ` +
+          `plan.metrics[] name 교정 → canonical description. "${c.before}" → "${c.after}"`
+        );
+      } else if (c.kind === 'percent-unit-rule') {
+        console.warn(
+          `[MetricGuard reqId=${traceCtx.requestId} phase=${phase}] ` +
+          `미등록 비율 metric 에 *100 자동 보정. name="${c.name}"`
+        );
+        console.warn(`  before: ${c.before}`);
+        console.warn(`  after:  ${c.after}`);
+      } else {
+        console.warn(
+          `[MetricGuard reqId=${traceCtx.requestId} phase=${phase}] ` +
+          `plan.metrics[] formula 변형 감지 → canonical 로 강제 대체. name="${c.name}"`
+        );
+        console.warn(`  LLM:       ${c.before}`);
+        console.warn(`  Canonical: ${c.after}`);
+      }
     }
   }
   return { plan, changes };
@@ -6666,11 +6946,22 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo, targetTable = '
   for (const m of mets) {
     if (!m.formula) continue;
     const alias = m.name || `metric_${Object.keys(metricAliasByName).length + 1}`;
+    // ★ [Percent Unit Rule 2026-09-14] 미등록 metric 이 여기 도달할 경우
+    //   (enforceCanonicalMetricsInPlan 이 canonicalMap 매칭 실패한 metric),
+    //   name 에 "비율/률/%" 이 있고 formula 에 *100 이 없으면 자동 부착.
+    //   등록 metric 은 이미 enforce 단계에서 canonical formula 로 대체되어
+    //   *100 이 포함된 상태로 여기 도달하므로 percent rule 이 no-op.
+    const percentResult = applyPercentUnitRuleIfNeeded(
+      { name: m.name, formula: m.formula },
+      {}
+    );
+    const workingFormula = percentResult.modified ? percentResult.formula : m.formula;
+
     const resolved = resolveCanonicalMetricExpression(
-      { formula: m.formula, aggregation: m.aggregation || 'CALC', description: m.name || alias },
+      { formula: workingFormula, aggregation: m.aggregation || 'CALC', description: m.name || alias },
       { queryGrain: 'AGGREGATE' }
     );
-    const finalExpr = resolved.ok ? resolved.expr : m.formula;
+    const finalExpr = resolved.ok ? resolved.expr : workingFormula;
     selectParts.push(`(${finalExpr}) AS \`${alias}\``);
     metricAliasByName[alias] = finalExpr;
   }
