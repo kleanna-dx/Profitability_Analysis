@@ -5258,6 +5258,260 @@ async function buildFallbackContext(domainCode) {
 // - 남기는 후처리: 율(%) 별칭에 FORMAT 미적용 시 자동 감싸기.
 // ============================================================
 
+// ============================================================
+// [Percent Display Rounding 2026-09-14]
+// ------------------------------------------------------------
+// 사용자 원칙 (2026-09-14 확정):
+//   1) 학습관리 Metric.formula 원본은 절대 수정하지 않음 (DB 값 불변)
+//   2) *100 포함 여부 등 기존 산식은 그대로 유지 —
+//      최종 사용자 노출값에만 ROUND(..., 0) 적용
+//   3) 내부 분석/비교/정렬 등 계산에는 원래 정밀값을 유지하고,
+//      화면 표 및 최종 답변에 표시할 때만 정수 반올림
+//   4) TRUNCATE/절삭이 아니라 ROUND 반올림 (SQL 의 ROUND 는 half-away-from-zero:
+//      -5.6 → -6, 5.6 → 6)
+//   5) 현황집계 / 분석질문 모두 동일 적용
+//
+// 구현 방식: SQL 후처리 — canonical formula mutation 없이 SELECT 절의
+//   비율 alias 표현식만 ROUND(<expr>, 0) 로 감쌈.
+// ============================================================
+
+// 비율/률/% 성격 판정 정규식
+//   positive: "비율", "률", "%", "rate", "ratio", "percent" (대소문자 무관)
+//   negative override: "합계", "금액", "액", 단위 접미사 (원/BOX/BAG/EA/KG 등)
+//     positive keyword 가 있어도 이들이 함께 있으면 금액/수량 metric 으로 판정
+const PERCENT_ALIAS_POSITIVE_RE = /(비율|률|%|\brate\b|\bratio\b|\bpercent\b)/i;
+const PERCENT_ALIAS_NEGATIVE_RE = /(합계|금액|\(원\)|\(원\/|\(BOX\)|\(BAG\)|\(EA\)|\(KG\)|\(kg\)|원단위)/;
+// 단, "매출액", "판매액" 등의 "액" 접미사도 부정 대상 (금액 성격)
+// 하지만 "판매관리비", "영업이익" 등은 negative RE 에 걸리지 않도록 좁게 유지
+const PERCENT_ALIAS_LIQUID_SUFFIX_RE = /액\s*$/;   // 마지막이 "액" (예: 매출액, 판매액)
+
+/**
+ * SQL SELECT alias 문자열이 비율/률/% 성격인지 판정.
+ *
+ * 판정 규칙:
+ *   1) positive keyword 없음 → false
+ *   2) negative keyword 있음 → false (금액/수량 metric)
+ *   3) 그 외 → true
+ *
+ * 예:
+ *   "영업이익률(%)"  → true    (positive)
+ *   "매출총이익률"    → true    (positive)
+ *   "판매비율"        → true    (positive)
+ *   "성장률"          → true    (positive)
+ *   "growth rate"     → true    (positive)
+ *   "총매출"          → false   (positive keyword 없음)
+ *   "매출액"          → false   (액 접미사)
+ *   "판매관리비(원)"  → false   (원 접미사)
+ *   "평균단가(BOX)"   → false   (BOX 접미사)
+ *   "합계금액"        → false   (금액)
+ *   "인건비합계"      → false   (합계)
+ *
+ * @param {string} alias
+ * @returns {boolean}
+ */
+function isPercentAlias(alias) {
+  if (!alias || typeof alias !== 'string') return false;
+  const s = String(alias).trim();
+  if (!s) return false;
+  if (!PERCENT_ALIAS_POSITIVE_RE.test(s)) return false;
+  if (PERCENT_ALIAS_NEGATIVE_RE.test(s)) return false;
+  if (PERCENT_ALIAS_LIQUID_SUFFIX_RE.test(s)) return false;
+  return true;
+}
+
+/**
+ * 표현식에 표시용 ROUND(..., 0) 감쌈.
+ * 이미 ROUND(...) 또는 FORMAT(ROUND(...)) 로 감싸져 있으면 no-op.
+ *
+ * @param {string} expr - SQL 표현식 (예: "SUM(A)/NULLIF(SUM(B),0)*100")
+ * @returns {string}
+ */
+function wrapWithDisplayRounding(expr) {
+  if (!expr || typeof expr !== 'string') return expr;
+  const trimmed = expr.trim();
+  if (!trimmed) return expr;
+  // 이미 ROUND(...) 로 시작하고 그 외곽이 ROUND top-level 인 경우 skip
+  //   (안전을 위해 "ROUND" 시작만 확인해도 충분 — 사용자가 명시적 자릿수 지정한 것 존중)
+  if (/^ROUND\s*\(/i.test(trimmed)) return expr;
+  // 이미 FORMAT(ROUND(...), ...) 형태도 skip
+  if (/^FORMAT\s*\(\s*ROUND\s*\(/i.test(trimmed)) return expr;
+  return `ROUND(${trimmed}, 0)`;
+}
+
+/**
+ * SQL 문자열의 top-level SELECT 절에서 비율 alias 표현식을 자동으로
+ * ROUND(<expr>, 0) 로 감쌈.
+ *
+ * 파싱 규칙:
+ *   - SELECT 키워드 뒤 ~ FROM 키워드 앞까지의 영역 (subquery/CTE 밖의 top-level)
+ *   - top-level 콤마로 SELECT item 분리
+ *   - 각 item 의 뒤쪽에 AS <alias> 를 파싱, alias 가 percent 이면 wrap
+ *
+ * 안전장치:
+ *   - subquery 안 (괄호 depth > 0) 은 건드리지 않음 (top-level 만 처리)
+ *   - 이미 ROUND/FORMAT(ROUND(...)) 로 감싸진 표현식은 wrapWithDisplayRounding 에서 no-op
+ *   - alias 없는 item, 별표 (*), 비율 아닌 alias 는 그대로
+ *
+ * @param {string} sql
+ * @returns {string}
+ */
+function applyPercentDisplayRoundingToSql(sql) {
+  if (!sql || typeof sql !== 'string') return sql;
+
+  // 최상위 SELECT ~ FROM 영역 찾기 (첫 번째 SELECT 만 처리 — CTE/서브쿼리는 그대로)
+  //   대소문자 무관, 서브쿼리 안 SELECT/FROM 을 건드리지 않도록 depth 추적.
+  const upper = sql.toUpperCase();
+  const N = sql.length;
+
+  // 첫 top-level SELECT 위치 찾기
+  let selectStart = -1;
+  {
+    let depth = 0;
+    let inStr = null;
+    for (let i = 0; i < N; i++) {
+      const ch = sql[i];
+      if (inStr) {
+        if (ch === '\\') { i++; continue; }
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') { inStr = ch; continue; }
+      if (ch === '(') { depth++; continue; }
+      if (ch === ')') { depth--; continue; }
+      if (depth !== 0) continue;
+      // top-level 에서 SELECT 시작 감지
+      if (upper.slice(i, i + 6) === 'SELECT') {
+        // 앞뒤가 identifier 경계인지 (단어 경계)
+        const prev = i > 0 ? sql[i - 1] : ' ';
+        const next = i + 6 < N ? sql[i + 6] : ' ';
+        if (!/[A-Za-z0-9_]/.test(prev) && !/[A-Za-z0-9_]/.test(next)) {
+          selectStart = i + 6;
+          break;
+        }
+      }
+    }
+  }
+  if (selectStart < 0) return sql;
+
+  // top-level FROM 위치 찾기 (selectStart 이후)
+  let fromStart = -1;
+  {
+    let depth = 0;
+    let inStr = null;
+    for (let i = selectStart; i < N; i++) {
+      const ch = sql[i];
+      if (inStr) {
+        if (ch === '\\') { i++; continue; }
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') { inStr = ch; continue; }
+      if (ch === '(') { depth++; continue; }
+      if (ch === ')') { depth--; continue; }
+      if (depth !== 0) continue;
+      if (upper.slice(i, i + 4) === 'FROM') {
+        const prev = sql[i - 1];
+        const next = i + 4 < N ? sql[i + 4] : ' ';
+        if (!/[A-Za-z0-9_]/.test(prev) && !/[A-Za-z0-9_]/.test(next)) {
+          fromStart = i;
+          break;
+        }
+      }
+    }
+  }
+  if (fromStart < 0) return sql;
+
+  const selectClause = sql.slice(selectStart, fromStart);
+
+  // SELECT item 을 top-level 콤마로 분리
+  const items = [];
+  {
+    let depth = 0;
+    let inStr = null;
+    let start = 0;
+    for (let i = 0; i < selectClause.length; i++) {
+      const ch = selectClause[i];
+      if (inStr) {
+        if (ch === '\\') { i++; continue; }
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') { inStr = ch; continue; }
+      if (ch === '(') { depth++; continue; }
+      if (ch === ')') { depth--; continue; }
+      if (depth === 0 && ch === ',') {
+        items.push(selectClause.slice(start, i));
+        start = i + 1;
+      }
+    }
+    items.push(selectClause.slice(start));
+  }
+
+  // 각 item 을 순회하며 percent alias 판정 및 wrap
+  const rewrittenItems = items.map((raw) => {
+    const item = raw;
+    const trimmed = item.trim();
+    if (!trimmed || trimmed === '*') return item;
+
+    // alias 추출: 뒤쪽에서 AS 절 찾기 (top-level, 문자열 밖)
+    // 형태: <expr> AS <alias>  또는 <expr> AS 'alias'  또는 <expr> AS "alias" 또는 <expr> AS `alias`
+    //       또는 <expr>  <alias>  (implicit AS — 여기선 처리 대상 아님, 위험)
+    // 뒤에서 앞으로 스캔하여 top-level "AS" 키워드 찾기
+    const itemUpper = item.toUpperCase();
+    let asIdx = -1;
+    {
+      let depth = 0;
+      let inStr = null;
+      // 뒤에서 앞으로 스캔
+      for (let i = item.length - 1; i >= 0; i--) {
+        const ch = item[i];
+        if (inStr) {
+          if (ch === inStr && item[i - 1] !== '\\') inStr = null;
+          continue;
+        }
+        if (ch === "'" || ch === '"' || ch === '`') { inStr = ch; continue; }
+        if (ch === ')') { depth++; continue; }
+        if (ch === '(') { depth--; continue; }
+        if (depth !== 0) continue;
+        // AS 키워드 감지: itemUpper[i..i+2] === "AS" 이고 단어 경계
+        if (i + 1 < item.length && itemUpper.slice(i, i + 2) === 'AS') {
+          const prev = i > 0 ? item[i - 1] : ' ';
+          const next = i + 2 < item.length ? item[i + 2] : ' ';
+          if (!/[A-Za-z0-9_]/.test(prev) && !/[A-Za-z0-9_]/.test(next)) {
+            asIdx = i;
+            break;
+          }
+        }
+      }
+    }
+    if (asIdx < 0) return item;
+
+    const exprPart = item.slice(0, asIdx);
+    const aliasPart = item.slice(asIdx + 2);   // "AS" 이후
+
+    // alias 추출: 따옴표/백틱 안 문자열, 또는 identifier
+    const aliasMatch = aliasPart.match(/^\s*(?:(['"`])([^'"`\\]*(?:\\.[^'"`\\]*)*)\1|([A-Za-z0-9_가-힣()%\/\-. ]+?))\s*$/);
+    if (!aliasMatch) return item;
+    const aliasText = aliasMatch[2] !== undefined ? aliasMatch[2] : (aliasMatch[3] || '').trim();
+
+    if (!isPercentAlias(aliasText)) return item;
+
+    // 표현식 앞뒤 공백 보존
+    const leadingWs = exprPart.match(/^\s*/)[0];
+    const trailingWs = exprPart.match(/\s*$/)[0];
+    const exprCore = exprPart.slice(leadingWs.length, exprPart.length - trailingWs.length);
+
+    // 이미 ROUND/FORMAT(ROUND(...)) 이면 no-op
+    const wrapped = wrapWithDisplayRounding(exprCore);
+    if (wrapped === exprCore) return item;
+
+    return `${leadingWs}${wrapped}${trailingWs}AS${aliasPart}`;
+  });
+
+  const newSelectClause = rewrittenItems.join(',');
+  return sql.slice(0, selectStart) + newSelectClause + sql.slice(fromStart);
+}
+
 /**
  * SQL 문자열 내에서 AS 별칭이 '(%)' 또는 '%'로 끝나는 ROUND(...) 표현식을
  * 자동으로 FORMAT(ROUND(...), N) 형태로 감싼다. (운영 안전장치)
@@ -5428,6 +5682,20 @@ async function applyMetricFormulaReplacement(inputSql, _domainCode, _traceCtx) {
       }
       return m;
     });
+
+    // ------------------------------------------------------------
+    // [Percent Display Rounding 2026-09-14]
+    //   비율/률/% 성격 alias 의 SELECT 표현식을 ROUND(<expr>, 0) 로 감쌈.
+    //   사용자 원칙:
+    //     - canonical formula 원본 mutation 없음 (SQL 후처리)
+    //     - 이미 ROUND(...) 로 감싸진 표현식은 건드리지 않음
+    //     - 최종 표시용 SELECT 절에만 적용, subquery/CTE 안 정밀값 유지
+    //   예) SUM(A)/NULLIF(SUM(B),0)*100 AS '영업이익률'
+    //       → ROUND(SUM(A)/NULLIF(SUM(B),0)*100, 0) AS '영업이익률'
+    //   ※ 반드시 wrapPercentRoundWithFormat 앞에 실행 —
+    //     후속 wrap 이 ROUND(...) 를 FORMAT(ROUND(...), 0) 으로 감싸도록.
+    // ------------------------------------------------------------
+    result = applyPercentDisplayRoundingToSql(result);
 
     // ------------------------------------------------------------
     // 율(%) 별칭에 FORMAT 미적용 시 자동 보정 (안전장치)
@@ -7554,6 +7822,24 @@ async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = nul
   } catch (_mgErr) {
     // metric validation 실패해도 SQL 실행은 계속 (기존 하위호환)
     console.warn(`[MetricGuard] validation 스킵 (예외 무시): ${_mgErr.message}`);
+  }
+
+  // ------------------------------------------------------------
+  // [Percent Display Rounding 2026-09-14] 분석질문 경로에도 적용
+  //   현황집계는 applyMetricFormulaReplacement 를 통해 이미 적용됨.
+  //   분석질문(executeAnalysisPlan) 은 buildAggregationSqlFromPlan 이 생성한 SQL 을
+  //   직접 실행하므로, 여기서 동일 helper 를 명시적으로 호출해
+  //   양쪽 경로가 동일 규칙으로 표시용 반올림을 적용받도록 강제.
+  //   canonical formula 원본은 mutate 하지 않음 (SQL 후처리).
+  // ------------------------------------------------------------
+  try {
+    const roundedSql = applyPercentDisplayRoundingToSql(baseSql);
+    if (roundedSql !== baseSql) {
+      execRecord.diagnostics.push('[PercentDisplayRounding] 비율 metric 에 ROUND(..., 0) 표시용 감쌈');
+      baseSql = roundedSql;
+    }
+  } catch (_prErr) {
+    console.warn(`[PercentDisplayRounding] executeAnalysisPlan 스킵: ${_prErr.message}`);
   }
 
   execRecord.baseSql = baseSql;
