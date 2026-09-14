@@ -44,10 +44,13 @@ function extractFunctionSource(source, header) {
 }
 
 // 대상 헬퍼: 신규 3종 + 기존 buildCanonicalMetricSqlMap (통합 확인)
+// [2026-09-14] buildCanonicalMetricSqlMap 이 이제 normalizeMetricName 을 내부에서 참조 →
+//   normalizeMetricName 도 bootstrap 에 포함 (미포함 시 ReferenceError)
 const targets = [
   { header: 'function tokenizeSqlExpression(expr) {', name: 'tokenizeSqlExpression' },
   { header: 'function classifyMetricFormula(formula) {', name: 'classifyMetricFormula' },
   { header: 'function resolveCanonicalMetricExpression(metric, opts = {}) {', name: 'resolveCanonicalMetricExpression' },
+  { header: 'function normalizeMetricName(name) {', name: 'normalizeMetricName' },
   { header: 'function buildCanonicalMetricSqlMap(metricMap, traceCtx) {', name: 'buildCanonicalMetricSqlMap' },
   { header: 'function expandMetricFormula(formula, _metricMap, _visited = new Set(), _depth = 0) {', name: 'expandMetricFormula' },
 ];
@@ -66,6 +69,8 @@ function extractConstDecl(source, header) {
 let bootstrap = '';
 bootstrap += extractConstDecl(src, "const AGGREGATE_FUNCTIONS = new Set(['SUM'") + '\n';
 bootstrap += extractConstDecl(src, "const SCALAR_FUNCTIONS = new Set([") + '\n';
+// [2026-09-14] buildCanonicalMetricSqlMap 내부에서 __CANONICAL_BY_NORMALIZED Symbol 참조
+bootstrap += "const __CANONICAL_BY_NORMALIZED = Symbol('canonicalDescByNormalized');\n";
 
 for (const t of targets) {
   const fnSrc = extractFunctionSource(src, t.header);
