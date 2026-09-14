@@ -51,11 +51,16 @@ function extractFunctionSource(source, header) {
 // 대상 헬퍼 함수들 추출 후 globalThis 에 노출
 const targets = [
   { header: 'function expandMetricFormula(formula, _metricMap, _visited = new Set(), _depth = 0) {', name: 'expandMetricFormula' },
+  { header: 'function normalizeMetricName(name) {', name: 'normalizeMetricName' },
+  { header: 'function lookupCanonicalMetric(canonicalMap, canonicalDescByNormalized, name) {', name: 'lookupCanonicalMetric' },
   { header: 'function buildCanonicalMetricSqlMap(metricMap, traceCtx) {', name: 'buildCanonicalMetricSqlMap' },
+  { header: 'function getCanonicalNormalizedIndex(canonicalMap) {', name: 'getCanonicalNormalizedIndex' },
   // [2026-09-14] resolveCanonicalMetricExpression 이 buildCanonicalMetricSqlMap 의 의존성이므로 함께 로드
   { header: 'function resolveCanonicalMetricExpression(metric, opts = {}) {', name: 'resolveCanonicalMetricExpression' },
   { header: 'function classifyMetricFormula(formula) {', name: 'classifyMetricFormula' },
   { header: 'function tokenizeSqlExpression(expr) {', name: 'tokenizeSqlExpression' },
+  { header: 'function formulaHasMultiplyByHundred(formula) {', name: 'formulaHasMultiplyByHundred' },
+  { header: 'function applyPercentUnitRuleIfNeeded(metric, opts = {}) {', name: 'applyPercentUnitRuleIfNeeded' },
   { header: 'function normalizeMetricFormula(formula) {', name: 'normalizeMetricFormula' },
   { header: 'function areFormulasEquivalent(a, b) {', name: 'areFormulasEquivalent' },
   { header: 'function replaceMetricExpressionsInSql(sql, canonicalMap, traceCtx) {', name: 'replaceMetricExpressionsInSql' },
@@ -73,9 +78,18 @@ function extractConstDecl(source, header) {
   return source.slice(startIdx, endIdx + 2);
 }
 
+function extractSingleLineConst(source, header) {
+  const startIdx = source.indexOf(header);
+  if (startIdx === -1) throw new Error(`상수 미발견: ${header}`);
+  const endIdx = source.indexOf('\n', startIdx);
+  return source.slice(startIdx, endIdx);
+}
+
 let bootstrap = '';
 bootstrap += extractConstDecl(src, "const AGGREGATE_FUNCTIONS = new Set(['SUM'") + '\n';
 bootstrap += extractConstDecl(src, "const SCALAR_FUNCTIONS = new Set([") + '\n';
+bootstrap += extractSingleLineConst(src, "const PERCENT_KEYWORD_PATTERN =") + '\n';
+bootstrap += "const __CANONICAL_BY_NORMALIZED = Symbol('canonicalDescByNormalized');\n";
 
 for (const t of targets) {
   const fnSrc = extractFunctionSource(src, t.header);
