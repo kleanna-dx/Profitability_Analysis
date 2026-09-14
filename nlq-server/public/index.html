@@ -5128,11 +5128,21 @@ function formatCellValue(v, col, label) {
     const num = _parseNumericLoose(v);
 
     // 1) 비율 → 콤마 없음 (율/률/%)
+    //    [2026-09-14] 사용자 요청: 비율 컬럼 셀 값 뒤에 '%' 자동 부착 (예: "-5" → "-5%")
+    //    - SQL alias 에 (%) 접미사가 있든 없든 무관하게 셀 값에만 표시
+    //    - 이미 문자열에 % 가 있으면 중복 부착 금지
+    //    - 숫자 값에만 부착 (문자열 그대로인 값은 원본 유지)
     if (isRatioColumn(col, label)) {
         if (num !== null && typeof v !== 'boolean') {
-            if (Number.isInteger(num)) return esc(String(num));
-            return esc(num.toLocaleString('ko-KR', { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: 4 }));
+            // 원본 문자열에 이미 '%' 포함 여부 (예: 서버가 "-5%" 형태로 보낸 경우) → 중복 방지
+            const rawStr = String(v);
+            const alreadyHasPercent = rawStr.trim().endsWith('%');
+            const formatted = Number.isInteger(num)
+                ? String(num)
+                : num.toLocaleString('ko-KR', { useGrouping: false, minimumFractionDigits: 0, maximumFractionDigits: 4 });
+            return esc(alreadyHasPercent ? formatted : `${formatted}%`);
         }
+        // 숫자 아님 (예: '-', 'N/A') — 원본 그대로, % 강제 부착 안 함
         return esc(String(v));
     }
     // 2) 코드성 → 콤마 없이 raw
