@@ -3041,30 +3041,389 @@ async function loadMetricMap(domainCode, tableWhitelist) {
 //   4) SQL 실행 직전 formula validation 을 통해 오염이 있으면 자동 치환 + 로그
 // ============================================================
 
+// ============================================================
+// [Metric Aggregation Level Classifier 2026-09-14]
+// ------------------------------------------------------------
+// 목적: Metric.formula 의 "집계 레벨" 을 AST 기반으로 판정.
+//
+// 배경:
+//   metric 테이블의 aggregation='CALC' 산식은 두 가지 형태로 혼재됨:
+//     (A) ROW_CALC — row-level 산식 (예: ZAMT001-ZAMT002)
+//         → 전체 집계 SQL 에서는 SUM(formula) 로 감싸야 함
+//     (B) AGG_CALC — 이미 aggregate 까지 포함된 완성형 산식 (예: SUM(A)/SUM(B)*100)
+//         → 그대로 사용, 외부 SUM 을 추가하면 SUM(SUM(...)) 이중 집계 오류 발생
+//
+// 단순 문자열 includes('SUM(') 으로는 부족한 이유:
+//   - 대소문자 (sum, SUM)
+//   - 다른 aggregate function (AVG, COUNT, MAX, MIN)
+//   - 문자열 리터럴 안의 SUM
+//   - 컬럼 이름에 SUM 포함 (예: SUM_AMOUNT)
+//   - INVALID_MIXED 감지 불가 (예: SUM(A)+B — 위험한 혼합형)
+//
+// 해결: 최소한의 SQL expression tokenizer + AST 기반 판정기.
+// ============================================================
+
+const AGGREGATE_FUNCTIONS = new Set(['SUM', 'AVG', 'COUNT', 'MIN', 'MAX']);
+// SQL scalar function 화이트리스트 (aggregate 가 아닌 함수)
+// NULLIF, COALESCE, IFNULL, ROUND, ABS, CAST 등은 aggregate 가 아님
+const SCALAR_FUNCTIONS = new Set([
+  'NULLIF', 'COALESCE', 'IFNULL', 'IF', 'CASE',
+  'ROUND', 'ABS', 'CEIL', 'CEILING', 'FLOOR', 'TRUNCATE',
+  'CAST', 'CONVERT', 'FORMAT',
+  'GREATEST', 'LEAST', 'POWER', 'SQRT', 'MOD',
+  'DATE', 'YEAR', 'MONTH', 'DAY', 'DATE_FORMAT',
+]);
+
+/**
+ * SQL expression 을 토큰 배열로 변환.
+ * 지원 토큰:
+ *   - IDENT: 식별자 (컬럼명, 함수명) — value 는 원본 표기, upper 는 대문자
+ *   - NUMBER: 숫자 리터럴
+ *   - STRING: 문자열 리터럴 ('...' 또는 "...")
+ *   - OP: 연산자 (+, -, *, /, %, =, <, >, <=, >=, <>, !=)
+ *   - LPAREN / RPAREN: ( )
+ *   - COMMA: ,
+ *   - KEYWORD: SQL 예약어 (AS, AND, OR, NOT, THEN, WHEN, ELSE, END, IS, NULL)
+ *
+ * @param {string} expr
+ * @returns {Array<{type: string, value: string, upper?: string, pos: number}>}
+ */
+function tokenizeSqlExpression(expr) {
+  const tokens = [];
+  if (!expr || typeof expr !== 'string') return tokens;
+  const src = String(expr);
+  const N = src.length;
+  let i = 0;
+
+  const KEYWORDS = new Set([
+    'AS', 'AND', 'OR', 'NOT', 'THEN', 'WHEN', 'ELSE', 'END', 'IS', 'NULL',
+    'CASE', 'BETWEEN', 'IN', 'LIKE', 'DISTINCT',
+  ]);
+
+  while (i < N) {
+    const ch = src[i];
+
+    // 공백 skip
+    if (/\s/.test(ch)) { i++; continue; }
+
+    // 문자열 리터럴 ('...' 또는 "...")
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      const start = i;
+      i++;
+      while (i < N) {
+        if (src[i] === quote) {
+          // escape: '' 또는 "" (SQL 표준)
+          if (src[i + 1] === quote) { i += 2; continue; }
+          i++;
+          break;
+        }
+        if (src[i] === '\\' && i + 1 < N) { i += 2; continue; } // \' escape
+        i++;
+      }
+      tokens.push({ type: 'STRING', value: src.slice(start, i), pos: start });
+      continue;
+    }
+
+    // 백틱 식별자
+    if (ch === '`') {
+      const start = i;
+      i++;
+      while (i < N && src[i] !== '`') i++;
+      i++; // 닫는 백틱
+      const value = src.slice(start + 1, i - 1);
+      tokens.push({ type: 'IDENT', value, upper: value.toUpperCase(), pos: start });
+      continue;
+    }
+
+    // 숫자
+    if (/[0-9]/.test(ch)) {
+      const start = i;
+      while (i < N && /[0-9.eE+\-]/.test(src[i])) {
+        // e/E 뒤의 부호는 지수의 일부, 그 외의 +/- 는 다른 토큰
+        if ((src[i] === '+' || src[i] === '-') && !(src[i - 1] === 'e' || src[i - 1] === 'E')) break;
+        i++;
+      }
+      tokens.push({ type: 'NUMBER', value: src.slice(start, i), pos: start });
+      continue;
+    }
+
+    // 식별자 (컬럼명, 함수명, 키워드)
+    if (/[a-zA-Z_]/.test(ch)) {
+      const start = i;
+      while (i < N && /[a-zA-Z0-9_]/.test(src[i])) i++;
+      const value = src.slice(start, i);
+      const upper = value.toUpperCase();
+      if (KEYWORDS.has(upper)) {
+        tokens.push({ type: 'KEYWORD', value, upper, pos: start });
+      } else {
+        tokens.push({ type: 'IDENT', value, upper, pos: start });
+      }
+      continue;
+    }
+
+    // 괄호
+    if (ch === '(') { tokens.push({ type: 'LPAREN', value: '(', pos: i }); i++; continue; }
+    if (ch === ')') { tokens.push({ type: 'RPAREN', value: ')', pos: i }); i++; continue; }
+
+    // 콤마
+    if (ch === ',') { tokens.push({ type: 'COMMA', value: ',', pos: i }); i++; continue; }
+
+    // 다중 문자 연산자
+    if (ch === '<' && src[i + 1] === '=') { tokens.push({ type: 'OP', value: '<=', pos: i }); i += 2; continue; }
+    if (ch === '>' && src[i + 1] === '=') { tokens.push({ type: 'OP', value: '>=', pos: i }); i += 2; continue; }
+    if (ch === '<' && src[i + 1] === '>') { tokens.push({ type: 'OP', value: '<>', pos: i }); i += 2; continue; }
+    if (ch === '!' && src[i + 1] === '=') { tokens.push({ type: 'OP', value: '!=', pos: i }); i += 2; continue; }
+
+    // 단일 문자 연산자
+    if ('+-*/%=<>'.includes(ch)) { tokens.push({ type: 'OP', value: ch, pos: i }); i++; continue; }
+
+    // 알 수 없는 문자 → skip (안전)
+    i++;
+  }
+
+  return tokens;
+}
+
+/**
+ * SQL expression 의 "집계 레벨" 판정 — AST 기반.
+ *
+ * 판정 규칙:
+ *   1. 토큰을 순회하며 함수 호출 감지 (IDENT + LPAREN 패턴)
+ *   2. AGGREGATE_FUNCTIONS 안에 있으면 aggregate span 으로 표시,
+ *      해당 함수의 인자 범위 (매칭 RPAREN 까지) 를 aggregate scope 로 기록
+ *   3. raw column reference (IDENT 이면서 함수 호출이 아닌 것) 를 순회:
+ *      - 문자열 리터럴 내부 (tokenize 단계에서 STRING 으로 분리됨)
+ *      - scalar function 인자는 raw column 으로 간주 (NULLIF, ROUND 등)
+ *   4. 판정:
+ *      - aggregate function 이 하나도 없음 + raw column 있음 → ROW_CALC
+ *      - aggregate function 있음 + 모든 raw column 이 aggregate scope 안 → AGG_CALC
+ *      - aggregate function 있음 + aggregate 밖에 raw column 존재 → INVALID_MIXED
+ *      - raw column 도 aggregate 도 없음 (숫자 리터럴만 등) → ROW_CALC (안전 기본값)
+ *
+ * @param {string} formula
+ * @returns {{kind: 'ROW_CALC'|'AGG_CALC'|'INVALID_MIXED', reason?: string, hasAggregate: boolean, rawColumnsOutsideAgg?: string[]}}
+ */
+function classifyMetricFormula(formula) {
+  if (!formula || typeof formula !== 'string' || !formula.trim()) {
+    return { kind: 'ROW_CALC', hasAggregate: false, reason: 'empty formula' };
+  }
+
+  const tokens = tokenizeSqlExpression(formula);
+  if (tokens.length === 0) {
+    return { kind: 'ROW_CALC', hasAggregate: false, reason: 'no tokens' };
+  }
+
+  // 각 토큰 위치의 "aggregate scope depth" 계산.
+  // aggregate function 을 만나면 그 인자 범위 내 모든 토큰에 대해 aggScopeDepth++
+  //
+  // 알고리즘:
+  //   - tokens[i] 가 IDENT + tokens[i+1] 이 LPAREN 이면 함수 호출.
+  //     upper 가 AGGREGATE_FUNCTIONS 안이면 그 LPAREN 부터 매칭 RPAREN 까지 aggregate scope.
+  //   - stack 으로 괄호 매칭 추적. 각 (에 대응하는 depth 값 저장.
+  //     ( 가 aggregate function 의 인자 시작이면 aggFlag=true 스택에 push.
+  //     ) 를 만나면 pop, aggFlag 가 true 였으면 그 범위가 aggregate scope.
+
+  const parenStack = []; // [{ isAggArg: boolean, openIdx: number }]
+  const aggregateRanges = []; // [{start, end}] — LPAREN idx ~ RPAREN idx
+  const functionCallIdx = new Set(); // 함수 이름으로 사용된 IDENT 의 인덱스 (raw column 판정에서 제외)
+  const scalarFuncStack = []; // aggregate 가 아닌 함수 인자 스택 (raw column 이 그 안에 있어도 그것은 aggregate 안이 아님)
+
+  let hasAggregate = false;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const tk = tokens[i];
+
+    // 함수 호출 감지: IDENT + 바로 뒤 LPAREN (사이에 공백은 tokenize 에서 이미 제거됨)
+    if (tk.type === 'IDENT' && i + 1 < tokens.length && tokens[i + 1].type === 'LPAREN') {
+      functionCallIdx.add(i);
+      const upper = tk.upper;
+      const isAgg = AGGREGATE_FUNCTIONS.has(upper);
+      if (isAgg) {
+        hasAggregate = true;
+      }
+      // 다음 LPAREN 을 스택에 push 할 때 flag 지정
+      parenStack.push({ isAggArg: isAgg, openIdx: i + 1, isFuncCall: true, funcName: upper });
+      i++; // LPAREN 소비
+      continue;
+    }
+
+    if (tk.type === 'LPAREN') {
+      // 함수 인자가 아닌 grouping 괄호
+      parenStack.push({ isAggArg: false, openIdx: i, isFuncCall: false });
+      continue;
+    }
+
+    if (tk.type === 'RPAREN') {
+      const opened = parenStack.pop();
+      if (opened && opened.isAggArg) {
+        aggregateRanges.push({ start: opened.openIdx, end: i });
+      }
+      continue;
+    }
+  }
+
+  // 각 IDENT 토큰이 raw column 인지 (= 함수 이름이 아니고, aggregate scope 밖) 판정.
+  //   - 함수 이름으로 사용된 IDENT 는 raw column 아님 (functionCallIdx)
+  //   - 예약어(KEYWORD) 는 IDENT 가 아니므로 자동 제외
+  //   - IDENT 가 순수 컬럼 참조인지 판정 (예: ZAMT001, DIVISION)
+  //     대문자만인 것 + 언더스코어 + 숫자 를 columnish 로 간주.
+  //     소문자 시작 IDENT (예: as, from) 는 이미 KEYWORD 로 분류됨.
+  //     Alias 도 SQL 상 컬럼 참조로 취급 (분석 formula 는 aggregate 판정과 무관).
+
+  const rawColumnsOutsideAgg = [];
+
+  const isInsideAggregateScope = (tokenIdx) => {
+    for (const r of aggregateRanges) {
+      if (tokenIdx > r.start && tokenIdx < r.end) return true;
+    }
+    return false;
+  };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const tk = tokens[i];
+    if (tk.type !== 'IDENT') continue;
+    if (functionCallIdx.has(i)) continue; // 함수 이름
+    // IDENT 가 raw column reference
+    if (!isInsideAggregateScope(i)) {
+      rawColumnsOutsideAgg.push(tk.value);
+    }
+  }
+
+  // 판정
+  if (!hasAggregate) {
+    return {
+      kind: 'ROW_CALC',
+      hasAggregate: false,
+      reason: 'no aggregate function found',
+    };
+  }
+
+  if (rawColumnsOutsideAgg.length === 0) {
+    return {
+      kind: 'AGG_CALC',
+      hasAggregate: true,
+      reason: 'all column refs inside aggregate scope',
+    };
+  }
+
+  // aggregate 있음 + 밖에 raw column 존재 → INVALID_MIXED
+  return {
+    kind: 'INVALID_MIXED',
+    hasAggregate: true,
+    rawColumnsOutsideAgg,
+    reason: `raw column refs outside aggregate scope: ${rawColumnsOutsideAgg.slice(0, 5).join(', ')}`,
+  };
+}
+
+/**
+ * Canonical metric expression resolver — 현황집계/분석질문 공통 헬퍼.
+ *
+ * ★ 핵심 원칙 (2026-09-14 사용자 확정):
+ *   1) 학습관리 Metric.formula 원본은 절대 수정하지 않음 (DB 값 불변)
+ *   2) formula 에 집계함수 없음 (ROW_CALC) + 전체 집계 SQL → SUM(formula) 로 감쌈
+ *   3) formula 에 이미 집계함수 있음 (AGG_CALC) → 그대로 사용 (외부 SUM 추가 금지)
+ *   4) 이 처리는 DB 값 변경이 아니라 SQL 생성 시점의 runtime wrapping 규칙
+ *   5) 현황집계 / 분석질문 모두 동일 규칙 사용 (이 함수 하나로 통합)
+ *
+ * @param {Object} metric - { formula, aggregation, description, metric_code? }
+ * @param {Object} [opts]
+ * @param {'AGGREGATE'|'ROW'} [opts.queryGrain='AGGREGATE'] - 조회 목적
+ *        - AGGREGATE: 전체 합계/도메인 집계 조회 (기본값) → ROW_CALC 를 SUM 으로 감쌈
+ *        - ROW: raw row 조회 → wrapping 안 함
+ * @param {Object} [opts.traceCtx] - { requestId, phase } 로그용
+ * @returns {{ok:boolean, expr:string, kind:string, wrapped:boolean, reason?:string}}
+ */
+function resolveCanonicalMetricExpression(metric, opts = {}) {
+  const queryGrain = opts.queryGrain || 'AGGREGATE';
+  const traceCtx = opts.traceCtx || {};
+
+  if (!metric || !metric.formula || typeof metric.formula !== 'string') {
+    return { ok: false, expr: '', kind: 'INVALID_MIXED', wrapped: false, reason: 'empty formula' };
+  }
+
+  const formula = metric.formula;
+  const aggregation = (metric.aggregation || '').toUpperCase();
+
+  // aggregation 이 명시적 aggregate function (SUM/AVG/COUNT/MAX/MIN) 인 경우:
+  //   → 원칙에 따라 formula 는 aggregate 인자로 넣음. formula 자체가 이미 SUM(...) 이면
+  //     이중집계가 되므로 그때는 classifier 로 다시 판정해서 처리.
+  if (['SUM', 'AVG', 'COUNT', 'MAX', 'MIN'].includes(aggregation)) {
+    // formula 가 이미 aggregate 를 포함하고 있는지 재확인 (안전장치)
+    const cls = classifyMetricFormula(formula);
+    if (cls.kind === 'AGG_CALC') {
+      // formula 자체가 이미 완성형 → 그대로 사용 (aggregation 지정을 무시하는게 안전)
+      return { ok: true, expr: formula, kind: 'AGG_CALC', wrapped: false,
+               reason: 'formula already has aggregate; aggregation column ignored to avoid double-agg' };
+    }
+    if (cls.kind === 'INVALID_MIXED') {
+      // 안전: aggregation 지정을 신뢰하지 않고 formula 그대로 사용 + 로그
+      if (traceCtx.requestId) {
+        console.warn(`[MetricResolver reqId=${traceCtx.requestId}] INVALID_MIXED formula detected in aggregation=${aggregation}: "${formula}" — using as-is`);
+      }
+      return { ok: true, expr: formula, kind: 'INVALID_MIXED', wrapped: false, reason: cls.reason };
+    }
+    // ROW_CALC → 지정된 aggregation function 으로 감쌈 (SUM/AVG/COUNT/MAX/MIN)
+    if (queryGrain === 'AGGREGATE') {
+      return { ok: true, expr: `${aggregation}(${formula})`, kind: 'ROW_CALC', wrapped: true };
+    }
+    return { ok: true, expr: formula, kind: 'ROW_CALC', wrapped: false };
+  }
+
+  // aggregation === 'CALC' 또는 그 외 (미지정, RAW 등) → classifier 로 판정
+  const cls = classifyMetricFormula(formula);
+
+  if (cls.kind === 'AGG_CALC') {
+    // 이미 완성형 aggregate 산식 → 그대로 사용, 외부 SUM 금지
+    return { ok: true, expr: formula, kind: 'AGG_CALC', wrapped: false, reason: cls.reason };
+  }
+
+  if (cls.kind === 'INVALID_MIXED') {
+    // 안전: formula 원본을 그대로 사용하되 에러 로그로 감시.
+    // (원본을 신뢰한다는 원칙 유지. 실행이 정말 실패하면 SQL 에러로 표출됨)
+    console.error(
+      `[MetricResolver] INVALID_MIXED metric formula detected — ` +
+      `metric_code=${metric.metric_code || '?'} description="${metric.description || '?'}" ` +
+      `reason="${cls.reason}" formula="${formula}"`
+    );
+    if (traceCtx.requestId) {
+      console.error(`  reqId=${traceCtx.requestId} phase=${traceCtx.phase || 'unknown'}`);
+    }
+    // 판단 유보: aggregate scope 밖 raw column 이 있어도 원본 신뢰 원칙에 따라 그대로 반환
+    // (외부 SUM 을 붙이면 SUM(SUM(A)+B) 형태가 되어 이중집계 위험, 안 붙이면 GROUP BY 오류 위험 — 원본 그대로가 최소 침습)
+    return { ok: true, expr: formula, kind: 'INVALID_MIXED', wrapped: false, reason: cls.reason };
+  }
+
+  // ROW_CALC — 집계 조회면 SUM 으로 감쌈, row 조회면 그대로
+  if (queryGrain === 'AGGREGATE') {
+    return { ok: true, expr: `SUM(${formula})`, kind: 'ROW_CALC', wrapped: true };
+  }
+  return { ok: true, expr: formula, kind: 'ROW_CALC', wrapped: false };
+}
+
 /**
  * metricSqlMap 생성 (description → 집계 적용 완료된 SQL 표현식).
  * 여러 함수에서 중복되던 로직을 하나로 통합.
  *
+ * ★ [2026-09-14] resolveCanonicalMetricExpression 으로 대체 —
+ *   ROW_CALC / AGG_CALC / INVALID_MIXED 를 AST 로 판정하여 적절한 runtime wrapping 적용.
+ *   더 이상 aggregation='CALC' 를 단순히 "raw formula 그대로" 로 처리하지 않음.
+ *
  * @param {Object} metricMap - loadMetricMap 결과
+ * @param {Object} [traceCtx] - { requestId, phase } 로그용
  * @returns {Object} { description: sqlExpr, ... }
  */
-function buildCanonicalMetricSqlMap(metricMap) {
+function buildCanonicalMetricSqlMap(metricMap, traceCtx) {
   const out = {};
   if (!metricMap || typeof metricMap !== 'object') return out;
   for (const [code, meta] of Object.entries(metricMap)) {
     if (!meta || !meta.description) continue;
-    const expanded = expandMetricFormula(meta.formula, metricMap, new Set([code]), 0);
-    let sqlExpr;
-    if (meta.aggregation === 'CALC') {
-      sqlExpr = expanded;
-    } else if (meta.aggregation === 'SUM') {
-      sqlExpr = `SUM(${expanded})`;
-    } else if (['AVG', 'COUNT', 'MAX', 'MIN'].includes(meta.aggregation)) {
-      sqlExpr = `${meta.aggregation}(${expanded})`;
-    } else {
-      sqlExpr = expanded;
-    }
-    out[meta.description] = sqlExpr;
+    const resolved = resolveCanonicalMetricExpression(
+      { ...meta, metric_code: code },
+      { queryGrain: 'AGGREGATE', traceCtx }
+    );
+    if (!resolved.ok) continue;
+    out[meta.description] = resolved.expr;
   }
   return out;
 }
@@ -5016,12 +5375,19 @@ async function buildAnalysisSQL(domainCode, calmonth) {
   const aliasUsed = new Set();
 
   // 1) 우선 코어 KPI
+  // ★ [2026-09-14] resolveCanonicalMetricExpression 사용 — AST 기반 aggregation 판정.
+  //   더 이상 .includes('SUM(') 같은 문자열 검색에 의존하지 않음.
   for (const code of corePriorityCodes) {
     const m = metricMap[code];
     if (!m || !m.formula) continue;
     const expanded = expandMetricFormula(m.formula, metricMap, new Set([code]), 0);
     if (!expanded) continue;
-    const safeExpr = expanded.includes('SUM(') || expanded.includes('sum(') ? `(${expanded})` : `SUM(${expanded})`;
+    const resolved = resolveCanonicalMetricExpression(
+      { ...m, formula: expanded, metric_code: code },
+      { queryGrain: 'AGGREGATE' }
+    );
+    if (!resolved.ok) continue;
+    const safeExpr = resolved.expr;
     // alias: description 우선, 없으면 metric_code
     let alias = (m.description || code).replace(/['"`\\]/g, '').substring(0, 40);
     if (aliasUsed.has(alias)) alias = `${alias}_${code}`;
@@ -5036,7 +5402,12 @@ async function buildAnalysisSQL(domainCode, calmonth) {
     if (selectExprs.length >= 25) break; // 너무 많아지지 않게 제한
     const expanded = expandMetricFormula(m.formula, metricMap, new Set([code]), 0);
     if (!expanded) continue;
-    const safeExpr = expanded.includes('SUM(') || expanded.includes('sum(') ? `(${expanded})` : `SUM(${expanded})`;
+    const resolved = resolveCanonicalMetricExpression(
+      { ...m, formula: expanded, metric_code: code },
+      { queryGrain: 'AGGREGATE' }
+    );
+    if (!resolved.ok) continue;
+    const safeExpr = resolved.expr;
     let alias = (m.description || code).replace(/['"`\\]/g, '').substring(0, 40);
     if (aliasUsed.has(alias)) alias = `${alias}_${code}`;
     aliasUsed.add(alias);
@@ -6285,14 +6656,23 @@ function buildAggregationSqlFromPlan(plan, calmonth, calmonthTo, targetTable = '
   // metrics — alias 는 한글 name, SQL 은 산식 그대로
   // ★ [Metric Determinism 2026-09-04] plan.metrics[].formula 는 generateAnalysisPlan 에서
   //   이미 enforceCanonicalMetricsInPlan 을 거쳐 canonical 로 정규화되어 있어야 함.
-  //   여기서는 정규화된 formula 를 그대로 SELECT 절에 삽입.
-  //   (canonical 재대체는 상위 흐름에서 처리 — 이 함수는 SQL builder 역할만)
+  // ★ [Metric Aggregation Level 2026-09-14] 추가 방어 —
+  //   canonicalMap 은 buildCanonicalMetricSqlMap 이 resolveCanonicalMetricExpression 을
+  //   호출해서 이미 SUM/wrapping 이 적용된 SQL 표현식을 담고 있음. 하지만 LLM 이 만든
+  //   즉석 metric (DB 미등록, canonicalMap 에 없음) 은 raw formula 인 채로 여기 도달할 수 있음.
+  //   → 이 함수 내부에서도 resolveCanonicalMetricExpression 을 호출해 최종 wrapping 을 보장.
+  //   현황집계 / 분석질문 두 경로가 반드시 동일한 runtime wrapping 규칙을 통과하도록 강제.
   const metricAliasByName = {};
   for (const m of mets) {
     if (!m.formula) continue;
     const alias = m.name || `metric_${Object.keys(metricAliasByName).length + 1}`;
-    selectParts.push(`(${m.formula}) AS \`${alias}\``);
-    metricAliasByName[alias] = m.formula;
+    const resolved = resolveCanonicalMetricExpression(
+      { formula: m.formula, aggregation: m.aggregation || 'CALC', description: m.name || alias },
+      { queryGrain: 'AGGREGATE' }
+    );
+    const finalExpr = resolved.ok ? resolved.expr : m.formula;
+    selectParts.push(`(${finalExpr}) AS \`${alias}\``);
+    metricAliasByName[alias] = finalExpr;
   }
 
   // CALMONTH 필터: 범위(calmonthTo 지정 & from!=to) → BETWEEN, 아니면 등호

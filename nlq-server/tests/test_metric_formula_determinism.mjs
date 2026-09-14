@@ -51,7 +51,11 @@ function extractFunctionSource(source, header) {
 // 대상 헬퍼 함수들 추출 후 globalThis 에 노출
 const targets = [
   { header: 'function expandMetricFormula(formula, _metricMap, _visited = new Set(), _depth = 0) {', name: 'expandMetricFormula' },
-  { header: 'function buildCanonicalMetricSqlMap(metricMap) {', name: 'buildCanonicalMetricSqlMap' },
+  { header: 'function buildCanonicalMetricSqlMap(metricMap, traceCtx) {', name: 'buildCanonicalMetricSqlMap' },
+  // [2026-09-14] resolveCanonicalMetricExpression 이 buildCanonicalMetricSqlMap 의 의존성이므로 함께 로드
+  { header: 'function resolveCanonicalMetricExpression(metric, opts = {}) {', name: 'resolveCanonicalMetricExpression' },
+  { header: 'function classifyMetricFormula(formula) {', name: 'classifyMetricFormula' },
+  { header: 'function tokenizeSqlExpression(expr) {', name: 'tokenizeSqlExpression' },
   { header: 'function normalizeMetricFormula(formula) {', name: 'normalizeMetricFormula' },
   { header: 'function areFormulasEquivalent(a, b) {', name: 'areFormulasEquivalent' },
   { header: 'function replaceMetricExpressionsInSql(sql, canonicalMap, traceCtx) {', name: 'replaceMetricExpressionsInSql' },
@@ -59,7 +63,20 @@ const targets = [
   { header: 'function validateAndFixMetricFormulas(sql, canonicalMap, traceCtx) {', name: 'validateAndFixMetricFormulas' },
 ];
 
+// [2026-09-14] resolveCanonicalMetricExpression / classifyMetricFormula 가
+//   AGGREGATE_FUNCTIONS / SCALAR_FUNCTIONS 상수를 참조하므로 함께 로드
+function extractConstDecl(source, header) {
+  const startIdx = source.indexOf(header);
+  if (startIdx === -1) throw new Error(`상수 시작점 없음: ${header}`);
+  const endIdx = source.indexOf(');', startIdx);
+  if (endIdx === -1) throw new Error(`상수 종료점 없음: ${header}`);
+  return source.slice(startIdx, endIdx + 2);
+}
+
 let bootstrap = '';
+bootstrap += extractConstDecl(src, "const AGGREGATE_FUNCTIONS = new Set(['SUM'") + '\n';
+bootstrap += extractConstDecl(src, "const SCALAR_FUNCTIONS = new Set([") + '\n';
+
 for (const t of targets) {
   const fnSrc = extractFunctionSource(src, t.header);
   bootstrap += fnSrc.replace(`function ${t.name}`, `globalThis.${t.name} = function `) + '\n';
