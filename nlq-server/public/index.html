@@ -1581,21 +1581,17 @@ function getSuggestionsForDomain(dc) {
 const SUGGESTIONS_BY_AREA = {
     'profitability': null,   // 도메인(PS/HL) 기반 → getSuggestionsForDomain() 위임
     'manufacturing-cost': {
-        // [2026-08-25] UI 세부탭 통합 → 통합 예시질문 (제품/부서/호기 골고루)
-        //   각 예시가 어느 subArea 인지 규칙 매칭으로 즉시 확정 가능한 문구로 구성.
+        // [2026-09-14] 제조원가 자연어질의는 sys_aimd_cot015 (제품별원가) 단일 테이블로 고정.
+        //   부서별/호기별/팀별/설비별 예시는 완전 삭제 — 서버가 조회를 차단하므로.
         '__unified__': [
-            // [2026-09-10] "제품별 실제원가 TOP N" 은 단순 SUM(TOTAL) 총액이 아니라
-            //   생산량 대비 단위당 실제원가(SUM(TOTAL)/SUM(LBKUM))로 조회해야 함.
-            //   생산량이 많아 총액이 큰 제품과 실제 단가가 높은 제품을 구분하기 위함.
-            //   → 예시질문 문구를 "실제원가 단가" 로 명시하여 사용자·LLM 모두에게 의도 전달.
             '제품별 실제원가 단가 TOP 5',
-            '부서별 총원가 TOP 5',
-            '설비별 총원가 TOP 5',
+            '제품별 표준원가와 실제원가 차이 TOP 5',
             '제품별 매출원가 TOP 5',
-            '부서별 재료비 TOP 5',
-            // [2026-09-11] "설비별 노무비 TOP 5" 예시질문 제거 (사용자 요청)
             '전월대비 제품별 실제원가 증가액 TOP 10',
-            '팀별 원가구성별 금액 비교',
+            '제지 플랜트 제품별 실제원가 순위',
+            '화장지 플랜트 제품별 매출원가 TOP 5',
+            '입고-생산 제품별 총원가 TOP 5',
+            '제품별 변동비와 고정비 비교',
         ],
         // [제품별원가] sys_aimd_cot015: PLANT/MATERIAL/ZCGUBUN(표준·실제·매출원가)/
         //   ZCGUBUN_D(입고-생산/소비-소비)/TOTAL/KST_V(변동비)/KST_F(고정비) 기준.
@@ -1611,32 +1607,9 @@ const SUGGESTIONS_BY_AREA = {
             '입고-생산 제품별 총원가 TOP 5',
             '제품별 변동비와 고정비 비교',
         ],
-        // [부서별원가] sys_aimd_cot043 실제 데이터 기준 (호기 COSTCENTER 제외).
-        //   COSTCENTER/COSTCENTER_NM(부서) × ZCOSTCOMP_NM(원가구성)/COSTELMNT_NM(원가요소) × AMOUNT(금액).
-        //   서버측 forcedFilter 로 23개 호기 COSTCENTER 는 자동 제외됨.
-        'cost-dept': [
-            '부서별 총원가 TOP 5',
-            '부서별 재료비 TOP 5',
-            '부서별 노무비 TOP 5',
-            '부서별 경비 TOP 5',
-            '부서별 원가구성별 금액 비교',
-            '전월대비 부서별 총원가 증가액 TOP 10',
-            '부서별 원가요소 순위',
-            '부서별 원가구성비율 TOP 5',
-        ],
-        // [호기별원가] sys_aimd_cot043 실제 데이터 기준 (23개 호기 COSTCENTER 만 포함).
-        //   COSTCENTER/COSTCENTER_NM(호기) × ZCOSTCOMP_NM(원가구성)/COSTELMNT_NM(원가요소) × AMOUNT(금액).
-        //   서버측 forcedFilter 로 23개 호기 COSTCENTER 만 자동 포함됨.
-        'cost-machine': [
-            '호기별 총원가 TOP 5',
-            '호기별 재료비 TOP 5',
-            '호기별 노무비 TOP 5',
-            '호기별 경비 TOP 5',
-            '호기별 원가구성별 금액 비교',
-            '전월대비 호기별 총원가 증가액 TOP 10',
-            '호기별 원가요소 순위',
-            '호기별 원가구성비율 TOP 5',
-        ],
+        // [2026-09-14] 부서별원가 (cost-dept), 호기별원가 (cost-machine) 예시 완전 삭제.
+        //   정책: 제조원가 자연어질의는 sys_aimd_cot015 (제품별원가) 단일 테이블로 고정.
+        //   sys_aimd_cot043 조회 완전 금지.
     },
 };
 
@@ -4270,6 +4243,13 @@ function appendUnknownTermMessage(msg) {
 //   }
 // ============================================================
 function appendSubareaClarificationMessage(data) {
+    // [2026-09-14] 정책 변경: 제조원가 자연어질의는 sys_aimd_cot015 단일 테이블로 고정.
+    //   서버가 더 이상 subareaClarification 을 발행하지 않지만, 캐시된 오래된 응답이
+    //   프론트에 도달할 가능성 대비 dead-path 로 보존.
+    //   → 콘솔 경고만 남기고 UI 는 렌더하지 않음 (사용자에게 3-버튼 노출 방지).
+    console.warn('[SubareaClarify] deprecated path invoked but ignored (mfg 정책 변경 2026-09-14). data=', data);
+    return;
+    /* eslint-disable no-unreachable */
     const chatArea = document.getElementById('chatArea');
     const clarify = data.subareaClarification || {};
     const originalQuery = clarify.originalQuery || '';
