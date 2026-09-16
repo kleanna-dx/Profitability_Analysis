@@ -6390,15 +6390,25 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   let costBasisDirective = '';
   if (areaCtx && areaCtx.forcedCostBasis && typeof areaCtx.forcedCostBasis.value === 'string') {
     const v = areaCtx.forcedCostBasis.value;
-    costBasisDirective = `\n[★★★ 원가기준(ZCGUBUN) — 사용자가 명확화 UI 에서 이미 선택 완료 ★★★]\n` +
-      `사용자는 원가기준을 이미 확정했습니다. 서버가 최종 SQL 에 다음 조건을 결정적으로 주입합니다:\n` +
-      `  WHERE ZCGUBUN = '${v}'\n\n` +
+    const zd = (typeof areaCtx.forcedCostBasis.zcgubunD === 'string') ? areaCtx.forcedCostBasis.zcgubunD : '';
+    // 표준원가 서브타입 명시 시 사용자 친화적 라벨
+    const subtypeLabel = (v === '표준원가' && zd === '소비-소비') ? '매출원가의 표준원가'
+                       : (v === '표준원가' && zd === '입고-생산') ? '실제원가의 표준원가' : v;
+    const whereClause = zd ? `WHERE ZCGUBUN = '${v}' AND ZCGUBUN_D = '${zd}'` : `WHERE ZCGUBUN = '${v}'`;
+    const zdRule = zd
+      ? `  3. filters 배열에 ZCGUBUN_D 조건도 넣지 마세요. 서버가 ZCGUBUN 과 함께 자동 주입합니다.\n` +
+        `  4. 서로 다른 표준원가 (입고-생산 vs 소비-소비) 를 함께 SUM 하지 마세요.\n` +
+        `     사용자 확정값 '${subtypeLabel}' (ZCGUBUN_D='${zd}') 의 데이터만 조회합니다.\n`
+      : `  3. 서로 다른 원가기준(실제원가/매출원가/표준원가) 을 함께 SUM 하지 마세요.\n` +
+        `     사용자 확정값 '${v}' 의 데이터만 조회합니다.\n`;
+    costBasisDirective = `\n[★★★ 원가기준(ZCGUBUN${zd ? ' + ZCGUBUN_D' : ''}) — 사용자가 명확화 UI 에서 이미 선택 완료 ★★★]\n` +
+      `사용자는 원가기준을 이미 확정했습니다 (${subtypeLabel}). 서버가 최종 SQL 에 다음 조건을 결정적으로 주입합니다:\n` +
+      `  ${whereClause}\n\n` +
       `[plan 작성 규칙]\n` +
       `  1. filters 배열에 ZCGUBUN 조건을 넣지 마세요. 서버가 자동 주입합니다.\n` +
       `  2. dimensions 에 ZCGUBUN 축을 넣지 마세요. 이미 단일 값으로 확정되었습니다.\n` +
-      `  3. 서로 다른 원가기준(실제원가/매출원가/표준원가) 을 함께 SUM 하지 마세요.\n` +
-      `     사용자 확정값 '${v}' 의 데이터만 조회합니다.\n` +
-      `  4. explanation 에도 '${v}' 를 그대로 사용하고 "다른 원가기준으로 해석" 같은\n` +
+      zdRule +
+      `  5. explanation 에도 '${subtypeLabel}' 를 그대로 사용하고 "다른 원가기준으로 해석" 같은\n` +
       `     부연 설명은 붙이지 마세요.\n`;
   }
 
@@ -9674,19 +9684,67 @@ function detectCostElementIntent(query) {
  * 명시되어 있으면 clarification 을 띄우지 않고 그 값을 canonical filter 로 사용.
  * (사용자 요구사항 #5)
  *
- * @returns {{ explicit: boolean, zcgubun: string|null, matchedKeyword: string }}
+ * [2026-09-16] 표준원가 세부 서브타입 지원:
+ *   sys_aimd_cot015 에서 표준원가는 ZCGUBUN='표준원가' 만으로 의미가 확정되지 않고
+ *   ZCGUBUN_D 조합에 따라 두 종류가 있음:
+ *     - 표준원가 + '입고-생산' = "실제원가의 표준원가"
+ *     - 표준원가 + '소비-소비' = "매출원가의 표준원가"
+ *   detectStandardCostSubtypeInQuery 가 "매출원가의 표준원가" 같은 명시적 표현을
+ *   먼저 감지하고, 그 결과가 있으면 여기서 explicit=true + zcgubunD 필드를 함께 반환.
+ *   단순 "표준원가" 만 있는 경우는 explicit=false (2차 clarification 필요).
+ *
+ * @returns {{ explicit: boolean, zcgubun: string|null, zcgubunD: string|null, matchedKeyword: string }}
  */
 function detectExplicitZcgubunInQuery(query) {
   const q = String(query || '');
-  if (!q.trim()) return { explicit: false, zcgubun: null, matchedKeyword: '' };
+  if (!q.trim()) return { explicit: false, zcgubun: null, zcgubunD: null, matchedKeyword: '' };
+
+  // 표준원가 세부 서브타입 먼저 감지 ("매출원가의 표준원가" 등)
+  const subtype = detectStandardCostSubtypeInQuery(q);
+  if (subtype.matched) {
+    return {
+      explicit: true,
+      zcgubun: '표준원가',
+      zcgubunD: subtype.zcgubunD,   // '소비-소비' or '입고-생산'
+      matchedKeyword: subtype.matchedKeyword,
+    };
+  }
+
   // 공백 포함 케이스 모두 커버 ("실제 원가", "실제원가" 등)
   const RE_ACTUAL   = /실제\s*원가/;
   const RE_SALES    = /매출\s*원가/;
   const RE_STANDARD = /표준\s*원가/;
-  if (RE_ACTUAL.test(q))   return { explicit: true, zcgubun: '실제원가', matchedKeyword: (RE_ACTUAL.exec(q)   || [''])[0] };
-  if (RE_SALES.test(q))    return { explicit: true, zcgubun: '매출원가', matchedKeyword: (RE_SALES.exec(q)    || [''])[0] };
-  if (RE_STANDARD.test(q)) return { explicit: true, zcgubun: '표준원가', matchedKeyword: (RE_STANDARD.exec(q) || [''])[0] };
-  return { explicit: false, zcgubun: null, matchedKeyword: '' };
+  if (RE_ACTUAL.test(q))   return { explicit: true, zcgubun: '실제원가', zcgubunD: null, matchedKeyword: (RE_ACTUAL.exec(q)   || [''])[0] };
+  if (RE_SALES.test(q))    return { explicit: true, zcgubun: '매출원가', zcgubunD: null, matchedKeyword: (RE_SALES.exec(q)    || [''])[0] };
+  // 표준원가 단독 → 세부 서브타입 불명확이므로 explicit=false (2차 clarification 필요)
+  //   요구사항 #7: "표준원가 알려줘" 만으로 바로 실행 금지
+  if (RE_STANDARD.test(q)) return { explicit: false, zcgubun: '표준원가', zcgubunD: null, matchedKeyword: (RE_STANDARD.exec(q) || [''])[0] };
+  return { explicit: false, zcgubun: null, zcgubunD: null, matchedKeyword: '' };
+}
+
+/**
+ * 사용자 질의에 "매출원가의 표준원가" / "실제원가의 표준원가" 같은
+ * 표준원가 세부 서브타입이 명시되어 있는지 판정.
+ * 사용자 요구사항 #6:
+ *   "실제원가의 표준원가 알려줘" → ZCGUBUN='표준원가', ZCGUBUN_D='입고-생산'
+ *   "매출원가의 표준원가 알려줘" → ZCGUBUN='표준원가', ZCGUBUN_D='소비-소비'
+ *
+ * @returns {{ matched: boolean, zcgubunD: string|null, matchedKeyword: string }}
+ */
+function detectStandardCostSubtypeInQuery(query) {
+  const q = String(query || '');
+  if (!q.trim()) return { matched: false, zcgubunD: null, matchedKeyword: '' };
+  // "매출원가(의) [공백/조사] 표준원가" — 매출원가가 먼저, 표준원가가 뒤
+  //   허용: "매출원가의 표준원가", "매출원가 표준원가", "매출 원가 의 표준 원가" 등
+  const RE_SALES_STD  = /매출\s*원가\s*(?:의)?\s*표준\s*원가/;
+  const RE_ACTUAL_STD = /실제\s*원가\s*(?:의)?\s*표준\s*원가/;
+  const RE_SALES_STD_REVERSE  = /표준\s*원가\s*(?:의)?\s*매출\s*원가/;   // 역순도 방어적으로 매칭
+  const RE_ACTUAL_STD_REVERSE = /표준\s*원가\s*(?:의)?\s*실제\s*원가/;
+  if (RE_SALES_STD.test(q))          return { matched: true, zcgubunD: '소비-소비', matchedKeyword: (RE_SALES_STD.exec(q)  || [''])[0] };
+  if (RE_ACTUAL_STD.test(q))         return { matched: true, zcgubunD: '입고-생산', matchedKeyword: (RE_ACTUAL_STD.exec(q) || [''])[0] };
+  if (RE_SALES_STD_REVERSE.test(q))  return { matched: true, zcgubunD: '소비-소비', matchedKeyword: (RE_SALES_STD_REVERSE.exec(q)  || [''])[0] };
+  if (RE_ACTUAL_STD_REVERSE.test(q)) return { matched: true, zcgubunD: '입고-생산', matchedKeyword: (RE_ACTUAL_STD_REVERSE.exec(q) || [''])[0] };
+  return { matched: false, zcgubunD: null, matchedKeyword: '' };
 }
 
 /**
@@ -9695,13 +9753,20 @@ function detectExplicitZcgubunInQuery(query) {
  *
  * 동작:
  *   - inputSql 이 sys_aimd_cot015 를 참조하지 않으면 pass-through.
- *   - LLM 이 임의로 생성한 ZCGUBUN 조건 (=, <>, LIKE, IN, IS NULL) 을 모두 제거한 뒤
- *     forcedCostBasis.value 를 canonical 필터로 재주입.
- *   - values 는 항상 단일 값 (실제/매출/표준 중 하나) 로 가정 (기획 요구사항: 서로 다른
- *     원가기준 합산 금지 → IN 확장 없음).
+ *   - LLM 이 임의로 생성한 ZCGUBUN / ZCGUBUN_D 조건 (=, <>, LIKE, IN, IS NULL) 을
+ *     모두 제거한 뒤 forcedCostBasis 값을 canonical 필터로 재주입.
+ *   - value 는 항상 단일 값 (실제/매출/표준 중 하나) 로 가정 (기획 요구사항:
+ *     서로 다른 원가기준 합산 금지 → IN 확장 없음).
+ *   - zcgubunD 가 함께 오면 ZCGUBUN_D='<값>' 도 함께 주입 (표준원가 2차 clarification
+ *     또는 "매출원가의 표준원가" 명시 케이스). 이때 SQL 은 아래 형태로 정착:
+ *       WHERE ZCGUBUN = '<value>' AND ZCGUBUN_D = '<zcgubunD>' AND (...)
+ *
+ * [2026-09-16] ZCGUBUN_D 처리 확장 (표준원가 2차 clarification 지원):
+ *   요구사항 #1/#7 — sys_aimd_cot015 에서 표준원가는 ZCGUBUN_D 없이는 의미 확정 불가.
+ *   요구사항 #4/#5 — value 별 canonical zcgubunD 매핑 옵션도 지원.
  *
  * @param {string} inputSql
- * @param {{ value: string }} forcedCostBasis  단일 ZCGUBUN 값 (canonical)
+ * @param {{ value: string, zcgubunD?: string }} forcedCostBasis
  * @returns {string} 재주입된 SQL
  */
 function applyForcedCostBasisFilter(inputSql, forcedCostBasis) {
@@ -9712,14 +9777,26 @@ function applyForcedCostBasisFilter(inputSql, forcedCostBasis) {
   if (!tableRe.test(inputSql)) return inputSql;
 
   const canonical = String(forcedCostBasis.value).replace(/'/g, "''");
-  const filterClause = `ZCGUBUN = '${canonical}'`;
+  // ZCGUBUN_D 도 지정되어 있으면 함께 결정적으로 주입
+  //   whitelist: 요구사항 #4 — '소비-소비' (매출원가 기준) / '입고-생산' (실제원가 기준)
+  const rawZcgubunD = (typeof forcedCostBasis.zcgubunD === 'string')
+    ? String(forcedCostBasis.zcgubunD).trim()
+    : '';
+  const validZcgubunD = (rawZcgubunD === '소비-소비' || rawZcgubunD === '입고-생산')
+    ? rawZcgubunD.replace(/'/g, "''")
+    : '';
+  const filterClause = validZcgubunD
+    ? `ZCGUBUN = '${canonical}' AND ZCGUBUN_D = '${validZcgubunD}'`
+    : `ZCGUBUN = '${canonical}'`;
 
-  // LLM 이 만든 ZCGUBUN 조건을 통째로 제거하기 위한 견고 정규식.
-  //   패턴 A: `ZCGUBUN (op) '값'` (연속 리터럴 흡수)
-  //   패턴 B: `ZCGUBUN (NOT)? IN ( ... )`
-  //   패턴 C: `ZCGUBUN IS (NOT)? NULL`
+  // LLM 이 만든 ZCGUBUN / ZCGUBUN_D 조건을 통째로 제거하기 위한 견고 정규식.
+  //   패턴 A: `<COL> (op) '값'` (연속 리터럴 흡수)
+  //   패턴 B: `<COL> (NOT)? IN ( ... )`
+  //   패턴 C: `<COL> IS (NOT)? NULL`
+  // ZCGUBUN_D 는 반드시 먼저 매칭되어야 함 (ZCGUBUN 을 앞에 두면 word boundary 문제로
+  // ZCGUBUN_D 가 부분 매치되어 잔여 "_D = ..." 이 남는 회귀가 발생).
   const condPattern = new RegExp(
-    '`?\\bZCGUBUN\\b`?\\s*' +
+    '`?\\b(?:ZCGUBUN_D|ZCGUBUN)\\b`?\\s*' +
     '(?:' +
       '(?:=|<>|!=|<=?|>=?|\\s+(?:NOT\\s+)?LIKE)\\s*' +
       "'(?:[^']|'')*'" +
@@ -9732,10 +9809,10 @@ function applyForcedCostBasisFilter(inputSql, forcedCostBasis) {
     'gi'
   );
 
-  // ZCGUBUN 조건 모두 제거 (AND/OR 연결자도 함께)
+  // ZCGUBUN / ZCGUBUN_D 조건 모두 제거 (AND/OR 연결자도 함께)
   let working = inputSql;
   let iterationGuard = 0;
-  while (iterationGuard++ < 10) {
+  while (iterationGuard++ < 20) {
     condPattern.lastIndex = 0;
     const m = condPattern.exec(working);
     if (!m) break;
@@ -10866,11 +10943,17 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   //   - SQL 실행 직전 applyForcedCostBasisFilter 가 areaCtx.forcedCostBasis 를 참조.
   //   - sys_aimd_cot015 참조 SQL 에만 주입 → 다른 테이블은 자연스럽게 no-op.
   //   - value 는 실제원가/매출원가/표준원가 whitelist (async 게이트에서도 동일 검증).
+  //   - zcgubunD 는 '소비-소비' (매출원가 기준) / '입고-생산' (실제원가 기준) whitelist.
+  //     표준원가는 zcgubunD 필수 (2차 clarification 결과 또는 "매출원가의 표준원가" 명시).
+  //     실제원가/매출원가는 zcgubunD 생략 가능 (기존 흐름 유지).
   if (req.body?.forcedCostBasis && typeof req.body.forcedCostBasis.value === 'string') {
     const v = req.body.forcedCostBasis.value.trim();
+    const rawZd = (typeof req.body.forcedCostBasis.zcgubunD === 'string')
+      ? req.body.forcedCostBasis.zcgubunD.trim() : '';
+    const zd = (rawZd === '소비-소비' || rawZd === '입고-생산') ? rawZd : '';
     if (v === '실제원가' || v === '매출원가' || v === '표준원가') {
-      areaCtx.forcedCostBasis = { value: v };
-      console.log(`[NLQ:CostBasisForced] forcedCostBasis 수신 → value="${v}"`);
+      areaCtx.forcedCostBasis = zd ? { value: v, zcgubunD: zd } : { value: v };
+      console.log(`[NLQ:CostBasisForced] forcedCostBasis 수신 → value="${v}"${zd ? ` zcgubunD="${zd}"` : ''}`);
     } else {
       console.warn(`[NLQ:CostBasisForced] forcedCostBasis whitelist 위반 (무시): value="${v}"`);
     }
@@ -11751,18 +11834,27 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       //   sys_aimd_cot015 자연어질의에서 사용자가 [실제원가]/[매출원가]/[표준원가] 선택했으면
       //   서버가 SQL 에 결정적으로 WHERE ZCGUBUN='<값>' 주입한다고 LLM 에게 알림.
       //   analysis 라우트의 costBasisDirective 와 대칭.
+      //   표준원가 서브타입 확정 시 ZCGUBUN_D 도 함께 주입 (사용자 요구사항 #4).
       if (areaCtx && areaCtx.forcedCostBasis && typeof areaCtx.forcedCostBasis.value === 'string') {
         const _cb = areaCtx.forcedCostBasis.value;
-        systemPrompt += `\n\n[★★★ 원가기준(ZCGUBUN) — 사용자가 명확화 UI 에서 이미 선택 완료 ★★★]\n` +
-          `사용자는 원가기준을 이미 확정했습니다. 서버가 최종 SQL 에 다음 조건을 결정적으로 주입합니다:\n` +
-          `  WHERE ZCGUBUN = '${_cb}'\n\n` +
+        const _zd = (typeof areaCtx.forcedCostBasis.zcgubunD === 'string') ? areaCtx.forcedCostBasis.zcgubunD : '';
+        const _subtypeLabel = (_cb === '표준원가' && _zd === '소비-소비') ? '매출원가의 표준원가'
+                            : (_cb === '표준원가' && _zd === '입고-생산') ? '실제원가의 표준원가' : _cb;
+        const _whereClause = _zd ? `WHERE ZCGUBUN = '${_cb}' AND ZCGUBUN_D = '${_zd}'` : `WHERE ZCGUBUN = '${_cb}'`;
+        const _extraRule = _zd
+          ? `  3. WHERE 절에 반드시 ZCGUBUN_D = '${_zd}' 도 포함하세요. 표준원가는 ZCGUBUN_D 조건 없이는 의미가 확정되지 않습니다.\n` +
+            `  4. 서로 다른 표준원가 (입고-생산 vs 소비-소비) 를 함께 SUM 하지 마세요. 확정값 '${_subtypeLabel}' 의 데이터만 조회합니다.\n`
+          : `  3. 서로 다른 원가기준(실제원가/매출원가/표준원가) 을 함께 SUM 하지 마세요. 확정값의 데이터만 조회합니다.\n`;
+        systemPrompt += `\n\n[★★★ 원가기준(ZCGUBUN${_zd ? ' + ZCGUBUN_D' : ''}) — 사용자가 명확화 UI 에서 이미 선택 완료 ★★★]\n` +
+          `사용자는 원가기준을 이미 확정했습니다 (${_subtypeLabel}). 서버가 최종 SQL 에 다음 조건을 결정적으로 주입합니다:\n` +
+          `  ${_whereClause}\n\n` +
           `[SQL 작성 규칙]\n` +
-          `  1. 이 값 '${_cb}' 은 사용자가 명시적으로 확정한 원가기준입니다. RAG/학습관리 등록 여부와 무관하게 그대로 사용하세요.\n` +
+          `  1. 확정값은 사용자가 명시적으로 선택한 값입니다. RAG/학습관리 등록 여부와 무관하게 그대로 사용하세요.\n` +
           `  2. WHERE 절에 반드시 ZCGUBUN = '${_cb}' 를 포함하세요 (서버가 재주입하지만 LLM 이 함께 넣는 것이 안전).\n` +
-          `  3. 서로 다른 원가기준(실제원가/매출원가/표준원가) 을 함께 SUM 하지 마세요. 확정값의 데이터만 조회합니다.\n` +
-          `  4. 사용자 원 질문의 다른 조건(기간·사업부·자재 등)은 그대로 유지하세요.\n` +
-          `  5. SELECT 절 컬럼 별칭·설명(explanation) 에도 '${_cb}' 를 그대로 사용하세요.\n`;
-        console.log(`[NLQ:CostBasisDirective:Aggregate] 명확화 확정값 프롬프트 주입: ZCGUBUN='${_cb}' (query="${String(query).substring(0, 80)}")`);
+          _extraRule +
+          `  5. 사용자 원 질문의 다른 조건(기간·사업부·자재 등)은 그대로 유지하세요.\n` +
+          `  6. SELECT 절 컬럼 별칭·설명(explanation) 에도 '${_subtypeLabel}' 를 그대로 사용하세요.\n`;
+        console.log(`[NLQ:CostBasisDirective:Aggregate] 명확화 확정값 프롬프트 주입: ${_whereClause} (query="${String(query).substring(0, 80)}")`);
       }
 
       // [2026-08-31] 전체 합계(OVERALL) 의도 처리 — 제조원가 영역 전용
@@ -13533,80 +13625,191 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
   //     - "제품별/부서별/호기별" 같은 subArea clarification 과는 무관 (다른 축).
   //     - cot015 targetTable 은 그대로. 테이블 라우팅 clarification 아님.
   // ─────────────────────────────────────────────────────────────────
-  const alreadyClarifiedCostBasis = !!(req.body?.forcedCostBasis && typeof req.body.forcedCostBasis.value === 'string' && req.body.forcedCostBasis.value.trim());
+  // 재요청 판정:
+  //   - value 만 실려있고 표준원가면 → 2차 clarification 필요 (아직 완료 안 됨)
+  //   - 표준원가 + zcgubunD 실려있으면 → 완전 확정 (통과)
+  //   - 실제원가/매출원가면 → 완전 확정 (통과)
+  const _rbFcb = req.body?.forcedCostBasis;
+  const _rbFcbValue = (_rbFcb && typeof _rbFcb.value === 'string') ? _rbFcb.value.trim() : '';
+  const _rbFcbZd    = (_rbFcb && typeof _rbFcb.zcgubunD === 'string') ? _rbFcb.zcgubunD.trim() : '';
+  const _needsStandardSubClarify = (_rbFcbValue === '표준원가' && !_rbFcbZd);
+  const alreadyClarifiedCostBasis = !!_rbFcbValue && !_needsStandardSubClarify;
   let confirmedForcedCostBasis = null;
   if (selectedTable === 'sys_aimd_cot015' && !alreadyClarifiedCostBasis) {
+    // 2차 clarification 재요청 케이스 (1차에서 표준원가 선택 후 body 에 실려 옴)
+    //   → detectCostElementIntent 트리거 판정과 무관하게 곧바로 2차 응답 반환.
+    if (_needsStandardSubClarify) {
+      console.log(`[CostBasisClarify] 재요청 forcedCostBasis.value='표준원가' + zcgubunD 미실림 → 2차 clarification (표준원가 서브타입) 응답`);
+      const clarifyJobId = generateNlqJobId();
+      const clarifyRequestId = getCurrentRequestId();
+      const clarifyMsg = `어떤 표준원가를 조회할까요?`;
+      // 옵션: 매출원가의 표준원가(소비-소비) / 실제원가의 표준원가(입고-생산)
+      //   __ALL__ 없음 — 요구사항 #7 (서로 다른 표준원가 합산 금지).
+      //   emphasize: 프론트가 이 필드를 참고해 '매출원가'/'실제원가' 부분만 굵게 표시.
+      const options = [
+        { value: '소비-소비', label: '매출원가의 표준원가', emphasize: '매출원가' },
+        { value: '입고-생산', label: '실제원가의 표준원가', emphasize: '실제원가' },
+      ];
+      const finishedJob = {
+        jobId: clarifyJobId,
+        status: 'done',
+        userId,
+        userRole: req.session.user.role || 'user',
+        requestId: clarifyRequestId,
+        query: String(query),
+        queryMode: queryMode || 'analysis',
+        conversationContext: conversationContext || null,
+        session_id: session_id || null,
+        area: selectedArea,
+        subArea: selectedSubArea,
+        table: selectedTable,
+        startedAt: Date.now(),
+        runningAt: Date.now(),
+        finishedAt: Date.now(),
+        result: {
+          success: true,
+          rows: [], rowCount: 0, sql: null,
+          explanation: clarifyMsg,
+          answer: clarifyMsg,
+          isUnknownTerm: false,
+          // 프론트는 costbasisStandardSubtypeClarification 필드를 보고 2차 버튼 렌더
+          //   → 클릭 시 forcedCostBasis = { value: '표준원가', zcgubunD: <선택값> } 로 재요청
+          costbasisStandardSubtypeClarification: {
+            originalQuery: String(query),
+            options,
+            area: selectedArea,
+            subArea: selectedSubArea,
+            baseValue: '표준원가',
+          },
+          requestId: clarifyRequestId,
+        },
+        error: null,
+        statusCode: 200,
+        innerRequestId: null,
+        timings: null,
+      };
+      nlqJobs.set(clarifyJobId, finishedJob);
+      return res.json({
+        success: true,
+        jobId: clarifyJobId,
+        status: 'pending',
+        requestId: clarifyRequestId,
+        asyncRequestId: clarifyRequestId,
+        startedAt: new Date(finishedJob.startedAt).toISOString(),
+        pollUrl: `/api/nlq/job/${clarifyJobId}`,
+        recommendedPollIntervalMs: 500,
+      });
+    }
+
     const elementIntent = detectCostElementIntent(query);
     const explicitZcgubun = detectExplicitZcgubunInQuery(query);
-    if (elementIntent.matched) {
-      if (explicitZcgubun.explicit) {
-        // 사용자가 이미 원가기준을 명시함 → clarification 스킵, 그 값을 canonical 로 확정
+    // 트리거: 원가요소 트리거가 있거나, 또는 사용자가 처음부터 "표준원가" 만 명시한 경우도
+    //   ("표준원가 알려줘" — 요구사항 #6/#7: 표준원가 단독 시 반드시 2차 확정 필요).
+    const shouldGate = elementIntent.matched
+      || (explicitZcgubun.zcgubun === '표준원가' && !explicitZcgubun.zcgubunD);
+    if (shouldGate) {
+      // Case A: 사용자가 "매출원가의 표준원가" 처럼 zcgubun+zcgubunD 를 모두 명시함
+      //   → 자동 확정, 모든 clarification 스킵.
+      if (explicitZcgubun.explicit && explicitZcgubun.zcgubun === '표준원가' && explicitZcgubun.zcgubunD) {
+        confirmedForcedCostBasis = { value: '표준원가', zcgubunD: explicitZcgubun.zcgubunD, source: 'explicit_in_query' };
+        console.log(`[CostBasisClarify] 표준원가 서브타입 명시 → 모든 명확화 스킵. matchedKeyword="${explicitZcgubun.matchedKeyword}" → ZCGUBUN='표준원가', ZCGUBUN_D='${explicitZcgubun.zcgubunD}'`);
+      }
+      // Case B: 사용자가 실제원가/매출원가 를 명시 → 1차 clarification 스킵
+      else if (explicitZcgubun.explicit && explicitZcgubun.zcgubun !== '표준원가') {
         confirmedForcedCostBasis = { value: explicitZcgubun.zcgubun, source: 'explicit_in_query' };
-        console.log(`[CostBasisClarify] 사용자 명시 → 명확화 스킵. matchedKeyword="${explicitZcgubun.matchedKeyword}" → zcgubun="${explicitZcgubun.zcgubun}"`);
-      } else {
-        // 원가요소 트리거 + ZCGUBUN 미명시 → clarification 응답
-        console.log(`[CostBasisClarify] "원가요소" 트리거 + ZCGUBUN 미명시 → 명확화 응답 반환. userTerm="${elementIntent.matchedKeyword}"`);
+        console.log(`[CostBasisClarify] 사용자 명시 → 1차 명확화 스킵. matchedKeyword="${explicitZcgubun.matchedKeyword}" → zcgubun="${explicitZcgubun.zcgubun}"`);
+      }
+      // Case C: 사용자가 "표준원가" 만 명시 (서브타입 없음) → 곧바로 2차 clarification 응답
+      //   1차 [실제/매출/표준] 을 건너뛰고 바로 [매출원가의 표준원가/실제원가의 표준원가] 표시.
+      else if (explicitZcgubun.zcgubun === '표준원가' && !explicitZcgubun.zcgubunD) {
+        console.log(`[CostBasisClarify] 표준원가만 명시 (서브타입 없음) → 2차 clarification 직접 반환`);
         const clarifyJobId = generateNlqJobId();
         const clarifyRequestId = getCurrentRequestId();
-        const clarifyMsg = `어떤 원가 기준으로 조회할까요?`;
-        // 옵션: 실제원가 / 매출원가 / 표준원가 3개 고정 (요구사항 #2)
-        //   __ALL__ 없음 — 요구사항 #4 (서로 다른 원가기준 합산 금지).
+        const clarifyMsg = `어떤 표준원가를 조회할까요?`;
         const options = [
-          { value: '실제원가', label: '실제원가' },
-          { value: '매출원가', label: '매출원가' },
-          { value: '표준원가', label: '표준원가' },
+          { value: '소비-소비', label: '매출원가의 표준원가', emphasize: '매출원가' },
+          { value: '입고-생산', label: '실제원가의 표준원가', emphasize: '실제원가' },
         ];
         const finishedJob = {
-          jobId: clarifyJobId,
-          status: 'done',
-          userId,
+          jobId: clarifyJobId, status: 'done', userId,
           userRole: req.session.user.role || 'user',
           requestId: clarifyRequestId,
           query: String(query),
           queryMode: queryMode || 'analysis',
           conversationContext: conversationContext || null,
           session_id: session_id || null,
-          area: selectedArea,
-          subArea: selectedSubArea,
-          table: selectedTable,
-          startedAt: Date.now(),
-          runningAt: Date.now(),
-          finishedAt: Date.now(),
+          area: selectedArea, subArea: selectedSubArea, table: selectedTable,
+          startedAt: Date.now(), runningAt: Date.now(), finishedAt: Date.now(),
           result: {
-            success: true,
-            rows: [], rowCount: 0, sql: null,
-            explanation: clarifyMsg,
-            answer: clarifyMsg,
-            isUnknownTerm: false,
-            // 프론트는 이 필드를 보고 명확화 버튼 렌더 → 재요청 시 forcedCostBasis 실어서 보냄
+            success: true, rows: [], rowCount: 0, sql: null,
+            explanation: clarifyMsg, answer: clarifyMsg, isUnknownTerm: false,
+            costbasisStandardSubtypeClarification: {
+              originalQuery: String(query),
+              options,
+              area: selectedArea, subArea: selectedSubArea,
+              baseValue: '표준원가',
+            },
+            requestId: clarifyRequestId,
+          },
+          error: null, statusCode: 200, innerRequestId: null, timings: null,
+        };
+        nlqJobs.set(clarifyJobId, finishedJob);
+        return res.json({
+          success: true, jobId: clarifyJobId, status: 'pending',
+          requestId: clarifyRequestId, asyncRequestId: clarifyRequestId,
+          startedAt: new Date(finishedJob.startedAt).toISOString(),
+          pollUrl: `/api/nlq/job/${clarifyJobId}`,
+          recommendedPollIntervalMs: 500,
+        });
+      }
+      // Case D: 아무 원가기준도 명시 안 됨 → 1차 clarification 응답
+      else {
+        console.log(`[CostBasisClarify] "원가요소" 트리거 + ZCGUBUN 미명시 → 1차 명확화 응답 반환. userTerm="${elementIntent.matchedKeyword}"`);
+        const clarifyJobId = generateNlqJobId();
+        const clarifyRequestId = getCurrentRequestId();
+        const clarifyMsg = `어떤 원가 기준으로 조회할까요?`;
+        // 옵션: 실제원가 / 매출원가 / 표준원가 3개 고정 (요구사항 #2)
+        //   __ALL__ 없음 — 요구사항 #4 (서로 다른 원가기준 합산 금지).
+        //   표준원가는 프론트가 클릭 시 2차 clarification 을 자체 렌더 (재요청 후 2차 응답도 지원).
+        const options = [
+          { value: '실제원가', label: '실제원가' },
+          { value: '매출원가', label: '매출원가' },
+          { value: '표준원가', label: '표준원가' },
+        ];
+        const finishedJob = {
+          jobId: clarifyJobId, status: 'done', userId,
+          userRole: req.session.user.role || 'user',
+          requestId: clarifyRequestId,
+          query: String(query),
+          queryMode: queryMode || 'analysis',
+          conversationContext: conversationContext || null,
+          session_id: session_id || null,
+          area: selectedArea, subArea: selectedSubArea, table: selectedTable,
+          startedAt: Date.now(), runningAt: Date.now(), finishedAt: Date.now(),
+          result: {
+            success: true, rows: [], rowCount: 0, sql: null,
+            explanation: clarifyMsg, answer: clarifyMsg, isUnknownTerm: false,
             costbasisClarification: {
               originalQuery: String(query),
               searchTerm: elementIntent.matchedKeyword,
               options,
-              area: selectedArea,
-              subArea: selectedSubArea,
+              area: selectedArea, subArea: selectedSubArea,
             },
             requestId: clarifyRequestId,
           },
-          error: null,
-          statusCode: 200,
-          innerRequestId: null,
-          timings: null,
+          error: null, statusCode: 200, innerRequestId: null, timings: null,
         };
         nlqJobs.set(clarifyJobId, finishedJob);
         return res.json({
-          success: true,
-          jobId: clarifyJobId,
-          status: 'pending',
-          requestId: clarifyRequestId,
-          asyncRequestId: clarifyRequestId,
+          success: true, jobId: clarifyJobId, status: 'pending',
+          requestId: clarifyRequestId, asyncRequestId: clarifyRequestId,
           startedAt: new Date(finishedJob.startedAt).toISOString(),
           pollUrl: `/api/nlq/job/${clarifyJobId}`,
           recommendedPollIntervalMs: 500,
         });
       }
     }
-    // "원가요소" 트리거 없음 → 게이트 통과, 기존 자연어 흐름 유지
+    // 트리거 없음 → 게이트 통과, 기존 자연어 흐름 유지
   }
 
   setRequestStage('async_job_accepted');
@@ -13642,12 +13845,17 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     //     2) 프론트가 명확화 응답 후 재요청 시 body 로 실어보낸 값 (req.body.forcedCostBasis)
     //   둘 다 없으면 null → 강제 필터 미주입 (기존 흐름).
     //   value 는 실제원가 / 매출원가 / 표준원가 중 하나로만 허용 (whitelist).
+    //   zcgubunD 는 '소비-소비' / '입고-생산' whitelist. 표준원가 서브타입 확정 시에만 존재.
+    //   표준원가 + zcgubunD 미실림 → 위 clarification 게이트에서 이미 2차 응답 반환됨.
     forcedCostBasis: confirmedForcedCostBasis || (() => {
       const raw = req.body?.forcedCostBasis;
       if (!raw || typeof raw.value !== 'string') return null;
       const v = raw.value.trim();
       if (v !== '실제원가' && v !== '매출원가' && v !== '표준원가') return null;
-      return { value: v, source: 'client_selection' };
+      const rawZd = (typeof raw.zcgubunD === 'string') ? raw.zcgubunD.trim() : '';
+      const zd = (rawZd === '소비-소비' || rawZd === '입고-생산') ? rawZd : '';
+      return zd ? { value: v, zcgubunD: zd, source: 'client_selection' }
+                : { value: v, source: 'client_selection' };
     })(),
     // [2026-09-13] body 로 전달된 UI 도메인 (self-fetch body 에도 다시 실어서 이중 방어)
     //   이미 위 [DomainSync] 블록에서 세션에 반영했지만, self-fetch 중 세션 상태가
