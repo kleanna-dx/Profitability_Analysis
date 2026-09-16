@@ -11549,15 +11549,30 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       //         기존 수익성분석의 자연어 집계 판단 로직에는 영향을 주지 않음.
       //   판별: detectOverallTotalIntent(query) — 형태소 경계 기반 정규식 (종합/복합/조합 등 오탐 방지)
       //   효과: LLM이 GROUP BY 없이 SUM(...) 1행만 반환하도록 강제
+      //
+      // [2026-09-16] aggregate 라우트 대칭 보정 — 총합 intent 없을 시 subArea 자연 grain 강제
+      //   배경: analysis 라우트(L6286~)는 총합 intent 없을 때 subArea 별 GROUP BY 강제
+      //         지시(subAreaDirective, cost-product → [MATERIAL, MATERIAL_NM])를 프롬프트에
+      //         이미 주입하지만, aggregate 라우트(여기)에는 총합 intent 있을 때의 GROUP BY
+      //         해제 지시만 있고 "없을 때 강제 지시"는 없었음. 그 결과 사용자가 "2026년 8월
+      //         인건비 알려줘" 처럼 총합 표현 없이 물었을 때 LLM 이 KST012 등 금액 컬럼을
+      //         보고 임의로 GROUP BY 없는 SUM(...) 1행 SQL 을 생성.
+      //   수정: detectOverallTotalIntent 판정 결과에 따라 대칭적으로 프롬프트를 붙임.
+      //         - 총합 intent 있음 → 기존대로 GROUP BY 해제, 1행 전체 합계
+      //         - 총합 intent 없음 → subArea 자연 grain (cost-product=[MATERIAL, MATERIAL_NM]/
+      //                              cost-dept=[COSTCENTER,COSTCENTER_NM]/cost-machine=[COSTCENTER,COSTCENTER_NM])
+      //                              GROUP BY 강제, 절대 1행 총합이 되지 않도록 지시
+      //   범위: manufacturing-cost + subArea 지정 시에만. 수익성분석 자연어 로직에는 영향 없음.
+      //         cot015 하드코딩 아님 — subArea 판정 결과만 사용 (cot015/cot043 모두 대응).
       if (areaCtx?.area === 'manufacturing-cost' && areaCtx?.subArea) {
         const overallIntent = detectOverallTotalIntent(query);
+        const subAreaLabel = (
+          areaCtx.subArea === 'cost-product' ? '제품별원가' :
+          areaCtx.subArea === 'cost-dept'    ? '부서별원가' :
+          areaCtx.subArea === 'cost-machine' ? '호기별원가' : areaCtx.subArea
+        );
         if (overallIntent.isOverall) {
           console.log(`[NLQ:OverallTotalIntent] mode=${userQueryMode} subArea=${areaCtx.subArea} matchedKeyword="${overallIntent.matchedKeyword}" → GROUP BY 해제, 1행 전체 합계 요청`);
-          const subAreaLabel = (
-            areaCtx.subArea === 'cost-product' ? '제품별원가' :
-            areaCtx.subArea === 'cost-dept'    ? '부서별원가' :
-            areaCtx.subArea === 'cost-machine' ? '호기별원가' : areaCtx.subArea
-          );
           const filterNote = (
             areaCtx.subArea === 'cost-dept'    ? '\n- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. WHERE 절에 COSTCENTER 조건을 넣지 마세요.' :
             areaCtx.subArea === 'cost-machine' ? '\n- 호기(설비) COSTCENTER 코드만 백엔드가 자동 필터링합니다. WHERE 절에 COSTCENTER 조건을 넣지 마세요.' : ''
@@ -11568,6 +11583,38 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
 - SELECT 절에 MATERIAL / MATERIAL_NM / COSTCENTER / COSTCENTER_NM 등 세부 분류 컬럼을 포함하지 마세요.
 - 조회 범위(테이블·부서/호기 코드 대상)는 세부업무영역이 결정하며, 서버가 자동 주입합니다.${filterNote}
 - 예) "총 인건비 알려줘" → SELECT FORMAT(SUM(...),0) AS '인건비(원)' FROM ... WHERE ... (GROUP BY X, 1행)`;
+        } else {
+          // 총합 intent 없음 → subArea 자연 grain 로 GROUP BY 강제 (analysis 라우트와 대칭)
+          console.log(`[NLQ:SubAreaGrainDirective:Aggregate] mode=${userQueryMode} subArea=${areaCtx.subArea} → GROUP BY 강제 (총합 intent 없음)`);
+          if (areaCtx.subArea === 'cost-product') {
+            systemPrompt += `\n\n[★★★ 세부업무영역 = 제품별원가 — 일반 조회 (총합 표현 없음) ★★★]
+- 사용자 질의에 "총 / 총합 / 합계 / 전체 합계" 같은 전체 합계 표현이 **없습니다**.
+- 반드시 **GROUP BY MATERIAL** 을 포함하고, dimension 에 [MATERIAL, MATERIAL_NM] 을 넣어 **제품별 여러 행** 으로 반환하세요.
+- 절대 1행 전체 SUM 만 반환하지 마세요. 결과는 제품별 여러 행이어야 합니다.
+- SELECT 예시:
+    SELECT MATERIAL AS '자재코드',
+           MAX(MATERIAL_NM) AS '자재명',
+           FORMAT(SUM(<금액컬럼>),0) AS '<지표명>(원)'
+    FROM <table>
+    WHERE <기간·기타 조건>
+    GROUP BY MATERIAL
+    ORDER BY SUM(<금액컬럼>) DESC
+- 기존 필터(CALMONTH, DIVISION, MATERIAL filter, ZCGUBUN, 기타 사용자 명시 조건)는 그대로 유지하세요.`;
+          } else if (areaCtx.subArea === 'cost-dept') {
+            systemPrompt += `\n\n[★★★ 세부업무영역 = 부서별원가 — 일반 조회 (총합 표현 없음) ★★★]
+- 사용자 질의에 "총 / 총합 / 합계 / 전체 합계" 같은 전체 합계 표현이 **없습니다**.
+- 반드시 **GROUP BY COSTCENTER** 를 포함하고, dimension 에 [COSTCENTER, COSTCENTER_NM] (COSTCENTER_NM 없으면 [COSTCENTER] 단독) 을 넣어 **부서별 여러 행** 으로 반환하세요.
+- 절대 1행 전체 SUM 만 반환하지 마세요. 결과는 부서별 여러 행이어야 합니다.
+- 호기(설비) COSTCENTER 코드는 백엔드가 자동으로 제외합니다. WHERE 절에 COSTCENTER 조건을 넣지 마세요.
+- 기존 필터(CALMONTH, DIVISION, 기타 사용자 명시 조건)는 그대로 유지하세요.`;
+          } else if (areaCtx.subArea === 'cost-machine') {
+            systemPrompt += `\n\n[★★★ 세부업무영역 = 호기별원가 — 일반 조회 (총합 표현 없음) ★★★]
+- 사용자 질의에 "총 / 총합 / 합계 / 전체 합계" 같은 전체 합계 표현이 **없습니다**.
+- 반드시 **GROUP BY COSTCENTER** 를 포함하고, dimension 에 [COSTCENTER, COSTCENTER_NM] (COSTCENTER_NM 없으면 [COSTCENTER] 단독) 을 넣어 **호기별 여러 행** 으로 반환하세요.
+- 절대 1행 전체 SUM 만 반환하지 마세요. 결과는 호기별 여러 행이어야 합니다.
+- 호기(설비) COSTCENTER 코드만 백엔드가 자동 필터링합니다. WHERE 절에 COSTCENTER 조건을 넣지 마세요.
+- 기존 필터(CALMONTH, DIVISION, 기타 사용자 명시 조건)는 그대로 유지하세요.`;
+          }
         }
       }
 
