@@ -225,10 +225,12 @@
             background:rgba(168,85,247,0.10);color:#7e22ce;
             border-color:rgba(168,85,247,0.30);
         }
-        /* [2026-09-16] 원가기준 (ZCGUBUN) 명확화 chip — 실제/매출/표준원가 */
+        /* [2026-09-16] 원가기준 (ZCGUBUN) 명확화 chip — 실제/매출/표준원가.
+           사용자 지시: 이전 subArea clarification (제품별/부서별/호기별) 과 동일한
+           파란 톤을 사용해 UI 일관성 유지. subArea 와 완전히 같은 색상. */
         .clarify-chip.type-costBasis{
-            background:rgba(234,88,12,0.10);color:#c2410c;
-            border-color:rgba(234,88,12,0.30);
+            background:rgba(14,165,233,0.10);color:#0369a1;
+            border-color:rgba(14,165,233,0.30);
         }
         .fav-heart-btn{
             width:30px;height:30px;border-radius:50%;
@@ -4744,30 +4746,31 @@ function appendCostbasisClarificationMessage(data) {
 
     const el = document.createElement('div');
     el.className = 'msg-bot fade-in';
-    // 3버튼 렌더 (동일 스타일, __ALL__ 없음)
+    // 3버튼 렌더 — 이전 subArea clarification (제품별/부서별/호기별) 과 동일한 파란 톤.
+    // (사용자 지시: 디자인만 통일, __ALL__ 옵션은 넣지 않음 = 요구사항 #4)
     const btnHtml = options.map((opt) => {
         return `<button type="button" class="costbasis-clarify-btn" data-value="${esc(opt.value)}"
-            style="padding:8px 16px;background:#fff;border:1.5px solid #c2410c;border-radius:8px;color:#c2410c;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;">
+            style="padding:8px 16px;background:#fff;border:1.5px solid #0369a1;border-radius:8px;color:#0369a1;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;">
             ${esc(opt.label)}
         </button>`;
     }).join('');
     el.innerHTML = `
         <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
-            <div class="bot-avatar" style="background:linear-gradient(135deg,#ea580c,#c2410c);">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#0284c7,#0369a1);">
                 <i class="fas fa-question-circle" style="font-size:13px;"></i>
             </div>
-            <div style="background:#fff7ed;border:1px solid #fed7aa;padding:14px 18px;border-radius:12px;flex:1;">
-                <p style="color:#9a3412;font-size:13px;font-weight:600;margin-bottom:10px;">
+            <div style="background:#f0f9ff;border:1px solid #bae6fd;padding:14px 18px;border-radius:12px;flex:1;">
+                <p style="color:#075985;font-size:13px;font-weight:600;margin-bottom:10px;">
                     <i class="fas fa-info-circle" style="margin-right:5px;"></i>어떤 원가 기준으로 조회할까요?
                 </p>
-                <p style="color:#7c2d12;font-size:12px;margin-bottom:12px;line-height:1.5;">
-                    <b>실제원가 / 매출원가 / 표준원가</b> 는 서로 다른 원가 기준입니다.<br>
-                    확인 없이 자동으로 합산하지 않으므로, 아래에서 조회할 기준을 선택해 주세요.
+                <p style="color:#0c4a6e;font-size:12px;margin-bottom:12px;line-height:1.5;">
+                    질문만으로는 <b>실제원가 / 매출원가 / 표준원가</b> 중 어느 기준인지 판단하기 어렵습니다.<br>
+                    아래에서 원하시는 조회 기준을 선택해 주세요.
                 </p>
                 <div class="costbasis-clarify-buttons" style="display:flex;gap:8px;flex-wrap:wrap;">
                     ${btnHtml}
                 </div>
-                <p style="color:#78716c;font-size:11px;margin-top:10px;font-style:italic;">
+                <p style="color:#64748b;font-size:11px;margin-top:10px;font-style:italic;">
                     원래 질문: "${esc(originalQuery)}"
                 </p>
             </div>
@@ -4775,14 +4778,15 @@ function appendCostbasisClarificationMessage(data) {
     chatArea.appendChild(el);
 
     el.querySelectorAll('.costbasis-clarify-btn').forEach(btn => {
+        // Hover 효과 (subArea clarification 과 동일)
         btn.addEventListener('mouseenter', () => {
-            btn.style.background = '#c2410c';
+            btn.style.background = '#0369a1';
             btn.style.color = '#fff';
         });
         btn.addEventListener('mouseleave', () => {
             if (!btn.dataset.selected) {
                 btn.style.background = '#fff';
-                btn.style.color = '#c2410c';
+                btn.style.color = '#0369a1';
             }
         });
         btn.addEventListener('click', async () => {
@@ -4793,7 +4797,7 @@ function appendCostbasisClarificationMessage(data) {
                 b.style.cursor = 'not-allowed';
             });
             btn.dataset.selected = '1';
-            btn.style.background = '#c2410c';
+            btn.style.background = '#0369a1';
             btn.style.color = '#fff';
             btn.style.opacity = '1';
             btn.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>${btn.textContent.trim()}`;
