@@ -108,11 +108,12 @@
     //     하위 탭은 자연어 질의 화면에서만 명시적으로 mountSubAreaBar() 호출.
     //   - 상단 PS/HL/통합 잠금 UX 와 동일한 시각언어(fa-lock 아이콘 · alert 문구) 사용.
     // ─────────────────────────────────────────────────────────────────
+    // [2026-09-14] 제조원가 자연어질의는 sys_aimd_cot015 단일 테이블로 고정.
+    //   부서별/호기별 (sys_aimd_cot043) 은 완전 제거 (보안 정책).
+    //   서브영역 자체가 1개뿐이라 UI 세부탭도 필요 없음 (이미 hidden 처리 완료).
     const SUB_AREAS = {
         'manufacturing-cost': [
-            { key: 'cost-product', label: '제품별원가', icon: 'fa-box',      table: 'sys_aimd_cot015' },
-            { key: 'cost-dept',    label: '부서별원가', icon: 'fa-sitemap',  table: 'sys_aimd_cot043' },
-            { key: 'cost-machine', label: '호기별원가', icon: 'fa-cogs',     table: 'sys_aimd_cot043' },
+            { key: 'cost-product', label: '제품별원가', icon: 'fa-box', table: 'sys_aimd_cot015' },
         ],
     };
     // 수익성분석은 서브영역 없이 곧바로 대상 테이블에 매핑
