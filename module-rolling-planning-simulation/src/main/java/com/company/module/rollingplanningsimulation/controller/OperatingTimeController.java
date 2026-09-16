@@ -1,9 +1,9 @@
-package com.company.module.simulation.controller;
+package com.company.module.rollingplanningsimulation.controller;
 
 import com.company.core.common.response.ApiResponse;
-import com.company.module.simulation.dto.request.OperatingTimeSaveRequest;
-import com.company.module.simulation.dto.response.OperatingTimeResponse;
-import com.company.module.simulation.service.OperatingTimeService;
+import com.company.module.rollingplanningsimulation.dto.request.OperatingTimeSaveRequest;
+import com.company.module.rollingplanningsimulation.dto.response.OperatingTimeResponse;
+import com.company.module.rollingplanningsimulation.service.OperatingTimeService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -16,7 +16,7 @@ import java.util.List;
  * - 호기별 월별 가동일수/비가동일수 CRUD
  */
 @RestController
-@RequestMapping("/simulation-api/operating-time")
+@RequestMapping("/rolling-planning-simulation-api/operating-time")
 @RequiredArgsConstructor
 public class OperatingTimeController {
 
@@ -24,7 +24,7 @@ public class OperatingTimeController {
 
     /**
      * 특정 호기의 가동시간 조회
-     * GET /simulation-api/operating-time?division=PS&machineCode=M01
+     * GET /rolling-planning-simulation-api/operating-time?division=PS&machineCode=M01
      */
     @GetMapping
     public ResponseEntity<ApiResponse<List<OperatingTimeResponse>>> getByMachine(
@@ -38,7 +38,7 @@ public class OperatingTimeController {
 
     /**
      * 특정 월의 전체 호기 가동시간 조회
-     * GET /simulation-api/operating-time/by-ym?division=PS&ym=202605
+     * GET /rolling-planning-simulation-api/operating-time/by-ym?division=PS&ym=202605
      */
     @GetMapping("/by-ym")
     public ResponseEntity<ApiResponse<List<OperatingTimeResponse>>> getByYm(
@@ -52,7 +52,7 @@ public class OperatingTimeController {
 
     /**
      * 가동시간 저장/수정 (Upsert)
-     * POST /simulation-api/operating-time
+     * POST /rolling-planning-simulation-api/operating-time
      */
     @PostMapping
     public ResponseEntity<ApiResponse<OperatingTimeResponse>> save(

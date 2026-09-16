@@ -1,6 +1,6 @@
-package com.company.module.simulation.repository;
+package com.company.module.rollingplanningsimulation.repository;
 
-import com.company.module.simulation.entity.OperatingTime;
+import com.company.module.rollingplanningsimulation.entity.OperatingTime;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;

@@ -1,4 +1,4 @@
-# module-simulation (경영시뮬레이션 — Rolling Planning Simulation)
+# module-rolling-planning-simulation (경영시뮬레이션 — Rolling Planning Simulation)
 
 ## 모듈 설명
 경영시뮬레이션 모듈로, 생산량 변동 시 전체 비용(원부재료비/전력비/물류비/인건비/감가상각/판관비)의 인과관계를 시뮬레이션하고 영업이익 영향을 분석하는 시스템입니다.
@@ -36,11 +36,11 @@
 
 | Method | URL | 설명 |
 |--------|-----|------|
-| GET | `/simulation-api/cost-unit-rates` | 비용 원단위 조회 (ym, machine, division) |
-| GET | `/simulation-api/data-readiness` | 데이터 준비 현황 (ym, division) |
-| GET | `/simulation-api/operating-time` | 호기별 가동시간 조회 (division, machineCode) |
-| GET | `/simulation-api/operating-time/by-ym` | 월별 전체 호기 가동시간 조회 (division, ym) |
-| POST | `/simulation-api/operating-time` | 가동시간 저장/수정 |
+| GET | `/rolling-planning-simulation-api/cost-unit-rates` | 비용 원단위 조회 (ym, machine, division) |
+| GET | `/rolling-planning-simulation-api/data-readiness` | 데이터 준비 현황 (ym, division) |
+| GET | `/rolling-planning-simulation-api/operating-time` | 호기별 가동시간 조회 (division, machineCode) |
+| GET | `/rolling-planning-simulation-api/operating-time/by-ym` | 월별 전체 호기 가동시간 조회 (division, ym) |
+| POST | `/rolling-planning-simulation-api/operating-time` | 가동시간 저장/수정 |
 
 ## 메뉴 등록 요청 정보
 
@@ -49,31 +49,31 @@
 | 메뉴명 | 경영시뮬레이션 |
 | 메뉴 위치 | 수익성분석 > 경영시뮬레이션 |
 | 메뉴 URL | /simulation |
-| API Prefix | /simulation-api |
+| API Prefix | /rolling-planning-simulation-api |
 
 ## 권한 코드 목록
 
 | 코드 | 설명 |
 |------|------|
-| `SIMULATION_READ` | 시뮬레이션 조회 |
-| `SIMULATION_WRITE` | 시뮬레이션 데이터 입력/수정 |
-| `SIMULATION_DELETE` | 시뮬레이션 데이터 삭제 |
+| `ROLLING_PLANNING_SIMULATION_READ` | 시뮬레이션 조회 |
+| `ROLLING_PLANNING_SIMULATION_WRITE` | 시뮬레이션 데이터 입력/수정 |
+| `ROLLING_PLANNING_SIMULATION_DELETE` | 시뮬레이션 데이터 삭제 |
 
-**관리자 권한**: SIMULATION_READ, SIMULATION_WRITE, SIMULATION_DELETE
-**일반 사용자 권한**: SIMULATION_READ, SIMULATION_WRITE
-**조회 사용자 권한**: SIMULATION_READ
+**관리자 권한**: ROLLING_PLANNING_SIMULATION_READ, ROLLING_PLANNING_SIMULATION_WRITE, ROLLING_PLANNING_SIMULATION_DELETE
+**일반 사용자 권한**: ROLLING_PLANNING_SIMULATION_READ, ROLLING_PLANNING_SIMULATION_WRITE
+**조회 사용자 권한**: ROLLING_PLANNING_SIMULATION_READ
 
 ## SQL 실행 순서
 
 ```
-1. sql/module-simulation/01_schema.sql    -- DDL (12개 테이블)
-2. sql/module-simulation/02_seed_data.sql -- 초기 데이터 (환율 등)
+1. sql/module-rolling-planning-simulation/01_schema.sql    -- DDL (12개 테이블)
+2. sql/module-rolling-planning-simulation/02_seed_data.sql -- 초기 데이터 (환율 등)
 ```
 
 ## 프로젝트 구조
 
 ```
-module-simulation/
+module-rolling-planning-simulation/
 ├── build.gradle
 └── src/main/java/com/company/module/simulation/
     ├── controller/
@@ -96,7 +96,7 @@ module-simulation/
         ├── SimulationService.java           -- 핵심 비즈니스 로직
         └── OperatingTimeService.java
 
-sql/module-simulation/
+sql/module-rolling-planning-simulation/
 ├── 01_schema.sql      -- DDL (rpsim_ prefix)
 ├── 02_seed_data.sql   -- 초기 데이터
 └── README.md          -- 본 문서
@@ -104,8 +104,8 @@ sql/module-simulation/
 
 ## 운영 반영 시 필요한 설정
 
-1. `settings.gradle`에 `include 'module-simulation'` 추가
-2. `app/build.gradle`에 `implementation project(':module-simulation')` 추가
+1. `settings.gradle`에 `include 'module-rolling-planning-simulation'` 추가
+2. `app/build.gradle`에 `implementation project(':module-rolling-planning-simulation')` 추가
 3. DB에 `01_schema.sql`, `02_seed_data.sql` 순서대로 실행
 4. 메뉴/권한 등록 (위 표 참조)
 
@@ -138,7 +138,7 @@ sql/module-simulation/
 | 3 | application.yml, application.properties 생성 여부 | 통과 | 미생성 |
 | 4 | Dockerfile, docker-compose.yml, Nginx 설정 생성 여부 | 통과 | 미생성 |
 | 5 | SpringBootApplication main class 생성 여부 | 통과 | 미생성 |
-| 6 | API URL이 /{모듈명}-api/** 규칙 준수 | 통과 | /simulation-api/** |
+| 6 | API URL이 /{모듈명}-api/** 규칙 준수 | 통과 | /rolling-planning-simulation-api/** |
 | 7 | 금지 URL /api/**, /admin/**, /auth/** 미사용 | 통과 | |
 | 8 | Entity에 @Setter 미사용 | 통과 | |
 | 9 | Entity에 @Data 미사용 | 통과 | |

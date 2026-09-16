@@ -1,4 +1,4 @@
-package com.company.module.simulation.dto.request;
+package com.company.module.rollingplanningsimulation.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;

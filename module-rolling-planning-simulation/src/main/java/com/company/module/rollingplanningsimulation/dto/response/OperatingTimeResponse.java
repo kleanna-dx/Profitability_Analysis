@@ -1,6 +1,6 @@
-package com.company.module.simulation.dto.response;
+package com.company.module.rollingplanningsimulation.dto.response;
 
-import com.company.module.simulation.entity.OperatingTime;
+import com.company.module.rollingplanningsimulation.entity.OperatingTime;
 import lombok.Builder;
 import lombok.Getter;
 

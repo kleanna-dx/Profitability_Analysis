@@ -1,9 +1,9 @@
-package com.company.module.simulation.service;
+package com.company.module.rollingplanningsimulation.service;
 
-import com.company.module.simulation.dto.request.OperatingTimeSaveRequest;
-import com.company.module.simulation.dto.response.OperatingTimeResponse;
-import com.company.module.simulation.entity.OperatingTime;
-import com.company.module.simulation.repository.OperatingTimeRepository;
+import com.company.module.rollingplanningsimulation.dto.request.OperatingTimeSaveRequest;
+import com.company.module.rollingplanningsimulation.dto.response.OperatingTimeResponse;
+import com.company.module.rollingplanningsimulation.entity.OperatingTime;
+import com.company.module.rollingplanningsimulation.repository.OperatingTimeRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;

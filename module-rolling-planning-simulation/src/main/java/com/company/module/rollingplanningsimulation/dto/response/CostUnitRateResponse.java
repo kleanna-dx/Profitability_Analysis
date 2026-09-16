@@ -1,4 +1,4 @@
-package com.company.module.simulation.dto.response;
+package com.company.module.rollingplanningsimulation.dto.response;
 
 import lombok.Builder;
 import lombok.Getter;

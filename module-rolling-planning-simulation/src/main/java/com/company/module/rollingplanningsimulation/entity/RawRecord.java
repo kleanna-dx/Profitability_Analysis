@@ -1,4 +1,4 @@
-package com.company.module.simulation.entity;
+package com.company.module.rollingplanningsimulation.entity;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;

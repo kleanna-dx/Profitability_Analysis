@@ -1,9 +1,9 @@
-package com.company.module.simulation.controller;
+package com.company.module.rollingplanningsimulation.controller;
 
 import com.company.core.common.response.ApiResponse;
-import com.company.module.simulation.dto.response.CostUnitRateResponse;
-import com.company.module.simulation.dto.response.DataReadinessResponse;
-import com.company.module.simulation.service.SimulationService;
+import com.company.module.rollingplanningsimulation.dto.response.CostUnitRateResponse;
+import com.company.module.rollingplanningsimulation.dto.response.DataReadinessResponse;
+import com.company.module.rollingplanningsimulation.service.SimulationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.*;
  * - 데이터 준비 현황 대시보드
  */
 @RestController
-@RequestMapping("/simulation-api")
+@RequestMapping("/rolling-planning-simulation-api")
 @RequiredArgsConstructor
 public class SimulationController {
 
@@ -23,7 +23,7 @@ public class SimulationController {
 
     /**
      * 비용 원단위 조회 (P/L 시뮬레이터용)
-     * GET /simulation-api/cost-unit-rates?ym=202605&machine=ALL&division=PS
+     * GET /rolling-planning-simulation-api/cost-unit-rates?ym=202605&machine=ALL&division=PS
      */
     @GetMapping("/cost-unit-rates")
     public ResponseEntity<ApiResponse<CostUnitRateResponse>> getCostUnitRates(
@@ -38,7 +38,7 @@ public class SimulationController {
 
     /**
      * 데이터 준비 현황 대시보드
-     * GET /simulation-api/data-readiness?ym=202605&division=PS
+     * GET /rolling-planning-simulation-api/data-readiness?ym=202605&division=PS
      */
     @GetMapping("/data-readiness")
     public ResponseEntity<ApiResponse<DataReadinessResponse>> getDataReadiness(

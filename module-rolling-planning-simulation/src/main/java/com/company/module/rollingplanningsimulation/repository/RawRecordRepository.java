@@ -1,6 +1,6 @@
-package com.company.module.simulation.repository;
+package com.company.module.rollingplanningsimulation.repository;
 
-import com.company.module.simulation.entity.RawRecord;
+import com.company.module.rollingplanningsimulation.entity.RawRecord;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
