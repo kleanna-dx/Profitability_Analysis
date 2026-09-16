@@ -225,6 +225,11 @@
             background:rgba(168,85,247,0.10);color:#7e22ce;
             border-color:rgba(168,85,247,0.30);
         }
+        /* [2026-09-16] 원가기준 (ZCGUBUN) 명확화 chip — 실제/매출/표준원가 */
+        .clarify-chip.type-costBasis{
+            background:rgba(234,88,12,0.10);color:#c2410c;
+            border-color:rgba(234,88,12,0.30);
+        }
         .fav-heart-btn{
             width:30px;height:30px;border-radius:50%;
             display:flex;align-items:center;justify-content:center;
@@ -2765,6 +2770,16 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
                 console.log(`[CostCompClarify] 재요청 forcedCostComp: op=${asyncPayload.forcedCostComp.op} values=[${asyncPayload.forcedCostComp.values.join(', ')}]`);
             }
         } catch (_) {}
+        // [2026-09-16] ZCGUBUN 명확화 응답 후 재요청 지원
+        //   - window.__forceCostBasis 가 세팅되어 있으면 payload 에 실어서 서버로 전달
+        //   - 서버가 명확화 게이트를 스킵하고 이 값으로 ZCGUBUN = '<값>' 을 강제 주입
+        //   - value 는 실제원가 / 매출원가 / 표준원가 whitelist (서버에서 재검증)
+        try {
+            if (window.__forceCostBasis && typeof window.__forceCostBasis.value === 'string' && window.__forceCostBasis.value.trim()) {
+                asyncPayload.forcedCostBasis = { value: window.__forceCostBasis.value };
+                console.log(`[CostBasisClarify] 재요청 forcedCostBasis: value="${asyncPayload.forcedCostBasis.value}"`);
+            }
+        } catch (_) {}
         // [2026-08-31 PR #407] 명확화 chip 목록을 서버로 전송
         //   - 서버는 이 값을 chart_config._clarificationSelections 에 병합하여 히스토리에 저장
         //   - 재조회 시 sendQuery 를 재실행하지 않고 chip 만 복원 (Q3-a)
@@ -3074,6 +3089,12 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         //     2개 이상이면 여기로 응답 (사용자 확인 없이 LIKE 합산 금지)
         //   - 각 후보 + "관련 항목 전체" 버튼 렌더 → 재요청 시 forcedCostComp 실어보냄
         appendCostcompClarificationMessage(data);
+    } else if (data.costbasisClarification) {
+        // [2026-09-16] 제조원가 ZCGUBUN 명확화 응답 (sys_aimd_cot015 전용)
+        //   - "원가요소" 트리거 + ZCGUBUN 미명시 시 여기로 응답
+        //   - [실제원가] [매출원가] [표준원가] 3버튼 렌더 → 재요청 시 forcedCostBasis 실어보냄
+        //   - "__ALL__" 옵션 없음 (요구사항: 서로 다른 원가기준 합산 금지)
+        appendCostbasisClarificationMessage(data);
     } else if (data.isUnknownTerm) {
         appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
     } else if (isNewIntent(data)) {
@@ -4685,6 +4706,145 @@ async function resendQueryWithForcedCostComp(originalQuery, subArea, forcedCostC
         setTimeout(() => {
             window.__forceMfgSubArea = null;
             window.__forceCostComp = null;
+        }, 100);
+    }
+}
+
+// ============================================================
+// [2026-09-16] 제조원가 ZCGUBUN(원가기준) 명확화 UI (sys_aimd_cot015 전용)
+// ------------------------------------------------------------
+// appendCostcompClarificationMessage 의 sibling.
+//   서버가 "원가요소" 트리거 + ZCGUBUN 미명시를 감지하면
+//   costbasisClarification 응답을 반환하고, 여기서 [실제원가]/[매출원가]/[표준원가]
+//   3버튼을 렌더한다. "__ALL__" 옵션 없음 (요구사항: 서로 다른 원가기준 합산 금지).
+// ============================================================
+function appendCostbasisClarificationMessage(data) {
+    const chatArea = document.getElementById('chatArea');
+    const clarify = data.costbasisClarification || {};
+    const originalQuery = clarify.originalQuery || '';
+    const searchTerm    = clarify.searchTerm || '';
+    const options       = Array.isArray(clarify.options) ? clarify.options : [];
+    const subArea       = clarify.subArea || null;
+    // 방어: 필수 필드 유실 시 렌더 스킵
+    if (!String(originalQuery).trim() || options.length === 0) {
+        const warn = document.createElement('div');
+        warn.className = 'msg-bot fade-in';
+        warn.innerHTML = `
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+                <div class="bot-avatar" style="background:#dc2626;"><i class="fas fa-exclamation-triangle" style="font-size:13px;"></i></div>
+                <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px 16px;border-radius:12px;flex:1;">
+                    <p style="color:#991b1b;font-size:13px;font-weight:600;margin:0;">원가기준 명확화 응답 데이터가 유효하지 않습니다.</p>
+                    <p style="color:#7f1d1d;font-size:12px;margin-top:6px;">질문을 다시 입력해 주세요.</p>
+                </div>
+            </div>`;
+        chatArea.appendChild(warn);
+        scrollToBottom();
+        return;
+    }
+
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+    // 3버튼 렌더 (동일 스타일, __ALL__ 없음)
+    const btnHtml = options.map((opt) => {
+        return `<button type="button" class="costbasis-clarify-btn" data-value="${esc(opt.value)}"
+            style="padding:8px 16px;background:#fff;border:1.5px solid #c2410c;border-radius:8px;color:#c2410c;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;">
+            ${esc(opt.label)}
+        </button>`;
+    }).join('');
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#ea580c,#c2410c);">
+                <i class="fas fa-question-circle" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#fff7ed;border:1px solid #fed7aa;padding:14px 18px;border-radius:12px;flex:1;">
+                <p style="color:#9a3412;font-size:13px;font-weight:600;margin-bottom:10px;">
+                    <i class="fas fa-info-circle" style="margin-right:5px;"></i>어떤 원가 기준으로 조회할까요?
+                </p>
+                <p style="color:#7c2d12;font-size:12px;margin-bottom:12px;line-height:1.5;">
+                    <b>실제원가 / 매출원가 / 표준원가</b> 는 서로 다른 원가 기준입니다.<br>
+                    확인 없이 자동으로 합산하지 않으므로, 아래에서 조회할 기준을 선택해 주세요.
+                </p>
+                <div class="costbasis-clarify-buttons" style="display:flex;gap:8px;flex-wrap:wrap;">
+                    ${btnHtml}
+                </div>
+                <p style="color:#78716c;font-size:11px;margin-top:10px;font-style:italic;">
+                    원래 질문: "${esc(originalQuery)}"
+                </p>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+
+    el.querySelectorAll('.costbasis-clarify-btn').forEach(btn => {
+        btn.addEventListener('mouseenter', () => {
+            btn.style.background = '#c2410c';
+            btn.style.color = '#fff';
+        });
+        btn.addEventListener('mouseleave', () => {
+            if (!btn.dataset.selected) {
+                btn.style.background = '#fff';
+                btn.style.color = '#c2410c';
+            }
+        });
+        btn.addEventListener('click', async () => {
+            // 중복 클릭 방지
+            el.querySelectorAll('.costbasis-clarify-btn').forEach(b => {
+                b.disabled = true;
+                b.style.opacity = '0.5';
+                b.style.cursor = 'not-allowed';
+            });
+            btn.dataset.selected = '1';
+            btn.style.background = '#c2410c';
+            btn.style.color = '#fff';
+            btn.style.opacity = '1';
+            btn.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>${btn.textContent.trim()}`;
+
+            const value = btn.dataset.value;
+            if (!value) {
+                console.warn('[CostBasisClarify] 선택 값이 비어있어 재요청을 중단합니다.');
+                return;
+            }
+            // 원 말풍선에 costBasis chip 부착 (subArea/costComponent 와 동일 패턴)
+            try {
+                if (typeof appendClarificationChip === 'function') {
+                    appendClarificationChip('costBasis', String(value));
+                }
+            } catch (chipErr) {
+                console.warn('[CostBasisClarify] chip 부착 실패(비치명):', chipErr);
+            }
+            try {
+                await resendQueryWithForcedCostBasis(originalQuery, subArea, { value });
+            } catch (e) {
+                console.error('[CostBasisClarify] 재요청 실패:', e);
+            }
+        });
+    });
+
+    scrollToBottom();
+}
+
+// [2026-09-16] ZCGUBUN 명확화 응답 후 재요청
+async function resendQueryWithForcedCostBasis(originalQuery, subArea, forcedCostBasis) {
+    const trimmedQuery = String(originalQuery || '').trim();
+    if (!trimmedQuery) {
+        console.warn('[CostBasisClarify] originalQuery 가 비어있어 재요청을 중단합니다.');
+        return;
+    }
+    if (!forcedCostBasis || typeof forcedCostBasis.value !== 'string' || !forcedCostBasis.value.trim()) {
+        console.warn('[CostBasisClarify] forcedCostBasis.value 가 비어있어 재요청을 중단합니다.');
+        return;
+    }
+    console.log(`[CostBasisClarify] 재질의 → value="${forcedCostBasis.value}" original="${trimmedQuery}"`);
+
+    if (subArea) window.__forceMfgSubArea = subArea;
+    window.__forceCostBasis = { value: forcedCostBasis.value };
+    try {
+        if (typeof sendQuery === 'function') {
+            await sendQuery(trimmedQuery, { clarifyResend: true });
+        }
+    } finally {
+        setTimeout(() => {
+            window.__forceMfgSubArea = null;
+            window.__forceCostBasis = null;
         }, 100);
     }
 }
