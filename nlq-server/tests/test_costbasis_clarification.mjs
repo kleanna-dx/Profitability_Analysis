@@ -50,6 +50,9 @@ function loadFunction(name) {
 const _sanitizeWhereCond = loadFunction('_sanitizeWhereCond');
 globalThis._sanitizeWhereCond = _sanitizeWhereCond;
 const detectCostElementIntent = loadFunction('detectCostElementIntent');
+// detectExplicitZcgubunInQuery 는 detectStandardCostSubtypeInQuery 를 참조하므로 후자 먼저 로드
+const detectStandardCostSubtypeInQuery = loadFunction('detectStandardCostSubtypeInQuery');
+globalThis.detectStandardCostSubtypeInQuery = detectStandardCostSubtypeInQuery;
 const detectExplicitZcgubunInQuery = loadFunction('detectExplicitZcgubunInQuery');
 const applyForcedCostBasisFilter = loadFunction('applyForcedCostBasisFilter');
 
@@ -94,14 +97,19 @@ console.log('\n=== 그룹 A: detectCostElementIntent — "원가요소" 트리�
 console.log('\n=== 그룹 B: detectExplicitZcgubunInQuery — 사용자 명시 여부 판정 ===');
 // ═══════════════════════════════════════════════════════════════
 {
+  // [2026-09-16 스펙 확장] 표준원가 단독은 이제 explicit=false (2차 clarification 필요)
+  //   요구사항 #6/#7: "표준원가 알려줘" → 반드시 서브타입 확정
+  //   표준원가 + 서브타입 명시 ("매출원가의 표준원가") 는 별도 스위트 (standard_subtype) 에서 검증
   const cases = [
+    // 실제/매출원가는 단독으로도 explicit=true (기존 유지)
     { q: '제품별 실제원가 원가요소 조회해줘',   explicit: true,  z: '실제원가' },
     { q: '제품별 매출원가 원가요소 조회해줘',   explicit: true,  z: '매출원가' },
-    { q: '제품별 표준원가 원가요소 조회해줘',   explicit: true,  z: '표준원가' },
     { q: '실제 원가 원가요소',                  explicit: true,  z: '실제원가' },  // 공백 허용
     { q: '매출 원가 요소',                      explicit: true,  z: '매출원가' },
-    { q: '표준 원가 알려줘',                    explicit: true,  z: '표준원가' },
-    // 명시 아님
+    // 표준원가 단독 → explicit=false (2차 clarification 필요, zcgubun 은 감지됨)
+    { q: '제품별 표준원가 원가요소 조회해줘',   explicit: false, z: '표준원가' },
+    { q: '표준 원가 알려줘',                    explicit: false, z: '표준원가' },
+    // 아무 것도 명시 안 됨
     { q: '제품별 원가요소 조회해줘',            explicit: false, z: null },
     { q: '원가 알려줘',                         explicit: false, z: null },
     { q: '',                                    explicit: false, z: null },
@@ -109,7 +117,8 @@ console.log('\n=== 그룹 B: detectExplicitZcgubunInQuery — 사용자 명시 �
   for (const c of cases) {
     const r = detectExplicitZcgubunInQuery(c.q);
     assert(r.explicit === c.explicit, `explicit=${c.explicit} for "${c.q}"`);
-    if (c.explicit) {
+    // 표준원가 단독은 explicit=false 지만 zcgubun 은 '표준원가' 로 반환 (게이트에서 2차 처리 위해)
+    if (c.z !== null) {
       assert(r.zcgubun === c.z, `zcgubun="${c.z}" for "${c.q}" (got "${r.zcgubun}")`);
     }
   }
@@ -195,12 +204,15 @@ console.log('\n=== 그룹 D: 사용자 요구사항 Case 1-5 시나리오 완전
   assert(e3.matched === true && x3.explicit === true && x3.zcgubun === '매출원가',
     `[Case 3] "${q3}" → ZCGUBUN='매출원가'`);
 
-  // Case 4: "제품별 표준원가 원가요소 조회해줘" → ZCGUBUN='표준원가'
+  // Case 4: "제품별 표준원가 원가요소 조회해줘" → zcgubun='표준원가' 감지되지만
+  //   서브타입 없어서 explicit=false → 2차 clarification 필요.
+  //   [2026-09-16] 스펙 확장: 표준원가 단독은 반드시 2차 확정 (요구사항 #6/#7).
+  //   기존 자동 확정 케이스는 test_costbasis_standard_subtype.mjs 에서 별도 검증.
   const q4 = '제품별 표준원가 원가요소 조회해줘';
   const e4 = detectCostElementIntent(q4);
   const x4 = detectExplicitZcgubunInQuery(q4);
-  assert(e4.matched === true && x4.explicit === true && x4.zcgubun === '표준원가',
-    `[Case 4] "${q4}" → ZCGUBUN='표준원가'`);
+  assert(e4.matched === true && x4.zcgubun === '표준원가' && x4.explicit === false,
+    `[Case 4] "${q4}" → 표준원가 감지되지만 서브타입 없어서 2차 clarification 필요 (explicit=false)`);
 
   // Case 5: 실제원가 선택 후 재요청 → 실제원가만 조회, 표준원가와 합산 안됨
   //   LLM 이 잘못해서 표준원가/실제원가 두 값을 IN 절에 넣어도 서버가 실제원가만 남김
@@ -246,8 +258,8 @@ console.log('\n=== 그룹 E: server.mjs 소스 반영 확인 (문자열 스팟 �
   assert(serverMjs.includes("v === '실제원가' || v === '매출원가' || v === '표준원가'"),
     'server.mjs 에 ZCGUBUN whitelist 검증 존재');
 
-  // areaCtx 병합
-  assert(serverMjs.includes('areaCtx.forcedCostBasis = { value: v }'),
+  // areaCtx 병합 (스펙 확장 후: value 또는 value+zcgubunD 로 병합)
+  assert(serverMjs.includes('areaCtx.forcedCostBasis ='),
     'server.mjs 에 areaCtx.forcedCostBasis 병합 로직 존재');
 
   // SQL 실행 직전 필터 주입

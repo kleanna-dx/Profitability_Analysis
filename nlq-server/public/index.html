@@ -2776,10 +2776,15 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         //   - window.__forceCostBasis 가 세팅되어 있으면 payload 에 실어서 서버로 전달
         //   - 서버가 명확화 게이트를 스킵하고 이 값으로 ZCGUBUN = '<값>' 을 강제 주입
         //   - value 는 실제원가 / 매출원가 / 표준원가 whitelist (서버에서 재검증)
+        //   - zcgubunD 는 '소비-소비' / '입고-생산' whitelist (표준원가 2차 clarification 결과)
         try {
             if (window.__forceCostBasis && typeof window.__forceCostBasis.value === 'string' && window.__forceCostBasis.value.trim()) {
-                asyncPayload.forcedCostBasis = { value: window.__forceCostBasis.value };
-                console.log(`[CostBasisClarify] 재요청 forcedCostBasis: value="${asyncPayload.forcedCostBasis.value}"`);
+                const _fcb = { value: window.__forceCostBasis.value };
+                if (typeof window.__forceCostBasis.zcgubunD === 'string' && window.__forceCostBasis.zcgubunD.trim()) {
+                    _fcb.zcgubunD = window.__forceCostBasis.zcgubunD;
+                }
+                asyncPayload.forcedCostBasis = _fcb;
+                console.log(`[CostBasisClarify] 재요청 forcedCostBasis: value="${_fcb.value}"${_fcb.zcgubunD ? ` zcgubunD="${_fcb.zcgubunD}"` : ''}`);
             }
         } catch (_) {}
         // [2026-08-31 PR #407] 명확화 chip 목록을 서버로 전송
@@ -3097,6 +3102,14 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
         //   - [실제원가] [매출원가] [표준원가] 3버튼 렌더 → 재요청 시 forcedCostBasis 실어보냄
         //   - "__ALL__" 옵션 없음 (요구사항: 서로 다른 원가기준 합산 금지)
         appendCostbasisClarificationMessage(data);
+    } else if (data.costbasisStandardSubtypeClarification) {
+        // [2026-09-16] 표준원가 서브타입 2차 명확화 응답 (sys_aimd_cot015 전용)
+        //   - 1차에서 [표준원가] 선택 후 재요청했거나, "표준원가 알려줘" 처럼 표준원가만
+        //     명시된 경우 서버가 여기로 응답
+        //   - [매출원가의 표준원가] [실제원가의 표준원가] 2버튼 렌더 (매출/실제 부분 굵게)
+        //   - 클릭 시 forcedCostBasis = { value:'표준원가', zcgubunD: '소비-소비' | '입고-생산' }
+        //     로 재요청
+        appendCostbasisStandardSubtypeClarificationMessage(data);
     } else if (data.isUnknownTerm) {
         appendUnknownTermMessage(data.answer || data.explanation || '알 수 없는 용어입니다. 관리자에게 문의해 주시기 바랍니다.');
     } else if (isNewIntent(data)) {
@@ -4827,6 +4840,8 @@ function appendCostbasisClarificationMessage(data) {
 }
 
 // [2026-09-16] ZCGUBUN 명확화 응답 후 재요청
+//   - 1차 clarification: forcedCostBasis = { value: '실제원가' | '매출원가' | '표준원가' }
+//   - 2차 clarification (표준원가 서브타입): forcedCostBasis = { value: '표준원가', zcgubunD: '소비-소비' | '입고-생산' }
 async function resendQueryWithForcedCostBasis(originalQuery, subArea, forcedCostBasis) {
     const trimmedQuery = String(originalQuery || '').trim();
     if (!trimmedQuery) {
@@ -4837,10 +4852,12 @@ async function resendQueryWithForcedCostBasis(originalQuery, subArea, forcedCost
         console.warn('[CostBasisClarify] forcedCostBasis.value 가 비어있어 재요청을 중단합니다.');
         return;
     }
-    console.log(`[CostBasisClarify] 재질의 → value="${forcedCostBasis.value}" original="${trimmedQuery}"`);
+    const zd = (typeof forcedCostBasis.zcgubunD === 'string' && forcedCostBasis.zcgubunD.trim()) ? forcedCostBasis.zcgubunD.trim() : '';
+    console.log(`[CostBasisClarify] 재질의 → value="${forcedCostBasis.value}"${zd ? ` zcgubunD="${zd}"` : ''} original="${trimmedQuery}"`);
 
     if (subArea) window.__forceMfgSubArea = subArea;
-    window.__forceCostBasis = { value: forcedCostBasis.value };
+    window.__forceCostBasis = zd ? { value: forcedCostBasis.value, zcgubunD: zd }
+                                 : { value: forcedCostBasis.value };
     try {
         if (typeof sendQuery === 'function') {
             await sendQuery(trimmedQuery, { clarifyResend: true });
@@ -4851,6 +4868,130 @@ async function resendQueryWithForcedCostBasis(originalQuery, subArea, forcedCost
             window.__forceCostBasis = null;
         }, 100);
     }
+}
+
+// ============================================================
+// [2026-09-16] 표준원가 서브타입 2차 명확화 UI (sys_aimd_cot015 전용)
+// ------------------------------------------------------------
+// 1차 costbasis clarification 에서 [표준원가] 선택 후 재요청하면 서버가 여기로 응답.
+// 또는 "표준원가 알려줘" 처럼 표준원가만 명시된 경우도 마찬가지.
+//
+// 요구사항:
+//   - 버튼 라벨의 "매출원가" / "실제원가" 부분을 굵게 표시
+//   - __ALL__ 옵션 없음 (요구사항 #7: 서로 다른 표준원가 합산 금지)
+//   - 클릭 시 forcedCostBasis = { value:'표준원가', zcgubunD:<선택값> } 로 재요청
+//   - 디자인 톤은 1차 clarification 과 동일 (파란 계열)
+// ============================================================
+function appendCostbasisStandardSubtypeClarificationMessage(data) {
+    const chatArea = document.getElementById('chatArea');
+    const clarify = data.costbasisStandardSubtypeClarification || {};
+    const originalQuery = clarify.originalQuery || '';
+    const options       = Array.isArray(clarify.options) ? clarify.options : [];
+    const subArea       = clarify.subArea || null;
+    const baseValue     = clarify.baseValue || '표준원가';
+    if (!String(originalQuery).trim() || options.length === 0) {
+        const warn = document.createElement('div');
+        warn.className = 'msg-bot fade-in';
+        warn.innerHTML = `
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+                <div class="bot-avatar" style="background:#dc2626;"><i class="fas fa-exclamation-triangle" style="font-size:13px;"></i></div>
+                <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px 16px;border-radius:12px;flex:1;">
+                    <p style="color:#991b1b;font-size:13px;font-weight:600;margin:0;">표준원가 서브타입 명확화 응답 데이터가 유효하지 않습니다.</p>
+                    <p style="color:#7f1d1d;font-size:12px;margin-top:6px;">질문을 다시 입력해 주세요.</p>
+                </div>
+            </div>`;
+        chatArea.appendChild(warn);
+        scrollToBottom();
+        return;
+    }
+
+    const el = document.createElement('div');
+    el.className = 'msg-bot fade-in';
+    // 버튼 라벨의 emphasize 부분(매출원가/실제원가) 은 <b> 로 굵게 표시. XSS 방어 위해 esc() 적용 후 문자열 치환.
+    const btnHtml = options.map((opt) => {
+        const rawLabel = String(opt.label || '');
+        const emph = String(opt.emphasize || '');
+        // esc 처리한 라벨에서 esc 처리한 emphasize 를 <b> 로 감쌈. 특정 서브스트링 1회만.
+        const escLabel = esc(rawLabel);
+        const escEmph = esc(emph);
+        const boldedLabel = (emph && escLabel.indexOf(escEmph) !== -1)
+            ? escLabel.replace(escEmph, `<b>${escEmph}</b>`)
+            : escLabel;
+        return `<button type="button" class="costbasis-subtype-clarify-btn"
+            data-zcgubund="${esc(opt.value)}" data-label="${esc(rawLabel)}"
+            style="padding:8px 16px;background:#fff;border:1.5px solid #0369a1;border-radius:8px;color:#0369a1;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;">
+            ${boldedLabel}
+        </button>`;
+    }).join('');
+    el.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:4px 0;">
+            <div class="bot-avatar" style="background:linear-gradient(135deg,#0284c7,#0369a1);">
+                <i class="fas fa-question-circle" style="font-size:13px;"></i>
+            </div>
+            <div style="background:#f0f9ff;border:1px solid #bae6fd;padding:14px 18px;border-radius:12px;flex:1;">
+                <p style="color:#075985;font-size:13px;font-weight:600;margin-bottom:10px;">
+                    <i class="fas fa-info-circle" style="margin-right:5px;"></i>어떤 표준원가를 조회할까요?
+                </p>
+                <p style="color:#0c4a6e;font-size:12px;margin-bottom:12px;line-height:1.5;">
+                    <b>표준원가</b> 는 기준에 따라 두 종류가 있습니다.<br>
+                    <b>매출원가의 표준원가</b> (소비-소비) 와 <b>실제원가의 표준원가</b> (입고-생산) 는 서로 다른 값이므로 합산하지 않고 하나만 선택해 주세요.
+                </p>
+                <div class="costbasis-subtype-clarify-buttons" style="display:flex;gap:8px;flex-wrap:wrap;">
+                    ${btnHtml}
+                </div>
+                <p style="color:#64748b;font-size:11px;margin-top:10px;font-style:italic;">
+                    원래 질문: "${esc(originalQuery)}"
+                </p>
+            </div>
+        </div>`;
+    chatArea.appendChild(el);
+
+    el.querySelectorAll('.costbasis-subtype-clarify-btn').forEach(btn => {
+        btn.addEventListener('mouseenter', () => {
+            btn.style.background = '#0369a1';
+            btn.style.color = '#fff';
+        });
+        btn.addEventListener('mouseleave', () => {
+            if (!btn.dataset.selected) {
+                btn.style.background = '#fff';
+                btn.style.color = '#0369a1';
+            }
+        });
+        btn.addEventListener('click', async () => {
+            el.querySelectorAll('.costbasis-subtype-clarify-btn').forEach(b => {
+                b.disabled = true;
+                b.style.opacity = '0.5';
+                b.style.cursor = 'not-allowed';
+            });
+            btn.dataset.selected = '1';
+            btn.style.background = '#0369a1';
+            btn.style.color = '#fff';
+            btn.style.opacity = '1';
+            const chosenLabel = btn.dataset.label || btn.textContent.trim();
+            btn.innerHTML = `<i class="fas fa-check" style="margin-right:4px;"></i>${esc(chosenLabel)}`;
+
+            const zcgubunD = btn.dataset.zcgubund;
+            if (!zcgubunD) {
+                console.warn('[CostBasisSubtypeClarify] 선택 값이 비어있어 재요청을 중단합니다.');
+                return;
+            }
+            // 원 말풍선에 costBasis chip 부착 (라벨 = "매출원가의 표준원가" 전체)
+            try {
+                if (typeof appendClarificationChip === 'function') {
+                    appendClarificationChip('costBasis', String(chosenLabel));
+                }
+            } catch (chipErr) {
+                console.warn('[CostBasisSubtypeClarify] chip 부착 실패(비치명):', chipErr);
+            }
+            try {
+                await resendQueryWithForcedCostBasis(originalQuery, subArea, { value: baseValue, zcgubunD });
+            } catch (e) {
+                console.error('[CostBasisSubtypeClarify] 재요청 실패:', e);
+            }
+        });
+    });
+
+    scrollToBottom();
 }
 
 // ============================================================
