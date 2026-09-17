@@ -171,73 +171,95 @@ assert(
   /addEventListener\(\s*['"`]resize['"`]/.test(html),
   'window resize 리스너로 뷰포트 축소 시 상한 재계산 처리가 있어야 함'
 );
-// [rev3] MIN_WIDTH 는 절대 상수 320px 로 정의 (rev5 에서도 유지, edge case fallback)
+// [rev3] MIN_WIDTH 는 절대 상수 320px 로 정의 (rev6 에서도 유지, edge case fallback)
 assert(
   /const\s+MIN_WIDTH\s*=\s*320/.test(html),
-  'MIN_WIDTH 상수(320px) 로 절대 하한 fallback 정의 (rev3~rev5 유지)'
+  'MIN_WIDTH 상수(320px) 로 절대 하한 fallback 정의 (rev3~rev6 유지)'
 );
-// [rev5] 콘텐츠 실제 폭을 계산하는 로직
+// [rev6] 콘텐츠 실제 폭 - init 시점 1회만 캡처 (재계산 금지)
 assert(
-  /tableScrollContainer/.test(html),
-  'tableScrollContainer 변수 - 테이블 스크롤 컨테이너 참조 (rev5)'
-);
-assert(
-  /wrap\.querySelector\(\s*['"`]table['"`]\s*\)/.test(html),
-  'wrap.querySelector(table) 로 테이블 요소 참조 (rev5)'
+  /let\s+initialContentWidth\s*=\s*0/.test(html),
+  'initialContentWidth 변수 - init 시점 1회만 캡처 (rev6, 재계산 금지)'
 );
 assert(
-  /\.parentElement/.test(html),
-  '테이블의 parentElement 로 스크롤 컨테이너 참조 (rev5)'
+  /const\s+captureInitialContentWidth\s*=/.test(html),
+  'captureInitialContentWidth 함수 - init 캡처 전용 (rev6)'
 );
 assert(
-  /const\s+computeContentMinWidth\s*=/.test(html),
-  'computeContentMinWidth 함수 - 콘텐츠 실제 폭 계산 (rev5)'
+  /const\s+tableEl\s*=\s*wrap\.querySelector\(\s*['"`]table['"`]\s*\)/.test(html),
+  'tableEl 로 테이블 요소 직접 참조 (rev6, parentElement 대신 table 자체 사용)'
 );
 assert(
-  /\.scrollWidth/.test(html),
-  'scrollWidth 로 테이블 실제 콘텐츠 폭 측정 (rev5) - 고정 min-width 하드코딩 금지'
+  /tableEl\.scrollWidth/.test(html),
+  'tableEl.scrollWidth 로 테이블 실제 콘텐츠 폭 측정 (rev6)'
 );
 assert(
   /const\s+WRAP_FRAME_PADDING\s*=\s*6/.test(html),
-  'WRAP_FRAME_PADDING = 6 (wrap border + 안전 여유) (rev5)'
+  'WRAP_FRAME_PADDING = 6 (wrap border + 안전 여유) 유지 (rev5~rev6)'
 );
-// [rev5] requestAnimationFrame 으로 콘텐츠 폭 재캡처
+// [rev6] requestAnimationFrame 재캡처 유지
 assert(
   /requestAnimationFrame/.test(html),
-  'requestAnimationFrame 으로 렌더 안정화 후 콘텐츠 폭 재계산 (rev4→rev5 계승)'
+  'requestAnimationFrame 으로 렌더 안정화 후 콘텐츠 폭 1회 더 캡처 (rev6)'
 );
-// [rev5] computeMinWidth - 실제 하한 = max(MIN_WIDTH, cachedContentMinWidth)
+// [rev6] rAF 내부에 expandedOnce 가드 - 사용자가 이미 드래그 시작했으면 재캡처 금지
 assert(
-  /const\s+computeMinWidth\s*=/.test(html),
-  'computeMinWidth 함수 존재 (rev4→rev5)'
+  /if\s*\(\s*expandedOnce\s*\)\s*return\s*;\s*captureInitialContentWidth/.test(html.replace(/\/\/[^\n]*\n/g, '\n')),
+  'rAF 콜백에 if (expandedOnce) return 가드 - 드래그 후 재캡처 금지 (rev6)'
 );
+// [rev6] getMinWidth - 고정값 반환 (재계산 없음, mousemove 안정성)
 assert(
-  /Math\.max\(\s*MIN_WIDTH\s*,\s*cachedContentMinWidth/.test(html),
-  '실제 하한 = Math.max(MIN_WIDTH, cachedContentMinWidth) - 콘텐츠 폭 기반 (rev5)'
+  /const\s+getMinWidth\s*=\s*\(\)\s*=>\s*Math\.max\(\s*MIN_WIDTH\s*,\s*initialContentWidth/.test(html),
+  'getMinWidth = Math.max(MIN_WIDTH, initialContentWidth) - 고정값 반환 (rev6)'
 );
-// [rev5] mousemove 하한 클램핑이 computeMinWidth() 사용
+// [rev6] mousemove 하한 클램핑이 getMinWidth() 사용
 assert(
-  /const\s+minW\s*=\s*computeMinWidth\(\)/.test(html),
-  'mousemove 에서 minW = computeMinWidth() 로 매번 계산해야 함 (rev4~rev5)'
+  /const\s+minW\s*=\s*getMinWidth\(\)/.test(html),
+  'mousemove 에서 minW = getMinWidth() 로 고정 하한 참조 (rev6)'
 );
 assert(
   /if\s*\(\s*next\s*<\s*minW\s*\)\s*next\s*=\s*minW/.test(html),
-  'mousemove 시 next < minW 이면 minW 로 클램핑 (rev4~rev5)'
+  'mousemove 시 next < minW 이면 minW 로 클램핑 (rev6)'
 );
-// [rev5] rev4 의 baselineWidth 는 완전히 제거되었어야 함 (콘텐츠 폭 기반으로 대체)
+// [rev6] 이전 rev5 의 재계산 로직은 완전히 제거되었어야 함
 assert(
-  !/let\s+baselineWidth\s*=\s*0/.test(html),
-  'rev4 의 baselineWidth 변수는 rev5 에서 cachedContentMinWidth 로 대체되어야 함'
+  !/let\s+cachedContentMinWidth\s*=/.test(html),
+  'rev5 의 cachedContentMinWidth 는 rev6 에서 initialContentWidth 로 대체 (재계산 제거)'
 );
 assert(
-  !/const\s+captureBaseline\s*=/.test(html),
-  'rev4 의 captureBaseline 함수는 rev5 에서 computeContentMinWidth 로 대체되어야 함'
+  !/const\s+computeContentMinWidth\s*=/.test(html),
+  'rev5 의 computeContentMinWidth 는 rev6 에서 captureInitialContentWidth 로 대체'
 );
-// [rev5] 하드코딩된 큰 min-width 상수가 없어야 함 (사용자 요구)
-//   MIN_WIDTH=320 은 절대 하한이라 허용, 그러나 700/800/820 등의 하드코딩은 금지
+assert(
+  !/const\s+computeMinWidth\s*=/.test(html),
+  'rev5 의 computeMinWidth (재계산) 은 rev6 에서 getMinWidth (고정값 반환) 로 대체'
+);
+// [rev6] 페이지 스크롤 유지 - .msg-bot-inner.mfg-expanded 는 overflow:auto (visible 아님)
+assert(
+  /\.msg-bot-inner\.mfg-expanded\s*\{[^}]*overflow:\s*auto/.test(html),
+  '.msg-bot-inner.mfg-expanded 는 overflow:auto - 페이지 스크롤 컨텍스트 유지 (rev6)'
+);
+// [rev6] .msg-bot-inner.mfg-expanded 블록 내부에 overflow:visible 이 없어야 함
+//   - CSS 블록 자체를 정확히 파싱해서 검증 (주석에 나오는 문자열은 무시)
+{
+  const cssBlockMatch = html.match(/\.msg-bot-inner\.mfg-expanded\s*\{([^}]*)\}/);
+  assert(cssBlockMatch, '.msg-bot-inner.mfg-expanded CSS 블록 파싱 성공');
+  if (cssBlockMatch) {
+    const body = cssBlockMatch[1];
+    assert(
+      !/overflow:\s*visible/.test(body),
+      'rev5 의 overflow:visible 은 rev6 에서 auto 로 변경 - 페이지 스크롤 깨짐 방지'
+    );
+    assert(
+      /overflow:\s*auto/.test(body),
+      '.msg-bot-inner.mfg-expanded 블록에 overflow:auto 가 있어야 함 (rev6)'
+    );
+  }
+}
+// [rev6] 하드코딩된 큰 min-width 상수가 없어야 함 (사용자 요구)
 assert(
   !/min-width:\s*[7-9]\d{2}px/i.test(html) || html.match(/min-width:\s*[7-9]\d{2}px/gi)?.every(s => !s.includes('mfg')),
-  '.mfg-resizable 관련 CSS 에 하드코딩된 700+px min-width 가 없어야 함 (사용자 요구)'
+  '.mfg-resizable 관련 CSS 에 하드코딩된 700+px min-width 없음 (사용자 요구)'
 );
 // [rev2] max-width 는 wrap 의 뷰포트 좌표 기준으로 계산 (사이드바 존재 시 정확)
 assert(
