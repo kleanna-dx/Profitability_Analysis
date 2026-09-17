@@ -171,20 +171,33 @@ assert(
   /addEventListener\(\s*['"`]resize['"`]/.test(html),
   'window resize 리스너로 뷰포트 축소 시 상한 재계산 처리가 있어야 함'
 );
-// min/max width 안전선
+// [rev3] MIN_WIDTH 는 절대 상수 320px 로 - 사용자가 원하는 만큼 축소 가능해야 함
 assert(
-  /Math\.max\(\s*320\s*,/.test(html),
-  '최소 폭 하한선(320px)이 설정되어야 함 - 너무 작아지지 않도록'
+  /const\s+MIN_WIDTH\s*=\s*320/.test(html),
+  'MIN_WIDTH 상수(320px) 로 하한을 정의해야 함 - 축소 가능하도록 (rev3)'
+);
+// [rev3] MIN_WIDTH 를 min 하한 클램핑에 사용
+assert(
+  /if\s*\(\s*next\s*<\s*MIN_WIDTH\s*\)\s*next\s*=\s*MIN_WIDTH/.test(html),
+  'mousemove 시 next < MIN_WIDTH 이면 MIN_WIDTH 로 클램핑해야 함 - 축소 시 하한 (rev3)'
 );
 // [rev2] max-width 는 wrap 의 뷰포트 좌표 기준으로 계산 (사이드바 존재 시 정확)
 assert(
   /window\.innerWidth\s*-\s*rect\.left/.test(html),
   '최대 폭은 (window.innerWidth - wrap.rect.left - 여백) 로 계산해야 함 - 사이드바 대응 (rev2)'
 );
-// [rev2] 조상 컨테이너 확장 로직
+// [rev3] 조상 확장 함수는 pinCurrentWidthAndExpandAncestors 로 이름 변경
+//   - "먼저 현재 폭을 인라인으로 고정, 그 후 조상 클래스 부여" 순서 강제
 assert(
-  /expandAncestors/.test(html),
-  'expandAncestors 함수로 조상(.msg-bot, .msg-bot-inner)에 mfg-expanded 클래스 부여해야 함 (rev2)'
+  /pinCurrentWidthAndExpandAncestors/.test(html),
+  'pinCurrentWidthAndExpandAncestors 함수 존재 - 현재 폭 고정 후 조상 해제 순서 보장 (rev3)'
+);
+// [rev3] mousedown 시 클릭만으로 폭이 변하지 않아야 함:
+//   pinCurrentWidthAndExpandAncestors 는 wrap.getBoundingClientRect().width 를
+//   현재 값 그대로 style.width 에 세팅 → 클릭만으로는 변화 없음
+assert(
+  /wrap\.style\.width\s*=\s*Math\.floor\(currentWidth\)\s*\+\s*['"`]px['"`]/.test(html),
+  '조상 확장 전 현재 폭을 wrap.style.width 로 정확히 고정해야 함 - 클릭 순간 부풀음 방지 (rev3)'
 );
 assert(
   /classList\.add\(\s*['"`]mfg-expanded['"`]/.test(html),
@@ -197,6 +210,29 @@ assert(
 assert(
   /\.closest\(\s*['"`]\.msg-bot-inner['"`]/.test(html),
   'wrap 에서 .msg-bot-inner 조상을 closest() 로 참조해야 함 (rev2)'
+);
+// [rev3] 순서 검증: mousedown 핸들러 안에서 "현재 폭 캡처+고정" 이 조상 확장보다 먼저 나와야 함
+//   → 소스에서 pinCurrentWidthAndExpandAncestors 함수 정의 내부의
+//     wrap.style.width 대입이 msgBot.classList.add 보다 앞서야 함
+{
+  const funcMatch = html.match(/const\s+pinCurrentWidthAndExpandAncestors\s*=\s*\(\s*\)\s*=>\s*\{([\s\S]*?)\};/);
+  assert(funcMatch, 'pinCurrentWidthAndExpandAncestors 함수 본문을 파싱할 수 있어야 함 (rev3)');
+  if (funcMatch) {
+    const body = funcMatch[1];
+    const idxWidthSet = body.search(/wrap\.style\.width\s*=/);
+    const idxClassAdd = body.search(/msgBot(?:Inner)?\.classList\.add\(\s*['"`]mfg-expanded['"`]/);
+    assert(idxWidthSet >= 0, '함수 안에 wrap.style.width 대입이 있어야 함 (rev3)');
+    assert(idxClassAdd >= 0, '함수 안에 msgBot.classList.add(mfg-expanded) 가 있어야 함 (rev3)');
+    assert(
+      idxWidthSet < idxClassAdd,
+      '★ 순서 필수: wrap.style.width 대입이 classList.add(mfg-expanded) 보다 먼저 실행되어야 함 - 클릭 시 부풀음 방지 (rev3)'
+    );
+  }
+}
+// [rev3] 함수 이름 변경 - 이전 expandAncestors 는 제거되었어야 함
+assert(
+  !/const\s+expandAncestors\s*=/.test(html),
+  '이전 expandAncestors 함수는 제거되었어야 함 (rev3 에서 pinCurrentWidthAndExpandAncestors 로 이름 변경)'
 );
 
 // ─────────────────────────────────────────────────────────────────
