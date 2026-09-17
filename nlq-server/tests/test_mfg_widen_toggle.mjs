@@ -218,24 +218,52 @@ assert(
     /document\.querySelector\(\s*['"`]\.chat-area['"`]\s*\)/.test(html),
   'main content(#chatArea 또는 .chat-area) 참조 - 사용가능 폭 기준'
 );
-// rect.right - wrap.rect.left 계산
-assert(
-  /getBoundingClientRect\(\)\.right/.test(html),
-  'chatArea.right 로 오른쪽 경계 참조'
-);
+// [hotfix] rect.right 대신 chatArea.clientWidth 기반 계산 (padding 반영, scrollbar 제외)
+//   이전 rev 는 rect.right 를 썼지만 chatArea.padding-right=24 를 무시해서 가로 스크롤 발생
 assert(
   /wrapRect\.left/.test(html) || /rect\.left/.test(html),
   'wrap.rect.left 로 wrap 시작점 참조'
 );
-// 안전 여백 상수
+// [hotfix] SAFETY_MARGIN = 32 (chatArea padding-right 24 + 여유 8)
+//   - 24 → 32 로 상향해서 chat-area 가로 스크롤 발생 원천 방지
 assert(
-  /const\s+SAFETY_MARGIN\s*=\s*24/.test(html),
-  'SAFETY_MARGIN = 24 (스크롤바/우측 여백 - 페이지 가로 스크롤 방지)'
+  /const\s+SAFETY_MARGIN\s*=\s*32/.test(html),
+  'SAFETY_MARGIN = 32 (chatArea padding-right 24 + 반올림 여유 8) - hotfix'
+);
+// [hotfix] chatArea.clientWidth 기반 계산 (rect.right 아님)
+//   - clientWidth 는 padding 포함, scrollbar 제외 → 실제 콘텐츠 영역 폭
+assert(
+  /chatArea\.clientWidth/.test(html),
+  'chatArea.clientWidth 기반 rightBoundary 계산 (padding 반영, scrollbar 제외) - hotfix'
+);
+assert(
+  /chatRect\.left\s*\+\s*chatArea\.clientWidth/.test(html),
+  'rightBoundary = chatRect.left + chatArea.clientWidth (정확한 콘텐츠 오른쪽 경계) - hotfix'
 );
 // window.innerWidth fallback
 assert(
   /window\.innerWidth/.test(html),
   'window.innerWidth fallback (chatArea 미검색 시)'
+);
+// [hotfix] .chat-area.mfg-widen-active CSS 로 overflow-x:hidden 이중 방어
+{
+  const chatAreaBlock = html.match(/\.chat-area\.mfg-widen-active\s*\{([^}]*)\}/);
+  assert(chatAreaBlock, '.chat-area.mfg-widen-active CSS 블록 존재 (hotfix)');
+  if (chatAreaBlock) {
+    assert(
+      /overflow-x:\s*hidden/.test(chatAreaBlock[1]),
+      '.chat-area.mfg-widen-active 에 overflow-x:hidden - 페이지 가로 스크롤 원천 차단 (hotfix)'
+    );
+  }
+}
+// [hotfix] applyWidened/applyDefault 에서 chatArea 에도 클래스 부여/제거
+assert(
+  /chatArea\.classList\.add\(\s*['"`]mfg-widen-active['"`]/.test(html),
+  '확장 시 chatArea 에 mfg-widen-active 클래스 부여 (hotfix)'
+);
+assert(
+  /chatArea\.classList\.remove\(\s*['"`]mfg-widen-active['"`]/.test(html),
+  '기본 복귀 시 chatArea 에서 mfg-widen-active 클래스 제거 (hotfix)'
 );
 // 하드코딩된 큰 폭 없음 (사용자 요구)
 {
