@@ -5169,14 +5169,42 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
     //   - true 일 때만 헤더 우측에 '가로 넓게 보기' 토글 버튼 렌더 (제조원가 현황집계 전용)
     //   - 미지정/false 이면 기존 UI 그대로 (분석질문, 수익성분석 등 영향 없음)
     //   - 실제 클릭 이벤트 바인딩은 initAnalysisDetailTable(..., widenable=true) 에서 수행
+    //
+    //   ★ 부가 게이팅: showWidenButton=true 는 area === 'manufacturing-cost' 인 경우에만
+    //     참이므로, 이 플래그를 재사용해서 '개당 단가' 컬럼 강조도 함께 활성화한다.
+    //     즉, 수익성분석/분석질문/기타 화면에는 '개당 단가' 강조가 적용되지 않음.
     const _mfgWidenable = !!showWidenButton;
+    const _mfgUnitPriceHighlight = !!showWidenButton;   // 동일 area 게이팅 (제조원가만)
     // 컬럼 헤더 라벨
-    const headers = columnOrder.map(c => (columnLabels && columnLabels[c]) || c);
-    // [2026-09-12] 증감/차이 컬럼 인덱스 사전 계산 → 헤더/셀에 시각 강조
+    // [2026-09-17] 증감/차이 컬럼 인덱스 사전 계산 → 헤더/셀에 시각 강조
     const deltaColIdxSet = new Set();
     columnOrder.forEach((c, idx) => {
         const lbl = (columnLabels && columnLabels[c]) || c;
         if (isDeltaColumn(c, lbl)) deltaColIdxSet.add(idx);
+    });
+    // [2026-09-17] '개당 단가' 컬럼 인덱스 사전 계산 → 헤더/셀에 연한 노란색 강조
+    //   - _mfgUnitPriceHighlight=true (제조원가 현황집계) 인 경우만 활성
+    //   - deltaColIdxSet 에 이미 포함된 컬럼은 여기서 배제 (예: '단가 증가액' 은 delta 우선)
+    //   - alias/컬럼 순서 하드코딩 없음 - isUnitPriceColumn() 로 이름 매칭
+    const unitPriceColIdxSet = new Set();
+    if (_mfgUnitPriceHighlight) {
+        columnOrder.forEach((c, idx) => {
+            if (deltaColIdxSet.has(idx)) return;   // delta 우선 (오탐 방지)
+            const lbl = (columnLabels && columnLabels[c]) || c;
+            if (isUnitPriceColumn(c, lbl)) unitPriceColIdxSet.add(idx);
+        });
+    }
+    // [2026-09-17 revA] 헤더 표시명 계산 - 개당 단가 컬럼은 표시명을 '개당 단가(원)' 로 정규화
+    //   - 제조원가 area (unitPriceColIdxSet 에 포함된) 에서만 rewrite
+    //   - 예: LLM 이 '매출원가의 표준원가 개당 단가(원)' 로 만든 alias 를 화면에서는 '개당 단가(원)' 로만 노출
+    //   - 데이터 키 (columnOrder 원본) 는 그대로 유지 → 정렬/검색/셀 매핑 무영향
+    //   - 다른 컬럼은 그대로 (원본 라벨)
+    const headers = columnOrder.map((c, idx) => {
+        const rawLabel = (columnLabels && columnLabels[c]) || c;
+        if (unitPriceColIdxSet.has(idx)) {
+            return normalizeUnitPriceHeaderLabel(rawLabel);
+        }
+        return rawLabel;
     });
     // [2026-07-21] 이력 재열람 시 하단 안내 문구
     //   - nl_query_history.result_data 는 DB 용량 절약을 위해 최대 100행만 저장됨
@@ -5231,12 +5259,20 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
                         ${headers.map((h, i) => {
                             // [2026-09-12] 증감/차이 컬럼 헤더는 연한 주황 배경 + 진한 주황 텍스트 + 볼드로 강조
                             const isDelta = deltaColIdxSet.has(i);
-                            const thBg = isDelta ? '#fff4e6' : '#f9fafb';
-                            const thColor = isDelta ? '#c2410c' : '#374151';
-                            const thWeight = isDelta ? '700' : '600';
-                            const thBorderTop = isDelta ? 'border-top:2px solid #fb923c;' : '';
+                            // [2026-09-17] '개당 단가' 컬럼 헤더는 연한 노란 배경 + 진한 노랑 텍스트 + 볼드로 강조
+                            //   delta 와 겹치지 않게 우선순위: delta > unit-price
+                            const isUnitPrice = !isDelta && unitPriceColIdxSet.has(i);
+                            let thBg = '#f9fafb', thColor = '#374151', thWeight = '600', thBorderTop = '';
+                            if (isDelta) {
+                                thBg = '#fff4e6'; thColor = '#c2410c'; thWeight = '700';
+                                thBorderTop = 'border-top:2px solid #fb923c;';
+                            } else if (isUnitPrice) {
+                                // 연한 노란색 톤 - 현재 UI (보라/회색) 와 어울리는 부드러운 강조
+                                thBg = '#fef9c3'; thColor = '#854d0e'; thWeight = '700';
+                                thBorderTop = 'border-top:2px solid #eab308;';
+                            }
                             return `
-                            <th data-col-idx="${i}" data-delta-col="${isDelta ? '1' : '0'}" style="padding:8px 10px;border-bottom:1px solid #e5e7eb;${thBorderTop}text-align:left;color:${thColor};font-weight:${thWeight};background:${thBg};cursor:pointer;user-select:none;white-space:nowrap;" onclick="sortAnalysisTable('${tableId}', ${i})">
+                            <th data-col-idx="${i}" data-delta-col="${isDelta ? '1' : '0'}" data-unit-price-col="${isUnitPrice ? '1' : '0'}" style="padding:8px 10px;border-bottom:1px solid #e5e7eb;${thBorderTop}text-align:left;color:${thColor};font-weight:${thWeight};background:${thBg};cursor:pointer;user-select:none;white-space:nowrap;" onclick="sortAnalysisTable('${tableId}', ${i})">
                                 <span>${esc(h)}</span>
                                 <i class="fas fa-sort" style="margin-left:4px;color:#9ca3af;font-size:10px;" data-sort-icon></i>
                             </th>`;
@@ -5282,6 +5318,17 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
         const lbl = (columnLabels && columnLabels[c]) || c;
         if (isDeltaColumn(c, lbl)) deltaColIdxSet.add(idx);
     });
+    // [2026-09-17] '개당 단가' 컬럼 인덱스 집합 - widenable=true (제조원가 현황집계) 에서만 활성
+    //   widenable 는 area === 'manufacturing-cost' 게이팅 결과이므로 여기서도 그대로 재사용.
+    //   delta 와 겹치는 컬럼은 delta 가 우선이므로 여기서 배제.
+    const unitPriceColIdxSet = new Set();
+    if (widenable) {
+        (columnOrder || []).forEach((c, idx) => {
+            if (deltaColIdxSet.has(idx)) return;
+            const lbl = (columnLabels && columnLabels[c]) || c;
+            if (isUnitPriceColumn(c, lbl)) unitPriceColIdxSet.add(idx);
+        });
+    }
     analysisTableState[tableId] = {
         rows: rows,
         columnOrder: columnOrder,
@@ -5293,6 +5340,7 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
         sortDir: 0,   // 0=none, 1=asc, -1=desc
         fromHistory: !!fromHistory,   // [2026-07-21] 이력 재열람 여부 (안내 문구 유지용)
         deltaColIdxSet: deltaColIdxSet,  // [2026-09-12] 증감/차이 컬럼 인덱스 집합
+        unitPriceColIdxSet: unitPriceColIdxSet,  // [2026-09-17] 개당 단가 컬럼 인덱스 집합 (제조원가만)
     };
     const st = analysisTableState[tableId];
     const searchEl = document.getElementById(tableId + '_search');
@@ -5501,6 +5549,75 @@ function isDeltaColumn(col, label) {
     if (/\b(delta|diff|change|growth|variation)/i.test(s)) return true;
     if (/[Δ▲▼]/.test(s)) return true;
     return false;
+}
+
+// ============================================================
+// [2026-09-17] "개당 단가" 컬럼 판별 — 제조원가 결과표 시각 강조 대상
+// ------------------------------------------------------------
+// 목적:
+//   사용자 요구 (자연어질의 > 제조원가):
+//     원가 총액(TOTAL) ÷ 생산수량(LBKUM) 로 계산된 단가 컬럼은
+//     화면에서 명확하게 '개당 단가' 로 표시하고, 결과표에서
+//     헤더 + 데이터 셀 전체를 연한 노란색 배경으로 강조.
+//
+// 매칭 규칙 (컬럼 alias / 라벨):
+//   기본 표준 alias: '개당 단가' (앞으로 서버 힌트가 통일해서 이 이름 사용)
+//   과거 호환: '원가 단가', '실제원가 단가', '매출원가 단가', '표준원가 단가'
+//     (기존에 다양했던 명칭도 강조 대상 - 이력 재열람 대비)
+//
+// 배제 규칙 (오탐 방지):
+//   '단가 증가액' / '단가 차이' 등은 delta 컬럼이므로 여기서는 매칭되지 않음
+//   (isDeltaColumn 이 먼저 잡음. 이 함수는 isDeltaColumn=false 인 컬럼에만 호출).
+//   '평균단가(BOX)' 같은 수익성분석 지표는 제조원가 area 게이팅으로 걸러짐
+//   (buildAnalysisDetailTable 호출부에서 area === 'manufacturing-cost' 만 활성).
+// ============================================================
+function isUnitPriceColumn(col, label) {
+    const s = (String(col || '') + ' ' + String(label || '')).trim();
+    if (!s) return false;
+    // 표준 alias
+    if (/개당\s*단가/.test(s)) return true;
+    // 과거 호환: '원가 단가' / '실제원가 단가' / '매출원가 단가' / '표준원가 단가'
+    //   단, '단가 증가액/차이/증감' 등 delta 성 표현이 함께 있으면 매칭 안 함
+    //   (호출자가 isDeltaColumn 을 먼저 체크하므로 실제로는 여기 안 옴)
+    if (/(원가|실제원가|매출원가|표준원가|제조원가)\s*단가(?!\s*(증가|감소|증감|차이|변동|상승|하락))/.test(s)) return true;
+    return false;
+}
+
+// ============================================================
+// [2026-09-17 revA] "개당 단가" 컬럼 헤더 표시명 정규화
+// ------------------------------------------------------------
+// 목적:
+//   사용자 요구:
+//     서버 힌트 + LLM 이 만드는 alias 가 '매출원가의 표준원가 개당 단가(원)'
+//     처럼 너무 길게 나올 수 있음. 화면에서는 반드시 '개당 단가(원)' 로만
+//     간결하게 표시해야 함.
+//   서버 프롬프트 지시로도 최대한 억제하지만, LLM 이 지시를 무시하는 경우가
+//   있으므로 프론트에서도 이중 안전망을 둔다.
+//
+// 규칙:
+//   1) isUnitPriceColumn 이 true 인 컬럼만 대상 (제조원가 area 게이팅은
+//      호출자에서 이미 함).
+//   2) '개당 단가' 또는 '개당 단가(원)' 자체는 그대로 반환 (변환 불필요).
+//   3) '<... prefix ...> 개당 단가' / '<... prefix ...> 개당 단가(원)' 형태이면
+//      prefix 를 제거하고 정규화된 표시명 반환.
+//   4) '단가(원)' suffix 유지 (단위 표기).
+//   5) prefix 감지 실패 시 원본 그대로 반환 (안전 fallback).
+//
+// 예시:
+//   '개당 단가'                             → '개당 단가(원)'
+//   '개당 단가(원)'                         → '개당 단가(원)'
+//   '매출원가의 표준원가 개당 단가(원)'      → '개당 단가(원)'
+//   '실제원가 개당 단가(원)'                → '개당 단가(원)'
+//   '실제원가의 표준원가 개당 단가'          → '개당 단가(원)'
+//   '표준원가 개당단가'                     → '개당 단가(원)'
+// ============================================================
+function normalizeUnitPriceHeaderLabel(label) {
+    const raw = String(label || '').trim();
+    if (!raw) return raw;
+    // '개당 단가' 를 포함하지 않으면 정규화 대상 아님 (과거 호환 alias 는 원본 유지)
+    if (!/개당\s*단가/.test(raw)) return raw;
+    // 표준화된 표시명 - 언제나 '개당 단가(원)' 로 통일
+    return '개당 단가(원)';
 }
 
 // ============================================================
@@ -5748,7 +5865,12 @@ function renderAnalysisTable(tableId) {
     // [2026-09-12] 증감/차이 컬럼용 스타일: 연한 주황 배경, 부호별 텍스트 색상
     //   양수 → 빨강 (#dc2626), 음수 → 파랑 (#2563eb), 0/기타 → 진회색 (#374151)
     const deltaCellBase = cellStyle + 'text-align:right;font-family:\'JetBrains Mono\',\'Consolas\',monospace;background:#fffaf0;font-weight:600;';
+    // [2026-09-17] '개당 단가' 컬럼용 스타일: 연한 노란 배경, 진한 텍스트 (사용자 요구)
+    //   - 헤더와 동일 톤 (#fef9c3 연한 노랑, #854d0e 진한 노랑/갈색 톤)
+    //   - 숫자 가독성 유지: 우측 정렬 + monospace
+    const unitPriceCellBase = cellStyle + 'text-align:right;font-family:\'JetBrains Mono\',\'Consolas\',monospace;background:#fef9c3;font-weight:600;';
     const deltaSet = (st.deltaColIdxSet instanceof Set) ? st.deltaColIdxSet : new Set();
+    const unitPriceSet = (st.unitPriceColIdxSet instanceof Set) ? st.unitPriceColIdxSet : new Set();
     if (pageRows.length === 0) {
         tbody.innerHTML = `<tr><td colspan="${st.columnOrder.length + 1}" style="padding:20px;text-align:center;color:#9ca3af;">검색 결과가 없습니다.</td></tr>`;
     } else {
@@ -5757,11 +5879,14 @@ function renderAnalysisTable(tableId) {
             const cells = st.columnOrder.map((c, colIdx) => {
                 const v = row[c];
                 const isDelta = deltaSet.has(colIdx);
+                // [2026-09-17] delta 우선 (겹치면 delta 스타일). delta 가 아닐 때만 unit-price 확인.
+                const isUnitPrice = !isDelta && unitPriceSet.has(colIdx);
                 if (v === null || v === undefined) {
-                    // null 셀도 delta 컬럼이면 배경만 유지 (부호 없음)
-                    const nullStyle = isDelta
-                        ? deltaCellBase + 'color:#9ca3af;font-weight:400;'
-                        : cellStyle + 'color:#9ca3af;';
+                    // null 셀도 delta/unit-price 컬럼이면 배경만 유지 (값 자리는 - 로 표시)
+                    let nullStyle;
+                    if (isDelta) nullStyle = deltaCellBase + 'color:#9ca3af;font-weight:400;';
+                    else if (isUnitPrice) nullStyle = unitPriceCellBase + 'color:#9ca3af;font-weight:400;';
+                    else nullStyle = cellStyle + 'color:#9ca3af;';
                     return `<td style="${nullStyle}">-</td>`;
                 }
                 // [2026-07-21] 컬럼 타입 기반 포맷 (formatCellValue)
@@ -5784,12 +5909,19 @@ function renderAnalysisTable(tableId) {
                     else if (num < 0) { signColor = '#2563eb'; signIcon = '▼ '; }
                     return `<td style="${deltaCellBase}color:${signColor};">${signIcon}${shown}</td>`;
                 }
+                // [2026-09-17] Unit-Price ('개당 단가') 컬럼: 연한 노란 배경 + 진한 텍스트
+                //   부호별 색상 없음 (delta 와 달리 값 자체의 변화가 아니라 절대값)
+                if (isUnitPrice && num !== null && typeof v !== 'boolean') {
+                    return `<td style="${unitPriceCellBase}color:#111827;">${shown}</td>`;
+                }
                 if (num !== null && typeof v !== 'boolean') {
-                    // delta 컬럼이지만 값이 숫자가 아닌 경우도 배경만 유지
+                    // delta/unit-price 컬럼이지만 값이 숫자가 아닌 경우도 배경만 유지
                     if (isDelta) return `<td style="${deltaCellBase}color:#111827;">${shown}</td>`;
+                    if (isUnitPrice) return `<td style="${unitPriceCellBase}color:#111827;">${shown}</td>`;
                     return `<td style="${numStyle}">${shown}</td>`;
                 }
                 if (isDelta) return `<td style="${deltaCellBase}color:#111827;font-weight:400;">${shown}</td>`;
+                if (isUnitPrice) return `<td style="${unitPriceCellBase}color:#111827;font-weight:400;">${shown}</td>`;
                 return `<td style="${cellStyle}color:#111827;">${shown}</td>`;
             }).join('');
             return `<tr><td style="${cellStyle}color:#9ca3af;text-align:right;">${rowIdx}</td>${cells}</tr>`;

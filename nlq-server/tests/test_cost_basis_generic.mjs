@@ -293,9 +293,13 @@ assert(serverSrc.includes('ZCGUBUN 을 실제원가나 매출원가 중 하나�
 assert(serverSrc.includes("MATERIAL          AS '자재코드'"), 'D-5: SELECT 1번 자재코드 존재');
 assert(serverSrc.includes("ZCGUBUN_D         AS '원가 대구분'"), 'D-6: SELECT 3번 원가 대구분 존재');
 assert(serverSrc.includes("ZCGUBUN           AS '원가구분'"), 'D-7: SELECT 4번 원가구분 존재');
-assert(serverSrc.includes("SUM(TOTAL)        AS '원가 총액'"), 'D-8: SELECT 5번 원가 총액 존재');
-assert(serverSrc.includes("SUM(LBKUM)        AS '생산수량'"), 'D-9: SELECT 6번 생산수량 존재');
-assert(serverSrc.includes("ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '원가 단가'"), 'D-10: SELECT 8번 원가 단가 존재');
+// [2026-09-17 revA] 컬럼 순서 재정렬 (사용자 요구사항):
+//   기존 (5)총액→(6)수량→(7)단위→(8)개당단가  ⇒  변경 (5)개당단가→(6)총액→(7)수량→(8)단위
+//   alias 도 '개당 단가' → '개당 단가(원)' 로 명확화 (단위 표기)
+assert(serverSrc.includes("ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'"), 'D-8: SELECT 5번 개당 단가(원) 존재 (revA: 순서 변경 및 alias 단위 명시)');
+assert(serverSrc.includes("SUM(TOTAL)        AS '원가 총액'"), 'D-9: SELECT 6번 원가 총액 존재');
+assert(serverSrc.includes("SUM(LBKUM)        AS '생산수량'"), 'D-10: SELECT 7번 생산수량 존재');
+assert(serverSrc.includes("MAX(BASE_UOM)     AS '단위'"), 'D-10b: SELECT 8번 단위 존재');
 assert(serverSrc.includes('GROUP BY MATERIAL, ZCGUBUN_D, ZCGUBUN'), 'D-11: GROUP BY 3중 지시 존재');
 assert(serverSrc.includes("CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END"), 'D-12: 표준원가 마지막 ORDER BY 존재');
 assert(serverSrc.includes("WHERE 절에 ZCGUBUN 필터를 **절대 넣지 마세요**"), 'D-13: ZCGUBUN WHERE 금지 지시 존재');

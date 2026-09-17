@@ -243,10 +243,12 @@ section('[D] server.mjs 소스에 실제 반영 확인 + 프롬프트 문구 스
     assert(src.includes(p), `프롬프트 문구에 "${p}" 포함됨`);
   }
 
-  // 컬럼 순서 고정 (숫자 1~6)
-  const orderPattern = /1\.\s*MATERIAL[\s\S]{0,200}2\.\s*MAX\(MATERIAL_NM\)[\s\S]{0,200}3\.\s*SUM\(TOTAL\)[\s\S]{0,200}4\.\s*SUM\(LBKUM\)[\s\S]{0,200}5\.\s*MAX\(BASE_UOM\)[\s\S]{0,200}6\.\s*ROUND/;
+  // [2026-09-17 revA] 컬럼 순서 재정렬 (사용자 요구사항):
+  //   기존: 코드(1)→명(2)→총액(3)→수량(4)→단위(5)→단가(6)
+  //   변경: 코드(1)→명(2)→**단가(3)**→총액(4)→수량(5)→단위(6)
+  const orderPattern = /1\.\s*MATERIAL[\s\S]{0,200}2\.\s*MAX\(MATERIAL_NM\)[\s\S]{0,200}3\.\s*ROUND[\s\S]{0,200}4\.\s*SUM\(TOTAL\)[\s\S]{0,200}5\.\s*SUM\(LBKUM\)[\s\S]{0,200}6\.\s*MAX\(BASE_UOM\)/;
   assert(orderPattern.test(src),
-    '프롬프트에 컬럼 순서 1~6 (코드/명/총액/수량/단위/단가) 순차 명시');
+    '프롬프트에 컬럼 순서 1~6 (코드/명/단가/총액/수량/단위) 순차 명시 (revA)');
 
   // 정렬 의도 분기 지시 확인
   assert(src.includes("ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) DESC"),
