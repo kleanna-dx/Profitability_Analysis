@@ -1315,6 +1315,16 @@
             /* 자연 max-width 100% 해제 - JS 가 인라인 style.width 로 명시적 고정 */
             max-width:none;
         }
+        /* [2026-09-17 hotfix] 넓게 보기 활성 상태에서 chatArea 자체에 가로 스크롤 발생 방지
+           - .chat-area 는 원래 padding:24px + overflow-y:auto 만 명시되어 있어
+             자식이 조금이라도 넓으면 브라우저가 overflow-x:auto 를 자동 적용해
+             가로 스크롤바를 생성함
+           - 확장 상태에서만 overflow-x:hidden 을 강제해 페이지 내 가로 스크롤 원천 차단
+           - 세로 스크롤(overflow-y:auto) 은 그대로 유지
+           - 표 내부 가로 스크롤은 <div overflow:auto> 자체에서 처리되므로 무관 */
+        .chat-area.mfg-widen-active{
+            overflow-x:hidden !important;
+        }
     </style>
 </head>
 <body>
@@ -5322,33 +5332,40 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
         const wrap = btn ? btn.closest('.analysis-detail-wrap') : null;
         const msgBot = wrap ? wrap.closest('.msg-bot') : null;
         const msgBotInner = wrap ? wrap.closest('.msg-bot-inner') : null;
+        // [hotfix] chatArea 참조 - 확장 시 overflow-x:hidden 강제해서 페이지 가로 스크롤 원천 차단
+        const chatArea = document.getElementById('chatArea') || document.querySelector('.chat-area');
 
         if (btn && wrap) {
-            // 사용가능한 최대 폭 계산
-            //   - chatArea 나 main content 컨테이너의 오른쪽 경계까지가 실제 사용가능 영역
-            //   - wrap.rect.left 부터 그 오른쪽 경계까지 - 24px 안전 여백
-            //   - fallback: window.innerWidth 기준 (chatArea 를 찾지 못한 경우)
+            // [hotfix] 사용가능한 최대 폭 계산 - chatArea 의 실제 콘텐츠 영역 기준
+            //   - chatArea 는 padding:24px 을 가지므로 rect.right 가 아닌 clientWidth 기반 계산
+            //   - clientWidth 는 padding 포함, scrollbar 제외
+            //   - 실제 오른쪽 콘텐츠 경계 = chatArea.rect.left + clientWidth - (오른쪽 padding)
+            //   - 하지만 padding 은 getComputedStyle 로 조회해야 하므로,
+            //     안전하게 SAFETY_MARGIN 을 chatArea padding(24) + 여유(8) = 32 로 상향
             const computeMaxWidth = () => {
                 const wrapRect = wrap.getBoundingClientRect();
-                // 우선순위: chatArea > 가장 가까운 main container > window
-                const chatArea = document.getElementById('chatArea') || document.querySelector('.chat-area');
                 let rightBoundary;
                 if (chatArea) {
-                    rightBoundary = chatArea.getBoundingClientRect().right;
+                    // clientWidth 로 스크롤바 폭 제외한 콘텐츠 영역 폭 사용
+                    const chatRect = chatArea.getBoundingClientRect();
+                    rightBoundary = chatRect.left + chatArea.clientWidth;
                 } else {
                     rightBoundary = window.innerWidth;
                 }
-                // 안전 여백 24px (스크롤바/우측 여백 고려)
-                const SAFETY_MARGIN = 24;
+                // [hotfix] 안전 여백을 24 → 32 로 상향
+                //   - chatArea padding-right 24px + 브라우저 반올림/border 여유 8px
+                //   - 이렇게 하면 wrap.right 가 확실히 chat-area 콘텐츠 영역 안에 들어감
+                //   - 추가로 .chat-area.mfg-widen-active { overflow-x:hidden } 로 이중 방어
+                const SAFETY_MARGIN = 32;
                 const maxW = Math.floor(rightBoundary - wrapRect.left - SAFETY_MARGIN);
-                // 최소값 보장 (극단적으로 좁은 화면에서도 최소 320px)
                 return Math.max(320, maxW);
             };
 
-            // 확장 상태 적용 (조상 클래스 + wrap style.width)
+            // 확장 상태 적용 (조상 클래스 + wrap style.width + chatArea overflow-x 차단)
             const applyWidened = () => {
                 if (msgBot) msgBot.classList.add('mfg-widened');
                 if (msgBotInner) msgBotInner.classList.add('mfg-widened');
+                if (chatArea) chatArea.classList.add('mfg-widen-active');
                 wrap.classList.add('mfg-widened');
                 const maxW = computeMaxWidth();
                 wrap.style.width = maxW + 'px';
@@ -5363,6 +5380,7 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
             const applyDefault = () => {
                 if (msgBot) msgBot.classList.remove('mfg-widened');
                 if (msgBotInner) msgBotInner.classList.remove('mfg-widened');
+                if (chatArea) chatArea.classList.remove('mfg-widen-active');
                 wrap.classList.remove('mfg-widened');
                 wrap.style.width = '';   // 인라인 style 제거 → 자연 폭 복귀
                 btn.classList.remove('is-active');
