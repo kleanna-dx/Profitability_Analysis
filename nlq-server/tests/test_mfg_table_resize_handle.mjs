@@ -63,14 +63,27 @@ assert(
   /cursor:se-resize/.test(html),
   '핸들 커서가 se-resize (대각선 남동쪽) 로 설정되어야 함'
 );
-// 색상: 진한 회색 또는 제조원가 관련 색상 사용
+// [rev2] 회색 삼각형 디자인 - border-right 로 삼각형을 그리므로 border-right-color 로 검증
 assert(
-  /color:#4b5563/.test(html) || /color:#6b7280/.test(html),
-  '핸들 기본색이 진한 회색(#4b5563 또는 #6b7280)이어야 함 - 사용자 요구'
+  /border-right:\s*\d+px\s+solid\s+#6b7280/.test(html),
+  '핸들 기본 형태가 회색(#6b7280) border-right 삼각형이어야 함 - 사용자 요구 (rev2)'
 );
 assert(
-  /color:#4c1d95/.test(html),
-  '핸들 hover/dragging 강조색이 제조원가 관련 진한 보라(#4c1d95)여야 함 - 사용자 요구'
+  /border-right-color:#4b5563/.test(html),
+  '핸들 hover 시 더 진한 회색(#4b5563)으로 강조되어야 함'
+);
+assert(
+  /border-right-color:#374151/.test(html),
+  '핸들 dragging 시 가장 진한 회색(#374151)으로 강조되어야 함'
+);
+// [rev2] 조상 컨테이너 폭 제약 해제 CSS
+assert(
+  /\.msg-bot\.mfg-expanded/.test(html),
+  '.msg-bot.mfg-expanded CSS 규칙 존재 - 드래그 시 max-width:820px 해제용'
+);
+assert(
+  /\.msg-bot-inner\.mfg-expanded/.test(html),
+  '.msg-bot-inner.mfg-expanded CSS 규칙 존재 - 드래그 시 overflow:hidden 해제용'
 );
 
 // ─────────────────────────────────────────────────────────────────
@@ -163,9 +176,27 @@ assert(
   /Math\.max\(\s*320\s*,/.test(html),
   '최소 폭 하한선(320px)이 설정되어야 함 - 너무 작아지지 않도록'
 );
+// [rev2] max-width 는 wrap 의 뷰포트 좌표 기준으로 계산 (사이드바 존재 시 정확)
 assert(
-  /window\.innerWidth\s*\*\s*0\.96/.test(html),
-  '최대 폭은 뷰포트의 96%로 제한해야 함 - 사이드바/스크롤바 침범 방지'
+  /window\.innerWidth\s*-\s*rect\.left/.test(html),
+  '최대 폭은 (window.innerWidth - wrap.rect.left - 여백) 로 계산해야 함 - 사이드바 대응 (rev2)'
+);
+// [rev2] 조상 컨테이너 확장 로직
+assert(
+  /expandAncestors/.test(html),
+  'expandAncestors 함수로 조상(.msg-bot, .msg-bot-inner)에 mfg-expanded 클래스 부여해야 함 (rev2)'
+);
+assert(
+  /classList\.add\(\s*['"`]mfg-expanded['"`]/.test(html),
+  '드래그 시작 시 조상에 mfg-expanded 클래스 추가하는 코드가 있어야 함 (rev2)'
+);
+assert(
+  /\.closest\(\s*['"`]\.msg-bot['"`]/.test(html),
+  'wrap 에서 .msg-bot 조상을 closest() 로 참조해야 함 (rev2)'
+);
+assert(
+  /\.closest\(\s*['"`]\.msg-bot-inner['"`]/.test(html),
+  'wrap 에서 .msg-bot-inner 조상을 closest() 로 참조해야 함 (rev2)'
 );
 
 // ─────────────────────────────────────────────────────────────────

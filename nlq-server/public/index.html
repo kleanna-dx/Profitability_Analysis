@@ -1266,59 +1266,57 @@
            - area === 'manufacturing-cost' 이고, aggregate(현황집계) 경로에서만 렌더
            - 분석질문(analysis) 경로 및 수익성분석에는 적용하지 않음
            - buildAnalysisDetailTable(..., showResizeHandle=true) 일 때만 노출
+           - [2026-09-17 rev2] 핸들 디자인을 회색 삼각형(SE) 으로 변경 (사용자 요구)
+             - JS 에서 조상(.msg-bot, .msg-bot-inner) 의 max-width/overflow 를
+               드래그 시 완화해야 실제로 시각 확장이 가능하기 때문에 CSS 는 최소한만 담당
            ============================================================ */
         .analysis-detail-wrap.mfg-resizable{
             position:relative;
             /* JS 로 style.width 를 부여받으므로 max-width 는 뷰포트 안전선까지 허용 */
-            max-width:100%;
+            max-width:none;
         }
         .mfg-table-resize-handle{
             position:absolute;
             right:0;
             bottom:0;
-            width:22px;
-            height:22px;
+            width:16px;
+            height:16px;
             cursor:se-resize;
-            /* 진한 회색(#4b5563) 톤 - 제조원가 UI 와 대비되면서 페이저 영역에 자연스럽게 앉음 */
-            color:#4b5563;
-            display:flex;
-            align-items:flex-end;
-            justify-content:flex-end;
-            padding:2px 4px 2px 2px;
-            box-sizing:border-box;
             user-select:none;
-            z-index:3;
-            opacity:0.75;
-            transition:opacity .12s ease, color .12s ease, background .12s ease;
-            border-bottom-right-radius:10px;
-            /* 대각선 stripe 로 SE resize 힌트 - CSS 만으로 화살표/줄무늬 표현 */
-            background:
-                linear-gradient(135deg,
-                    transparent 0%,
-                    transparent 45%,
-                    currentColor 45%,
-                    currentColor 55%,
-                    transparent 55%,
-                    transparent 70%,
-                    currentColor 70%,
-                    currentColor 80%,
-                    transparent 80%
-                );
+            z-index:5;
+            opacity:0.85;
+            transition:opacity .12s ease, border-color .12s ease;
+            /* CSS 삼각형 - 우측 하단(SE) 방향
+               border-right + border-bottom 만 진한 회색으로 채워 SE 코너 삼각형 형성 */
+            border-right:16px solid #6b7280;
+            border-top:16px solid transparent;
+            border-bottom-right-radius:9px;
+            box-sizing:border-box;
         }
         .mfg-table-resize-handle:hover{
             opacity:1;
-            /* 호버 시 제조원가 관련 진한 보라(#4c1d95) 로 살짝 강조 */
-            color:#4c1d95;
+            border-right-color:#4b5563;
         }
         .mfg-table-resize-handle.dragging{
             opacity:1;
-            color:#4c1d95;
+            border-right-color:#374151;
         }
         /* 드래그 중 텍스트/컬럼 선택 방지 (전역 body 에 임시로 부여) */
         body.mfg-resizing,
         body.mfg-resizing *{
             user-select:none !important;
             cursor:se-resize !important;
+        }
+        /* [2026-09-17 rev2] wrap 이 드래그로 확장될 때 조상 컨테이너 폭 제약 해제
+           - .msg-bot 은 max-width:820px 하드코딩 되어 있어 wrap 확장이 시각적으로 차단됨
+           - .msg-bot-inner 는 overflow:hidden 이라 wrap 이 밖으로 삐져나가지도 못함
+           - .mfg-expanded 클래스는 JS 가 드래그 시작 시 조상에 부여 */
+        .msg-bot.mfg-expanded{
+            max-width:none !important;
+            width:auto !important;
+        }
+        .msg-bot-inner.mfg-expanded{
+            overflow:visible !important;
         }
     </style>
 </head>
@@ -5205,8 +5203,12 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
     const _resizeHandleHtml = _mfgResizable
         ? `<div id="${tableId}_resizeHandle" class="mfg-table-resize-handle" title="드래그하여 표 가로폭을 조절할 수 있습니다" role="separator" aria-orientation="vertical" aria-label="표 가로폭 조절"></div>`
         : '';
+    // [2026-09-17 rev2] mfg-resizable 인 경우 wrap 자체는 overflow:visible 로 두어
+    //   확장 시 핸들과 컨텐츠가 조상 컨테이너 폭 제약을 넘어 표시되도록 함
+    //   (조상 .msg-bot / .msg-bot-inner 도 JS 로 mfg-expanded 클래스 부여해 함께 해제)
+    const _wrapOverflow = _mfgResizable ? 'visible' : 'hidden';
     return `
-    <div class="${_wrapClass}" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+    <div class="${_wrapClass}" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:${_wrapOverflow};">
         <div class="analysis-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:linear-gradient(135deg,#eef2ff,#f5f3ff);border-bottom:1px solid #e5e7eb;flex-wrap:wrap;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;color:#4c1d95;font-size:12px;font-weight:700;">
                 <i class="fas fa-table"></i>
@@ -5320,19 +5322,29 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
     renderAnalysisTable(tableId);
 
     // ============================================================
-    // [2026-09-17] 제조원가 현황집계 전용: 표 가로폭 수동 조절 핸들 바인딩
+    // [2026-09-17 rev2] 제조원가 현황집계 전용: 표 가로폭 수동 조절 핸들 바인딩
     //   - resizable=true 인 경우에만 활성 (buildAnalysisDetailTable 에서 이미 핸들 DOM 렌더됨)
-    //   - 우측 하단 핸들을 마우스로 드래그하여 wrap.style.width 를 픽셀 단위로 조절
+    //   - 우측 하단 회색 삼각형 핸들을 마우스로 드래그해 wrap.style.width 를 픽셀 단위로 조절
+    //
+    //   ★ 핵심 원인 (rev2 에서 수정된 부분):
+    //     - .msg-bot 는 max-width:820px 하드코딩 되어 있어, wrap 폭을 늘려도
+    //       조상이 820px 로 잘라내 시각적 확장이 안 됨
+    //     - .msg-bot-inner 는 overflow:hidden 이라 wrap 이 밖으로 삐져나가지도 못함
+    //     - 따라서 드래그 시작 시 조상 두 요소에 .mfg-expanded 클래스를 부여해
+    //       max-width/overflow 를 함께 해제해야 실제로 가로가 늘어남
+    //
     //   - min-width: 초기 렌더 시 offsetWidth (현재 크기보다 작아지지 않도록)
-    //   - max-width: 뷰포트의 96%  (사이드바/우측 여백 침범 방지, 반응형 처리)
+    //   - max-width: 뷰포트 - 우측 여백 안전선  (사이드바/스크롤바 침범 방지)
     //   - 현재 응답 뷰가 유지되는 동안(DOM 살아있는 동안)만 폭 유지 - 새 질의에서는 리셋
-    //   - overflow-x: 부모(.chat-area 등)는 이미 CSS 로 처리되어 있으므로 별도 조작 없음
-    //     wrap 자체는 overflow:hidden 이라 내부 max-height:440px scroll 영역이 여전히 동작함.
     // ============================================================
     if (resizable) {
         const handle = document.getElementById(tableId + '_resizeHandle');
         // 핸들이 wrap 안에 들어있으므로 closest 로 wrap 참조 확보
         const wrap = handle ? handle.closest('.analysis-detail-wrap') : null;
+        // [rev2] 조상 컨테이너 참조 - 확장 시 폭 제약 해제 대상
+        const msgBot = wrap ? wrap.closest('.msg-bot') : null;
+        const msgBotInner = wrap ? wrap.closest('.msg-bot-inner') : null;
+
         if (handle && wrap) {
             // 최초 자연 폭을 min-width 로 캡처 (현재보다 작아지지 않도록)
             let minWidth = 0;
@@ -5340,6 +5352,17 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
             let startX = 0;
             let startWidth = 0;
             let dragging = false;
+            let expandedOnce = false;   // [rev2] 조상 해제 클래스 1회 부여 플래그
+
+            // [rev2] 조상 컨테이너의 폭 제약 해제 - mousedown 시 최초 1회 부여
+            //   - 이후에는 클래스 유지 (드래그 종료 후에도 확장된 폭 유지)
+            //   - 이력 재열람 등으로 재초기화되면 새 DOM 이라 자연히 리셋됨
+            const expandAncestors = () => {
+                if (expandedOnce) return;
+                if (msgBot) msgBot.classList.add('mfg-expanded');
+                if (msgBotInner) msgBotInner.classList.add('mfg-expanded');
+                expandedOnce = true;
+            };
 
             const computeBounds = () => {
                 // 최초 1회 캡처 → 이후 유지 (컬럼 정렬/페이지 변경으로 폭이 변해도 기준선 고정)
@@ -5347,13 +5370,19 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
                     const rect = wrap.getBoundingClientRect();
                     minWidth = Math.max(320, Math.floor(rect.width));
                 }
-                // 뷰포트의 96% 를 상한선으로 (사이드바/스크롤바 고려)
-                maxWidth = Math.max(minWidth, Math.floor(window.innerWidth * 0.96));
+                // 뷰포트 기준 상한 계산:
+                //   wrap 의 왼쪽 좌표(뷰포트 기준) + 오른쪽 안전 여백(24px)
+                //   → 사이드바가 왼쪽에 있어도 그대로 wrap 오른쪽으로 확장 가능한 만큼만 허용
+                const rect = wrap.getBoundingClientRect();
+                const available = Math.floor(window.innerWidth - rect.left - 24);
+                maxWidth = Math.max(minWidth, available);
             };
 
             const onMouseMove = (e) => {
                 if (!dragging) return;
                 const dx = e.clientX - startX;
+                // 매 프레임마다 상한 재계산 (조상 확장 후 rect.left 가 바뀔 수 있음)
+                computeBounds();
                 let next = startWidth + dx;
                 if (next < minWidth) next = minWidth;
                 if (next > maxWidth) next = maxWidth;
@@ -5374,6 +5403,8 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
                 if (e.button !== 0) return;
                 e.preventDefault();
                 e.stopPropagation();
+                // ★ 조상 폭 제약을 먼저 해제한 뒤 bounds 계산 (해제 전엔 rect 가 클램프됨)
+                expandAncestors();
                 computeBounds();
                 startX = e.clientX;
                 startWidth = wrap.getBoundingClientRect().width;
