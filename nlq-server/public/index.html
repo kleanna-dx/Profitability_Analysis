@@ -1260,66 +1260,6 @@
             overflow-wrap:anywhere;
             word-break:break-word;
         }
-
-        /* ============================================================
-           [2026-09-17] 제조원가 현황집계 결과 표 - 가로폭 수동 조절 핸들
-           - area === 'manufacturing-cost' 이고, aggregate(현황집계) 경로에서만 렌더
-           - 분석질문(analysis) 경로 및 수익성분석에는 적용하지 않음
-           - buildAnalysisDetailTable(..., showResizeHandle=true) 일 때만 노출
-           - [2026-09-17 rev2] 핸들 디자인을 회색 삼각형(SE) 으로 변경 (사용자 요구)
-             - JS 에서 조상(.msg-bot, .msg-bot-inner) 의 max-width/overflow 를
-               드래그 시 완화해야 실제로 시각 확장이 가능하기 때문에 CSS 는 최소한만 담당
-           ============================================================ */
-        .analysis-detail-wrap.mfg-resizable{
-            position:relative;
-            /* JS 로 style.width 를 부여받으므로 max-width 는 뷰포트 안전선까지 허용 */
-            max-width:none;
-        }
-        .mfg-table-resize-handle{
-            position:absolute;
-            right:0;
-            bottom:0;
-            width:16px;
-            height:16px;
-            cursor:se-resize;
-            user-select:none;
-            z-index:5;
-            opacity:0.85;
-            transition:opacity .12s ease, border-color .12s ease;
-            /* CSS 삼각형 - 우측 하단(SE) 방향
-               border-right + border-bottom 만 진한 회색으로 채워 SE 코너 삼각형 형성 */
-            border-right:16px solid #6b7280;
-            border-top:16px solid transparent;
-            border-bottom-right-radius:9px;
-            box-sizing:border-box;
-        }
-        .mfg-table-resize-handle:hover{
-            opacity:1;
-            border-right-color:#4b5563;
-        }
-        .mfg-table-resize-handle.dragging{
-            opacity:1;
-            border-right-color:#374151;
-        }
-        /* 드래그 중 텍스트/컬럼 선택 방지 (전역 body 에 임시로 부여) */
-        body.mfg-resizing,
-        body.mfg-resizing *{
-            user-select:none !important;
-            cursor:se-resize !important;
-        }
-        /* [2026-09-17 rev2] wrap 이 드래그로 확장될 때 조상 컨테이너 폭 제약 해제
-           - .msg-bot 은 max-width:820px 하드코딩 되어 있어 wrap 확장이 시각적으로 차단됨
-           - .msg-bot-inner 는 overflow:hidden 이라 wrap 이 밖으로 삐져나가지도 못함
-           - .mfg-expanded 클래스는 JS 가 드래그 시작 시 조상에 부여
-           - [rev6] visible 대신 auto - visible 은 페이지 스크롤 컨텍스트를 깨뜨림
-             auto 로도 wrap 확장 자체는 동일하게 되고, 페이지 스크롤 정상 동작 */
-        .msg-bot.mfg-expanded{
-            max-width:none !important;
-            width:auto !important;
-        }
-        .msg-bot-inner.mfg-expanded{
-            overflow:auto !important;
-        }
     </style>
 </head>
 <body>
@@ -3618,25 +3558,8 @@ function appendBotMessage(data) {
         // fromHistory=true 이면 이력 재열람 → 페이징 표 하단에 100행 저장 안내 문구 표시
         // [2026-07-31] periodInfo 전달 — 표 제목 옆 '· 2026년 6월' 형태로 실제 조회 기간 표시
         const fromHistory = !!data.fromHistory;
-        // [2026-09-17] 제조원가 현황집계 전용 리사이즈 핸들 게이팅
-        //   - AreaTabs.snapshot() 로 현재 area 를 조회 (없으면 data.area 로 폴백)
-        //   - area === 'manufacturing-cost' 인 경우에만 결과 표 우측 하단에 가로폭 조절 핸들 노출
-        //   - profitability(수익성분석) 등 다른 영역과 분석질문(analysis) 경로에는 적용하지 않음
-        //     (이 블록은 aggregate/현황집계 경로에서만 실행되므로, area 만 체크하면 조건 충족)
-        let _mfgShowResizeHandle = false;
-        try {
-            let _areaForResize = null;
-            if (window.AreaTabs && typeof window.AreaTabs.snapshot === 'function') {
-                const _snap = window.AreaTabs.snapshot();
-                _areaForResize = _snap && _snap.area;
-            }
-            if (!_areaForResize && data && typeof data.area === 'string') {
-                _areaForResize = data.area;
-            }
-            _mfgShowResizeHandle = (_areaForResize === 'manufacturing-cost');
-        } catch (_) { _mfgShowResizeHandle = false; }
-        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo, _mfgShowResizeHandle);
-        _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory, resizable: _mfgShowResizeHandle };
+        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo);
+        _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory };
     }
 
     // Analysis HTML (분석 답변 패널)
@@ -3757,9 +3680,7 @@ function appendBotMessage(data) {
             _aggDetailInitCtx.rows,
             _aggDetailInitCtx.cols,
             _aggDetailInitCtx.colLabels,
-            _aggDetailInitCtx.fromHistory,
-            // [2026-09-17] 제조원가 현황집계에서만 리사이즈 핸들 활성 - 위 buildAnalysisDetailTable 게이트와 동일
-            _aggDetailInitCtx.resizable
+            _aggDetailInitCtx.fromHistory
         );
     }
 
@@ -5159,12 +5080,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
 //   - <thead> 헤더 클릭 시 정렬
 //   - 실제 데이터 채움과 이벤트 바인딩은 initAnalysisDetailTable 에서.
 // ============================================================
-function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, showResizeHandle) {
-    // [2026-09-17] showResizeHandle (선택, 9번째 인자)
-    //   - true 일 때만 우측 하단 가로폭 조절 핸들 DOM 을 함께 렌더링 (제조원가 현황집계 전용)
-    //   - 미지정/false 이면 기존 동작 그대로 (분석질문, 수익성분석 등 영향 없음)
-    //   - 실제 드래그 이벤트 바인딩은 initAnalysisDetailTable(..., resizable=true) 에서 수행
-    const _mfgResizable = !!showResizeHandle;
+function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo) {
     // 컬럼 헤더 라벨
     const headers = columnOrder.map(c => (columnLabels && columnLabels[c]) || c);
     // [2026-09-12] 증감/차이 컬럼 인덱스 사전 계산 → 헤더/셀에 시각 강조
@@ -5194,23 +5110,8 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
     // SQL 다운로드/펼침 토글 옵션
     const sqlToggleId = tableId + '_sqltoggle';
     const sqlPanelId = tableId + '_sqlpanel';
-    // [2026-09-17] 제조원가 현황집계 전용: 리사이즈 대상 wrapper 에 mfg-resizable 클래스 부여
-    //   - 클래스가 있어야 CSS 의 position:relative 및 max-width:100% 가 적용됨
-    //   - initAnalysisDetailTable 에서 이 클래스를 셀렉터로 핸들 이벤트 바인딩
-    const _wrapClass = _mfgResizable ? 'analysis-detail-wrap mfg-resizable' : 'analysis-detail-wrap';
-    // [2026-09-17] pager 안에 넣을 리사이즈 핸들 DOM
-    //   - pager 는 이미 position:static 이지만, 부모 wrap 에 position:relative(mfg-resizable) 부여됐으므로
-    //     핸들은 wrap 기준으로 오른쪽 하단(pager 우측 하단 코너)에 정확히 붙음.
-    //   - title 로 사용법 안내, aria-label 로 스크린리더 지원
-    const _resizeHandleHtml = _mfgResizable
-        ? `<div id="${tableId}_resizeHandle" class="mfg-table-resize-handle" title="드래그하여 표 가로폭을 조절할 수 있습니다" role="separator" aria-orientation="vertical" aria-label="표 가로폭 조절"></div>`
-        : '';
-    // [2026-09-17 rev2] mfg-resizable 인 경우 wrap 자체는 overflow:visible 로 두어
-    //   확장 시 핸들과 컨텐츠가 조상 컨테이너 폭 제약을 넘어 표시되도록 함
-    //   (조상 .msg-bot / .msg-bot-inner 도 JS 로 mfg-expanded 클래스 부여해 함께 해제)
-    const _wrapOverflow = _mfgResizable ? 'visible' : 'hidden';
     return `
-    <div class="${_wrapClass}" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:${_wrapOverflow};">
+    <div class="analysis-detail-wrap" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
         <div class="analysis-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:linear-gradient(135deg,#eef2ff,#f5f3ff);border-bottom:1px solid #e5e7eb;flex-wrap:wrap;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;color:#4c1d95;font-size:12px;font-weight:700;">
                 <i class="fas fa-table"></i>
@@ -5262,7 +5163,6 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
             </div>
             <div id="${tableId}_pagectrl" style="display:flex;align-items:center;gap:4px;"></div>
         </div>
-        ${_resizeHandleHtml}
     </div>`;
 }
 
@@ -5285,7 +5185,7 @@ const analysisTableState = {};
 //   - 초기 렌더
 //   - 검색어 변경 / 페이지 크기 변경 시 재렌더
 // ============================================================
-function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory, resizable) {
+function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory) {
     // [2026-09-12] 증감/차이 컬럼 인덱스 집합 (Set of column index) — 셀 렌더 시 시각 강조에 사용
     const deltaColIdxSet = new Set();
     (columnOrder || []).forEach((c, idx) => {
@@ -5322,156 +5222,6 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
         });
     }
     renderAnalysisTable(tableId);
-
-    // ============================================================
-    // [2026-09-17 rev6] 제조원가 현황집계 전용: 표 가로폭 수동 조절 핸들 바인딩
-    //
-    //   ★ rev6 수정 이유 (사용자 피드백):
-    //     "드래그 시 가로길이가 서서히 늘어나는게 아니라 갑자기 한번에 커지면서
-    //      스크롤이 안된다고.."
-    //
-    //   ★ 원인 (rev5 두 개의 버그):
-    //     [A] 하한이 매 mousemove 마다 상승 → 한번에 최대로 튀는 버그
-    //         - rev5 는 computeMinWidth() 를 매 mousemove 마다 호출
-    //         - computeMinWidth() 안에서 tableScrollContainer.scrollWidth 재계산
-    //         - wrap 이 커지면 → 내부 <table width:100%> 도 커짐 → scrollWidth 도 같이 증가
-    //         - 다음 mousemove 에서 새 하한이 이전 next 보다 큼 → next < minW 발동
-    //         - 결과: wrap 이 한 프레임에 minW 로 강제 튐 → "확 커짐"
-    //
-    //     [B] 페이지 스크롤 안 되는 버그
-    //         - .msg-bot-inner.mfg-expanded { overflow:visible !important }
-    //         - 조상 msg-bot-inner 가 visible 되면 wrap 이 페이지 밖으로 삐져나감
-    //         - .chat-area 등의 스크롤 컨텍스트를 깨뜨림
-    //
-    //   ★ rev6 해결:
-    //     [A] initialContentWidth 를 init 시점에 딱 1회만 캡처 (rAF 로 안정 후 1회 더)
-    //         - 이후 절대 재계산하지 않음 → 하한이 고정 → mousemove 시 서서히 변화
-    //     [B] .msg-bot-inner 는 overflow:auto 로 변경 (visible 대신)
-    //         - visible 이 아니라 auto 라도 wrap 확장 자체는 그대로 됨
-    //         - 페이지 스크롤 컨텍스트 유지
-    //
-    //   ★ rev6 에서 유지되는 것:
-    //     - rev3: pinCurrentWidthAndExpandAncestors 순서 (BUG1/BUG2 방지)
-    //     - rev3: MIN_WIDTH = 320 절대 하한 (edge case fallback)
-    //     - rev5: scrollWidth 기반 콘텐츠 폭 캡처 (흰 여백 방지)
-    // ============================================================
-    if (resizable) {
-        const handle = document.getElementById(tableId + '_resizeHandle');
-        // 핸들이 wrap 안에 들어있으므로 closest 로 wrap 참조 확보
-        const wrap = handle ? handle.closest('.analysis-detail-wrap') : null;
-        // [rev2] 조상 컨테이너 참조 - 확장 시 폭 제약 해제 대상
-        const msgBot = wrap ? wrap.closest('.msg-bot') : null;
-        const msgBotInner = wrap ? wrap.closest('.msg-bot-inner') : null;
-
-        if (handle && wrap) {
-            // 절대 하한 (콘텐츠 폭 캡처가 실패한 극단적인 edge case fallback)
-            const MIN_WIDTH = 320;
-
-            let startX = 0;
-            let startWidth = 0;
-            let dragging = false;
-            let expandedOnce = false;
-
-            // ★ rev6 핵심: 콘텐츠 실제 폭을 init 시점에 딱 1회만 캡처
-            //   - 이후 절대 재계산 안 함 → 하한 고정 → 드래그가 서서히 부드럽게 진행
-            //   - wrap 이 커져도 minWidth 는 변하지 않으므로 mousemove 클램핑 안정적
-            //
-            //   측정 대상: <table>.scrollWidth
-            //     - table 이 width:100% 라 최소 폭은 컬럼 폭 합 (white-space:nowrap 덕분)
-            //     - table.scrollWidth 를 직접 참조 (parentElement 대신)
-            //       → 이래야 wrap 이 커져도 table 실제 콘텐츠 폭에 영향 없음
-            const tableEl = wrap.querySelector('table');
-            const WRAP_FRAME_PADDING = 6;  // wrap 좌우 border + 안전 여유
-
-            // ★ 딱 1회 캡처 (재계산 금지)
-            let initialContentWidth = 0;
-            const captureInitialContentWidth = () => {
-                if (!tableEl) return;
-                const sw = tableEl.scrollWidth || 0;
-                if (sw > 0) initialContentWidth = Math.floor(sw + WRAP_FRAME_PADDING);
-            };
-            // 즉시 1회 + rAF 로 초기 레이아웃 안정 후 1회 (아직 확장 전 상태)
-            captureInitialContentWidth();
-            if (typeof requestAnimationFrame === 'function') {
-                requestAnimationFrame(() => {
-                    if (!wrap.isConnected) return;
-                    if (expandedOnce) return;  // 이미 사용자가 드래그 시작했다면 재캡처 금지
-                    captureInitialContentWidth();
-                });
-            }
-
-            // ★ rev3 유지: 조상 확장 "전에" 현재 폭을 인라인으로 고정
-            //   → 클릭 순간 부풀지 않음 (BUG1 재발 방지)
-            const pinCurrentWidthAndExpandAncestors = () => {
-                if (expandedOnce) return;
-                const currentWidth = wrap.getBoundingClientRect().width;
-                wrap.style.width = Math.floor(currentWidth) + 'px';
-                if (msgBot) msgBot.classList.add('mfg-expanded');
-                if (msgBotInner) msgBotInner.classList.add('mfg-expanded');
-                expandedOnce = true;
-            };
-
-            // ★ rev6: 하한 = max(절대상수, 초기 콘텐츠 폭) - 고정값 (재계산 없음)
-            const getMinWidth = () => Math.max(MIN_WIDTH, initialContentWidth || 0);
-
-            // 상한: 뷰포트 - wrap 좌측 좌표 - 우측 안전 여백 (매번 재계산 OK, 시각 변화 없음)
-            const computeMaxWidth = () => {
-                const rect = wrap.getBoundingClientRect();
-                const available = Math.floor(window.innerWidth - rect.left - 24);
-                return Math.max(getMinWidth(), available);
-            };
-
-            const onMouseMove = (e) => {
-                if (!dragging) return;
-                const dx = e.clientX - startX;
-                const minW = getMinWidth();
-                const maxW = computeMaxWidth();
-                let next = startWidth + dx;
-                if (next < minW) next = minW;
-                if (next > maxW) next = maxW;
-                wrap.style.width = next + 'px';
-            };
-
-            const onMouseUp = () => {
-                if (!dragging) return;
-                dragging = false;
-                handle.classList.remove('dragging');
-                document.body.classList.remove('mfg-resizing');
-                document.removeEventListener('mousemove', onMouseMove);
-                document.removeEventListener('mouseup', onMouseUp);
-            };
-
-            handle.addEventListener('mousedown', (e) => {
-                // 좌클릭만
-                if (e.button !== 0) return;
-                e.preventDefault();
-                e.stopPropagation();
-                // ★ 조상 확장 전 마지막 콘텐츠 폭 확정 캡처 (아직 캡처 실패한 경우 대비)
-                if (!initialContentWidth) captureInitialContentWidth();
-                pinCurrentWidthAndExpandAncestors();
-                startX = e.clientX;
-                startWidth = wrap.getBoundingClientRect().width;
-                dragging = true;
-                handle.classList.add('dragging');
-                document.body.classList.add('mfg-resizing');
-                document.addEventListener('mousemove', onMouseMove);
-                document.addEventListener('mouseup', onMouseUp);
-            });
-
-            // 창 크기 변경 시 상·하한 재계산 - 현재 폭이 범위 벗어나면 다듬어줌
-            window.addEventListener('resize', () => {
-                if (!wrap.isConnected) return;
-                const minW = getMinWidth();
-                const maxW = computeMaxWidth();
-                const cur = wrap.getBoundingClientRect().width;
-                if (cur > maxW) {
-                    wrap.style.width = maxW + 'px';
-                } else if (cur < minW) {
-                    wrap.style.width = minW + 'px';
-                }
-            });
-        }
-    }
 }
 
 // 정렬 토글
