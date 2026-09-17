@@ -1260,6 +1260,66 @@
             overflow-wrap:anywhere;
             word-break:break-word;
         }
+
+        /* ============================================================
+           [2026-09-17] 제조원가 현황집계 결과 표 - 가로폭 수동 조절 핸들
+           - area === 'manufacturing-cost' 이고, aggregate(현황집계) 경로에서만 렌더
+           - 분석질문(analysis) 경로 및 수익성분석에는 적용하지 않음
+           - buildAnalysisDetailTable(..., showResizeHandle=true) 일 때만 노출
+           ============================================================ */
+        .analysis-detail-wrap.mfg-resizable{
+            position:relative;
+            /* JS 로 style.width 를 부여받으므로 max-width 는 뷰포트 안전선까지 허용 */
+            max-width:100%;
+        }
+        .mfg-table-resize-handle{
+            position:absolute;
+            right:0;
+            bottom:0;
+            width:22px;
+            height:22px;
+            cursor:se-resize;
+            /* 진한 회색(#4b5563) 톤 - 제조원가 UI 와 대비되면서 페이저 영역에 자연스럽게 앉음 */
+            color:#4b5563;
+            display:flex;
+            align-items:flex-end;
+            justify-content:flex-end;
+            padding:2px 4px 2px 2px;
+            box-sizing:border-box;
+            user-select:none;
+            z-index:3;
+            opacity:0.75;
+            transition:opacity .12s ease, color .12s ease, background .12s ease;
+            border-bottom-right-radius:10px;
+            /* 대각선 stripe 로 SE resize 힌트 - CSS 만으로 화살표/줄무늬 표현 */
+            background:
+                linear-gradient(135deg,
+                    transparent 0%,
+                    transparent 45%,
+                    currentColor 45%,
+                    currentColor 55%,
+                    transparent 55%,
+                    transparent 70%,
+                    currentColor 70%,
+                    currentColor 80%,
+                    transparent 80%
+                );
+        }
+        .mfg-table-resize-handle:hover{
+            opacity:1;
+            /* 호버 시 제조원가 관련 진한 보라(#4c1d95) 로 살짝 강조 */
+            color:#4c1d95;
+        }
+        .mfg-table-resize-handle.dragging{
+            opacity:1;
+            color:#4c1d95;
+        }
+        /* 드래그 중 텍스트/컬럼 선택 방지 (전역 body 에 임시로 부여) */
+        body.mfg-resizing,
+        body.mfg-resizing *{
+            user-select:none !important;
+            cursor:se-resize !important;
+        }
     </style>
 </head>
 <body>
@@ -3558,8 +3618,25 @@ function appendBotMessage(data) {
         // fromHistory=true 이면 이력 재열람 → 페이징 표 하단에 100행 저장 안내 문구 표시
         // [2026-07-31] periodInfo 전달 — 표 제목 옆 '· 2026년 6월' 형태로 실제 조회 기간 표시
         const fromHistory = !!data.fromHistory;
-        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo);
-        _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory };
+        // [2026-09-17] 제조원가 현황집계 전용 리사이즈 핸들 게이팅
+        //   - AreaTabs.snapshot() 로 현재 area 를 조회 (없으면 data.area 로 폴백)
+        //   - area === 'manufacturing-cost' 인 경우에만 결과 표 우측 하단에 가로폭 조절 핸들 노출
+        //   - profitability(수익성분석) 등 다른 영역과 분석질문(analysis) 경로에는 적용하지 않음
+        //     (이 블록은 aggregate/현황집계 경로에서만 실행되므로, area 만 체크하면 조건 충족)
+        let _mfgShowResizeHandle = false;
+        try {
+            let _areaForResize = null;
+            if (window.AreaTabs && typeof window.AreaTabs.snapshot === 'function') {
+                const _snap = window.AreaTabs.snapshot();
+                _areaForResize = _snap && _snap.area;
+            }
+            if (!_areaForResize && data && typeof data.area === 'string') {
+                _areaForResize = data.area;
+            }
+            _mfgShowResizeHandle = (_areaForResize === 'manufacturing-cost');
+        } catch (_) { _mfgShowResizeHandle = false; }
+        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo, _mfgShowResizeHandle);
+        _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory, resizable: _mfgShowResizeHandle };
     }
 
     // Analysis HTML (분석 답변 패널)
@@ -3680,7 +3757,9 @@ function appendBotMessage(data) {
             _aggDetailInitCtx.rows,
             _aggDetailInitCtx.cols,
             _aggDetailInitCtx.colLabels,
-            _aggDetailInitCtx.fromHistory
+            _aggDetailInitCtx.fromHistory,
+            // [2026-09-17] 제조원가 현황집계에서만 리사이즈 핸들 활성 - 위 buildAnalysisDetailTable 게이트와 동일
+            _aggDetailInitCtx.resizable
         );
     }
 
@@ -5080,7 +5159,12 @@ function appendAnalysisOnlyMessage(dataOrText) {
 //   - <thead> 헤더 클릭 시 정렬
 //   - 실제 데이터 채움과 이벤트 바인딩은 initAnalysisDetailTable 에서.
 // ============================================================
-function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo) {
+function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, showResizeHandle) {
+    // [2026-09-17] showResizeHandle (선택, 9번째 인자)
+    //   - true 일 때만 우측 하단 가로폭 조절 핸들 DOM 을 함께 렌더링 (제조원가 현황집계 전용)
+    //   - 미지정/false 이면 기존 동작 그대로 (분석질문, 수익성분석 등 영향 없음)
+    //   - 실제 드래그 이벤트 바인딩은 initAnalysisDetailTable(..., resizable=true) 에서 수행
+    const _mfgResizable = !!showResizeHandle;
     // 컬럼 헤더 라벨
     const headers = columnOrder.map(c => (columnLabels && columnLabels[c]) || c);
     // [2026-09-12] 증감/차이 컬럼 인덱스 사전 계산 → 헤더/셀에 시각 강조
@@ -5110,8 +5194,19 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
     // SQL 다운로드/펼침 토글 옵션
     const sqlToggleId = tableId + '_sqltoggle';
     const sqlPanelId = tableId + '_sqlpanel';
+    // [2026-09-17] 제조원가 현황집계 전용: 리사이즈 대상 wrapper 에 mfg-resizable 클래스 부여
+    //   - 클래스가 있어야 CSS 의 position:relative 및 max-width:100% 가 적용됨
+    //   - initAnalysisDetailTable 에서 이 클래스를 셀렉터로 핸들 이벤트 바인딩
+    const _wrapClass = _mfgResizable ? 'analysis-detail-wrap mfg-resizable' : 'analysis-detail-wrap';
+    // [2026-09-17] pager 안에 넣을 리사이즈 핸들 DOM
+    //   - pager 는 이미 position:static 이지만, 부모 wrap 에 position:relative(mfg-resizable) 부여됐으므로
+    //     핸들은 wrap 기준으로 오른쪽 하단(pager 우측 하단 코너)에 정확히 붙음.
+    //   - title 로 사용법 안내, aria-label 로 스크린리더 지원
+    const _resizeHandleHtml = _mfgResizable
+        ? `<div id="${tableId}_resizeHandle" class="mfg-table-resize-handle" title="드래그하여 표 가로폭을 조절할 수 있습니다" role="separator" aria-orientation="vertical" aria-label="표 가로폭 조절"></div>`
+        : '';
     return `
-    <div class="analysis-detail-wrap" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+    <div class="${_wrapClass}" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
         <div class="analysis-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:linear-gradient(135deg,#eef2ff,#f5f3ff);border-bottom:1px solid #e5e7eb;flex-wrap:wrap;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;color:#4c1d95;font-size:12px;font-weight:700;">
                 <i class="fas fa-table"></i>
@@ -5163,6 +5258,7 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
             </div>
             <div id="${tableId}_pagectrl" style="display:flex;align-items:center;gap:4px;"></div>
         </div>
+        ${_resizeHandleHtml}
     </div>`;
 }
 
@@ -5185,7 +5281,7 @@ const analysisTableState = {};
 //   - 초기 렌더
 //   - 검색어 변경 / 페이지 크기 변경 시 재렌더
 // ============================================================
-function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory) {
+function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory, resizable) {
     // [2026-09-12] 증감/차이 컬럼 인덱스 집합 (Set of column index) — 셀 렌더 시 시각 강조에 사용
     const deltaColIdxSet = new Set();
     (columnOrder || []).forEach((c, idx) => {
@@ -5222,6 +5318,84 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
         });
     }
     renderAnalysisTable(tableId);
+
+    // ============================================================
+    // [2026-09-17] 제조원가 현황집계 전용: 표 가로폭 수동 조절 핸들 바인딩
+    //   - resizable=true 인 경우에만 활성 (buildAnalysisDetailTable 에서 이미 핸들 DOM 렌더됨)
+    //   - 우측 하단 핸들을 마우스로 드래그하여 wrap.style.width 를 픽셀 단위로 조절
+    //   - min-width: 초기 렌더 시 offsetWidth (현재 크기보다 작아지지 않도록)
+    //   - max-width: 뷰포트의 96%  (사이드바/우측 여백 침범 방지, 반응형 처리)
+    //   - 현재 응답 뷰가 유지되는 동안(DOM 살아있는 동안)만 폭 유지 - 새 질의에서는 리셋
+    //   - overflow-x: 부모(.chat-area 등)는 이미 CSS 로 처리되어 있으므로 별도 조작 없음
+    //     wrap 자체는 overflow:hidden 이라 내부 max-height:440px scroll 영역이 여전히 동작함.
+    // ============================================================
+    if (resizable) {
+        const handle = document.getElementById(tableId + '_resizeHandle');
+        // 핸들이 wrap 안에 들어있으므로 closest 로 wrap 참조 확보
+        const wrap = handle ? handle.closest('.analysis-detail-wrap') : null;
+        if (handle && wrap) {
+            // 최초 자연 폭을 min-width 로 캡처 (현재보다 작아지지 않도록)
+            let minWidth = 0;
+            let maxWidth = 0;
+            let startX = 0;
+            let startWidth = 0;
+            let dragging = false;
+
+            const computeBounds = () => {
+                // 최초 1회 캡처 → 이후 유지 (컬럼 정렬/페이지 변경으로 폭이 변해도 기준선 고정)
+                if (!minWidth) {
+                    const rect = wrap.getBoundingClientRect();
+                    minWidth = Math.max(320, Math.floor(rect.width));
+                }
+                // 뷰포트의 96% 를 상한선으로 (사이드바/스크롤바 고려)
+                maxWidth = Math.max(minWidth, Math.floor(window.innerWidth * 0.96));
+            };
+
+            const onMouseMove = (e) => {
+                if (!dragging) return;
+                const dx = e.clientX - startX;
+                let next = startWidth + dx;
+                if (next < minWidth) next = minWidth;
+                if (next > maxWidth) next = maxWidth;
+                wrap.style.width = next + 'px';
+            };
+
+            const onMouseUp = () => {
+                if (!dragging) return;
+                dragging = false;
+                handle.classList.remove('dragging');
+                document.body.classList.remove('mfg-resizing');
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+            };
+
+            handle.addEventListener('mousedown', (e) => {
+                // 좌클릭만
+                if (e.button !== 0) return;
+                e.preventDefault();
+                e.stopPropagation();
+                computeBounds();
+                startX = e.clientX;
+                startWidth = wrap.getBoundingClientRect().width;
+                dragging = true;
+                handle.classList.add('dragging');
+                document.body.classList.add('mfg-resizing');
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+
+            // 창 크기 변경 시 상한 재계산 - 현재 폭이 상한을 넘으면 다듬어줌
+            //   (사이드바가 열려 뷰포트가 좁아지는 상황 대응)
+            window.addEventListener('resize', () => {
+                if (!wrap.isConnected) return;
+                computeBounds();
+                const cur = wrap.getBoundingClientRect().width;
+                if (cur > maxWidth) {
+                    wrap.style.width = maxWidth + 'px';
+                }
+            });
+        }
+    }
 }
 
 // 정렬 토글
