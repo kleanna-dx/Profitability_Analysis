@@ -50,9 +50,14 @@ function loadFunction(name) {
 const _sanitizeWhereCond = loadFunction('_sanitizeWhereCond');
 globalThis._sanitizeWhereCond = _sanitizeWhereCond;
 const detectCostElementIntent = loadFunction('detectCostElementIntent');
-// detectExplicitZcgubunInQuery 는 detectStandardCostSubtypeInQuery 를 참조하므로 후자 먼저 로드
+// detectExplicitZcgubunInQuery 는 detectStandardCostSubtypeInQuery + detectManufacturingCostAlias 참조
+//   [2026-09-17] "제조원가" alias 추가로 detectManufacturingCostAlias 도 함께 로드 필요
+const _mapDecl = serverMjs.match(/const MANUFACTURING_COST_TERM_MAP = \{[\s\S]*?\n\};/);
+if (_mapDecl) eval(_mapDecl[0].replace('const MANUFACTURING_COST_TERM_MAP', 'globalThis.MANUFACTURING_COST_TERM_MAP'));
 const detectStandardCostSubtypeInQuery = loadFunction('detectStandardCostSubtypeInQuery');
 globalThis.detectStandardCostSubtypeInQuery = detectStandardCostSubtypeInQuery;
+const detectManufacturingCostAlias = loadFunction('detectManufacturingCostAlias');
+globalThis.detectManufacturingCostAlias = detectManufacturingCostAlias;
 const detectExplicitZcgubunInQuery = loadFunction('detectExplicitZcgubunInQuery');
 const applyForcedCostBasisFilter = loadFunction('applyForcedCostBasisFilter');
 

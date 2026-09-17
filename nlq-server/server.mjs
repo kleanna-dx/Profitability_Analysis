@@ -4687,7 +4687,7 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   const hasDeltaIntent = DELTA_INTENT_RE.test(String(query || ''));
 
   // ────────────────────────────────────────────────────────────────
-  // [2026-09-13] GENERIC 원가 의도 감지 ("원가" / "제조원가" / "자재원가" / "제품원가")
+  // [2026-09-13] GENERIC 원가 의도 감지 ("원가" / "자재원가" / "제품원가")
   // ────────────────────────────────────────────────────────────────
   // 사용자 신고 케이스: "F2A11220-05000720B 자재 원가 알려줘"
   //   → 사용자가 특정 ZCGUBUN (실제/표준/매출) 을 명시하지 않고 "원가" 라고만 물음.
@@ -4697,11 +4697,15 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   // 정규식 설계:
   //   1) 앞에 한글이 붙지 않은 "원가" (단어 경계) — "실제원가/표준원가/매출원가" 는 앞이
   //      한글이므로 매칭 안 됨.
-  //   2) 특수 케이스: "제조원가/자재원가/제품원가/그냥 원가" — GENERIC 으로 취급
-  //      (ZCGUBUN 값 아님).
+  //   2) 특수 케이스: "자재원가/제품원가/그냥 원가" — GENERIC 으로 취급 (ZCGUBUN 값 아님).
   //   3) 명확한 ZCGUBUN 값 (실제/표준/매출) 이 columnMatches 에서 매칭되면
   //      GENERIC 이 아니라 SPECIFIC 으로 이동 (뒤 트리거 분기에서 처리).
-  const GENERIC_COST_INTENT_RE = /(?:^|[^가-힣])(원가|제조원가|자재원가|제품원가)(?![가-힣])/;
+  //
+  // [2026-09-17] "제조원가" 는 이 GENERIC 목록에서 제외 (요구사항 #1).
+  //   업무규칙: "제조원가" = "실제원가" 고정 매핑.
+  //   → detectManufacturingCostAlias / detectExplicitZcgubunInQuery 가 SPECIFIC 처리.
+  //   → 결과적으로 detectSpecificZcgubunFromQueryText (∨) 로 ZCGUBUN 매칭됨.
+  const GENERIC_COST_INTENT_RE = /(?:^|[^가-힣])(원가|자재원가|제품원가)(?![가-힣])/;
   const hasGenericCostIntent = GENERIC_COST_INTENT_RE.test(String(query || ''));
 
   // ────────────────────────────────────────────────────────────────
@@ -9680,6 +9684,41 @@ function detectCostElementIntent(query) {
 }
 
 /**
+ * [2026-09-17] 제조원가 → 실제원가 canonical 매핑 (고정 업무규칙)
+ *
+ *   사용자 요구사항: 자연어질의에서 "제조원가" 는 업무상 "실제원가" 를 의미.
+ *   LLM 추론이 아닌 서버 semantic resolver 단계에서 고정 매핑.
+ *
+ *   MANUFACTURING_COST_TERM_MAP = {
+ *     "제조원가": { canonicalName: "실제원가", column: "ZCGUBUN", value: "실제원가" }
+ *   }
+ *
+ *   범위:
+ *     - "제조원가" 단독 → ZCGUBUN='실제원가' 확정 (clarification 스킵)
+ *     - "제조원가의 표준원가" → 표준원가 우선 (detectStandardCostSubtypeInQuery 가 처리)
+ *     - "매출원가" 는 이 매핑과 무관 (그대로 매출원가)
+ *     - "원가" 단독은 이 매핑과 무관 (GENERIC 처리 유지)
+ *
+ * @returns {{ matched: boolean, zcgubun: string|null, matchedKeyword: string }}
+ */
+const MANUFACTURING_COST_TERM_MAP = {
+  '제조원가': { canonicalName: '실제원가', column: 'ZCGUBUN', value: '실제원가' },
+};
+function detectManufacturingCostAlias(query) {
+  const q = String(query || '');
+  if (!q.trim()) return { matched: false, zcgubun: null, matchedKeyword: '' };
+  // "제조원가" (공백 허용: "제조 원가" 도 함께 커버)
+  const RE = /제조\s*원가/;
+  const m = RE.exec(q);
+  if (!m) return { matched: false, zcgubun: null, matchedKeyword: '' };
+  return {
+    matched: true,
+    zcgubun: MANUFACTURING_COST_TERM_MAP['제조원가'].value,   // '실제원가'
+    matchedKeyword: m[0],
+  };
+}
+
+/**
  * 사용자 질의에 ZCGUBUN 값(실제원가/매출원가/표준원가) 이 명시되어 있는지 판정.
  * 명시되어 있으면 clarification 을 띄우지 않고 그 값을 canonical filter 로 사용.
  * (사용자 요구사항 #5)
@@ -9693,13 +9732,19 @@ function detectCostElementIntent(query) {
  *   먼저 감지하고, 그 결과가 있으면 여기서 explicit=true + zcgubunD 필드를 함께 반환.
  *   단순 "표준원가" 만 있는 경우는 explicit=false (2차 clarification 필요).
  *
+ * [2026-09-17] "제조원가" → "실제원가" 고정 매핑 지원:
+ *   detectManufacturingCostAlias 로 감지되면 explicit=true, zcgubun='실제원가' 반환.
+ *   단, "제조원가의 표준원가" 는 표준원가 서브타입(detectStandardCostSubtypeInQuery)
+ *   판정이 우선이므로 그 결과가 먼저 반환됨.
+ *
  * @returns {{ explicit: boolean, zcgubun: string|null, zcgubunD: string|null, matchedKeyword: string }}
  */
 function detectExplicitZcgubunInQuery(query) {
   const q = String(query || '');
   if (!q.trim()) return { explicit: false, zcgubun: null, zcgubunD: null, matchedKeyword: '' };
 
-  // 표준원가 세부 서브타입 먼저 감지 ("매출원가의 표준원가" 등)
+  // ★ 우선순위 1: 표준원가 세부 서브타입 ("매출원가의 표준원가", "제조원가의 표준원가" 등)
+  //   "제조원가의 표준원가" 도 detectStandardCostSubtypeInQuery 가 함께 매칭하므로 이 분기에서 처리.
   const subtype = detectStandardCostSubtypeInQuery(q);
   if (subtype.matched) {
     return {
@@ -9710,7 +9755,20 @@ function detectExplicitZcgubunInQuery(query) {
     };
   }
 
-  // 공백 포함 케이스 모두 커버 ("실제 원가", "실제원가" 등)
+  // ★ 우선순위 2: "제조원가" 고정 매핑 → ZCGUBUN='실제원가' (요구사항 #1/#4)
+  //   반드시 실제/매출/표준 정규식 검사 앞에 위치해야 함
+  //   ("제조원가" 안에 "조원가" 같은 부분이 없으므로 실제/매출/표준 정규식과 충돌 없음).
+  const mfg = detectManufacturingCostAlias(q);
+  if (mfg.matched) {
+    return {
+      explicit: true,
+      zcgubun: mfg.zcgubun,        // '실제원가' (canonical)
+      zcgubunD: null,
+      matchedKeyword: mfg.matchedKeyword,
+    };
+  }
+
+  // 우선순위 3: 실제/매출/표준원가 개별 명시 (공백 유/무 모두)
   const RE_ACTUAL   = /실제\s*원가/;
   const RE_SALES    = /매출\s*원가/;
   const RE_STANDARD = /표준\s*원가/;
@@ -9729,6 +9787,9 @@ function detectExplicitZcgubunInQuery(query) {
  *   "실제원가의 표준원가 알려줘" → ZCGUBUN='표준원가', ZCGUBUN_D='입고-생산'
  *   "매출원가의 표준원가 알려줘" → ZCGUBUN='표준원가', ZCGUBUN_D='소비-소비'
  *
+ * [2026-09-17] "제조원가의 표준원가" 도 실제원가와 동의어이므로 '입고-생산' 로 매핑
+ *   (사용자 요구사항 #6).
+ *
  * @returns {{ matched: boolean, zcgubunD: string|null, matchedKeyword: string }}
  */
 function detectStandardCostSubtypeInQuery(query) {
@@ -9736,14 +9797,19 @@ function detectStandardCostSubtypeInQuery(query) {
   if (!q.trim()) return { matched: false, zcgubunD: null, matchedKeyword: '' };
   // "매출원가(의) [공백/조사] 표준원가" — 매출원가가 먼저, 표준원가가 뒤
   //   허용: "매출원가의 표준원가", "매출원가 표준원가", "매출 원가 의 표준 원가" 등
-  const RE_SALES_STD  = /매출\s*원가\s*(?:의)?\s*표준\s*원가/;
-  const RE_ACTUAL_STD = /실제\s*원가\s*(?:의)?\s*표준\s*원가/;
+  const RE_SALES_STD    = /매출\s*원가\s*(?:의)?\s*표준\s*원가/;
+  const RE_ACTUAL_STD   = /실제\s*원가\s*(?:의)?\s*표준\s*원가/;
+  // "제조원가의 표준원가" = "실제원가의 표준원가" (요구사항 #6)
+  const RE_MFG_STD      = /제조\s*원가\s*(?:의)?\s*표준\s*원가/;
   const RE_SALES_STD_REVERSE  = /표준\s*원가\s*(?:의)?\s*매출\s*원가/;   // 역순도 방어적으로 매칭
   const RE_ACTUAL_STD_REVERSE = /표준\s*원가\s*(?:의)?\s*실제\s*원가/;
+  const RE_MFG_STD_REVERSE    = /표준\s*원가\s*(?:의)?\s*제조\s*원가/;
   if (RE_SALES_STD.test(q))          return { matched: true, zcgubunD: '소비-소비', matchedKeyword: (RE_SALES_STD.exec(q)  || [''])[0] };
   if (RE_ACTUAL_STD.test(q))         return { matched: true, zcgubunD: '입고-생산', matchedKeyword: (RE_ACTUAL_STD.exec(q) || [''])[0] };
+  if (RE_MFG_STD.test(q))            return { matched: true, zcgubunD: '입고-생산', matchedKeyword: (RE_MFG_STD.exec(q)    || [''])[0] };
   if (RE_SALES_STD_REVERSE.test(q))  return { matched: true, zcgubunD: '소비-소비', matchedKeyword: (RE_SALES_STD_REVERSE.exec(q)  || [''])[0] };
   if (RE_ACTUAL_STD_REVERSE.test(q)) return { matched: true, zcgubunD: '입고-생산', matchedKeyword: (RE_ACTUAL_STD_REVERSE.exec(q) || [''])[0] };
+  if (RE_MFG_STD_REVERSE.test(q))    return { matched: true, zcgubunD: '입고-생산', matchedKeyword: (RE_MFG_STD_REVERSE.exec(q)    || [''])[0] };
   return { matched: false, zcgubunD: null, matchedKeyword: '' };
 }
 
@@ -10165,8 +10231,12 @@ function validateCostBasisSqlIntegrity({
   //   사용자가 "원가" 로만 물었는데 (실제/표준/매출 등 구체 언급 없음) LLM 이
   //   WHERE ZCGUBUN='실제원가' 등을 넣은 경우 거부.
   //   → 사용자 쿼리 텍스트만으로 GENERIC 여부 판단 (columnMatches 없이도 동작).
-  const GENERIC_COST_INTENT_RE = /(?:^|[^가-힣])(원가|제조원가|자재원가|제품원가)(?![가-힣])/;
-  const SPECIFIC_ZCGUBUN_IN_QUERY_RE = /(실제\s*원가|표준\s*원가|매출\s*원가)/;
+  //
+  // [2026-09-17] "제조원가" 는 SPECIFIC 취급 (요구사항 #1: 제조원가 = 실제원가 고정 매핑).
+  //   → GENERIC_COST_INTENT_RE 에서 "제조원가" 제거 + SPECIFIC_ZCGUBUN_IN_QUERY_RE 에 추가.
+  //   그 결과 "제조원가" 명시 시 WHERE ZCGUBUN='실제원가' 자동 주입이 V2 위반으로 안 잡힘.
+  const GENERIC_COST_INTENT_RE = /(?:^|[^가-힣])(원가|자재원가|제품원가)(?![가-힣])/;
+  const SPECIFIC_ZCGUBUN_IN_QUERY_RE = /(실제\s*원가|표준\s*원가|매출\s*원가|제조\s*원가)/;
   const hasGenericCostIntent = GENERIC_COST_INTENT_RE.test(queryStr);
   const hasSpecificZcgubunInQuery = SPECIFIC_ZCGUBUN_IN_QUERY_RE.test(queryStr);
   // columnMatches 가 넘어왔으면 그것도 참고 (더 정확한 판단)
