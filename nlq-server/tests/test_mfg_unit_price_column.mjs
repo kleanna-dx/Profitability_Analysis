@@ -1,12 +1,17 @@
-// [2026-09-17] 제조원가 결과표 '개당 단가' 컬럼 명칭 표준화 + UI 강조 회귀 테스트
+// [2026-09-17 revA] 제조원가 결과표 '개당 단가(원)' 컬럼 명칭·순서 표준화 + UI 강조 회귀 테스트
 //
-//   요구사항 요약:
-//     1. 서버 프롬프트 힌트에서 단가 컬럼 alias 를 '개당 단가' 로 통일
+//   요구사항 요약 (revA):
+//     1. 서버 프롬프트 힌트에서 단가 컬럼 alias 를 '개당 단가(원)' 로 통일
+//        (rev1: '개당 단가' → revA: 단위 명시 '(원)' 추가)
 //     2. 계산식(ROUND(SUM(TOTAL)/NULLIF(SUM(LBKUM),0),0)) 은 변경 없음
 //     3. 프론트에서 '개당 단가' 컬럼(및 과거 호환 '원가 단가' 등)을 자동 감지해 연한 노란색 강조
 //     4. 컬럼 index 하드코딩 금지 - 이름 기반 매칭
 //     5. 제조원가에만 적용 (area === 'manufacturing-cost') - 수익성분석 미적용
-//     6. 계산 근거 컬럼(원가 총액/생산수량/단위) 순서 유지 → '개당 단가' 마지막
+//     6. 컬럼 순서 재정렬: 코드/명 → **개당 단가(원)** → 총액 → 수량 → 단위
+//        (rev1: 총액→수량→단위→개당단가 → revA: 개당단가를 앞으로)
+//     7. 헤더 표시명 정규화: '매출원가의 표준원가 개당 단가(원)' 같은
+//        긴 alias 는 프론트가 rewrite 해서 '개당 단가(원)' 로만 노출
+//     8. costBasisDirective (analysis + aggregate) 에 subtypeLabel prefix 금지 지시 추가
 //
 //   검증 방식: 정적 파싱만 (LLM/DB 미호출)
 
@@ -29,17 +34,17 @@ function assert(cond, msg) {
 // ─────────────────────────────────────────────────────────────────
 console.log('[1] 서버 프롬프트 힌트 - alias 표준화');
 
-// 4컬럼 세트 힌트 (SPECIFIC 분기, L4802) 에 '개당 단가' 사용
+// 4컬럼 세트 힌트 (SPECIFIC 분기) 에 '개당 단가(원)' 사용 (revA)
 assert(
-  /AS\s+'개당 단가'/.test(serverMjs),
-  "서버 힌트에 AS '개당 단가' alias 사용 (요구사항 #1)"
+  /AS\s+'개당 단가\(원\)'/.test(serverMjs),
+  "서버 힌트에 AS '개당 단가(원)' alias 사용 (요구사항 #1, revA)"
 );
-// GENERIC 분기 (L4848) 에도 '개당 단가' 사용 - 2군데 이상 매칭
+// GENERIC 분기 (L~4854) 에도 '개당 단가(원)' 사용 - 2군데 이상 매칭
 {
-  const matches = serverMjs.match(/AS\s+'개당 단가'/g) || [];
+  const matches = serverMjs.match(/AS\s+'개당 단가\(원\)'/g) || [];
   assert(
     matches.length >= 2,
-    `AS '개당 단가' 는 SPECIFIC + GENERIC 두 힌트 분기에 모두 있어야 함 (matched=${matches.length})`
+    `AS '개당 단가(원)' 는 SPECIFIC + GENERIC 두 힌트 분기에 모두 있어야 함 (matched=${matches.length})`
   );
 }
 
@@ -54,18 +59,24 @@ assert(
   const bareOldAlias = serverMjs.match(/AS\s+'원가 단가'(?!\s*증가액)/g) || [];
   assert(
     bareOldAlias.length === 0,
-    `이전 단독 AS '원가 단가' 는 SPECIFIC/GENERIC 힌트에서 '개당 단가' 로 교체돼야 함 (found=${bareOldAlias.length})`
+    `이전 단독 AS '원가 단가' 는 SPECIFIC/GENERIC 힌트에서 '개당 단가(원)' 로 교체돼야 함 (found=${bareOldAlias.length})`
+  );
+  // rev1 표준 alias '개당 단가' (단위 없이) 도 SPECIFIC/GENERIC SELECT 절에서 제거되어야 함 (revA)
+  const bareRev1Alias = serverMjs.match(/AS\s+'개당 단가'(?!\()/g) || [];
+  assert(
+    bareRev1Alias.length === 0,
+    `rev1 alias '개당 단가' (단위 없이) 도 revA 에서 '개당 단가(원)' 로 교체돼야 함 (found=${bareRev1Alias.length})`
   );
 }
 
-// 계산식 유지 (요구사항 #2): ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) 형태
+// 계산식 유지 (요구사항 #2): ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) 형태 + 새 alias
 assert(
-  /ROUND\(SUM\(TOTAL\)\s*\/\s*NULLIF\(SUM\(LBKUM\),\s*0\),\s*0\)\s*AS\s+'개당 단가'/.test(serverMjs),
-  "계산식 ROUND(SUM(TOTAL)/NULLIF(SUM(LBKUM),0),0) 은 그대로 유지 (요구사항 #2)"
+  /ROUND\(SUM\(TOTAL\)\s*\/\s*NULLIF\(SUM\(LBKUM\),\s*0\),\s*0\)\s*AS\s+'개당 단가\(원\)'/.test(serverMjs),
+  "계산식 ROUND(SUM(TOTAL)/NULLIF(SUM(LBKUM),0),0) AS '개당 단가(원)' 은 그대로 유지 (요구사항 #2)"
 );
 
-// 계산 근거 컬럼 순서 유지 (요구사항 #6): 총액 → 수량 → 단위 → 개당 단가
-//   SPECIFIC 4컬럼 힌트 안에서 순서 검증 - 대괄호 이스케이프 필수
+// [revA] 컬럼 순서 재정렬 검증 (요구사항 #6):
+//   SPECIFIC 4컬럼 힌트 안 순서: 코드 → 명 → **개당 단가(원)** → 원가 총액 → 생산수량 → 단위
 {
   const specificHintMatch = serverMjs.match(
     /★ 제품별 원가 조회 — 4컬럼 세트 필수[\s\S]*?\[중요 규칙\]/
@@ -73,13 +84,66 @@ assert(
   assert(specificHintMatch, '4컬럼 세트 힌트 블록 파싱 가능');
   if (specificHintMatch) {
     const block = specificHintMatch[0];
+    const idxUnitPrice = block.search(/'개당 단가\(원\)'/);
     const idxTotal = block.search(/'원가 총액/);
     const idxQty = block.search(/'생산수량'/);
     const idxUom = block.search(/'단위'/);
-    const idxUnitPrice = block.search(/'개당 단가'/);
-    assert(idxTotal > 0 && idxQty > idxTotal && idxUom > idxQty && idxUnitPrice > idxUom,
-      `SPECIFIC 4컬럼 힌트 순서: 원가 총액(${idxTotal}) → 생산수량(${idxQty}) → 단위(${idxUom}) → 개당 단가(${idxUnitPrice})`);
+    assert(
+      idxUnitPrice > 0 && idxTotal > idxUnitPrice && idxQty > idxTotal && idxUom > idxQty,
+      `SPECIFIC 4컬럼 힌트 순서 (revA): 개당 단가(원)(${idxUnitPrice}) → 원가 총액(${idxTotal}) → 생산수량(${idxQty}) → 단위(${idxUom})`
+    );
   }
+}
+
+// [revA] GENERIC 8컬럼 힌트 안 순서도 검증:
+//   자재코드 → 자재명 → 원가 대구분 → 원가구분 → **개당 단가(원)** → 원가 총액 → 생산수량 → 단위
+{
+  const genericHintMatch = serverMjs.match(
+    /★ 제품별 원가 GENERIC 조회[\s\S]*?\[WHERE \/ GROUP BY \/ ORDER BY/
+  );
+  assert(genericHintMatch, 'GENERIC 8컬럼 세트 힌트 블록 파싱 가능');
+  if (genericHintMatch) {
+    const block = genericHintMatch[0];
+    const idxCode = block.search(/'자재코드'/);
+    const idxName = block.search(/'자재명'/);
+    const idxDvc = block.search(/'원가 대구분'/);
+    const idxCat = block.search(/'원가구분'/);
+    const idxUnitPrice = block.search(/'개당 단가\(원\)'/);
+    const idxTotal = block.search(/'원가 총액'/);
+    const idxQty = block.search(/'생산수량'/);
+    const idxUom = block.search(/'단위'/);
+    assert(
+      idxCode < idxName && idxName < idxDvc && idxDvc < idxCat &&
+      idxCat < idxUnitPrice && idxUnitPrice < idxTotal &&
+      idxTotal < idxQty && idxQty < idxUom,
+      `GENERIC 8컬럼 힌트 순서 (revA): 자재코드→자재명→원가대구분→원가구분→개당단가(원)(${idxUnitPrice})→원가총액(${idxTotal})→생산수량(${idxQty})→단위(${idxUom})`
+    );
+  }
+}
+
+// [revA] 서버 힌트에 'subtypeLabel prefix 금지' 지시 명시 (SPECIFIC + GENERIC)
+{
+  // "subtypeLabel prefix 를 붙이지 마세요" 또는 유사 지시가 힌트에 있어야 함
+  assert(
+    /alias 는 반드시 정확히 '개당 단가\(원\)' 만 사용/.test(serverMjs),
+    "서버 힌트에 '개당 단가 alias 는 정확히 개당 단가(원) 만 사용' 지시 존재 (revA)"
+  );
+  assert(
+    /subtypeLabel prefix 를 붙이지 마세요/.test(serverMjs),
+    "서버 힌트에 'subtypeLabel prefix 를 붙이지 마세요' 지시 존재 (revA)"
+  );
+}
+
+// [revA] costBasisDirective (analysis + aggregate) 에 subtypeLabel alias prefix 금지 지시
+{
+  // analysis route: costBasisDirective 안에 관련 문구
+  //   (analysis + aggregate 어디서든 최소 2회 이상 등장)
+  const prefixWarnCount = (serverMjs.match(/개당 단가 컬럼[\s\S]{0,40}alias '개당 단가\(원\)' 만 사용/g) || []).length +
+                          (serverMjs.match(/개당 단가 컬럼은 반드시 alias '개당 단가\(원\)' 만 사용/g) || []).length;
+  assert(
+    prefixWarnCount >= 2,
+    `costBasisDirective (analysis + aggregate) 에 '개당 단가 alias' prefix 금지 지시 존재 (matched=${prefixWarnCount})`
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -245,6 +309,52 @@ console.log('[8] 컬럼 index 하드코딩 금지 검증');
     // isUnitPriceColumn 함수 호출로 이름 기반 매칭
     assert(/isUnitPriceColumn\s*\(/.test(body),
       "isUnitPriceColumn(c, label) 이름 기반 매칭 (index 하드코딩 대신)");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// [8-2] (revA) 프론트 헤더 라벨 정규화 헬퍼 normalizeUnitPriceHeaderLabel
+// ─────────────────────────────────────────────────────────────────
+console.log('[8-2] normalizeUnitPriceHeaderLabel 헬퍼 정의 및 사용 (revA)');
+
+// 함수 정의 존재
+assert(
+  /function\s+normalizeUnitPriceHeaderLabel\s*\(\s*label\s*\)/.test(indexHtml),
+  'normalizeUnitPriceHeaderLabel(label) 함수 정의 존재 (revA)'
+);
+// 함수 본문에 '개당 단가(원)' 로 통일하는 return 값 포함
+{
+  const fnMatch = indexHtml.match(/function\s+normalizeUnitPriceHeaderLabel[\s\S]*?\n\}/);
+  assert(fnMatch, 'normalizeUnitPriceHeaderLabel 함수 본문 파싱 가능');
+  if (fnMatch) {
+    const body = fnMatch[0];
+    assert(
+      /return\s+'개당 단가\(원\)'/.test(body),
+      "normalizeUnitPriceHeaderLabel 이 표준 표시명 '개당 단가(원)' 로 통일"
+    );
+    // '개당 단가' 패턴을 검출하는 정규식이 있어야 함
+    assert(
+      /개당\\s\*단가/.test(body),
+      "normalizeUnitPriceHeaderLabel 이 '개당 단가' 패턴을 감지 (subtypeLabel prefix 유무 무관)"
+    );
+  }
+}
+// buildAnalysisDetailTable 의 headers 계산에서 normalizeUnitPriceHeaderLabel 호출
+//   구조: const headers = columnOrder.map((c, idx) => { ...; return normalizeUnitPriceHeaderLabel(rawLabel); ... });
+assert(
+  /const\s+headers\s*=\s*columnOrder\.map\(\s*\(\s*c\s*,\s*idx\s*\)\s*=>[\s\S]{0,300}normalizeUnitPriceHeaderLabel\s*\(/.test(indexHtml),
+  'buildAnalysisDetailTable 의 headers 계산에서 normalizeUnitPriceHeaderLabel 호출 (revA)'
+);
+// unitPriceColIdxSet 에 포함된 컬럼만 rewrite (제조원가 area 게이팅 재사용)
+{
+  const headersMatch = indexHtml.match(/const\s+headers\s*=\s*columnOrder\.map\([\s\S]*?\}\);/);
+  assert(headersMatch, 'headers = columnOrder.map(...) 블록 파싱 가능');
+  if (headersMatch) {
+    const block = headersMatch[0];
+    assert(
+      /unitPriceColIdxSet\.has\(idx\)/.test(block),
+      "headers 계산에서 unitPriceColIdxSet.has(idx) 로 대상 판정 (제조원가 area 게이팅 자동 재사용)"
+    );
   }
 }
 
