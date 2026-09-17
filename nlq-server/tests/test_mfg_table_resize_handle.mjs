@@ -171,46 +171,73 @@ assert(
   /addEventListener\(\s*['"`]resize['"`]/.test(html),
   'window resize 리스너로 뷰포트 축소 시 상한 재계산 처리가 있어야 함'
 );
-// [rev3] MIN_WIDTH 는 절대 상수 320px 로 정의 (rev4 에서도 유지, edge case 안전선)
+// [rev3] MIN_WIDTH 는 절대 상수 320px 로 정의 (rev5 에서도 유지, edge case fallback)
 assert(
   /const\s+MIN_WIDTH\s*=\s*320/.test(html),
-  'MIN_WIDTH 상수(320px) 로 절대 하한을 정의해야 함 (rev3, rev4 에서도 유지)'
+  'MIN_WIDTH 상수(320px) 로 절대 하한 fallback 정의 (rev3~rev5 유지)'
 );
-// [rev4] baselineWidth - init 시점의 초기 자연 폭 캡처
+// [rev5] 콘텐츠 실제 폭을 계산하는 로직
 assert(
-  /let\s+baselineWidth\s*=\s*0/.test(html),
-  'baselineWidth 변수 - init 시점 초기 자연 폭 캡처용 (rev4)'
+  /tableScrollContainer/.test(html),
+  'tableScrollContainer 변수 - 테이블 스크롤 컨테이너 참조 (rev5)'
 );
 assert(
-  /const\s+captureBaseline\s*=/.test(html),
-  'captureBaseline 함수 - 조상 확장 전 wrap 폭 캡처 (rev4)'
+  /wrap\.querySelector\(\s*['"`]table['"`]\s*\)/.test(html),
+  'wrap.querySelector(table) 로 테이블 요소 참조 (rev5)'
 );
+assert(
+  /\.parentElement/.test(html),
+  '테이블의 parentElement 로 스크롤 컨테이너 참조 (rev5)'
+);
+assert(
+  /const\s+computeContentMinWidth\s*=/.test(html),
+  'computeContentMinWidth 함수 - 콘텐츠 실제 폭 계산 (rev5)'
+);
+assert(
+  /\.scrollWidth/.test(html),
+  'scrollWidth 로 테이블 실제 콘텐츠 폭 측정 (rev5) - 고정 min-width 하드코딩 금지'
+);
+assert(
+  /const\s+WRAP_FRAME_PADDING\s*=\s*6/.test(html),
+  'WRAP_FRAME_PADDING = 6 (wrap border + 안전 여유) (rev5)'
+);
+// [rev5] requestAnimationFrame 으로 콘텐츠 폭 재캡처
 assert(
   /requestAnimationFrame/.test(html),
-  'requestAnimationFrame 으로 렌더 안정화 후 baseline 재캡처 (rev4)'
+  'requestAnimationFrame 으로 렌더 안정화 후 콘텐츠 폭 재계산 (rev4→rev5 계승)'
 );
-// [rev4] computeMinWidth - 실제 하한 = max(MIN_WIDTH, baselineWidth)
+// [rev5] computeMinWidth - 실제 하한 = max(MIN_WIDTH, cachedContentMinWidth)
 assert(
   /const\s+computeMinWidth\s*=/.test(html),
-  'computeMinWidth 함수 - 실제 하한 계산 (rev4)'
+  'computeMinWidth 함수 존재 (rev4→rev5)'
 );
 assert(
-  /Math\.max\(\s*MIN_WIDTH\s*,\s*baselineWidth/.test(html),
-  '실제 하한 = Math.max(MIN_WIDTH, baselineWidth) - 기본 너비 이하 축소 방지 (rev4)'
+  /Math\.max\(\s*MIN_WIDTH\s*,\s*cachedContentMinWidth/.test(html),
+  '실제 하한 = Math.max(MIN_WIDTH, cachedContentMinWidth) - 콘텐츠 폭 기반 (rev5)'
 );
-// [rev4] mousemove 하한 클램핑이 computeMinWidth() 사용
+// [rev5] mousemove 하한 클램핑이 computeMinWidth() 사용
 assert(
   /const\s+minW\s*=\s*computeMinWidth\(\)/.test(html),
-  'mousemove 에서 minW = computeMinWidth() 로 매번 계산해야 함 (rev4)'
+  'mousemove 에서 minW = computeMinWidth() 로 매번 계산해야 함 (rev4~rev5)'
 );
 assert(
   /if\s*\(\s*next\s*<\s*minW\s*\)\s*next\s*=\s*minW/.test(html),
-  'mousemove 시 next < minW 이면 minW 로 클램핑 - 기본 너비 하한 (rev4)'
+  'mousemove 시 next < minW 이면 minW 로 클램핑 (rev4~rev5)'
 );
-// [rev4] 이전 rev3 의 직접 MIN_WIDTH 사용 코드는 사라졌어야 함
+// [rev5] rev4 의 baselineWidth 는 완전히 제거되었어야 함 (콘텐츠 폭 기반으로 대체)
 assert(
-  !/if\s*\(\s*next\s*<\s*MIN_WIDTH\s*\)\s*next\s*=\s*MIN_WIDTH/.test(html),
-  'rev3 의 "if (next < MIN_WIDTH) next = MIN_WIDTH" 는 rev4 에서 minW 로 대체되어야 함'
+  !/let\s+baselineWidth\s*=\s*0/.test(html),
+  'rev4 의 baselineWidth 변수는 rev5 에서 cachedContentMinWidth 로 대체되어야 함'
+);
+assert(
+  !/const\s+captureBaseline\s*=/.test(html),
+  'rev4 의 captureBaseline 함수는 rev5 에서 computeContentMinWidth 로 대체되어야 함'
+);
+// [rev5] 하드코딩된 큰 min-width 상수가 없어야 함 (사용자 요구)
+//   MIN_WIDTH=320 은 절대 하한이라 허용, 그러나 700/800/820 등의 하드코딩은 금지
+assert(
+  !/min-width:\s*[7-9]\d{2}px/i.test(html) || html.match(/min-width:\s*[7-9]\d{2}px/gi)?.every(s => !s.includes('mfg')),
+  '.mfg-resizable 관련 CSS 에 하드코딩된 700+px min-width 가 없어야 함 (사용자 요구)'
 );
 // [rev2] max-width 는 wrap 의 뷰포트 좌표 기준으로 계산 (사이드바 존재 시 정확)
 assert(

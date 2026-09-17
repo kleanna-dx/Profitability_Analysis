@@ -5322,26 +5322,36 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
     renderAnalysisTable(tableId);
 
     // ============================================================
-    // [2026-09-17 rev4] 제조원가 현황집계 전용: 표 가로폭 수동 조절 핸들 바인딩
+    // [2026-09-17 rev5] 제조원가 현황집계 전용: 표 가로폭 수동 조절 핸들 바인딩
     //   - resizable=true 인 경우에만 활성 (buildAnalysisDetailTable 에서 이미 핸들 DOM 렌더됨)
     //   - 우측 하단 회색 삼각형 핸들을 마우스로 드래그해 wrap.style.width 를 픽셀 단위로 조절
     //
-    //   ★ rev4 수정 이유 (사용자 피드백):
-    //     "화살표 드래그 해서 축소할때 기본 너비에서 더 축소할경우 흰 여백이 생겨.
-    //      기본 너비에서 더 축소할 순 없게 해줘"
+    //   ★ rev5 수정 이유 (사용자 피드백):
+    //     "최대로 가로길이 줄인건데 이렇게 흰 여백이 보이잖아...
+    //      흰 여백보이지 않을만큼만 최소화할 수있게 하라고.
+    //      리사이즈 최소 너비는 고정된 큰 min-width가 아니라
+    //      '현재 표 콘텐츠가 실제로 차지하는 최소 너비' 를 기준으로 잡아주세요.
+    //      최소화했을 때 오른쪽에 불필요한 흰 여백이 남지 않도록 해주세요."
     //
-    //   ★ 원인 (rev3 의 문제):
-    //     - rev3 는 MIN_WIDTH=320 절대 상수를 하한으로 사용
-    //     - 하지만 초기 렌더 시 wrap 은 조상 .msg-bot 의 max-width:820px 로 클램프됨
-    //     - 사용자가 이 기본 너비(820px 근처) 아래로 축소하면, 조상은 이미 확장돼 있어
-    //       그 자리를 그대로 차지 → wrap 오른쪽에 흰 여백이 생김
+    //   ★ 원인 (rev4 의 문제):
+    //     - rev4 는 하한 = max(MIN_WIDTH, baselineWidth) 로 계산
+    //     - baselineWidth 는 init 시점 wrap 의 자연 폭 (조상 .msg-bot max-width:820px)
+    //     - 하지만 실제 테이블 콘텐츠 폭(예: 700px)이 그보다 작을 수 있음
+    //     - 결과: 사용자가 820px 이하로 못 줄이는데 실제 콘텐츠는 700px 까지만 필요
+    //             → 오른쪽에 120px 흰 여백 발생
     //
-    //   ★ rev4 해결:
-    //     1) init 시점(조상 확장 전, 렌더 직후)에 wrap 의 "초기 자연 폭"을 baselineWidth 로 캡처
-    //        - 이 값이 사용자가 인지하는 "기본 너비" (조상 max-width 에 의해 클램프된 폭)
-    //     2) 실제 하한(effectiveMinWidth) = max(MIN_WIDTH, baselineWidth)
-    //        - 기본 너비 이하로 절대 축소되지 않음 → 흰 여백 발생 원천 차단
-    //     3) rev3 의 pinCurrentWidthAndExpandAncestors 순서는 그대로 유지 (BUG1/BUG2 재발 방지)
+    //   ★ rev5 해결:
+    //     - 하한 = "실제 테이블 콘텐츠가 차지하는 최소 픽셀 폭 + wrap 프레임 여유폭"
+    //     - 테이블은 width:100% 라서 computed width 가 아닌 scrollWidth 를 기준으로
+    //       콘텐츠 실제 필요 폭을 구함
+    //     - 스크롤 컨테이너의 scrollWidth = 컬럼 실제 폭 합계 (= 최소 필요 폭)
+    //     - 그 값에 wrap 의 좌우 border/padding + 안전 여유(4px)만 더해 최소값 계산
+    //     - 컬럼이 많아 이보다 더 필요한 경우: 내부 horizontal scroll 그대로 사용
+    //
+    //   ★ rev5 에서 유지되는 것 (이전 rev 의 버그 수정):
+    //     - rev3: pinCurrentWidthAndExpandAncestors 순서 (BUG1/BUG2 방지)
+    //     - rev3: MIN_WIDTH = 320 절대 하한 (edge case fallback)
+    //     - rev4: 즉시 + rAF 재캡처 패턴 (콘텐츠 폭 캡처에도 동일 적용)
     // ============================================================
     if (resizable) {
         const handle = document.getElementById(tableId + '_resizeHandle');
@@ -5352,7 +5362,7 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
         const msgBotInner = wrap ? wrap.closest('.msg-bot-inner') : null;
 
         if (handle && wrap) {
-            // 절대 하한 (극단적으로 작은 화면에서도 최소 이 폭은 보장)
+            // 절대 하한 (콘텐츠 폭 캡처가 아예 실패한 극단적인 edge case fallback)
             const MIN_WIDTH = 320;
 
             let startX = 0;
@@ -5360,22 +5370,45 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
             let dragging = false;
             let expandedOnce = false;
 
-            // ★ rev4 핵심: init 시점에 조상 확장 전 wrap 의 자연 폭 캡처
-            //   - 이 시점의 wrap 은 .msg-bot max-width:820px 에 의해 클램프된 상태
-            //   - 이 값을 축소 하한으로 사용해 "기본 너비 아래로는 못 줄임"을 보장
-            //   - requestAnimationFrame 으로 렌더 안정화 후 재캡처 (초기 레이아웃 정착)
-            let baselineWidth = 0;
-            const captureBaseline = () => {
-                if (!wrap.isConnected) return;
-                const w = Math.floor(wrap.getBoundingClientRect().width);
-                if (w > 0) baselineWidth = w;
+            // ★ rev5 핵심: wrap 내부 테이블/스크롤 컨테이너에서 콘텐츠 실제 폭 계산
+            //   구조: wrap
+            //           ├─ header
+            //           ├─ (sql panel)
+            //           ├─ <div overflow:auto>   ← 스크롤 컨테이너
+            //           │    └─ <table width:100%>
+            //           ├─ pager
+            //           └─ resize handle
+            //
+            //   콘텐츠 실제 필요 폭 = <div overflow:auto>.scrollWidth
+            //     - table 이 width:100% 라 clientWidth 는 컨테이너에 맞춰짐
+            //     - 하지만 컬럼 width:nowrap 이므로 scrollWidth 는 실제 컬럼 폭 합
+            //     - 결국 이 값이 "컬럼이 잘리지 않고 다 보이는 최소 컨테이너 폭"
+            //
+            //   wrap 하한 = 콘텐츠 폭 + wrap 프레임 여유
+            //     - wrap 은 border 1px + border 1px = 2px (좌우 border)
+            //     - 안전 여유 4px 추가
+            //     - 총 6px 추가 (실제 border/scrollbar 는 이미 scrollWidth 에 반영됨)
+            const tableScrollContainer = wrap.querySelector('table')
+                ? wrap.querySelector('table').parentElement
+                : null;
+            const WRAP_FRAME_PADDING = 6;  // wrap 좌우 border + 안전 여유
+
+            const computeContentMinWidth = () => {
+                if (!tableScrollContainer) return 0;
+                // scrollWidth = 실제 콘텐츠(테이블) 폭. 컬럼이 잘리지 않는 최소값
+                const sw = tableScrollContainer.scrollWidth || 0;
+                if (sw <= 0) return 0;
+                return Math.floor(sw + WRAP_FRAME_PADDING);
             };
-            // 즉시 1회 + 다음 프레임에 재캡처 (초기 레이아웃 안정 확보)
-            captureBaseline();
+
+            // 최초 콘텐츠 폭 계산 (즉시 1회 + rAF 재계산)
+            //   - rAF 로 초기 레이아웃 안정 후 재계산 → 더 정확
+            let cachedContentMinWidth = computeContentMinWidth();
             if (typeof requestAnimationFrame === 'function') {
                 requestAnimationFrame(() => {
-                    // 아직 조상 확장 전(사용자 드래그 시작 전)이면 다시 캡처 (더 정확한 값)
-                    if (!expandedOnce) captureBaseline();
+                    if (!wrap.isConnected) return;
+                    const v = computeContentMinWidth();
+                    if (v > 0) cachedContentMinWidth = v;
                 });
             }
 
@@ -5390,11 +5423,15 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
                 expandedOnce = true;
             };
 
-            // ★ rev4: 실제 하한 = max(절대상수, 초기 자연 폭)
-            //   - baselineWidth 가 정상 캡처됐으면 그 값이 하한
-            //   - 아직 캡처 실패 (edge case) 면 MIN_WIDTH 만 사용
+            // ★ rev5: 실제 하한 = max(절대상수, 콘텐츠 실제 폭)
+            //   - 콘텐츠 폭이 있으면 그 값이 우선 (흰 여백 없음)
+            //   - 캡처 실패한 edge case 에서만 MIN_WIDTH(320) fallback
+            //   - 매 호출마다 다시 계산 (컬럼 정렬/검색/페이지 변경으로 콘텐츠 폭이 바뀔 수 있음)
             const computeMinWidth = () => {
-                return Math.max(MIN_WIDTH, baselineWidth || 0);
+                // 매번 최신 콘텐츠 폭 계산 시도 - 실패하면 캐시값 사용
+                const fresh = computeContentMinWidth();
+                if (fresh > 0) cachedContentMinWidth = fresh;
+                return Math.max(MIN_WIDTH, cachedContentMinWidth || 0);
             };
 
             // 상한 계산: 뷰포트 - wrap 좌측 좌표 - 우측 안전 여백
@@ -5429,9 +5466,6 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
                 if (e.button !== 0) return;
                 e.preventDefault();
                 e.stopPropagation();
-                // ★ 조상 확장 전, baselineWidth 가 아직 0 이면 지금이라도 캡처
-                //   (사용자가 렌더 직후 매우 빠르게 클릭한 경우 대비)
-                if (!baselineWidth) captureBaseline();
                 pinCurrentWidthAndExpandAncestors();
                 startX = e.clientX;
                 startWidth = wrap.getBoundingClientRect().width;
