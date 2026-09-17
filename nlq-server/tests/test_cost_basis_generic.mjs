@@ -295,7 +295,8 @@ assert(serverSrc.includes("ZCGUBUN_D         AS '원가 대구분'"), 'D-6: SELE
 assert(serverSrc.includes("ZCGUBUN           AS '원가구분'"), 'D-7: SELECT 4번 원가구분 존재');
 assert(serverSrc.includes("SUM(TOTAL)        AS '원가 총액'"), 'D-8: SELECT 5번 원가 총액 존재');
 assert(serverSrc.includes("SUM(LBKUM)        AS '생산수량'"), 'D-9: SELECT 6번 생산수량 존재');
-assert(serverSrc.includes("ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '원가 단가'"), 'D-10: SELECT 8번 원가 단가 존재');
+// [2026-09-17] alias '원가 단가' → '개당 단가' 로 통일 (사용자 요구사항).
+assert(serverSrc.includes("ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가'"), 'D-10: SELECT 8번 개당 단가 존재 (rev: 원가 단가 → 개당 단가)');
 assert(serverSrc.includes('GROUP BY MATERIAL, ZCGUBUN_D, ZCGUBUN'), 'D-11: GROUP BY 3중 지시 존재');
 assert(serverSrc.includes("CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END"), 'D-12: 표준원가 마지막 ORDER BY 존재');
 assert(serverSrc.includes("WHERE 절에 ZCGUBUN 필터를 **절대 넣지 마세요**"), 'D-13: ZCGUBUN WHERE 금지 지시 존재');
