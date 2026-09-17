@@ -171,15 +171,46 @@ assert(
   /addEventListener\(\s*['"`]resize['"`]/.test(html),
   'window resize 리스너로 뷰포트 축소 시 상한 재계산 처리가 있어야 함'
 );
-// [rev3] MIN_WIDTH 는 절대 상수 320px 로 - 사용자가 원하는 만큼 축소 가능해야 함
+// [rev3] MIN_WIDTH 는 절대 상수 320px 로 정의 (rev4 에서도 유지, edge case 안전선)
 assert(
   /const\s+MIN_WIDTH\s*=\s*320/.test(html),
-  'MIN_WIDTH 상수(320px) 로 하한을 정의해야 함 - 축소 가능하도록 (rev3)'
+  'MIN_WIDTH 상수(320px) 로 절대 하한을 정의해야 함 (rev3, rev4 에서도 유지)'
 );
-// [rev3] MIN_WIDTH 를 min 하한 클램핑에 사용
+// [rev4] baselineWidth - init 시점의 초기 자연 폭 캡처
 assert(
-  /if\s*\(\s*next\s*<\s*MIN_WIDTH\s*\)\s*next\s*=\s*MIN_WIDTH/.test(html),
-  'mousemove 시 next < MIN_WIDTH 이면 MIN_WIDTH 로 클램핑해야 함 - 축소 시 하한 (rev3)'
+  /let\s+baselineWidth\s*=\s*0/.test(html),
+  'baselineWidth 변수 - init 시점 초기 자연 폭 캡처용 (rev4)'
+);
+assert(
+  /const\s+captureBaseline\s*=/.test(html),
+  'captureBaseline 함수 - 조상 확장 전 wrap 폭 캡처 (rev4)'
+);
+assert(
+  /requestAnimationFrame/.test(html),
+  'requestAnimationFrame 으로 렌더 안정화 후 baseline 재캡처 (rev4)'
+);
+// [rev4] computeMinWidth - 실제 하한 = max(MIN_WIDTH, baselineWidth)
+assert(
+  /const\s+computeMinWidth\s*=/.test(html),
+  'computeMinWidth 함수 - 실제 하한 계산 (rev4)'
+);
+assert(
+  /Math\.max\(\s*MIN_WIDTH\s*,\s*baselineWidth/.test(html),
+  '실제 하한 = Math.max(MIN_WIDTH, baselineWidth) - 기본 너비 이하 축소 방지 (rev4)'
+);
+// [rev4] mousemove 하한 클램핑이 computeMinWidth() 사용
+assert(
+  /const\s+minW\s*=\s*computeMinWidth\(\)/.test(html),
+  'mousemove 에서 minW = computeMinWidth() 로 매번 계산해야 함 (rev4)'
+);
+assert(
+  /if\s*\(\s*next\s*<\s*minW\s*\)\s*next\s*=\s*minW/.test(html),
+  'mousemove 시 next < minW 이면 minW 로 클램핑 - 기본 너비 하한 (rev4)'
+);
+// [rev4] 이전 rev3 의 직접 MIN_WIDTH 사용 코드는 사라졌어야 함
+assert(
+  !/if\s*\(\s*next\s*<\s*MIN_WIDTH\s*\)\s*next\s*=\s*MIN_WIDTH/.test(html),
+  'rev3 의 "if (next < MIN_WIDTH) next = MIN_WIDTH" 는 rev4 에서 minW 로 대체되어야 함'
 );
 // [rev2] max-width 는 wrap 의 뷰포트 좌표 기준으로 계산 (사이드바 존재 시 정확)
 assert(
