@@ -5176,8 +5176,7 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
     const _mfgWidenable = !!showWidenButton;
     const _mfgUnitPriceHighlight = !!showWidenButton;   // 동일 area 게이팅 (제조원가만)
     // 컬럼 헤더 라벨
-    const headers = columnOrder.map(c => (columnLabels && columnLabels[c]) || c);
-    // [2026-09-12] 증감/차이 컬럼 인덱스 사전 계산 → 헤더/셀에 시각 강조
+    // [2026-09-17] 증감/차이 컬럼 인덱스 사전 계산 → 헤더/셀에 시각 강조
     const deltaColIdxSet = new Set();
     columnOrder.forEach((c, idx) => {
         const lbl = (columnLabels && columnLabels[c]) || c;
@@ -5195,6 +5194,18 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
             if (isUnitPriceColumn(c, lbl)) unitPriceColIdxSet.add(idx);
         });
     }
+    // [2026-09-17 revA] 헤더 표시명 계산 - 개당 단가 컬럼은 표시명을 '개당 단가(원)' 로 정규화
+    //   - 제조원가 area (unitPriceColIdxSet 에 포함된) 에서만 rewrite
+    //   - 예: LLM 이 '매출원가의 표준원가 개당 단가(원)' 로 만든 alias 를 화면에서는 '개당 단가(원)' 로만 노출
+    //   - 데이터 키 (columnOrder 원본) 는 그대로 유지 → 정렬/검색/셀 매핑 무영향
+    //   - 다른 컬럼은 그대로 (원본 라벨)
+    const headers = columnOrder.map((c, idx) => {
+        const rawLabel = (columnLabels && columnLabels[c]) || c;
+        if (unitPriceColIdxSet.has(idx)) {
+            return normalizeUnitPriceHeaderLabel(rawLabel);
+        }
+        return rawLabel;
+    });
     // [2026-07-21] 이력 재열람 시 하단 안내 문구
     //   - nl_query_history.result_data 는 DB 용량 절약을 위해 최대 100행만 저장됨
     //     (server.mjs saveHistory L6886-6888 slice(0,100))
@@ -5570,6 +5581,43 @@ function isUnitPriceColumn(col, label) {
     //   (호출자가 isDeltaColumn 을 먼저 체크하므로 실제로는 여기 안 옴)
     if (/(원가|실제원가|매출원가|표준원가|제조원가)\s*단가(?!\s*(증가|감소|증감|차이|변동|상승|하락))/.test(s)) return true;
     return false;
+}
+
+// ============================================================
+// [2026-09-17 revA] "개당 단가" 컬럼 헤더 표시명 정규화
+// ------------------------------------------------------------
+// 목적:
+//   사용자 요구:
+//     서버 힌트 + LLM 이 만드는 alias 가 '매출원가의 표준원가 개당 단가(원)'
+//     처럼 너무 길게 나올 수 있음. 화면에서는 반드시 '개당 단가(원)' 로만
+//     간결하게 표시해야 함.
+//   서버 프롬프트 지시로도 최대한 억제하지만, LLM 이 지시를 무시하는 경우가
+//   있으므로 프론트에서도 이중 안전망을 둔다.
+//
+// 규칙:
+//   1) isUnitPriceColumn 이 true 인 컬럼만 대상 (제조원가 area 게이팅은
+//      호출자에서 이미 함).
+//   2) '개당 단가' 또는 '개당 단가(원)' 자체는 그대로 반환 (변환 불필요).
+//   3) '<... prefix ...> 개당 단가' / '<... prefix ...> 개당 단가(원)' 형태이면
+//      prefix 를 제거하고 정규화된 표시명 반환.
+//   4) '단가(원)' suffix 유지 (단위 표기).
+//   5) prefix 감지 실패 시 원본 그대로 반환 (안전 fallback).
+//
+// 예시:
+//   '개당 단가'                             → '개당 단가(원)'
+//   '개당 단가(원)'                         → '개당 단가(원)'
+//   '매출원가의 표준원가 개당 단가(원)'      → '개당 단가(원)'
+//   '실제원가 개당 단가(원)'                → '개당 단가(원)'
+//   '실제원가의 표준원가 개당 단가'          → '개당 단가(원)'
+//   '표준원가 개당단가'                     → '개당 단가(원)'
+// ============================================================
+function normalizeUnitPriceHeaderLabel(label) {
+    const raw = String(label || '').trim();
+    if (!raw) return raw;
+    // '개당 단가' 를 포함하지 않으면 정규화 대상 아님 (과거 호환 alias 는 원본 유지)
+    if (!/개당\s*단가/.test(raw)) return raw;
+    // 표준화된 표시명 - 언제나 '개당 단가(원)' 로 통일
+    return '개당 단가(원)';
 }
 
 // ============================================================

@@ -4790,33 +4790,42 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
         ? `ORDER BY 는 반드시 ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) DESC (단가 기준). SUM(TOTAL) DESC 로 정렬하지 마세요.`
         : `단일 제품/자재 조회이면 ORDER BY 절을 아예 만들지 마세요 (불필요).`;
 
-      // [2026-09-17] SELECT 6번 컬럼 alias 를 '개당 단가' 로 통일 (사용자 요구사항).
-      //   기존 '원가 단가' → '개당 단가' 로 변경. 계산식은 동일.
+      // [2026-09-17 revA] SELECT 3번 컬럼(단가 계산의 핵심 지표) alias 통일 + 순서 변경.
+      //   기존: 제품코드 → 제품명 → 총액 → 수량 → 단위 → 단가 (6번)
+      //   변경: 제품코드 → 제품명 → 단가 (3번) → 총액 → 수량 → 단위
+      //   배경: 사용자 요구 — 핵심 지표를 앞에 배치하고 총액/수량/단위 는 계산 근거.
+      //         또한 alias 는 정확히 단위 명시 형태로만. subtypeLabel (매출원가의 표준원가 등)
+      //         을 alias prefix 로 붙이지 않음 (컬럼명이 너무 길어져 가독성 저하).
+      //   계산식은 동일 (ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0)).
       //   프론트가 이 alias 를 감지해 결과표 헤더/셀에 연한 노란색 강조 적용.
+      //   (주석에는 실제 alias 리터럴을 쓰지 않는다 - 테스트 오탐 방지)
       synonymContext += '\n[★★★ 제품별 원가 조회 — 4컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
       synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 조회 중입니다.\n`;
       synonymContext += `사용자 질의에 "총액/합계" 명시가 없으므로 기본 출력은 **총액 단독이 아니라 단가 계산 근거 4컬럼 세트** 입니다.\n`;
       synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지]\n`;
       synonymContext += `  1. MATERIAL     AS '제품코드'         (또는 '자재코드')\n`;
       synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'       (또는 '자재명')\n`;
-      synonymContext += `  3. SUM(TOTAL)   AS '원가 총액(원)'\n`;
-      synonymContext += `  4. SUM(LBKUM)   AS '생산수량'\n`;
-      synonymContext += `  5. MAX(BASE_UOM) AS '단위'\n`;
-      synonymContext += `  6. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가'\n`;
+      synonymContext += `  3. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
+      synonymContext += `  4. SUM(TOTAL)   AS '원가 총액(원)'\n`;
+      synonymContext += `  5. SUM(LBKUM)   AS '생산수량'\n`;
+      synonymContext += `  6. MAX(BASE_UOM) AS '단위'\n`;
       synonymContext += `\n[GROUP BY / HAVING / ORDER BY]\n`;
       synonymContext += `  - GROUP BY MATERIAL 필수 (제품별 집계)\n`;
       synonymContext += `  - TOP N/상위/랭킹 요청이 있으면 HAVING SUM(LBKUM) <> 0 (생산수량 0 제외)\n`;
       synonymContext += `  - ${orderDirective}\n`;
       synonymContext += `\n[중요 규칙]\n`;
-      synonymContext += `  - '개당 단가'는 반드시 SUM(TOTAL) / SUM(LBKUM) 방식 (합계의 비율).\n`;
+      synonymContext += `  - '개당 단가(원)'는 반드시 SUM(TOTAL) / SUM(LBKUM) 방식 (합계의 비율).\n`;
       synonymContext += `    AVG(TOTAL / LBKUM) 이나 SUM(TOTAL/LBKUM) 은 **금지** (행별 나눗셈 후 평균은 의미 왜곡).\n`;
       synonymContext += `  - NULLIF(SUM(LBKUM), 0) 로 0 나누기 방지 필수.\n`;
       synonymContext += `  - ROUND(..., 0) 로 원 단위 정수 표시 (소수점 노출 억제).\n`;
+      synonymContext += `  - 개당 단가 alias 는 반드시 정확히 '개당 단가(원)' 만 사용하세요.\n`;
+      synonymContext += `    ZCGUBUN 이 확정되어 있어도 alias 앞에 '매출원가의 표준원가' / '실제원가' 같은\n`;
+      synonymContext += `    subtypeLabel prefix 를 붙이지 마세요. (컬럼명이 길어져 가독성 저하)\n`;
       synonymContext += `  - ZCGUBUN=${gubunList} 필터는 WHERE 절에 그대로 유지 (dimension value).\n`;
       synonymContext += `  - 기존 필터 (DIVISION / CALMONTH / MATERIAL) 는 그대로 유지.\n`;
       synonymContext += `  - Metric 산식(COST_ACTUAL_UNIT_PRICE) 이 프롬프트에 노출된 경우, 그 산식과\n`;
-      synonymContext += `    이 4컬럼 세트는 서로 보완 관계: metric 은 6번 컬럼(개당 단가) 을 담당하고,\n`;
-      synonymContext += `    3~5번 (총액/수량/단위) 은 이 힌트가 명시.\n`;
+      synonymContext += `    이 4컬럼 세트는 서로 보완 관계: metric 은 3번 컬럼(개당 단가(원)) 을 담당하고,\n`;
+      synonymContext += `    4~6번 (총액/수량/단위) 은 이 힌트가 명시.\n`;
       console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭 [${detectedGubun.join(',')}] + 총액명시없음 → 4컬럼 세트 프롬프트 힌트 주입`);
     }
   } else if (canInjectAnyCostHint && !HAS_ZCGUBUN_MATCH && hasGenericCostIntent) {
@@ -4840,18 +4849,21 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
     synonymContext += `사용자가 특정 원가 유형(실제원가/표준원가/매출원가)을 지정하지 않고 "원가" 또는 "제조원가" 로만 조회했습니다.\n`;
     synonymContext += `이 경우 ZCGUBUN 을 실제원가나 매출원가 중 하나로 **임의 확정하지 마세요**.\n`;
     synonymContext += `해당 자재/기간/사업부에 존재하는 모든 ZCGUBUN_D + ZCGUBUN 조합을 전체 조회해야 합니다.\n`;
+    // [2026-09-17 revA] 컬럼 순서 재정렬 (사용자 요구사항):
+    //   기존: 자재코드 → 자재명 → 원가대구분 → 원가구분 → 총액 → 수량 → 단위 → 단가 (8번)
+    //   변경: 자재코드 → 자재명 → 원가대구분 → 원가구분 → 단가 (5번) → 총액 → 수량 → 단위
+    //   배경: 핵심 지표를 앞쪽에 배치. 총액/수량/단위 는 계산 근거로 뒤에.
+    //   alias 는 정확히 단위 명시 형태로만 (subtypeLabel prefix 금지).
+    //   (주석에는 실제 alias 리터럴을 쓰지 않는다 - 테스트가 SELECT 순서 검증 시 오탐 방지)
     synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지 (8컬럼)]\n`;
     synonymContext += `  1. MATERIAL          AS '자재코드'\n`;
     synonymContext += `  2. MAX(MATERIAL_NM)  AS '자재명'\n`;
     synonymContext += `  3. ZCGUBUN_D         AS '원가 대구분'\n`;
     synonymContext += `  4. ZCGUBUN           AS '원가구분'\n`;
-    synonymContext += `  5. SUM(TOTAL)        AS '원가 총액'\n`;
-    synonymContext += `  6. SUM(LBKUM)        AS '생산수량'\n`;
-    synonymContext += `  7. MAX(BASE_UOM)     AS '단위'\n`;
-    // [2026-09-17] '개당 단가' alias 로 통일 - 사용자 요구사항.
-    //   기존 '원가 단가' 등 다양했던 단가 컬럼명을 명확하게 '개당 단가' 로 표준화.
-    //   프론트는 이 alias 를 감지해서 연한 노란색으로 강조.
-    synonymContext += `  8. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가'\n`;
+    synonymContext += `  5. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
+    synonymContext += `  6. SUM(TOTAL)        AS '원가 총액'\n`;
+    synonymContext += `  7. SUM(LBKUM)        AS '생산수량'\n`;
+    synonymContext += `  8. MAX(BASE_UOM)     AS '단위'\n`;
     synonymContext += `\n[WHERE / GROUP BY / ORDER BY — 반드시 아래 규칙 준수]\n`;
     synonymContext += `  - WHERE 절에 ZCGUBUN 필터를 **절대 넣지 마세요** (예: WHERE ZCGUBUN='실제원가' 금지).\n`;
     synonymContext += `    → 사용자가 원가 유형을 명시하지 않았으므로 전체 조회.\n`;
@@ -4860,9 +4872,12 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
     synonymContext += `      ORDER BY ZCGUBUN_D, CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END\n`;
     synonymContext += `  - 그 외 필터 (DIVISION / CALMONTH / MATERIAL) 는 정상적으로 유지.\n`;
     synonymContext += `\n[중요 규칙]\n`;
-    synonymContext += `  - '개당 단가'는 반드시 SUM(TOTAL) / NULLIF(SUM(LBKUM), 0) 형태 (0 나누기 방지).\n`;
-    synonymContext += `  - LBKUM=0 인 행 (예: 표준원가 일부) 은 '개당 단가'가 NULL 로 반환 → 화면에서 "-" 표시.\n`;
-    synonymContext += `    이때 SUM(TOTAL) 을 "개당 단가" alias 에 넣으면 절대 안 됩니다. 총액과 단가는 별개 컬럼.\n`;
+    synonymContext += `  - '개당 단가(원)'는 반드시 SUM(TOTAL) / NULLIF(SUM(LBKUM), 0) 형태 (0 나누기 방지).\n`;
+    synonymContext += `  - 개당 단가 alias 는 반드시 정확히 '개당 단가(원)' 만 사용하세요.\n`;
+    synonymContext += `    ZCGUBUN 값에 따라 alias 앞에 '매출원가의 표준원가' / '실제원가' 같은\n`;
+    synonymContext += `    subtypeLabel prefix 를 붙이지 마세요. (컬럼명이 길어져 가독성 저하)\n`;
+    synonymContext += `  - LBKUM=0 인 행 (예: 표준원가 일부) 은 '개당 단가(원)' 이 NULL 로 반환 → 화면에서 "-" 표시.\n`;
+    synonymContext += `    이때 SUM(TOTAL) 을 "개당 단가(원)" alias 에 넣으면 절대 안 됩니다. 총액과 단가는 별개 컬럼.\n`;
     synonymContext += `  - AVG(TOTAL / LBKUM) 또는 SUM(TOTAL/LBKUM) 금지 (행별 나눗셈 후 평균은 의미 왜곡).\n`;
     synonymContext += `  - 결과가 여러 행이 되는 것은 정상 (같은 자재라도 원가유형별 행이 나뉨).\n`;
     console.log(`[CostBasisHint] sys_aimd_cot015 + GENERIC 원가 감지 (ZCGUBUN 미확정) + 총액명시없음 → 8컬럼 GENERIC 힌트 주입`);
@@ -6419,7 +6434,10 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
       `  2. dimensions 에 ZCGUBUN 축을 넣지 마세요. 이미 단일 값으로 확정되었습니다.\n` +
       zdRule +
       `  5. explanation 에도 '${subtypeLabel}' 를 그대로 사용하고 "다른 원가기준으로 해석" 같은\n` +
-      `     부연 설명은 붙이지 마세요.\n`;
+      `     부연 설명은 붙이지 마세요.\n` +
+      `  6. 단, SELECT 절 컬럼 alias 자체에는 '${subtypeLabel}' prefix 를 붙이지 마세요.\n` +
+      `     특히 '개당 단가' 컬럼은 반드시 alias '개당 단가(원)' 만 사용하고\n` +
+      `     '${subtypeLabel} 개당 단가(원)' 처럼 조합하지 마세요. (컬럼명이 너무 길어져 가독성 저하)\n`;
   }
 
   // ── [2026-08-07] 사업부 표현 결정적 감지 (aggregate 모드와 동일 정책 이식)
@@ -11930,7 +11948,11 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           `  2. WHERE 절에 반드시 ZCGUBUN = '${_cb}' 를 포함하세요 (서버가 재주입하지만 LLM 이 함께 넣는 것이 안전).\n` +
           _extraRule +
           `  5. 사용자 원 질문의 다른 조건(기간·사업부·자재 등)은 그대로 유지하세요.\n` +
-          `  6. SELECT 절 컬럼 별칭·설명(explanation) 에도 '${_subtypeLabel}' 를 그대로 사용하세요.\n`;
+          `  6. explanation 에는 '${_subtypeLabel}' 를 그대로 사용하세요.\n` +
+          `     단, SELECT 절 컬럼 alias 자체에는 '${_subtypeLabel}' prefix 를 붙이지 마세요.\n` +
+          `     특히 개당 단가 컬럼은 반드시 alias '개당 단가(원)' 만 사용하고\n` +
+          `     '${_subtypeLabel} 개당 단가(원)' 처럼 조합하지 마세요. (컬럼명이 너무 길어져 가독성 저하)\n` +
+          `     원가 총액/생산수량/단위 등 다른 컬럼도 subtypeLabel prefix 없이 순수 alias 사용.\n`;
         console.log(`[NLQ:CostBasisDirective:Aggregate] 명확화 확정값 프롬프트 주입: ${_whereClause} (query="${String(query).substring(0, 80)}")`);
       }
 
