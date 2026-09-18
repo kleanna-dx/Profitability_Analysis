@@ -10408,6 +10408,126 @@ function _stripAlias(item) {
 }
 // ═════════════════════════════════════════════════════════════════════════
 
+// ═════════════════════════════════════════════════════════════════════════
+// [2026-09-18] enforceCostElementColumnsForCot015
+// ─────────────────────────────────────────────────────────────────────────
+// 목적:
+//   사용자가 "원가요소 조회해줘" 유형의 질의를 하면
+//   sys_aimd_cot015 의 원가요소 KST 20개 컬럼을 SELECT 에 강제 추가.
+//
+// 배경 (사용자 요구 2026-09-18):
+//   기존 GENERIC 힌트는 개당단가/총액/수량/단위 4개만 붙였는데,
+//   사용자는 KST001~KST039 20개의 원가 세부 항목을 함께 보고 싶어함.
+//   프롬프트 힌트는 LLM 이 무시할 수 있으므로 결정적 사후 재작성으로 강제.
+//
+// 트리거 조건 (모두 만족 시 발동):
+//   1) FROM sys_aimd_cot015
+//   2) 원 질의에 "원가요소" 어휘 있음
+//   3) 특정 KST 카테고리 지목 없음 (인건비/재료비/도급비/에너지비/전력비/외주비 등)
+//      → 특정 항목 지목 시엔 그 항목만 조회 (기존 로직)
+//
+// 재작성 규칙:
+//   - SELECT 뒤에 20개 KST 컬럼을 SUM(KSTxxx) AS '<라벨> 합계(원)' 형태로 append
+//   - 이미 SELECT 에 있는 KST 컬럼은 중복 방지 (건너뜀)
+//   - GROUP BY / WHERE / ORDER BY 는 건드리지 않음 (원 상태 유지)
+//   - 실패 / 파싱 안 됨 → 원본 반환 (안전)
+//
+// 반환:
+//   { sql, applied, changes[] }
+// ═════════════════════════════════════════════════════════════════════════
+
+// KST 20개 원가요소 컬럼 + 라벨 (ontology_column 시드 기준)
+// 사용자 요구: "<시드 라벨> + ' 합계(원)'" 포맷 통일
+const COT015_COST_ELEMENT_KST_COLUMNS = [
+  { col: 'KST001', label: '재료비-펄프 합계(원)' },
+  { col: 'KST002', label: '재료비-고지 합계(원)' },
+  { col: 'KST004', label: '재료비-패드 합계(원)' },
+  { col: 'KST006', label: '부재료비-약품 합계(원)' },
+  { col: 'KST008', label: '부재료비-포장재 합계(원)' },
+  { col: 'KST010', label: '재료비-기타 합계(원)' },
+  { col: 'KST012', label: '인건비 합계(원)' },
+  { col: 'KST014', label: '도급비 합계(원)' },
+  { col: 'KST015', label: '에너지비 합계(원)' },
+  { col: 'KST017', label: '감가상각비 합계(원)' },
+  { col: 'KST019', label: '수선/소모품비 합계(원)' },
+  { col: 'KST021', label: '기타경비 합계(원)' },
+  { col: 'KST025', label: '외주가공비 합계(원)' },
+  { col: 'KST027', label: '인건비-경비 합계(원)' },
+  { col: 'KST029', label: '인건비-기타 합계(원)' },
+  { col: 'KST031', label: '전력비 합계(원)' },
+  { col: 'KST033', label: '세금과공과 합계(원)' },
+  { col: 'KST035', label: '지급수수료 합계(원)' },
+  { col: 'KST037', label: '기타경비-폐기물 합계(원)' },
+  { col: 'KST039', label: '생산량-입고용 합계(원)' },
+];
+
+// "원가요소" 어휘 감지 (제조원가 탭 GENERIC 원가 어휘와는 독립적)
+//   - "원가요소" (뒤에 코드/명 붙으면 컬럼 언급이므로 제외)
+//   - "원가 요소" (공백 허용)
+const COST_ELEMENT_INTENT_RE = /(?:^|[^가-힣])(원가요소|원가\s요소)(?![_가-힣])/;
+
+// 특정 KST 카테고리 지목 감지 (지목하면 20개 강제 스킵 — 기존 로직 유지)
+//   ontology_synonym 에 등록된 주요 원가요소 어휘를 하드코딩으로 검사
+//   (동의어 사전과 완전 동기화는 아니지만, 자주 쓰이는 것 위주로 충분)
+const COST_ELEMENT_SPECIFIC_TERMS_RE = /(펄프비|고지비|약품비|포장재비|인건비|도급비|에너지비|감가상각비|수선비|소모품비|외주가공비|외주비|전력비|세금과공과|지급수수료|재료비|부재료비|기타경비|폐기물|경비)/;
+
+function enforceCostElementColumnsForCot015(inputSql, query) {
+  const originalSql = String(inputSql || '');
+  const queryStr = String(query || '');
+  const changes = [];
+
+  // 1) sys_aimd_cot015 FROM 확인
+  if (!/\bFROM\s+sys_aimd_cot015\b/i.test(originalSql)) {
+    return { sql: originalSql, applied: false, changes: ['skip: sys_aimd_cot015 미사용'] };
+  }
+
+  // 2) 질의에 "원가요소" 어휘 있는지 확인
+  if (!COST_ELEMENT_INTENT_RE.test(queryStr)) {
+    return { sql: originalSql, applied: false, changes: ['skip: 질의에 "원가요소" 어휘 없음'] };
+  }
+
+  // 3) 특정 KST 카테고리 지목 감지 → 지목 시 스킵 (기존 로직 유지)
+  if (COST_ELEMENT_SPECIFIC_TERMS_RE.test(queryStr)) {
+    const matched = queryStr.match(COST_ELEMENT_SPECIFIC_TERMS_RE);
+    return { sql: originalSql, applied: false, changes: [`skip: 특정 원가요소 카테고리 지목 감지 ("${matched[1]}")`] };
+  }
+
+  // 4) SELECT 절 추출
+  const selectMatch = originalSql.match(/\bSELECT\s+([\s\S]+?)\s+\bFROM\b/i);
+  if (!selectMatch) {
+    return { sql: originalSql, applied: false, changes: ['skip: SELECT 절 파싱 실패'] };
+  }
+  const selectFull = selectMatch[0];
+  const selectBody = selectMatch[1];
+
+  // 5) 이미 존재하는 KST 컬럼 감지 (중복 방지)
+  //    KSTxxx 를 SUM(...) 안에서 참조하는 항목 검사
+  const existingKstSet = new Set();
+  const items = _splitSelectItems(selectBody);
+  for (const it of items) {
+    const exprOnly = _stripAlias(it);
+    const kstMatches = exprOnly.match(/\bKST\d{3}\b/gi) || [];
+    for (const km of kstMatches) existingKstSet.add(km.toUpperCase());
+  }
+
+  // 6) 20개 중 아직 없는 것만 추가
+  const toAdd = COT015_COST_ELEMENT_KST_COLUMNS.filter(x => !existingKstSet.has(x.col));
+  if (toAdd.length === 0) {
+    return { sql: originalSql, applied: false, changes: ['skip: 이미 20개 KST 컬럼 모두 SELECT 에 포함'] };
+  }
+
+  // 7) SELECT 뒤쪽에 append (원 항목 순서는 유지, KST 20개는 끝에 순서대로)
+  const kstItemsSql = toAdd.map(x => `SUM(${x.col}) AS '${x.label}'`);
+  const newItems = [...items.map(s => s.trim()), ...kstItemsSql];
+  const newSelectBody = newItems.join(', ');
+  const newSelectFull = selectFull.replace(selectBody, newSelectBody);
+  const newSql = originalSql.replace(selectFull, newSelectFull);
+
+  changes.push(`SELECT: KST 원가요소 ${toAdd.length}개 컬럼 append (${toAdd.map(x => x.col).join(', ')})`);
+  return { sql: newSql, applied: true, changes };
+}
+// ═════════════════════════════════════════════════════════════════════════
+
 function validateCostBasisSqlIntegrity({
   sql, query, columnMatches, tableWhitelist,
 } = {}) {
@@ -12568,6 +12688,28 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         }
       } catch (e) {
         console.error('[PlantGrouping] 보정 중 예외 (원본 SQL 유지):', e.message);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // [2026-09-18] sys_aimd_cot015 "원가요소" 조회 시 KST 20개 컬럼 강제 주입
+      //   사용자 요구: "원가요소 조회해줘" 질의는 원가 세부 항목(재료비/인건비/에너지비 등)
+      //   20개(KST001~KST039)를 항상 함께 보여줘야 함. LLM 이 임의로 일부만 뽑는 것 방지.
+      //   - 트리거: 질의에 "원가요소" 어휘 O + 특정 카테고리(인건비/재료비 등) 지목 X
+      //   - 재작성: SELECT 뒤에 20개 KST 컬럼 append (기존 컬럼 순서 보존)
+      // ─────────────────────────────────────────────────────────────
+      try {
+        const _kstEnforce = enforceCostElementColumnsForCot015(sql, query);
+        if (_kstEnforce.applied) {
+          console.log(
+            `[CostElementCols] sys_aimd_cot015 "원가요소" 조회에 KST 20개 컬럼 강제 주입 완료. ` +
+            `변경: ${_kstEnforce.changes.join(' | ')}`
+          );
+          sql = _kstEnforce.sql;
+        } else {
+          console.log(`[CostElementCols] no-op: ${_kstEnforce.changes.join(' | ')}`);
+        }
+      } catch (e) {
+        console.error('[CostElementCols] 보정 중 예외 (원본 SQL 유지):', e.message);
       }
 
       // ─────────────────────────────────────────────────────────────
