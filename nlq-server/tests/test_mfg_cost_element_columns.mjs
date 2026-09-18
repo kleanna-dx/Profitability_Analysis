@@ -134,8 +134,10 @@ section('[C] 정상 재작성 케이스');
   assert(r.applied === true, 'C-2: 일부 KST 이미 있음 → applied=true');
   const kstInSql = new Set((r.sql.match(/SUM\(KST\d{3}\)/gi) || []).map(s => s.toUpperCase()));
   assert(kstInSql.size === 20, `C-2: 최종 SELECT KST 개수 20 (중복 제거, 실제: ${kstInSql.size})`);
-  // 이미 있던 3개는 그대로, 나머지 17개만 새로 추가됐다고 changes 에 기록
-  assert(/17개 컬럼 append/.test(r.changes.join(' ')), 'C-2: 17개만 append 로그');
+  // [2026-09-18 revB] 재정렬 방식으로 변경 → 로그 문구도 변경
+  //   기존: "17개 컬럼 append" → 신규: "기존 3개 재배치 + 신규 17개 삽입"
+  assert(/기존 3개 재배치 \+ 신규 17개 삽입/.test(r.changes.join(' ')),
+    'C-2: 기존 3개 재배치 + 신규 17개 삽입 로그 (재정렬 방식)');
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -172,13 +174,24 @@ section('[D] no-op 케이스');
 }
 
 {
-  // D-4: 이미 20개 KST 모두 있음
-  const allKstSelect = expectedKst.map(k => `SUM(${k})`).join(', ');
+  // D-4: 이미 20개 KST 모두 있고 순서/라벨까지 완벽 → no-op
+  //   [2026-09-18 revB] 재정렬 방식으로 변경 → alias/순서까지 일치해야 no-op
+  //     alias 없이 SUM(KSTxxx) 만 있으면 표준 라벨 붙이려고 재작성 발동
+  const labelMap = {
+    KST001: '재료비-펄프 합계(원)', KST002: '재료비-고지 합계(원)', KST004: '재료비-패드 합계(원)',
+    KST006: '부재료비-약품 합계(원)', KST008: '부재료비-포장재 합계(원)', KST010: '재료비-기타 합계(원)',
+    KST012: '인건비 합계(원)', KST014: '도급비 합계(원)', KST015: '에너지비 합계(원)',
+    KST017: '감가상각비 합계(원)', KST019: '수선/소모품비 합계(원)', KST021: '기타경비 합계(원)',
+    KST025: '외주가공비 합계(원)', KST027: '인건비-경비 합계(원)', KST029: '인건비-기타 합계(원)',
+    KST031: '전력비 합계(원)', KST033: '세금과공과 합계(원)', KST035: '지급수수료 합계(원)',
+    KST037: '기타경비-폐기물 합계(원)', KST039: '생산량-입고용 합계(원)',
+  };
+  const perfectSelect = expectedKst.map(k => `SUM(${k}) AS '${labelMap[k]}'`).join(', ');
   const r = enforceCostElementColumnsForCot015(
-    `SELECT MATERIAL, ${allKstSelect} FROM sys_aimd_cot015 GROUP BY MATERIAL`,
+    `SELECT MATERIAL, ${perfectSelect} FROM sys_aimd_cot015 GROUP BY MATERIAL`,
     '원가요소 조회'
   );
-  assert(r.applied === false, 'D-4: 이미 20개 KST 모두 포함 → no-op');
+  assert(r.applied === false, 'D-4: 이미 20개 KST 모두 정확한 순서/라벨 → no-op');
 }
 
 {
