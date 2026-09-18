@@ -1993,14 +1993,14 @@ function _currentBuilderArea() {
 }
 
 async function _fetchAndApplyLatestMonth() {
-    // 제조원가 영역은 데이터 경로가 없으므로 조회 자체를 하지 않음 (설계상 결정: 사용자 지정 B안).
-    if (_isManufacturingCostArea()) {
-        _showDateBanner('', '');
-        // 사용자가 아직 안 만졌으면 셀렉트를 비운 상태로 둠 (기존 값이 있으면 유지)
-        return;
-    }
+    // [2026-09-18] 제조원가 area 게이팅 제거 - 정식 오픈됨 (PR #483).
+    //   기존: 제조원가는 데이터 경로 없어서 조회 자체 스킵 (프리뷰 상태 시절 정책).
+    //   변경: 수익성분석과 동일하게 area 파라미터를 서버에 전달하고 마감 완료 최신월 자동 적용.
+    //         서버가 area 별 target table (bw_profitability_data or sys_aimd_cot015) 로 MAX(CALMONTH) 조회.
     try {
-        const r = await fetch('/api/data-date-context', { credentials: 'same-origin' });
+        const areaParam = _currentBuilderArea();
+        const url = `/api/data-date-context?area=${encodeURIComponent(areaParam)}`;
+        const r = await fetch(url, { credentials: 'same-origin' });
         if (!r.ok) {
             // 서버가 명시적 5xx (예: NO_DATA / DB_ERROR) 로 응답
             //   → 사용자 요청대로 조용히 시스템 현재월로 폴백 (배너 없음).
