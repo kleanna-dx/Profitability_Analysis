@@ -1506,8 +1506,18 @@ const BUILDER_HIDDEN_SIDEBAR_FIELDS = new Set([
     'CUSTOMER',    // 고객 코드
 ]);
 // 컬럼명 매칭은 대소문자/접두사(`BIC_Z...`) 차이를 모두 흡수
+// [2026-09-17] BUILDER_HIDDEN_SIDEBAR_FIELDS 는 수익성분석(bw_profitability_data) 전용 정책.
+//   - 수익성분석에서는 "코드/명칭 쌍" (예: PLANT/PLANT_NM) 이 함께 있어 사용자 혼란 방지 목적으로 코드 컬럼 숨김.
+//   - 제조원가(sys_aimd_cot015)에서는 컬럼 수가 적고 코드 컬럼(PLANT, MATERIAL)도 필수 조회 대상이므로
+//     이 숨김 정책을 적용하지 않는다.
+//   - 판정은 window.AreaTabs.current 또는 body dataset (기존 _isManufacturingCostArea 와 동일 로직).
 function isHiddenInBuilderSidebar(name) {
     if (!name) return false;
+    // 제조원가 area 에서는 강제 숨김 정책 미적용 (요구사항: PLANT/MATERIAL 노출 필수)
+    try {
+        const _area = (window.AreaTabs && window.AreaTabs.current) || document.body?.dataset?.area || '';
+        if (_area === 'manufacturing-cost') return false;
+    } catch (e) { /* 안전 fallback: 기존 정책 유지 */ }
     const u = String(name).toUpperCase();
     if (BUILDER_HIDDEN_SIDEBAR_FIELDS.has(u)) return true;
     // 일부 환경에서 BW 컬럼이 'BIC_Z...' prefix 로 노출되는 경우 대응
@@ -1537,9 +1547,17 @@ function escapeAttr(s) {
 
 const CATEGORY_NAMES = {
     period: '기간', org: '조직/사업부', product: '자재/제품',
-    trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액', metric: '계산지표', other: '기타', system: '시스템'
+    trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액',
+    // [2026-09-17] 제조원가 VQB 전용 카테고리
+    //   - 'cost_type': ZCGUBUN / ZCGUBUN_D 원가 구분 컬럼
+    //   - 'cost': KST001~KST039 원가요소 세부 + TOTAL/TOTAL1/TOTAL2/KST_V/KST_F 원가 집계
+    cost_type: '원가구분', cost: '원가요소',
+    metric: '계산지표', other: '기타', system: '시스템'
 };
-const CATEGORY_ORDER = ['period','org','product','trade','quantity','amount','metric','unit','other'];
+// [2026-09-17] 제조원가 VQB 전용 카테고리 (cost_type / cost) 추가.
+//   - 수익성분석에는 해당 카테고리 컬럼이 없으므로 미노출 (자동).
+//   - 순서: 기간 → 조직/사업부 → 자재/제품 → 원가구분 → 수량 → 단위 → 원가요소 → (수익성분석용) 거래/고객 → 금액 → 계산지표 → 기타
+const CATEGORY_ORDER = ['period','org','product','cost_type','quantity','unit','cost','trade','amount','metric','other'];
 
 // ─── Init ────────────────────────────────────
 let currentUserRole='user', currentDomain='PS', currentUserId='';

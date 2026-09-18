@@ -15914,7 +15914,10 @@ app.get('/api/builder/columns', async (req, res) => {
 
     // 카테고리 분류
     const catMap = {
+      // [2026-09-17] DB 자체 채번 PK - 대소문자 무관 매칭 (실제 DDL: seq BIGINT AUTO_INCREMENT)
+      //   프론트에서 category !== 'system' 으로 자동 제외됨.
       'SEQ': 'system',
+      'seq': 'system',
       'CALYEAR': 'period', 'CALMONTH': 'period', 'CALDAY': 'period',
       'CO_AREA': 'org', 'CO_AREA_NM': 'org', 'PROFIT_CTR': 'org', 'PROFIT_CTR_NM': 'org', 'DIVISION': 'org', 'DIVISION_NM': 'org', 'PLANT': 'org', 'PLANT_NM': 'org',
       'DISTR_CHAN': 'org', 'DISTR_CHAN_NM': 'org', 'BIC_ZDISTCHAN': 'org', 'BIC_ZORG_TEAM': 'org', 'SALES_OFF': 'org', 'SALES_OFF_NM': 'org',
@@ -15926,6 +15929,27 @@ app.get('/api/builder/columns', async (req, res) => {
       'CUST_GRP1': 'trade', 'CUST_GRP1_NM': 'trade', 'ZZKVGR7': 'trade', 'ZZKVGR7_NM': 'trade', 'COUNTRY': 'trade', 'COUNTRY_NM': 'trade', 'BIC_ZKUNN2': 'trade', 'BIC_ZKUNN2_NM': 'trade', 'CUSTOMER': 'trade', 'CUSTOMER_NM': 'trade',
       'BIC_ZBOXUNIT': 'unit', 'BIC_ZBAGUNIT': 'unit', 'BIC_ZUNIT': 'unit', 'CURRENCY': 'unit',
       'BIC_ZQTY_BOX': 'quantity', 'BIC_ZQTY_BAG': 'quantity', 'BIC_ZQTY_KE': 'quantity',
+      // ─────────────────────────────────────────────────────────────
+      // [2026-09-17] sys_aimd_cot015 (제조원가) 전용 카테고리 매핑
+      //   - 사용자 요구사항: KST001~KST039 원가 세부 컬럼을 [원가요소] 그룹으로,
+      //     TOTAL/TOTAL1/TOTAL2/KST_V/KST_F 원가 집계 컬럼도 [원가요소] 그룹으로 이동
+      //   - ZCGUBUN/ZCGUBUN_D 원가구분 컬럼은 [원가구분] 그룹으로 분리
+      //   - LBKUM(생산수량) / BASE_UOM(단위) 는 각각 quantity / unit 로 분류
+      //     (기존 매핑에 CURRENCY 만 있어서 BASE_UOM 추가)
+      //   - 수익성분석 테이블(bw_profitability_data)에 이 컬럼들이 존재하지 않으므로
+      //     매핑을 추가해도 수익성분석 VQB 는 완전 무영향.
+      'ZCGUBUN_D': 'cost_type', 'ZCGUBUN': 'cost_type',
+      'LBKUM': 'quantity',
+      'BASE_UOM': 'unit',
+      'TOTAL': 'cost', 'TOTAL1': 'cost', 'TOTAL2': 'cost',
+      'KST_V': 'cost', 'KST_F': 'cost',
+      'KST001': 'cost', 'KST002': 'cost', 'KST004': 'cost',
+      'KST006': 'cost', 'KST008': 'cost', 'KST010': 'cost',
+      'KST012': 'cost', 'KST014': 'cost', 'KST015': 'cost',
+      'KST017': 'cost', 'KST019': 'cost', 'KST021': 'cost',
+      'KST025': 'cost', 'KST027': 'cost', 'KST029': 'cost',
+      'KST031': 'cost', 'KST033': 'cost', 'KST035': 'cost',
+      'KST037': 'cost', 'KST039': 'cost',
     };
 
     // 3. Metric 계산 지표 먼저 조회 (DB 컬럼 루프 전에 — 산식 참조 컬럼을 ontology에서 숨기기 위해)
@@ -15995,10 +16019,13 @@ app.get('/api/builder/columns', async (req, res) => {
       const label = (onto && onto.description) ? onto.description : (r.COLUMN_COMMENT || name);
 
       // 카테고리
+      //   [2026-09-17] KST 로 시작하는 컬럼도 fallback 으로 'cost' 카테고리 분류
+      //     - 향후 sys_aimd_cot015 에 신규 KST 컬럼이 추가되어도 자동으로 원가요소 그룹에 들어감
       let category = catMap[name] || 'other';
       if (!catMap[name]) {
         if (name.startsWith('ZQTY') || name.includes('ZQTY_')) category = 'quantity';
         else if (name.startsWith('ZAMT')) category = 'amount';
+        else if (/^KST[_0-9]/.test(name)) category = 'cost';  // KST001~KST039, KST_V, KST_F 등
       }
 
       // Ontology 동의어 포함
