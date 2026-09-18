@@ -2107,32 +2107,47 @@ let ragReady = false;  // RAG 인덱스 빌드 완료 여부
  *     신규 프론트엔드(비주얼 쿼리 빌더) 는 `ok=false` 인 경우 안내 처리를 하도록 분기.
  */
 const DATE_CTX_CACHE_TTL_MS = 10 * 60 * 1000; // 10분
-let _dateCtxCache = null; // { value: {...}, expiresAt: number }
+// [2026-09-18] area 별 캐시 분리 - 수익성분석/제조원가 테이블의 최신 마감월이 다를 수 있음
+//   { 'profitability': { value, expiresAt }, 'manufacturing-cost': { value, expiresAt } }
+const _dateCtxCacheByArea = {};
 
 function invalidateDataDateContextCache() {
-  _dateCtxCache = null;
-  console.log('[DateCtx] 캐시 무효화 완료');
+  for (const k of Object.keys(_dateCtxCacheByArea)) delete _dateCtxCacheByArea[k];
+  console.log('[DateCtx] 캐시 무효화 완료 (전체 area)');
 }
 
-async function getDataDateContext() {
-  // 캐시 히트 (TTL 유효 & 성공 응답만 캐시됨)
-  if (_dateCtxCache && Date.now() < _dateCtxCache.expiresAt) {
-    return _dateCtxCache.value;
+// [2026-09-18] area 별 target table 매핑 (VQB 및 date context 공통 규칙)
+//   - profitability      → bw_profitability_data
+//   - manufacturing-cost → sys_aimd_cot015
+//   - 알 수 없는 area 는 profitability 로 fallback (기존 URL 하위호환)
+function _resolveDateCtxTable(area) {
+  const areaKey = String(area || '').toLowerCase().trim();
+  if (areaKey === 'manufacturing-cost') return { area: 'manufacturing-cost', table: 'sys_aimd_cot015' };
+  return { area: 'profitability', table: 'bw_profitability_data' };
+}
+
+async function getDataDateContext(area) {
+  const { area: areaKey, table: targetTable } = _resolveDateCtxTable(area);
+  // area 별 캐시 히트 확인 (TTL 유효 & 성공 응답만 캐시됨)
+  const cached = _dateCtxCacheByArea[areaKey];
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.value;
   }
 
   try {
     const [rows] = await pool.query(
-      'SELECT MAX(CALMONTH) AS latest FROM bw_profitability_data'
+      `SELECT MAX(CALMONTH) AS latest FROM \`${targetTable}\``
     );
     const latest = rows[0]?.latest;
     if (!latest) {
       // 테이블은 있으나 데이터 없음 → 캐시 안 함 + ok=false
-      console.warn('[DateCtx] bw_profitability_data 에 데이터 없음 (MAX(CALMONTH)=NULL)');
+      console.warn(`[DateCtx] ${targetTable} 에 데이터 없음 (MAX(CALMONTH)=NULL) [area=${areaKey}]`);
       return {
         ok: false,
         errorCode: 'NO_DATA',
         latestMonth: '202604', prevMonth: '202603',
         latestLabel: '2026년 4월', prevLabel: '2026년 3월',
+        area: areaKey, table: targetTable,
       };
     }
     const y = parseInt(latest.substring(0, 4));
@@ -2142,14 +2157,14 @@ async function getDataDateContext() {
     const prevMonth = `${prevY}${String(prevM).padStart(2, '0')}`;
     const latestLabel = `${y}년 ${m}월`;
     const prevLabel = `${prevY}년 ${prevM}월`;
-    const value = { ok: true, latestMonth: latest, prevMonth, latestLabel, prevLabel };
+    const value = { ok: true, latestMonth: latest, prevMonth, latestLabel, prevLabel, area: areaKey, table: targetTable };
 
-    // 성공 응답만 캐시
-    _dateCtxCache = { value, expiresAt: Date.now() + DATE_CTX_CACHE_TTL_MS };
-    console.log(`[DateCtx] 최신 데이터: ${latest} → 당월=${latestLabel}, 전월=${prevLabel} (캐시 TTL 10분)`);
+    // 성공 응답만 area 별 캐시
+    _dateCtxCacheByArea[areaKey] = { value, expiresAt: Date.now() + DATE_CTX_CACHE_TTL_MS };
+    console.log(`[DateCtx] area=${areaKey} table=${targetTable} 최신 데이터: ${latest} → 당월=${latestLabel}, 전월=${prevLabel} (캐시 TTL 10분)`);
     return value;
   } catch (e) {
-    console.error('[DateCtx] 데이터 기간 조회 실패:', e.message);
+    console.error(`[DateCtx] area=${areaKey} 데이터 기간 조회 실패:`, e.message);
     // 실패는 캐시하지 않음 (다음 호출에서 재시도)
     return {
       ok: false,
@@ -2157,6 +2172,7 @@ async function getDataDateContext() {
       errorMessage: e.message,
       latestMonth: '202604', prevMonth: '202603',
       latestLabel: '2026년 4월', prevLabel: '2026년 3월',
+      area: areaKey, table: targetTable,
     };
   }
 }
@@ -14695,7 +14711,13 @@ app.get('/api/status', async (req, res) => {
 // ============================================================
 app.get('/api/data-date-context', async (req, res) => {
   try {
-    const ctx = await getDataDateContext();
+    // [2026-09-18] area 파라미터 지원 - 제조원가 VQB 도 마감 완료 최신월 자동 설정
+    //   - ?area=manufacturing-cost → sys_aimd_cot015 의 MAX(CALMONTH)
+    //   - ?area=profitability (기본, fallback) → bw_profitability_data 의 MAX(CALMONTH)
+    //   - 알 수 없는 area 는 profitability 로 fallback (기존 URL 하위호환)
+    //   - area 별 캐시 분리 (TTL 10분)
+    const areaParam = String(req.query.area || 'profitability').toLowerCase().trim();
+    const ctx = await getDataDateContext(areaParam);
     // 서버 캐시 히트 여부와 무관하게 응답. 브라우저/게이트웨이 캐시는 짧게(60초) 허용.
     res.set('Cache-Control', 'private, max-age=60');
     if (ctx.ok === false) {
@@ -14704,6 +14726,7 @@ app.get('/api/data-date-context', async (req, res) => {
         ok: false,
         errorCode: ctx.errorCode || 'UNKNOWN',
         errorMessage: ctx.errorMessage,
+        area: ctx.area,
       });
     }
     res.json({
@@ -14712,6 +14735,8 @@ app.get('/api/data-date-context', async (req, res) => {
       prevMonth: ctx.prevMonth,
       latestLabel: ctx.latestLabel,
       prevLabel: ctx.prevLabel,
+      area: ctx.area,
+      table: ctx.table,
     });
   } catch (err) {
     res.status(500).json({ ok: false, errorCode: 'INTERNAL', error: err.message });
