@@ -4424,7 +4424,10 @@ async function matchSynonymsDirectly(query, domainCode, tableWhitelist) {
  * @param {string} query - 사용자 질문
  * @returns {Promise<{prompt: string, ragContext: Object}>}
  */
-async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
+async function buildRAGSystemPrompt(query, domainCode, tableWhitelist, opts = {}) {
+  // [2026-09-18] opts.areaCtx: 명확화(clarification) UI 로 확정된 forcedCostBasis 등을
+  //   CostBasisHint 트리거에 반영하기 위해 추가. 기존 호출자 (areaCtx 미전달) 는 no-op.
+  const _areaCtxFromOpts = opts && opts.areaCtx ? opts.areaCtx : null;
   let ragContext = null;
   let contextText = '';
 
@@ -4679,9 +4682,21 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   const HAS_COT015_SCOPE = Array.isArray(tableWhitelist)
     && tableWhitelist.includes('sys_aimd_cot015');
   // ZCGUBUN 값 매칭 감지 (사용자 질의에 "실제원가"/"매출원가"/"표준원가" 등 등장)
-  const HAS_ZCGUBUN_MATCH = (columnMatches || []).some(m =>
+  const HAS_ZCGUBUN_MATCH_FROM_QUERY = (columnMatches || []).some(m =>
     String(m.column_name || '').toUpperCase() === 'ZCGUBUN'
   );
+  // [2026-09-18] 명확화(clarification) UI 로 확정된 ZCGUBUN 값도 SPECIFIC 트리거로 취급.
+  //   사용자 신고 케이스: 원 질의 "제품별 원가요소 조회해줘" → 명확화 UI 에서
+  //     [표준원가]/[매출원가의 표준원가] 클릭 → forcedCostBasis 로 확정.
+  //   이 경우 원 질의 텍스트엔 ZCGUBUN 어휘 없음 → 기존 로직은 GENERIC 분기로 판정
+  //   → 하지만 사용자 의도는 "매출원가의 표준원가" (SPECIFIC 확정) → SPECIFIC 힌트 세트 필요.
+  //   → forcedCostBasis 존재 시에도 HAS_ZCGUBUN_MATCH=true 로 취급하여 SPECIFIC 분기 유도.
+  const HAS_FORCED_COST_BASIS = !!(
+    _areaCtxFromOpts && _areaCtxFromOpts.forcedCostBasis
+    && typeof _areaCtxFromOpts.forcedCostBasis.value === 'string'
+    && _areaCtxFromOpts.forcedCostBasis.value.length > 0
+  );
+  const HAS_ZCGUBUN_MATCH = HAS_ZCGUBUN_MATCH_FROM_QUERY || HAS_FORCED_COST_BASIS;
   // 사용자가 명시적으로 "총액" 요청 → 힌트 미주입 (SUM(TOTAL) 중심 조회 허용)
   //   경계 검사: "총액/합계/총금액/총원가/총합" 어절 (다른 단어 안의 부분매칭 방지)
   const EXPLICIT_TOTAL_INTENT_RE = /(총액|총금액|총원가|총합|합계|총\s*발생액|총\s*금액)/;
@@ -4743,10 +4758,19 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
 
   if (canInjectAnyCostHint && HAS_ZCGUBUN_MATCH) {
     // 감지된 ZCGUBUN 값 (예: '실제원가')
+    //   1) 사용자 원 질의에서 매칭된 ZCGUBUN 어휘 (SPECIFIC 정상 경로)
+    //   2) 없으면 명확화 UI 로 확정된 forcedCostBasis.value (2026-09-18 추가)
     const detectedGubun = (columnMatches || [])
       .filter(m => String(m.column_name || '').toUpperCase() === 'ZCGUBUN')
       .map(m => m.matchedKeyword || m.synonym)
       .filter(Boolean);
+    if (detectedGubun.length === 0 && HAS_FORCED_COST_BASIS) {
+      // 명확화 UI 로 확정된 값 사용 (예: '표준원가' + zcgubunD '소비-소비')
+      const fv = _areaCtxFromOpts.forcedCostBasis.value;
+      const fzd = _areaCtxFromOpts.forcedCostBasis.zcgubunD || '';
+      detectedGubun.push(fv);
+      console.log(`[CostBasisHint] 명확화 확정값으로 SPECIFIC 분기 진입: forcedCostBasis.value='${fv}'${fzd ? `, zcgubunD='${fzd}'` : ''}`);
+    }
     const gubunList = detectedGubun.length > 0
       ? detectedGubun.map(v => `'${v}'`).join(', ')
       : "'실제원가' 등";
@@ -7832,6 +7856,48 @@ async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = nul
     baseSql = applyForcedCostBasisFilter(baseSql, areaCtx.forcedCostBasis);
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-09-18] sys_aimd_cot015 제품별 조회 PLANT 강제 (analysis 경로에도 부착)
+  //   배경: 사용자 신고 — 사용자가 "원가요소 조회" 등 분석형 질의를 하면
+  //   /api/nlq 는 analysisRequired=true 판정 → executeAnalysisPlan 로 진입.
+  //   그런데 aggregate route (L12678) 에만 훅이 있어서 analysis route 는
+  //   PLANT 강제/KST 20개 강제가 전혀 안 됨.
+  //   → 두 경로 모두 훅을 부착하여 동일 결과 보장.
+  // ─────────────────────────────────────────────────────────────────
+  try {
+    const _plantEnforce = enforcePlantGroupingForCot015(baseSql);
+    if (_plantEnforce.applied) {
+      console.log(
+        `[PlantGrouping:Analysis] sys_aimd_cot015 제품별 조회에 PLANT 강제 주입 완료. ` +
+        `변경: ${_plantEnforce.changes.join(' | ')}`
+      );
+      baseSql = _plantEnforce.sql;
+    } else {
+      console.log(`[PlantGrouping:Analysis] no-op: ${_plantEnforce.changes.join(' | ')}`);
+    }
+  } catch (e) {
+    console.error('[PlantGrouping:Analysis] 보정 중 예외 (원본 SQL 유지):', e.message);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-09-18] sys_aimd_cot015 "원가요소" 조회 시 KST 20개 컬럼 강제 (analysis 경로)
+  //   aggregate route (L12701) 와 동일 로직을 analysis 경로에도 부착.
+  // ─────────────────────────────────────────────────────────────────
+  try {
+    const _kstEnforce = enforceCostElementColumnsForCot015(baseSql, query);
+    if (_kstEnforce.applied) {
+      console.log(
+        `[CostElementCols:Analysis] sys_aimd_cot015 "원가요소" 조회에 KST 20개 컬럼 강제 주입 완료. ` +
+        `변경: ${_kstEnforce.changes.join(' | ')}`
+      );
+      baseSql = _kstEnforce.sql;
+    } else {
+      console.log(`[CostElementCols:Analysis] no-op: ${_kstEnforce.changes.join(' | ')}`);
+    }
+  } catch (e) {
+    console.error('[CostElementCols:Analysis] 보정 중 예외 (원본 SQL 유지):', e.message);
+  }
+
   // ★ [Metric Determinism 2026-09-04] SQL 실행 직전 최종 검증 게이트
   //   plan → buildAggregationSqlFromPlan 을 거친 SQL 에 metric alias 가 있는 경우,
   //   canonical formula 와 구조가 다르면 자동 치환 (결정 2 옵션 B).
@@ -10384,6 +10450,154 @@ function _stripAlias(item) {
 }
 // ═════════════════════════════════════════════════════════════════════════
 
+// ═════════════════════════════════════════════════════════════════════════
+// [2026-09-18] enforceCostElementColumnsForCot015
+// ─────────────────────────────────────────────────────────────────────────
+// 목적:
+//   사용자가 "원가요소 조회해줘" 유형의 질의를 하면
+//   sys_aimd_cot015 의 원가요소 KST 20개 컬럼을 SELECT 에 강제 추가.
+//
+// 배경 (사용자 요구 2026-09-18):
+//   기존 GENERIC 힌트는 개당단가/총액/수량/단위 4개만 붙였는데,
+//   사용자는 KST001~KST039 20개의 원가 세부 항목을 함께 보고 싶어함.
+//   프롬프트 힌트는 LLM 이 무시할 수 있으므로 결정적 사후 재작성으로 강제.
+//
+// 트리거 조건 (모두 만족 시 발동):
+//   1) FROM sys_aimd_cot015
+//   2) 원 질의에 "원가요소" 어휘 있음
+//   3) 특정 KST 카테고리 지목 없음 (인건비/재료비/도급비/에너지비/전력비/외주비 등)
+//      → 특정 항목 지목 시엔 그 항목만 조회 (기존 로직)
+//
+// 재작성 규칙:
+//   - SELECT 뒤에 20개 KST 컬럼을 SUM(KSTxxx) AS '<라벨> 합계(원)' 형태로 append
+//   - 이미 SELECT 에 있는 KST 컬럼은 중복 방지 (건너뜀)
+//   - GROUP BY / WHERE / ORDER BY 는 건드리지 않음 (원 상태 유지)
+//   - 실패 / 파싱 안 됨 → 원본 반환 (안전)
+//
+// 반환:
+//   { sql, applied, changes[] }
+// ═════════════════════════════════════════════════════════════════════════
+
+// KST 20개 원가요소 컬럼 + 라벨 (ontology_column 시드 기준)
+// 사용자 요구: "<시드 라벨> + ' 합계(원)'" 포맷 통일
+const COT015_COST_ELEMENT_KST_COLUMNS = [
+  { col: 'KST001', label: '재료비-펄프 합계(원)' },
+  { col: 'KST002', label: '재료비-고지 합계(원)' },
+  { col: 'KST004', label: '재료비-패드 합계(원)' },
+  { col: 'KST006', label: '부재료비-약품 합계(원)' },
+  { col: 'KST008', label: '부재료비-포장재 합계(원)' },
+  { col: 'KST010', label: '재료비-기타 합계(원)' },
+  { col: 'KST012', label: '인건비 합계(원)' },
+  { col: 'KST014', label: '도급비 합계(원)' },
+  { col: 'KST015', label: '에너지비 합계(원)' },
+  { col: 'KST017', label: '감가상각비 합계(원)' },
+  { col: 'KST019', label: '수선/소모품비 합계(원)' },
+  { col: 'KST021', label: '기타경비 합계(원)' },
+  { col: 'KST025', label: '외주가공비 합계(원)' },
+  { col: 'KST027', label: '인건비-경비 합계(원)' },
+  { col: 'KST029', label: '인건비-기타 합계(원)' },
+  { col: 'KST031', label: '전력비 합계(원)' },
+  { col: 'KST033', label: '세금과공과 합계(원)' },
+  { col: 'KST035', label: '지급수수료 합계(원)' },
+  { col: 'KST037', label: '기타경비-폐기물 합계(원)' },
+  { col: 'KST039', label: '생산량-입고용 합계(원)' },
+];
+
+// "원가요소" 어휘 감지 (제조원가 탭 GENERIC 원가 어휘와는 독립적)
+//   - "원가요소" (뒤에 코드/명 붙으면 컬럼 언급이므로 제외)
+//   - "원가 요소" (공백 허용)
+const COST_ELEMENT_INTENT_RE = /(?:^|[^가-힣])(원가요소|원가\s요소)(?![_가-힣])/;
+
+// 특정 KST 카테고리 지목 감지 (지목하면 20개 강제 스킵 — 기존 로직 유지)
+//   ontology_synonym 에 등록된 주요 원가요소 어휘를 하드코딩으로 검사
+//   (동의어 사전과 완전 동기화는 아니지만, 자주 쓰이는 것 위주로 충분)
+const COST_ELEMENT_SPECIFIC_TERMS_RE = /(펄프비|고지비|약품비|포장재비|인건비|도급비|에너지비|감가상각비|수선비|소모품비|외주가공비|외주비|전력비|세금과공과|지급수수료|재료비|부재료비|기타경비|폐기물|경비)/;
+
+function enforceCostElementColumnsForCot015(inputSql, query) {
+  const originalSql = String(inputSql || '');
+  const queryStr = String(query || '');
+  const changes = [];
+
+  // 1) sys_aimd_cot015 FROM 확인
+  if (!/\bFROM\s+sys_aimd_cot015\b/i.test(originalSql)) {
+    return { sql: originalSql, applied: false, changes: ['skip: sys_aimd_cot015 미사용'] };
+  }
+
+  // 2) 질의에 "원가요소" 어휘 있는지 확인
+  if (!COST_ELEMENT_INTENT_RE.test(queryStr)) {
+    return { sql: originalSql, applied: false, changes: ['skip: 질의에 "원가요소" 어휘 없음'] };
+  }
+
+  // 3) 특정 KST 카테고리 지목 감지 → 지목 시 스킵 (기존 로직 유지)
+  if (COST_ELEMENT_SPECIFIC_TERMS_RE.test(queryStr)) {
+    const matched = queryStr.match(COST_ELEMENT_SPECIFIC_TERMS_RE);
+    return { sql: originalSql, applied: false, changes: [`skip: 특정 원가요소 카테고리 지목 감지 ("${matched[1]}")`] };
+  }
+
+  // 4) SELECT 절 추출
+  const selectMatch = originalSql.match(/\bSELECT\s+([\s\S]+?)\s+\bFROM\b/i);
+  if (!selectMatch) {
+    return { sql: originalSql, applied: false, changes: ['skip: SELECT 절 파싱 실패'] };
+  }
+  const selectFull = selectMatch[0];
+  const selectBody = selectMatch[1];
+
+  // 5) 이미 존재하는 KST 컬럼 감지 (중복 방지)
+  //    KSTxxx 를 SUM(...) 안에서 참조하는 항목 검사
+  const existingKstSet = new Set();
+  const items = _splitSelectItems(selectBody);
+  for (const it of items) {
+    const exprOnly = _stripAlias(it);
+    const kstMatches = exprOnly.match(/\bKST\d{3}\b/gi) || [];
+    for (const km of kstMatches) existingKstSet.add(km.toUpperCase());
+  }
+
+  // [2026-09-18 revB] append 방식 → 치환 방식으로 변경 (사용자 요구: 순서 고정).
+  //   기존 append 방식: LLM 이 뽑은 KST 는 원 위치 유지, 없는 것만 뒤에 append
+  //     → 결과 순서가 KST002, 004, ..., 035, [KST001, 027, 029, 033, 037, 039]
+  //       로 뒤죽박죽 (LLM 이 뽑은 순서에 종속).
+  //   신규 치환 방식: SELECT 에서 KST 를 참조하는 모든 항목을 제거하고,
+  //     20개 KST 를 사용자 지정 순서 (KST001, 002, 004, ..., 039) 로 재삽입.
+  //     → non-KST 컬럼 (자재코드/자재명/플랜트/개당단가/총액 등) 은 원 순서 유지.
+  //     → KST 컬럼 순서 = COT015_COST_ELEMENT_KST_COLUMNS 배열 순서 = 사용자 지정.
+  //     → alias 도 표준 라벨로 통일 (LLM 이 'KST001_by_llm' 같은 임시 alias 로 뽑아도 강제 교체).
+
+  // 6) SELECT 항목을 [non-KST 유지] vs [KST 제거] 로 분류
+  const nonKstItems = [];
+  for (const it of items) {
+    const exprOnly = _stripAlias(it);
+    const hasKstRef = /\bKST\d{3}\b/i.test(exprOnly);
+    if (!hasKstRef) {
+      nonKstItems.push(it.trim());
+    }
+    // KST 참조 항목은 제거 (existingKstSet 에 이미 기록됨)
+  }
+
+  // 7) 20개 KST 를 사용자 지정 순서로 생성 (alias 도 표준 라벨 강제)
+  const orderedKstItems = COT015_COST_ELEMENT_KST_COLUMNS.map(
+    x => `SUM(${x.col}) AS '${x.label}'`
+  );
+
+  // 8) 최종 SELECT 조립 = [non-KST 원 순서] + [KST 20개 고정 순서]
+  const newItems = [...nonKstItems, ...orderedKstItems];
+  const newSelectBody = newItems.join(', ');
+  const newSelectFull = selectFull.replace(selectBody, newSelectBody);
+  const newSql = originalSql.replace(selectFull, newSelectFull);
+
+  // 9) 원본과 완전히 동일하면 no-op (이미 정확한 순서/라벨)
+  if (newSql === originalSql) {
+    return { sql: originalSql, applied: false, changes: ['skip: 이미 20개 KST 컬럼이 정확한 순서/라벨로 존재'] };
+  }
+
+  const preExistingCount = existingKstSet.size;
+  const newlyAddedCount = 20 - preExistingCount;
+  changes.push(
+    `SELECT: KST 원가요소 20개 컬럼 재정렬 (기존 ${preExistingCount}개 재배치 + 신규 ${newlyAddedCount}개 삽입, 고정 순서: KST001→KST039)`
+  );
+  return { sql: newSql, applied: true, changes };
+}
+// ═════════════════════════════════════════════════════════════════════════
+
 function validateCostBasisSqlIntegrity({
   sql, query, columnMatches, tableWhitelist,
 } = {}) {
@@ -12021,7 +12235,11 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           console.log(`[RAG:SeedAugment] manufacturing-cost subArea=${areaCtx.subArea} → 검색 시드에만 라벨 "${areaCtx.subAreaLabel}" 접미 (원 질의·SQL 무변경)`);
         }
       }
-      const buildResult = await buildRAGSystemPrompt(_ragSeedQuery, activeDomain, areaCtx.tableWhitelist);
+      // [2026-09-18] areaCtx 전달 → CostBasisHint 트리거가 명확화 확정값 (forcedCostBasis) 을
+      //   SPECIFIC 분기 판정에 반영할 수 있게 함.
+      //   Before: 명확화 경로에서 원 질의에 ZCGUBUN 어휘 없으면 GENERIC 분기로 판정
+      //   After : forcedCostBasis 있으면 SPECIFIC 분기로 판정 → 개당단가/총액/수량 세트 주입
+      const buildResult = await buildRAGSystemPrompt(_ragSeedQuery, activeDomain, areaCtx.tableWhitelist, { areaCtx });
       // [2026-08-21] BUG B 수정: 상위 스코프의 systemPrompt 에 재할당 (재선언 X)
       //   → else 블록 밖의 SQL 재생성 로직에서도 참조 가능
       systemPrompt = buildResult.prompt;
@@ -12518,53 +12736,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         console.warn(`[NLQ:CostCompPostValidate] 오염 정정 완료. SQL alias·explanation 재작성됨.`);
       }
 
-      // ─────────────────────────────────────────────────────────────
-      // [2026-09-18] sys_aimd_cot015 제품별 조회 PLANT 강제 (hard-rewrite)
-      //   업무 규칙: 동일 MATERIAL 이라도 PLANT 별로 원가 산정.
-      //   → GROUP BY 에 MATERIAL 만 있고 PLANT 가 없으면 서버가 결정적으로
-      //     GROUP BY MATERIAL, PLANT 로 재작성하고 SELECT 에 PLANT/PLANT_NM 삽입.
-      //   프롬프트 힌트만으로는 "원가요소" 등 일부 어휘 케이스에서 힌트 트리거가
-      //   안 걸려 PLANT 규칙이 미적용되는 문제 → 힌트 트리거와 무관하게 강제.
-      // ─────────────────────────────────────────────────────────────
-      try {
-        const _plantEnforce = enforcePlantGroupingForCot015(sql);
-        if (_plantEnforce.applied) {
-          console.log(
-            `[PlantGrouping] sys_aimd_cot015 제품별 조회에 PLANT 강제 주입 완료. ` +
-            `변경: ${_plantEnforce.changes.join(' | ')}`
-          );
-          sql = _plantEnforce.sql;
-        } else {
-          // no-op 사유 로그 (한 줄, 디버깅용)
-          console.log(`[PlantGrouping] no-op: ${_plantEnforce.changes.join(' | ')}`);
-        }
-      } catch (e) {
-        console.error('[PlantGrouping] 보정 중 예외 (원본 SQL 유지):', e.message);
-      }
-
-      // ─────────────────────────────────────────────────────────────
-      // [2026-09-13] sys_aimd_cot015 원가 SQL 무결성 검증 (soft-warning)
-      //   V1: alias '원가/실제원가/원가 단가' 인데 expression 이 SUM(TOTAL) 단독
-      //   V2: "원가" 단독 질의인데 WHERE ZCGUBUN 임의 확정
-      //   현재 정책: soft-warning (로그만 남기고 실행 허용).
-      //     LLM 프롬프트 힌트 강화 (3분기 CostBasisHint) 로 충분히 방어되지만,
-      //     LLM 이 힌트를 무시한 경우 운영에서 즉시 감지 가능하도록 로그 태그
-      //     [CostBasisIntegrity] 로 남긴다.
-      //   추후: 재발 시 hard-fail (SQL 실행 거부 + 재생성) 로 승격 가능.
-      // ─────────────────────────────────────────────────────────────
-      try {
-        const _costIntegrity = validateCostBasisSqlIntegrity({
-          sql, query, tableWhitelist,
-        });
-        if (!_costIntegrity.valid) {
-          console.warn(
-            `[CostBasisIntegrity] 위반 감지 (soft-warning, SQL 은 실행 허용): ` +
-            _costIntegrity.violations.join(' | ')
-          );
-        }
-      } catch (e) {
-        console.error('[CostBasisIntegrity] 검증 중 예외 (무시):', e.message);
-      }
+      // [2026-09-18 FIX] PLANT / KST / CostBasisIntegrity 훅은 forcedCostComp 조건과
+      //   무관하게 항상 실행되어야 하므로 이 블록에서 제거하고 아래 블록 밖으로 이동.
+      //   ↓ 훅 3종은 `if (areaCtx.forcedCostComp)` 블록 바깥의 새 위치로 옮김.
 
       // ─────────────────────────────────────────────────────────────
       // [2026-09-02 PR #408] Phase 1 — 컬럼 화이트리스트 검증 가드
@@ -12653,6 +12827,68 @@ ${_colHintList}
           console.warn(`[SchemaGuard] systemPrompt 비어있음 → 재생성 스킵`);
         }
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // [2026-09-18 FIX] sys_aimd_cot015 사후 재작성 훅 3종
+    //   forcedCostComp 조건 블록 밖에서 항상 실행되어야 함.
+    //   버그 히스토리:
+    //     PR #491 최초 도입 시 실수로 forcedCostComp 블록 안에 삽입 →
+    //     사용자 케이스 (forcedCostBasis 만 있고 forcedCostComp 없음) 에서
+    //     훅이 아예 발동 안 됨 → KST 20개 강제도 안 되어 15개만 출력.
+    //   이번 수정: 블록 밖으로 이동. sql 이 sys_aimd_cot015 대상이면 조건 없이 실행.
+    //
+    // 실행 순서:
+    //   1) PLANT 강제 (GROUP BY MATERIAL → MATERIAL, PLANT)
+    //   2) KST 20개 강제 (원가요소 조회 시 KST001~039 세트 append)
+    //   3) CostBasis 무결성 soft-warning (alias 오염 감지)
+    // ─────────────────────────────────────────────────────────────
+
+    // [1] PLANT 강제
+    try {
+      const _plantEnforce = enforcePlantGroupingForCot015(sql);
+      if (_plantEnforce.applied) {
+        console.log(
+          `[PlantGrouping] sys_aimd_cot015 제품별 조회에 PLANT 강제 주입 완료. ` +
+          `변경: ${_plantEnforce.changes.join(' | ')}`
+        );
+        sql = _plantEnforce.sql;
+      } else {
+        console.log(`[PlantGrouping] no-op: ${_plantEnforce.changes.join(' | ')}`);
+      }
+    } catch (e) {
+      console.error('[PlantGrouping] 보정 중 예외 (원본 SQL 유지):', e.message);
+    }
+
+    // [2] KST 20개 강제
+    try {
+      const _kstEnforce = enforceCostElementColumnsForCot015(sql, query);
+      if (_kstEnforce.applied) {
+        console.log(
+          `[CostElementCols] sys_aimd_cot015 "원가요소" 조회에 KST 20개 컬럼 강제 주입 완료. ` +
+          `변경: ${_kstEnforce.changes.join(' | ')}`
+        );
+        sql = _kstEnforce.sql;
+      } else {
+        console.log(`[CostElementCols] no-op: ${_kstEnforce.changes.join(' | ')}`);
+      }
+    } catch (e) {
+      console.error('[CostElementCols] 보정 중 예외 (원본 SQL 유지):', e.message);
+    }
+
+    // [3] CostBasis 무결성 soft-warning
+    try {
+      const _costIntegrity = validateCostBasisSqlIntegrity({
+        sql, query, tableWhitelist,
+      });
+      if (!_costIntegrity.valid) {
+        console.warn(
+          `[CostBasisIntegrity] 위반 감지 (soft-warning, SQL 은 실행 허용): ` +
+          _costIntegrity.violations.join(' | ')
+        );
+      }
+    } catch (e) {
+      console.error('[CostBasisIntegrity] 검증 중 예외 (무시):', e.message);
     }
 
     // [2026-08-21] SQL Validator 개선 — CTE(WITH ... SELECT) 허용
