@@ -15941,8 +15941,13 @@ app.get('/api/builder/columns', async (req, res) => {
       'ZCGUBUN_D': 'cost_type', 'ZCGUBUN': 'cost_type',
       'LBKUM': 'quantity',
       'BASE_UOM': 'unit',
-      'TOTAL': 'cost', 'TOTAL1': 'cost', 'TOTAL2': 'cost',
-      'KST_V': 'cost', 'KST_F': 'cost',
+      // [2026-09-17 rev2] 사용자 요구사항 - 세부 카테고리 재분류
+      //   - 'cost_total' (합계) 그룹 신설: 원가 집계값 3개 - '원가 합계금액', '변동비 합계', '고정비 합계'
+      //   - 'other' (기타) 로 이동: '현재월 표준가', '이전월 표준가' (표준가 참고용, 원가 세부 아님)
+      //   - 'cost' (원가요소) 그룹은 KST001~KST039 (20개) 원가 세부 항목만 유지
+      'TOTAL': 'cost_total',
+      'KST_V': 'cost_total', 'KST_F': 'cost_total',
+      'TOTAL1': 'other', 'TOTAL2': 'other',
       'KST001': 'cost', 'KST002': 'cost', 'KST004': 'cost',
       'KST006': 'cost', 'KST008': 'cost', 'KST010': 'cost',
       'KST012': 'cost', 'KST014': 'cost', 'KST015': 'cost',

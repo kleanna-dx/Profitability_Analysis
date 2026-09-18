@@ -1550,14 +1550,18 @@ const CATEGORY_NAMES = {
     trade: '거래/고객', unit: '단위', quantity: '수량', amount: '금액',
     // [2026-09-17] 제조원가 VQB 전용 카테고리
     //   - 'cost_type': ZCGUBUN / ZCGUBUN_D 원가 구분 컬럼
-    //   - 'cost': KST001~KST039 원가요소 세부 + TOTAL/TOTAL1/TOTAL2/KST_V/KST_F 원가 집계
-    cost_type: '원가구분', cost: '원가요소',
+    //   - 'cost': KST001~KST039 원가요소 세부 항목
+    //   - 'cost_total' (rev2): TOTAL(원가 합계금액) / KST_V(변동비 합계) / KST_F(고정비 합계) - 원가 집계값
+    //   - TOTAL1(현재월 표준가) / TOTAL2(이전월 표준가) 는 'other' (기타) 로 분리 - 표준가 참고용
+    cost_type: '원가구분', cost: '원가요소', cost_total: '합계',
     metric: '계산지표', other: '기타', system: '시스템'
 };
-// [2026-09-17] 제조원가 VQB 전용 카테고리 (cost_type / cost) 추가.
+// [2026-09-17] 제조원가 VQB 전용 카테고리 (cost_type / cost / cost_total) 추가.
 //   - 수익성분석에는 해당 카테고리 컬럼이 없으므로 미노출 (자동).
-//   - 순서: 기간 → 조직/사업부 → 자재/제품 → 원가구분 → 수량 → 단위 → 원가요소 → (수익성분석용) 거래/고객 → 금액 → 계산지표 → 기타
-const CATEGORY_ORDER = ['period','org','product','cost_type','quantity','unit','cost','trade','amount','metric','other'];
+//   - 순서 (rev2): 기간 → 조직/사업부 → 자재/제품 → 원가구분 → 수량 → 단위 → 원가요소 → 합계 → (수익성분석용) 거래/고객 → 금액 → 계산지표 → 기타
+//   - '합계'(cost_total) 는 원가요소 세부(cost) 바로 뒤에 배치 (요약격이므로).
+//   - '기타'(other) 는 마지막 - TOTAL1/TOTAL2 (표준가) 가 여기에 표시됨.
+const CATEGORY_ORDER = ['period','org','product','cost_type','quantity','unit','cost','cost_total','trade','amount','metric','other'];
 
 // ─── Init ────────────────────────────────────
 let currentUserRole='user', currentDomain='PS', currentUserId='';
