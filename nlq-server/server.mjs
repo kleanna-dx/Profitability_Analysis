@@ -7856,6 +7856,48 @@ async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = nul
     baseSql = applyForcedCostBasisFilter(baseSql, areaCtx.forcedCostBasis);
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-09-18] sys_aimd_cot015 제품별 조회 PLANT 강제 (analysis 경로에도 부착)
+  //   배경: 사용자 신고 — 사용자가 "원가요소 조회" 등 분석형 질의를 하면
+  //   /api/nlq 는 analysisRequired=true 판정 → executeAnalysisPlan 로 진입.
+  //   그런데 aggregate route (L12678) 에만 훅이 있어서 analysis route 는
+  //   PLANT 강제/KST 20개 강제가 전혀 안 됨.
+  //   → 두 경로 모두 훅을 부착하여 동일 결과 보장.
+  // ─────────────────────────────────────────────────────────────────
+  try {
+    const _plantEnforce = enforcePlantGroupingForCot015(baseSql);
+    if (_plantEnforce.applied) {
+      console.log(
+        `[PlantGrouping:Analysis] sys_aimd_cot015 제품별 조회에 PLANT 강제 주입 완료. ` +
+        `변경: ${_plantEnforce.changes.join(' | ')}`
+      );
+      baseSql = _plantEnforce.sql;
+    } else {
+      console.log(`[PlantGrouping:Analysis] no-op: ${_plantEnforce.changes.join(' | ')}`);
+    }
+  } catch (e) {
+    console.error('[PlantGrouping:Analysis] 보정 중 예외 (원본 SQL 유지):', e.message);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-09-18] sys_aimd_cot015 "원가요소" 조회 시 KST 20개 컬럼 강제 (analysis 경로)
+  //   aggregate route (L12701) 와 동일 로직을 analysis 경로에도 부착.
+  // ─────────────────────────────────────────────────────────────────
+  try {
+    const _kstEnforce = enforceCostElementColumnsForCot015(baseSql, query);
+    if (_kstEnforce.applied) {
+      console.log(
+        `[CostElementCols:Analysis] sys_aimd_cot015 "원가요소" 조회에 KST 20개 컬럼 강제 주입 완료. ` +
+        `변경: ${_kstEnforce.changes.join(' | ')}`
+      );
+      baseSql = _kstEnforce.sql;
+    } else {
+      console.log(`[CostElementCols:Analysis] no-op: ${_kstEnforce.changes.join(' | ')}`);
+    }
+  } catch (e) {
+    console.error('[CostElementCols:Analysis] 보정 중 예외 (원본 SQL 유지):', e.message);
+  }
+
   // ★ [Metric Determinism 2026-09-04] SQL 실행 직전 최종 검증 게이트
   //   plan → buildAggregationSqlFromPlan 을 거친 SQL 에 metric alias 가 있는 경우,
   //   canonical formula 와 구조가 다르면 자동 치환 (결정 2 옵션 B).
