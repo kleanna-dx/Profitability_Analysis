@@ -1722,13 +1722,35 @@ window.addEventListener('DOMContentLoaded', async () => {
     updateOrderByOptions();
 });
 
+// [2026-09-17 rev3] 제조원가 area 전용 필드 라벨 축약 매핑
+//   - 사용자 요구: 필드목록 칸이 좁아서 라벨이 너무 김
+//   - 원본 ontology_column.description 은 그대로 유지 (자연어질의 RAG/matchSynonymsDirectly 무영향)
+//   - VQB 프론트에서 사이드바 표시 + 조회필드 alias + 결과표 헤더 에만 짧은 표시명 사용
+//   - 제조원가 area 게이팅 (수익성분석은 그대로)
+const MFG_FIELD_LABEL_SHORT = {
+    'ZCGUBUN_D': '표준원가추정(대구분)',  // 원본: '표준원가추정 대구분 (실적/추정 등)'
+    'ZCGUBUN':   '원가구분(구분)',        // 원본: '원가구분 (실제원가/표준원가 등)'
+};
+function _rewriteMfgFieldLabel(colName, originalLabel) {
+    if (_currentBuilderArea() !== 'manufacturing-cost') return originalLabel;
+    const short = MFG_FIELD_LABEL_SHORT[String(colName || '').toUpperCase()];
+    return short || originalLabel;
+}
+
 async function loadColumns() {
     try {
         // [2026-09-17] area 파라미터 추가 - 서버가 area 별 target table 로 컬럼 조회
         const areaParam = _currentBuilderArea();
         const res = await fetch(`/api/builder/columns?_t=${Date.now()}&area=${encodeURIComponent(areaParam)}`);
         const data = await res.json();
-        allColumns = data.columns.filter(c => c.category !== 'system');
+        // [2026-09-17 rev3] 제조원가 area 인 경우 특정 컬럼의 label 을 축약형으로 rewrite
+        //   - c.label 을 새 값으로 덮어쓰면 사이드바/조회필드 alias/결과표 헤더 모두 자동 반영
+        //   - 수익성분석 area 는 rewrite 함수가 원본 그대로 반환하므로 무영향
+        const cols = (data.columns || []).map(c => {
+            const shortLabel = _rewriteMfgFieldLabel(c.name, c.label);
+            return (shortLabel !== c.label) ? { ...c, label: shortLabel } : c;
+        });
+        allColumns = cols.filter(c => c.category !== 'system');
         renderFieldList(allColumns);
     } catch(e) {
         document.getElementById('fieldList').innerHTML = '<p style="color:var(--error);padding:16px;">필드 로딩 실패</p>';
