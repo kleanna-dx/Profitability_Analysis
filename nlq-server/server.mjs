@@ -15844,18 +15844,42 @@ app.post('/api/report/upload-preview', upload.single('file'), async (req, res) =
 // GET /api/builder/columns - 쿼리 빌더용 컬럼 목록 (Ontology 기반 + DB 실제 컬럼)
 app.get('/api/builder/columns', async (req, res) => {
   try {
-    // 1. DB 실제 컬럼 정보 조회
+    // ─────────────────────────────────────────────────────────────────
+    // [2026-09-17] area 파라미터 지원 - 제조원가 VQB 정식 개발 (Phase 1-A)
+    //   - area='profitability'    (기본, 미지정 시 fallback) → bw_profitability_data
+    //   - area='manufacturing-cost'                          → sys_aimd_cot015
+    //   - resolveAreaContext 로 안전 해석 (알 수 없는 area 는 profitability 로 fallback)
+    //   - 하드코딩 완전 제거
+    //   - ontology_column 필터에도 table_name IN (허용 테이블) 추가하여
+    //     다른 area 의 컬럼이 섞이지 않도록 격리 (요구사항 #7)
+    // ─────────────────────────────────────────────────────────────────
+    const rawArea = String(req.query.area || 'profitability').toLowerCase().trim();
+    const areaCtx = resolveAreaContext(rawArea, null);
+    // area 매핑 실패 시 안전 fallback (기존 URL 도 계속 동작)
+    const targetTable = areaCtx.table || 'bw_profitability_data';
+    const tableWhitelist = (areaCtx.tableWhitelist && areaCtx.tableWhitelist.length > 0)
+      ? areaCtx.tableWhitelist
+      : [targetTable];
+
+    // 1. DB 실제 컬럼 정보 조회 (area 별 target table)
     const [dbCols] = await pool.query(`
       SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT
       FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data'
+      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?
       ORDER BY ORDINAL_POSITION
-    `);
+    `, [targetTable]);
 
-    // 2. Ontology 컬럼 정보 조회 (설명 보강, domain 필터)
+    // 2. Ontology 컬럼 정보 조회 (설명 보강, domain 필터 + table_name 필터)
     //    is_active 도 함께 조회 → 비활성 컬럼은 빌더 응답에서 제외
+    //    [2026-09-17] table_name 필터 추가 - area 별 허용 테이블의 ontology 만 사용
     const dc = await getActiveDomain(req);
-    const [ontoCols] = await pool.query(`SELECT id, column_name, description, data_type, is_active FROM ontology_column WHERE domain_code = ?`, [dc]);
+    const _tablePlaceholders = tableWhitelist.map(() => '?').join(',');
+    const [ontoCols] = await pool.query(
+      `SELECT id, column_name, description, data_type, is_active
+       FROM ontology_column
+       WHERE domain_code = ? AND table_name IN (${_tablePlaceholders})`,
+      [dc, ...tableWhitelist]
+    );
     const ontoMap = {};
     const inactiveColSet = new Set(); // 비활성 컬럼명(UPPER) 집합
     for (const o of ontoCols) {
@@ -15905,13 +15929,31 @@ app.get('/api/builder/columns', async (req, res) => {
     };
 
     // 3. Metric 계산 지표 먼저 조회 (DB 컬럼 루프 전에 — 산식 참조 컬럼을 ontology에서 숨기기 위해)
+    //   [2026-09-17] metric.table_name 컬럼이 있으면 area 별 허용 테이블로 추가 필터.
+    //     - 컬럼이 없거나 NULL 인 metric 은 하위호환성을 위해 도메인 조회에 포함 (기존 동작 유지).
+    //     - 컬럼이 있고 값이 다른 테이블이면 제외 (다른 area 의 metric 이 섞이는 것 방지).
     const dc2 = dc; // dc 변수 alias
     let metricRows = [];
     try {
-      const [_rows] = await pool.query(
-        `SELECT id, metric_code, aggregation, formula, table_name, description, domain_code FROM metric WHERE domain_code = ?`,
-        [dc2]
-      );
+      // metric 테이블에 table_name 컬럼이 있는지 확인 후 필터 조건 결정
+      const [_metaCols] = await pool.query(`
+        SELECT COLUMN_NAME FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='metric' AND COLUMN_NAME='table_name'
+      `);
+      const _hasTableCol = _metaCols.length > 0;
+      let _sql, _params;
+      if (_hasTableCol) {
+        _sql = `SELECT id, metric_code, aggregation, formula, table_name, description, domain_code
+                FROM metric
+                WHERE domain_code = ?
+                  AND (table_name IS NULL OR table_name IN (${_tablePlaceholders}))`;
+        _params = [dc2, ...tableWhitelist];
+      } else {
+        _sql = `SELECT id, metric_code, aggregation, formula, description, domain_code
+                FROM metric WHERE domain_code = ?`;
+        _params = [dc2];
+      }
+      const [_rows] = await pool.query(_sql, _params);
       metricRows = _rows;
     } catch (e) {
       console.error('[Builder] metric 사전조회 오류 (무시):', e.message);
@@ -15997,7 +16039,12 @@ app.get('/api/builder/columns', async (req, res) => {
       console.error('[Builder] metric 조회 오류 (무시):', metErr.message);
     }
 
-    res.json({ columns });
+    // [2026-09-17] 응답에 area/table 정보 포함 (프론트 디버깅/검증용)
+    res.json({
+      columns,
+      area: areaCtx.area || 'profitability',
+      table: targetTable,
+    });
   } catch (err) {
     console.error('[Builder] columns error:', err.message);
     res.status(500).json({ error: '컬럼 목록 조회 실패: ' + err.message });
@@ -16059,18 +16106,28 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       domainParam = 'PS';
     }
   }
-  log.withCtx({ domain: domainParam, date_start: dateStart || null, date_end: dateEnd || null });
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-09-17] area 파라미터 지원 - 제조원가 VQB 정식 개발 (Phase 1-B)
+  //   - area='profitability'    (기본) → bw_profitability_data
+  //   - area='manufacturing-cost'      → sys_aimd_cot015
+  //   - 알 수 없는 area 는 profitability 로 fallback (기존 URL 하위호환)
+  // ─────────────────────────────────────────────────────────────────
+  const rawArea = String(req.query.area || 'profitability').toLowerCase().trim();
+  const areaCtx = resolveAreaContext(rawArea, null);
+  const targetTable = areaCtx.table || 'bw_profitability_data';
+
+  log.withCtx({ domain: domainParam, date_start: dateStart || null, date_end: dateEnd || null, area: areaCtx.area || 'profitability', table: targetTable });
   log.stage('params_resolved');
 
   // 서버단 statement timeout — Nginx 60s 보다 먼저 끊고 친절한 메시지 반환
   const stmtTimeoutMs = Math.max(parseInt(process.env.BUILDER_VALUES_STATEMENT_TIMEOUT_MS || '25000', 10), 1000);
   const t0 = Date.now();
   try {
-    // 화이트리스트 검증 — DB 에 실제 존재하는 컬럼인지 확인
+    // 화이트리스트 검증 — DB 에 실제 존재하는 컬럼인지 확인 (area 별 target table)
     const [check] = await pool.query(`
       SELECT COLUMN_NAME FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data' AND COLUMN_NAME = ?
-    `, [columnName]);
+      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME = ?
+    `, [targetTable, columnName]);
     log.stage('column_whitelist_check', {
       valid: check.length > 0,
       mapped_db_column: check.length > 0 ? check[0].COLUMN_NAME : null,
@@ -16131,11 +16188,12 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
       : `cnt DESC, \`${columnName}\` ASC`; // 인기값 우선, 동률이면 알파벳순
 
     // ─── 단일 GROUP BY 쿼리 + statement timeout ────────────────────────
+    //   [2026-09-17] FROM 절 하드코딩 제거 - area 별 target table 사용
     const fetchLimit = limit + 1;
     const stmtTimeoutSec = Math.max(1, Math.round(stmtTimeoutMs / 1000));
     const sql = `SET STATEMENT MAX_STATEMENT_TIME=${stmtTimeoutSec} FOR
       SELECT \`${columnName}\` AS val, COUNT(*) AS cnt
-      FROM bw_profitability_data
+      FROM \`${targetTable}\`
       ${whereSql}
       GROUP BY \`${columnName}\`
       ORDER BY ${orderBy}
@@ -16229,7 +16287,23 @@ app.get('/api/builder/values/:columnName', async (req, res) => {
 // POST /api/builder/query - 쿼리 빌더 실행
 app.post('/api/builder/query', async (req, res) => {
   const { fields, conditions, group_by, order_by, order_dir, limit: limitStr, prompt,
-          date_start, date_end, compare_yoy, compare_mom, compare_dims, history_id } = req.body;
+          date_start, date_end, compare_yoy, compare_mom, compare_dims, history_id,
+          area: rawAreaFromBody } = req.body;
+
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-09-17] area 파라미터 지원 - 제조원가 VQB 정식 개발 (Phase 1-C)
+  //   - area='profitability'    (기본) → bw_profitability_data
+  //   - area='manufacturing-cost'      → sys_aimd_cot015
+  //   - 알 수 없는 area 는 profitability 로 fallback (기존 요청 하위호환)
+  //   - targetTable 변수를 함수 최상단에서 결정하여 이후 모든 SQL 생성에 재사용
+  //     (100+ 하드코딩된 'bw_profitability_data' 를 targetTable 로 치환)
+  // ─────────────────────────────────────────────────────────────────
+  const _rawAreaStr = String(rawAreaFromBody || 'profitability').toLowerCase().trim();
+  const _areaCtx = resolveAreaContext(_rawAreaStr, null);
+  const targetTable = _areaCtx.table || 'bw_profitability_data';
+  const areaKey = _areaCtx.area || 'profitability';
+  const isMfgArea = (areaKey === 'manufacturing-cost');
+  console.log(`[Builder] area=${areaKey} table=${targetTable} isMfg=${isMfgArea}`);
 
   // ─── [2026-06-29] 요청 단위 로거 — 11개 stage 단계별 추적 ────────────────
   //   (사용자 요청 #3) 요청 수신 → LLM 필요 여부 → LLM 호출/응답 → SQL 파싱
@@ -16242,6 +16316,8 @@ app.post('/api/builder/query', async (req, res) => {
     date_start: date_start || null,
     date_end: date_end || null,
     history_id: history_id || null,
+    area: areaKey,
+    table: targetTable,
   });
   log.stage('request_received', { prompt_preview: (prompt && String(prompt).trim().slice(0, 80)) || null });
 
@@ -16285,11 +16361,11 @@ app.post('/api/builder/query', async (req, res) => {
   const safeLimit = Math.min(parseInt(limitStr) || 1000, 5000);
 
   try {
-    // 화이트리스트: DB 실제 컬럼명 검증
+    // 화이트리스트: DB 실제 컬럼명 검증 (area 별 target table)
     const [validColRows] = await pool.query(`
       SELECT COLUMN_NAME FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data'
-    `);
+      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?
+    `, [targetTable]);
     const validCols = new Set(validColRows.map(r => r.COLUMN_NAME));
 
     // ── Metric 산식 매핑 조회 ──
@@ -16666,8 +16742,8 @@ app.post('/api/builder/query', async (req, res) => {
       try {
         const [typeRows] = await pool.query(`
           SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bw_profitability_data'
-        `);
+          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?
+        `, [targetTable]);
         numericColSet = new Set(typeRows.filter(r => numericTypes.has(r.DATA_TYPE.toLowerCase())).map(r => r.COLUMN_NAME));
       } catch(e) { /* fallback: 빈 set */ }
     }
@@ -16753,7 +16829,7 @@ app.post('/api/builder/query', async (req, res) => {
       });
       const curParams = [curMonth];
       const curUserWhere = buildUserConditions(curParams);
-      let curSql = `SELECT ${curSelectParts.join(', ')} FROM bw_profitability_data WHERE \`CALMONTH\` = ?${curUserWhere ? ' ' + curUserWhere : ''}`;
+      let curSql = `SELECT ${curSelectParts.join(', ')} FROM ${targetTable} WHERE \`CALMONTH\` = ?${curUserWhere ? ' ' + curUserWhere : ''}`;
       if (curGroupByCols.length > 0) {
         curSql += ` GROUP BY ${curGroupByCols.join(', ')}`;
       }
@@ -16770,7 +16846,7 @@ app.post('/api/builder/query', async (req, res) => {
       });
       const prevParams = [prevMonth];
       const prevUserWhere = buildUserConditions(prevParams);
-      let prevSql = `SELECT ${prevSelectParts.join(', ')} FROM bw_profitability_data WHERE \`CALMONTH\` = ?${prevUserWhere ? ' ' + prevUserWhere : ''}`;
+      let prevSql = `SELECT ${prevSelectParts.join(', ')} FROM ${targetTable} WHERE \`CALMONTH\` = ?${prevUserWhere ? ' ' + prevUserWhere : ''}`;
       if (prevGroupByCols.length > 0) {
         prevSql += ` GROUP BY ${prevGroupByCols.join(', ')}`;
       }
@@ -16977,7 +17053,7 @@ app.post('/api/builder/query', async (req, res) => {
         orderClause = `ORDER BY ${order_by} ${dir}`;
       }
 
-      sql = `SELECT ${selectParts.join(', ')} FROM bw_profitability_data`;
+      sql = `SELECT ${selectParts.join(', ')} FROM ${targetTable}`;
       if (whereParts.length > 0) sql += ` WHERE ${whereParts.join(' ')}`;
       if (groupParts.length > 0) sql += ` GROUP BY ${groupParts.join(', ')}`;
       if (orderClause) sql += ` ${orderClause}`;
@@ -17219,7 +17295,7 @@ app.post('/api/builder/query', async (req, res) => {
               orderClause2 = `ORDER BY ${order_by} ${dir}`;
             }
 
-            let newSql = `SELECT ${newSelectParts.join(', ')} FROM bw_profitability_data`;
+            let newSql = `SELECT ${newSelectParts.join(', ')} FROM ${targetTable}`;
             if (whereParts2.length > 0) newSql += ` WHERE ${whereParts2.join(' ')}`;
             if (newGroupParts.length > 0) newSql += ` GROUP BY ${newGroupParts.join(', ')}`;
             if (orderClause2) newSql += ` ${orderClause2}`;
@@ -17410,8 +17486,8 @@ app.post('/api/builder/query', async (req, res) => {
               '   - "N월 대비" 패턴에서 비교 대상 월이 명시 안 되면 기본 SQL 의 CALMONTH 범위 중 가장 큰(최신) 월을 사용\n' +
               '   - "사업부별로" → GROUP BY 에 해당 컬럼 추가\n' +
               '9. 따옴표 규칙: 컬럼명/테이블명에는 백틱(`) 이나 작은따옴표를 사용하지 마세요. ' +
-              '   - 잘못된 예: SELECT `MATERIAL_NM` FROM `bw_profitability_data`\n' +
-              '   - 올바른 예: SELECT MATERIAL_NM FROM bw_profitability_data\n' +
+              `   - 잘못된 예: SELECT \`MATERIAL_NM\` FROM \`${targetTable}\`\n` +
+              `   - 올바른 예: SELECT MATERIAL_NM FROM ${targetTable}\n` +
               '   - AS 뒤의 한글 alias 만 작은따옴표로 감쌉니다 (예: AS \'4월 영업이익\')\n' +
               '   - WHERE 조건값은 작은따옴표로 감쌉니다 (예: CALMONTH = \'202604\')\n' +
               '\n' +
@@ -17431,7 +17507,7 @@ app.post('/api/builder/query', async (req, res) => {
               '    SELECT MATERIAL_NM,\n' +
               '      SUM(CASE WHEN CALMONTH = \'202603\' THEN 산식 ELSE 0 END) AS cost_202603,   -- ❌ 내부 SUM 금지\n' +
               '      SUM(CASE WHEN CALMONTH = \'202604\' THEN 산식 ELSE 0 END) AS cost_202604    -- ❌ 내부 SUM 금지\n' +
-              '    FROM bw_profitability_data\n' +
+              `    FROM ${targetTable}\n` +
               '    WHERE CALMONTH BETWEEN \'202603\' AND \'202604\'\n' +
               '    GROUP BY MATERIAL_NM\n' +
               '  ) t\n' +
@@ -17448,7 +17524,7 @@ app.post('/api/builder/query', async (req, res) => {
               '    SELECT MATERIAL_NM,\n' +
               '      CASE WHEN CALMONTH = \'202603\' THEN (COALESCE(ZAMT006,0)+COALESCE(ZAMT007,0)+...) ELSE 0 END AS cost_202603,\n' +
               '      CASE WHEN CALMONTH = \'202604\' THEN (COALESCE(ZAMT006,0)+COALESCE(ZAMT007,0)+...) ELSE 0 END AS cost_202604\n' +
-              '    FROM bw_profitability_data\n' +
+              `    FROM ${targetTable}\n` +
               '    WHERE CALMONTH BETWEEN \'202603\' AND \'202604\'\n' +
               '  ) x\n' +
               '  GROUP BY x.MATERIAL_NM\n' +
@@ -18159,7 +18235,9 @@ app.post('/api/builder/query', async (req, res) => {
 //  1) 로그인 필수 (req.session.user)
 //  2) SELECT 문만 허용 (DDL/DML 키워드 차단)
 //  3) 다중 statement 차단 (세미콜론으로 분리되는 추가 문장 거부)
-//  4) 테이블 화이트리스트: bw_profitability_data 만 허용
+//  4) 테이블 화이트리스트: area 별 허용 테이블만 허용
+//     - area='profitability'    → bw_profitability_data
+//     - area='manufacturing-cost' → sys_aimd_cot015 (Phase 1-D + Phase 4)
 //  5) LIMIT 강제 주입/캡 (safeLimit = min(요청값, 5000))
 //  6) 차트 자동 판별 결과 포함 → 기존 결과 영역에 동일하게 렌더링 가능
 // ============================================================
@@ -18169,7 +18247,17 @@ app.post('/api/builder/execute-sql', async (req, res) => {
     return res.status(401).json({ error: '로그인이 필요합니다.' });
   }
 
-  const { sql: rawSql, limit: limitStr } = req.body || {};
+  const { sql: rawSql, limit: limitStr, area: rawAreaFromBody } = req.body || {};
+
+  // ─────────────────────────────────────────────────────────────────
+  // [2026-09-17] area 파라미터 지원 - 제조원가 VQB 정식 개발 (Phase 1-D + Phase 4)
+  //   area 별 허용/금지 테이블 결정
+  // ─────────────────────────────────────────────────────────────────
+  const _rawAreaStr = String(rawAreaFromBody || 'profitability').toLowerCase().trim();
+  const _areaCtx = resolveAreaContext(_rawAreaStr, null);
+  const targetTable = _areaCtx.table || 'bw_profitability_data';
+  const areaKey = _areaCtx.area || 'profitability';
+  const isMfgArea = (areaKey === 'manufacturing-cost');
 
   if (!rawSql || typeof rawSql !== 'string' || !rawSql.trim()) {
     return res.status(400).json({ error: 'SQL이 비어 있습니다.' });
@@ -18202,12 +18290,42 @@ app.post('/api/builder/execute-sql', async (req, res) => {
     return res.status(400).json({ error: `허용되지 않는 키워드가 포함되어 있습니다: ${forbiddenMatch[0].trim()}` });
   }
 
-  // 5) 테이블 화이트리스트: bw_profitability_data 만 허용
-  if (!/\bbw_profitability_data\b/i.test(sqlNoComment)) {
-    return res.status(400).json({ error: '허용된 테이블(bw_profitability_data)만 사용할 수 있습니다.' });
+  // 5) 테이블 화이트리스트: area 별 허용 테이블만 허용
+  //   [2026-09-17] Phase 1-D + Phase 4 - area 별 격리 검증
+  //     - profitability      → bw_profitability_data
+  //     - manufacturing-cost → sys_aimd_cot015 (다른 테이블/ZAMT 컬럼 언급 시 차단)
+  const targetTableRegex = new RegExp(`\\b${targetTable}\\b`, 'i');
+  if (!targetTableRegex.test(sqlNoComment)) {
+    return res.status(400).json({
+      error: `현재 영역(${areaKey})에서는 테이블 '${targetTable}'만 사용할 수 있습니다.`,
+      area: areaKey,
+      allowed_table: targetTable,
+    });
+  }
+  // ─── Phase 4: 제조원가 area 에서 금지 테이블/컬럼 언급 차단 ──────────
+  //   요구사항 #9 - 다른 area 의 테이블 / ZAMT 계열 컬럼이 섞이면 실행 거부
+  if (isMfgArea) {
+    // 금지 테이블: bw_profitability_data, sys_aimd_cot043
+    const forbiddenTableMatch = sqlNoComment.match(/\b(bw_profitability_data|sys_aimd_cot043)\b/i);
+    if (forbiddenTableMatch) {
+      return res.status(400).json({
+        error: `제조원가 영역에서는 '${forbiddenTableMatch[1]}' 테이블 사용이 금지되어 있습니다. 오직 '${targetTable}' 만 사용하세요.`,
+        area: areaKey,
+        forbidden_table: forbiddenTableMatch[1],
+      });
+    }
+    // 금지 컬럼: ZAMT 계열 (수익성분석 전용 금액 컬럼)
+    const forbiddenColMatch = sqlNoComment.match(/\bZAMT\d+\b/i);
+    if (forbiddenColMatch) {
+      return res.status(400).json({
+        error: `제조원가 영역에서는 수익성분석 전용 컬럼 '${forbiddenColMatch[0]}' 을(를) 사용할 수 없습니다. sys_aimd_cot015 컬럼(TOTAL / LBKUM / KST_V 등)을 사용하세요.`,
+        area: areaKey,
+        forbidden_column: forbiddenColMatch[0],
+      });
+    }
   }
   // information_schema / mysql 등 시스템 DB 접근 차단
-  if (/\b(information_schema|mysql|performance_schema|sys)\b/i.test(sqlNoComment)) {
+  if (/\b(information_schema|mysql|performance_schema|sys(?!_aimd_cot))\b/i.test(sqlNoComment)) {
     return res.status(400).json({ error: '시스템 스키마(information_schema/mysql 등) 접근은 허용되지 않습니다.' });
   }
 
