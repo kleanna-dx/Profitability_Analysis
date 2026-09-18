@@ -4753,24 +4753,32 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       // 형태: (전월 단가) + (당월 단가) + 단위 + (단가 증가액) = 총 6컬럼
       // 정렬 기준: 반드시 "단가 증가액" DESC (총액 증가액 아님!)
       // HAVING 은 유지 — 표시는 안 하지만 두 기간 모두 생산수량 > 0 인 제품만 필터
-      synonymContext += '\n[★★★ 제품별 원가 비교 분석 — 심플 6컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
+      // [2026-09-18] 제품별 집계 기준에 PLANT 추가 (사용자 요구):
+      //   비교 분석에서도 MATERIAL+PLANT 단위로 단가 산정 → 결과행이 (자재,공장) 조합별.
+      //   컬럼 순서: 자재코드 → 자재명 → 플랜트 → 플랜트명 → 전월단가 → 당월단가 → 단위 → 증가액 (8컬럼)
+      synonymContext += '\n[★★★ 제품별 원가 비교 분석 — MATERIAL+PLANT 8컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
       synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 **기간 비교** 분석 중입니다 (전월대비/전년대비/증가액 등 감지).\n`;
       synonymContext += `총액 증가액이 아니라 **단가(SUM(TOTAL)/SUM(LBKUM)) 증가액** 을 기준으로 비교해야 합니다.\n`;
       synonymContext += `가독성을 위해 원가 총액·생산수량 컬럼은 SELECT 에 절대 포함하지 마세요 (내부 계산에만 사용).\n`;
-      synonymContext += `\n[SELECT 절 구성 — 반드시 이 6컬럼 순서 유지, 그 외 컬럼 추가 금지]\n`;
-      synonymContext += `  1. MATERIAL AS '제품코드'\n`;
-      synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'\n`;
-      synonymContext += `  3. ROUND(\n`;
+      synonymContext += `\n[⚠️ 집계 단위 필수 규칙 — sys_aimd_cot015 제품별 조회]\n`;
+      synonymContext += `  - 동일 MATERIAL 이라도 PLANT 별로 원가가 별도 산정됩니다.\n`;
+      synonymContext += `  - 반드시 **MATERIAL + PLANT** 를 기준으로 GROUP BY 해야 하며, MATERIAL 만으로 합치면 안 됩니다.\n`;
+      synonymContext += `\n[SELECT 절 구성 — 반드시 이 8컬럼 순서 유지, 그 외 컬럼 추가 금지]\n`;
+      synonymContext += `  1. MATERIAL AS '자재코드'\n`;
+      synonymContext += `  2. MAX(MATERIAL_NM) AS '자재명'\n`;
+      synonymContext += `  3. PLANT AS '플랜트'\n`;
+      synonymContext += `  4. MAX(PLANT_NM) AS '플랜트명'\n`;
+      synonymContext += `  5. ROUND(\n`;
       synonymContext += `       SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `       / NULLIF(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN LBKUM ELSE 0 END), 0)\n`;
       synonymContext += `     , 0) AS '전월 원가 단가'\n`;
-      synonymContext += `  4. ROUND(\n`;
+      synonymContext += `  6. ROUND(\n`;
       synonymContext += `       SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `       / NULLIF(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END), 0)\n`;
       synonymContext += `     , 0) AS '당월 원가 단가'\n`;
-      synonymContext += `  5. MAX(BASE_UOM) AS '단위'\n`;
+      synonymContext += `  7. MAX(BASE_UOM) AS '단위'\n`;
       synonymContext += `  -- 단가 증가액 (핵심 지표) ← 양수는 상승, 음수는 하락\n`;
-      synonymContext += `  6. (\n`;
+      synonymContext += `  8. (\n`;
       synonymContext += `        ROUND(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `            / NULLIF(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END), 0), 0)\n`;
       synonymContext += `        - ROUND(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
@@ -4782,8 +4790,8 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       synonymContext += `  → 위 두 컬럼은 HAVING 절 안에서만 계산 필터로 사용하고, SELECT 에는 드러내지 마세요.\n`;
       synonymContext += `\n[WHERE / GROUP BY / HAVING / ORDER BY]\n`;
       synonymContext += `  - WHERE ZCGUBUN=${gubunList} AND CALMONTH IN ('<전월YYYYMM>', '<당월YYYYMM>')\n`;
-      synonymContext += `  - GROUP BY MATERIAL\n`;
-      synonymContext += `  - HAVING: 두 기간 모두 생산수량이 0 이 아닌 제품만 (양쪽 단가 계산 가능)\n`;
+      synonymContext += `  - GROUP BY MATERIAL, PLANT 필수. PLANT 를 빠뜨리면 자재+공장 조합이 잘못 합산됩니다.\n`;
+      synonymContext += `  - HAVING: 두 기간 모두 생산수량이 0 이 아닌 (자재,공장) 조합만 (양쪽 단가 계산 가능)\n`;
       synonymContext += `      SUM(CASE WHEN CALMONTH='<전월>' THEN LBKUM ELSE 0 END) <> 0\n`;
       synonymContext += `      AND SUM(CASE WHEN CALMONTH='<당월>' THEN LBKUM ELSE 0 END) <> 0\n`;
       synonymContext += `  - ORDER BY '원가 단가 증가액' DESC (증가액 큰 순). 총액 증가액 DESC 금지.\n`;
@@ -4815,18 +4823,29 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       //   계산식은 동일 (ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0)).
       //   프론트가 이 alias 를 감지해 결과표 헤더/셀에 연한 노란색 강조 적용.
       //   (주석에는 실제 alias 리터럴을 쓰지 않는다 - 테스트 오탐 방지)
-      synonymContext += '\n[★★★ 제품별 원가 조회 — 4컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
+      // [2026-09-18] 제품별 집계 기준에 PLANT 추가 (사용자 요구):
+      //   동일 MATERIAL 이라도 PLANT 별로 원가가 별도 산정되므로 GROUP BY 에 PLANT 필수.
+      //   SELECT 에 PLANT 코드/PLANT_NM 노출 → 결과행이 자재+공장 조합으로 분리됨.
+      //   (예: FRT-FIR0003A / P200 vs FRT-FIR0003A / P400)
+      synonymContext += '\n[★★★ 제품별 원가 조회 — MATERIAL+PLANT 8컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
       synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 조회 중입니다.\n`;
-      synonymContext += `사용자 질의에 "총액/합계" 명시가 없으므로 기본 출력은 **총액 단독이 아니라 단가 계산 근거 4컬럼 세트** 입니다.\n`;
+      synonymContext += `사용자 질의에 "총액/합계" 명시가 없으므로 기본 출력은 **총액 단독이 아니라 단가 계산 근거 컬럼 세트** 입니다.\n`;
+      synonymContext += `\n[⚠️ 집계 단위 필수 규칙 — sys_aimd_cot015 제품별 조회]\n`;
+      synonymContext += `  - 동일 MATERIAL(자재코드) 이라도 PLANT(플랜트) 별로 원가가 별도 산정됩니다.\n`;
+      synonymContext += `  - 따라서 제품별 집계는 반드시 **MATERIAL + PLANT** 를 기준으로 해야 하며,\n`;
+      synonymContext += `    MATERIAL 만으로 GROUP BY 하면 잘못된 합산이 발생합니다.\n`;
+      synonymContext += `  - 결과는 (자재코드, 플랜트) 조합별 행으로 분리 노출 (예: 같은 자재라도 P200 / P400 이 별도 행).\n`;
       synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지]\n`;
-      synonymContext += `  1. MATERIAL     AS '제품코드'         (또는 '자재코드')\n`;
-      synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'       (또는 '자재명')\n`;
-      synonymContext += `  3. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
-      synonymContext += `  4. SUM(TOTAL)   AS '원가 총액(원)'\n`;
-      synonymContext += `  5. SUM(LBKUM)   AS '생산수량'\n`;
-      synonymContext += `  6. MAX(BASE_UOM) AS '단위'\n`;
+      synonymContext += `  1. MATERIAL         AS '자재코드'\n`;
+      synonymContext += `  2. MAX(MATERIAL_NM) AS '자재명'\n`;
+      synonymContext += `  3. PLANT            AS '플랜트'\n`;
+      synonymContext += `  4. MAX(PLANT_NM)    AS '플랜트명'\n`;
+      synonymContext += `  5. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
+      synonymContext += `  6. SUM(TOTAL)       AS '원가 총액(원)'\n`;
+      synonymContext += `  7. SUM(LBKUM)       AS '생산수량'\n`;
+      synonymContext += `  8. MAX(BASE_UOM)    AS '단위'\n`;
       synonymContext += `\n[GROUP BY / HAVING / ORDER BY]\n`;
-      synonymContext += `  - GROUP BY MATERIAL 필수 (제품별 집계)\n`;
+      synonymContext += `  - GROUP BY MATERIAL, PLANT 필수 (자재+공장별 집계). PLANT 를 GROUP BY 에서 절대 빠뜨리지 마세요.\n`;
       synonymContext += `  - TOP N/상위/랭킹 요청이 있으면 HAVING SUM(LBKUM) <> 0 (생산수량 0 제외)\n`;
       synonymContext += `  - ${orderDirective}\n`;
       synonymContext += `\n[중요 규칙]\n`;
@@ -4840,8 +4859,8 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       synonymContext += `  - ZCGUBUN=${gubunList} 필터는 WHERE 절에 그대로 유지 (dimension value).\n`;
       synonymContext += `  - 기존 필터 (DIVISION / CALMONTH / MATERIAL) 는 그대로 유지.\n`;
       synonymContext += `  - Metric 산식(COST_ACTUAL_UNIT_PRICE) 이 프롬프트에 노출된 경우, 그 산식과\n`;
-      synonymContext += `    이 4컬럼 세트는 서로 보완 관계: metric 은 3번 컬럼(개당 단가(원)) 을 담당하고,\n`;
-      synonymContext += `    4~6번 (총액/수량/단위) 은 이 힌트가 명시.\n`;
+      synonymContext += `    이 컬럼 세트는 서로 보완 관계: metric 은 '개당 단가(원)' 컬럼을 담당하고,\n`;
+      synonymContext += `    총액/수량/단위 는 이 힌트가 명시.\n`;
       console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭 [${detectedGubun.join(',')}] + 총액명시없음 → 4컬럼 세트 프롬프트 힌트 주입`);
     }
   } else if (canInjectAnyCostHint && !HAS_ZCGUBUN_MATCH && hasGenericCostIntent) {
@@ -4871,21 +4890,29 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
     //   배경: 핵심 지표를 앞쪽에 배치. 총액/수량/단위 는 계산 근거로 뒤에.
     //   alias 는 정확히 단위 명시 형태로만 (subtypeLabel prefix 금지).
     //   (주석에는 실제 alias 리터럴을 쓰지 않는다 - 테스트가 SELECT 순서 검증 시 오탐 방지)
-    synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지 (8컬럼)]\n`;
+    // [2026-09-18] 제품별 집계 기준에 PLANT 추가 (사용자 요구):
+    //   GENERIC 조회에서도 MATERIAL+PLANT 단위로 분리. 컬럼: 자재코드/자재명/플랜트/플랜트명/원가대구분/원가구분/단가/총액/수량/단위 (10컬럼)
+    synonymContext += `\n[⚠️ 집계 단위 필수 규칙 — sys_aimd_cot015 제품별 조회]\n`;
+    synonymContext += `  - 동일 MATERIAL 이라도 PLANT 별로 원가가 별도 산정됩니다.\n`;
+    synonymContext += `  - 반드시 **MATERIAL + PLANT** 를 기준으로 GROUP BY 해야 하며, MATERIAL 만으로 합치면 안 됩니다.\n`;
+    synonymContext += `  - 결과행이 (자재, 공장, 원가유형) 조합으로 늘어나는 것은 정상.\n`;
+    synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지 (10컬럼)]\n`;
     synonymContext += `  1. MATERIAL          AS '자재코드'\n`;
     synonymContext += `  2. MAX(MATERIAL_NM)  AS '자재명'\n`;
-    synonymContext += `  3. ZCGUBUN_D         AS '원가 대구분'\n`;
-    synonymContext += `  4. ZCGUBUN           AS '원가구분'\n`;
-    synonymContext += `  5. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
-    synonymContext += `  6. SUM(TOTAL)        AS '원가 총액'\n`;
-    synonymContext += `  7. SUM(LBKUM)        AS '생산수량'\n`;
-    synonymContext += `  8. MAX(BASE_UOM)     AS '단위'\n`;
+    synonymContext += `  3. PLANT             AS '플랜트'\n`;
+    synonymContext += `  4. MAX(PLANT_NM)     AS '플랜트명'\n`;
+    synonymContext += `  5. ZCGUBUN_D         AS '원가 대구분'\n`;
+    synonymContext += `  6. ZCGUBUN           AS '원가구분'\n`;
+    synonymContext += `  7. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
+    synonymContext += `  8. SUM(TOTAL)        AS '원가 총액'\n`;
+    synonymContext += `  9. SUM(LBKUM)        AS '생산수량'\n`;
+    synonymContext += ` 10. MAX(BASE_UOM)     AS '단위'\n`;
     synonymContext += `\n[WHERE / GROUP BY / ORDER BY — 반드시 아래 규칙 준수]\n`;
     synonymContext += `  - WHERE 절에 ZCGUBUN 필터를 **절대 넣지 마세요** (예: WHERE ZCGUBUN='실제원가' 금지).\n`;
     synonymContext += `    → 사용자가 원가 유형을 명시하지 않았으므로 전체 조회.\n`;
-    synonymContext += `  - GROUP BY MATERIAL, ZCGUBUN_D, ZCGUBUN 필수 (원가유형별 집계).\n`;
+    synonymContext += `  - GROUP BY MATERIAL, PLANT, ZCGUBUN_D, ZCGUBUN 필수 (자재+공장+원가유형별 집계). PLANT 를 빠뜨리지 마세요.\n`;
     synonymContext += `  - ORDER BY 는 반드시 아래 순서 유지 (표준원가는 각 ZCGUBUN_D 그룹의 마지막):\n`;
-    synonymContext += `      ORDER BY ZCGUBUN_D, CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END\n`;
+    synonymContext += `      ORDER BY MATERIAL, PLANT, ZCGUBUN_D, CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END\n`;
     synonymContext += `  - 그 외 필터 (DIVISION / CALMONTH / MATERIAL) 는 정상적으로 유지.\n`;
     synonymContext += `\n[중요 규칙]\n`;
     synonymContext += `  - '개당 단가(원)'는 반드시 SUM(TOTAL) / NULLIF(SUM(LBKUM), 0) 형태 (0 나누기 방지).\n`;

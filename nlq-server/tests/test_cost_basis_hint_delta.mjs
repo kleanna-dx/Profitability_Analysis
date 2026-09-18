@@ -238,9 +238,14 @@ assert(
   serverSrc.includes('제품별 원가 비교 분석'),
   'D-3: Delta 분기 힌트 헤더 문구 존재'
 );
+// [2026-09-18] MATERIAL+PLANT 확장으로 컬럼이 6→8 로 증가 (PLANT + PLANT_NM)
 assert(
-  serverSrc.includes('심플 6컬럼 세트'),
-  'D-4: "심플 6컬럼 세트" 문구 존재 (옵션 A 축소 반영)'
+  serverSrc.includes('MATERIAL+PLANT 8컬럼 세트'),
+  'D-4: "MATERIAL+PLANT 8컬럼 세트" 문구 존재 (2026-09-18 PLANT 확장)'
+);
+assert(
+  serverSrc.includes("3. PLANT AS '플랜트'") && serverSrc.includes("4. MAX(PLANT_NM) AS '플랜트명'"),
+  'D-4b: Delta 분기 SELECT 에 PLANT(3번) + PLANT_NM(4번) 삽입됨'
 );
 assert(
   serverSrc.includes("'원가 단가 증가액'"),
@@ -276,7 +281,12 @@ assert(
 );
 assert(
   serverSrc.includes('Delta의도 → 심플 6컬럼 힌트 주입'),
-  'D-13: Delta의도 심플 힌트 로그 메시지 존재'
+  'D-13: Delta의도 심플 힌트 로그 메시지 존재 (로그 태그는 6컬럼 명명 유지 — 개편 이력)'
+);
+// [2026-09-18] GROUP BY MATERIAL, PLANT 강제
+assert(
+  /GROUP BY MATERIAL, PLANT[^,]*필수/.test(serverSrc) || serverSrc.includes('GROUP BY MATERIAL, PLANT 필수'),
+  'D-13b: Delta 분기에 GROUP BY MATERIAL, PLANT 필수 지시 존재'
 );
 
 // [2026-09-12 옵션 A] 6컬럼 축소 관련 assertion 추가
@@ -300,7 +310,8 @@ assert(
 //   (기존 10컬럼 힌트 잔재가 남지 않았는지 검증)
 {
   // Delta 분기 블록만 잘라내서 검사
-  const idxStart = serverSrc.indexOf('제품별 원가 비교 분석 — 심플 6컬럼');
+  // [2026-09-18] 헤더 문구 변경: "심플 6컬럼" → "MATERIAL+PLANT 8컬럼"
+  const idxStart = serverSrc.indexOf('제품별 원가 비교 분석 — MATERIAL+PLANT 8컬럼');
   const idxEnd = serverSrc.indexOf('} else {', idxStart);
   const deltaBlock = idxStart >= 0 && idxEnd > idxStart
     ? serverSrc.substring(idxStart, idxEnd)
@@ -332,9 +343,10 @@ assert(
 // ═══════════════════════════════════════════════════════════════════════
 section('[E] 회귀 안전성 (기존 힌트 유지)');
 
+// [2026-09-18] MATERIAL+PLANT 확장으로 SPECIFIC 힌트 헤더도 4→8 컬럼
 assert(
-  serverSrc.includes('제품별 원가 조회 — 4컬럼 세트 필수'),
-  'E-1: 기존 4컬럼 세트 힌트 헤더 유지'
+  serverSrc.includes('제품별 원가 조회 — MATERIAL+PLANT 8컬럼 세트 필수'),
+  'E-1: SPECIFIC 힌트 헤더 (MATERIAL+PLANT 8컬럼 세트 필수) 존재 (2026-09-18 PLANT 확장)'
 );
 assert(
   /SUM\(TOTAL\)\s+AS '원가 총액\(원\)'/.test(serverSrc),
