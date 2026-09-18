@@ -290,17 +290,20 @@ assert(serverSrc.includes('GENERIC_COST_INTENT_RE'), 'D-1: GENERIC_COST_INTENT_R
 assert(serverSrc.includes('hasGenericCostIntent'), 'D-2: hasGenericCostIntent 플래그 존재');
 assert(serverSrc.includes('제품별 원가 GENERIC 조회'), 'D-3: GENERIC 분기 힌트 헤더 문구 존재');
 assert(serverSrc.includes('ZCGUBUN 을 실제원가나 매출원가 중 하나로 **임의 확정하지 마세요**'), 'D-4: 임의 확정 금지 문구 존재');
+// [2026-09-18] MATERIAL+PLANT 확장으로 컬럼이 8→10 으로 증가 (PLANT + PLANT_NM 삽입)
+//   순서: (1)자재코드 (2)자재명 (3)플랜트 (4)플랜트명 (5)원가대구분 (6)원가구분 (7)개당단가 (8)총액 (9)수량 (10)단위
 assert(serverSrc.includes("MATERIAL          AS '자재코드'"), 'D-5: SELECT 1번 자재코드 존재');
-assert(serverSrc.includes("ZCGUBUN_D         AS '원가 대구분'"), 'D-6: SELECT 3번 원가 대구분 존재');
-assert(serverSrc.includes("ZCGUBUN           AS '원가구분'"), 'D-7: SELECT 4번 원가구분 존재');
-// [2026-09-17 revA] 컬럼 순서 재정렬 (사용자 요구사항):
-//   기존 (5)총액→(6)수량→(7)단위→(8)개당단가  ⇒  변경 (5)개당단가→(6)총액→(7)수량→(8)단위
-//   alias 도 '개당 단가' → '개당 단가(원)' 로 명확화 (단위 표기)
-assert(serverSrc.includes("ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'"), 'D-8: SELECT 5번 개당 단가(원) 존재 (revA: 순서 변경 및 alias 단위 명시)');
-assert(serverSrc.includes("SUM(TOTAL)        AS '원가 총액'"), 'D-9: SELECT 6번 원가 총액 존재');
-assert(serverSrc.includes("SUM(LBKUM)        AS '생산수량'"), 'D-10: SELECT 7번 생산수량 존재');
-assert(serverSrc.includes("MAX(BASE_UOM)     AS '단위'"), 'D-10b: SELECT 8번 단위 존재');
-assert(serverSrc.includes('GROUP BY MATERIAL, ZCGUBUN_D, ZCGUBUN'), 'D-11: GROUP BY 3중 지시 존재');
+assert(serverSrc.includes("PLANT             AS '플랜트'"), 'D-5b: SELECT 3번 PLANT 존재 (2026-09-18 PLANT 확장)');
+assert(serverSrc.includes("MAX(PLANT_NM)     AS '플랜트명'"), 'D-5c: SELECT 4번 PLANT_NM 존재 (2026-09-18 PLANT 확장)');
+assert(serverSrc.includes("ZCGUBUN_D         AS '원가 대구분'"), 'D-6: SELECT 5번 원가 대구분 존재 (PLANT 다음 위치)');
+assert(serverSrc.includes("ZCGUBUN           AS '원가구분'"), 'D-7: SELECT 6번 원가구분 존재 (PLANT 다음 위치)');
+// [2026-09-18] 컬럼 순서 PLANT/PLANT_NM 삽입으로 7~10번으로 밀림
+assert(serverSrc.includes("ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'"), 'D-8: SELECT 7번 개당 단가(원) 존재');
+assert(serverSrc.includes("SUM(TOTAL)        AS '원가 총액'"), 'D-9: SELECT 8번 원가 총액 존재');
+assert(serverSrc.includes("SUM(LBKUM)        AS '생산수량'"), 'D-10: SELECT 9번 생산수량 존재');
+assert(serverSrc.includes("MAX(BASE_UOM)     AS '단위'"), 'D-10b: SELECT 10번 단위 존재');
+assert(serverSrc.includes('GROUP BY MATERIAL, PLANT, ZCGUBUN_D, ZCGUBUN'), 'D-11: GROUP BY 4중 지시 존재 (MATERIAL+PLANT+ZCGUBUN_D+ZCGUBUN, 2026-09-18 PLANT 확장)');
+assert(serverSrc.includes('MATERIAL + PLANT'), 'D-11b: 집계 단위 필수 규칙 헤드라인 존재');
 assert(serverSrc.includes("CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END"), 'D-12: 표준원가 마지막 ORDER BY 존재');
 assert(serverSrc.includes("WHERE 절에 ZCGUBUN 필터를 **절대 넣지 마세요**"), 'D-13: ZCGUBUN WHERE 금지 지시 존재');
 assert(serverSrc.includes('8컬럼 GENERIC 힌트 주입'), 'D-14: GENERIC 로그 태그 존재');
@@ -408,8 +411,9 @@ section('[F] V2: WHERE ZCGUBUN 임의 확정 감지');
 // ═══════════════════════════════════════════════════════════════════════
 section('[G] 회귀 안전성');
 
-assert(serverSrc.includes('제품별 원가 조회 — 4컬럼 세트 필수'), 'G-1: 기존 SPECIFIC 힌트 유지');
-assert(serverSrc.includes('심플 6컬럼 세트'), 'G-2: 기존 DELTA 심플 힌트 유지');
+// [2026-09-18] SPECIFIC/DELTA 헤더가 MATERIAL+PLANT 확장으로 변경됨 (4컬럼/심플6컬럼 → 8컬럼)
+assert(serverSrc.includes('제품별 원가 조회 — MATERIAL+PLANT 8컬럼 세트 필수'), 'G-1: SPECIFIC 힌트 헤더 (MATERIAL+PLANT 8컬럼) 유지');
+assert(serverSrc.includes('제품별 원가 비교 분석 — MATERIAL+PLANT 8컬럼 세트 필수'), 'G-2: DELTA 힌트 헤더 (MATERIAL+PLANT 8컬럼) 유지');
 assert(serverSrc.includes('총액명시없음 → 4컬럼 세트 프롬프트 힌트 주입'), 'G-3: SPECIFIC 로그 태그 유지');
 assert(serverSrc.includes('Delta의도 → 심플 6컬럼 힌트 주입'), 'G-4: DELTA 로그 태그 유지');
 // [CostBasisHint] 태그가 최소 4회 (SPECIFIC 주입 / DELTA 주입 / GENERIC 주입 / 스킵) 
