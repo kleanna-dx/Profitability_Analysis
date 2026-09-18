@@ -12708,75 +12708,9 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         console.warn(`[NLQ:CostCompPostValidate] 오염 정정 완료. SQL alias·explanation 재작성됨.`);
       }
 
-      // ─────────────────────────────────────────────────────────────
-      // [2026-09-18] sys_aimd_cot015 제품별 조회 PLANT 강제 (hard-rewrite)
-      //   업무 규칙: 동일 MATERIAL 이라도 PLANT 별로 원가 산정.
-      //   → GROUP BY 에 MATERIAL 만 있고 PLANT 가 없으면 서버가 결정적으로
-      //     GROUP BY MATERIAL, PLANT 로 재작성하고 SELECT 에 PLANT/PLANT_NM 삽입.
-      //   프롬프트 힌트만으로는 "원가요소" 등 일부 어휘 케이스에서 힌트 트리거가
-      //   안 걸려 PLANT 규칙이 미적용되는 문제 → 힌트 트리거와 무관하게 강제.
-      // ─────────────────────────────────────────────────────────────
-      try {
-        const _plantEnforce = enforcePlantGroupingForCot015(sql);
-        if (_plantEnforce.applied) {
-          console.log(
-            `[PlantGrouping] sys_aimd_cot015 제품별 조회에 PLANT 강제 주입 완료. ` +
-            `변경: ${_plantEnforce.changes.join(' | ')}`
-          );
-          sql = _plantEnforce.sql;
-        } else {
-          // no-op 사유 로그 (한 줄, 디버깅용)
-          console.log(`[PlantGrouping] no-op: ${_plantEnforce.changes.join(' | ')}`);
-        }
-      } catch (e) {
-        console.error('[PlantGrouping] 보정 중 예외 (원본 SQL 유지):', e.message);
-      }
-
-      // ─────────────────────────────────────────────────────────────
-      // [2026-09-18] sys_aimd_cot015 "원가요소" 조회 시 KST 20개 컬럼 강제 주입
-      //   사용자 요구: "원가요소 조회해줘" 질의는 원가 세부 항목(재료비/인건비/에너지비 등)
-      //   20개(KST001~KST039)를 항상 함께 보여줘야 함. LLM 이 임의로 일부만 뽑는 것 방지.
-      //   - 트리거: 질의에 "원가요소" 어휘 O + 특정 카테고리(인건비/재료비 등) 지목 X
-      //   - 재작성: SELECT 뒤에 20개 KST 컬럼 append (기존 컬럼 순서 보존)
-      // ─────────────────────────────────────────────────────────────
-      try {
-        const _kstEnforce = enforceCostElementColumnsForCot015(sql, query);
-        if (_kstEnforce.applied) {
-          console.log(
-            `[CostElementCols] sys_aimd_cot015 "원가요소" 조회에 KST 20개 컬럼 강제 주입 완료. ` +
-            `변경: ${_kstEnforce.changes.join(' | ')}`
-          );
-          sql = _kstEnforce.sql;
-        } else {
-          console.log(`[CostElementCols] no-op: ${_kstEnforce.changes.join(' | ')}`);
-        }
-      } catch (e) {
-        console.error('[CostElementCols] 보정 중 예외 (원본 SQL 유지):', e.message);
-      }
-
-      // ─────────────────────────────────────────────────────────────
-      // [2026-09-13] sys_aimd_cot015 원가 SQL 무결성 검증 (soft-warning)
-      //   V1: alias '원가/실제원가/원가 단가' 인데 expression 이 SUM(TOTAL) 단독
-      //   V2: "원가" 단독 질의인데 WHERE ZCGUBUN 임의 확정
-      //   현재 정책: soft-warning (로그만 남기고 실행 허용).
-      //     LLM 프롬프트 힌트 강화 (3분기 CostBasisHint) 로 충분히 방어되지만,
-      //     LLM 이 힌트를 무시한 경우 운영에서 즉시 감지 가능하도록 로그 태그
-      //     [CostBasisIntegrity] 로 남긴다.
-      //   추후: 재발 시 hard-fail (SQL 실행 거부 + 재생성) 로 승격 가능.
-      // ─────────────────────────────────────────────────────────────
-      try {
-        const _costIntegrity = validateCostBasisSqlIntegrity({
-          sql, query, tableWhitelist,
-        });
-        if (!_costIntegrity.valid) {
-          console.warn(
-            `[CostBasisIntegrity] 위반 감지 (soft-warning, SQL 은 실행 허용): ` +
-            _costIntegrity.violations.join(' | ')
-          );
-        }
-      } catch (e) {
-        console.error('[CostBasisIntegrity] 검증 중 예외 (무시):', e.message);
-      }
+      // [2026-09-18 FIX] PLANT / KST / CostBasisIntegrity 훅은 forcedCostComp 조건과
+      //   무관하게 항상 실행되어야 하므로 이 블록에서 제거하고 아래 블록 밖으로 이동.
+      //   ↓ 훅 3종은 `if (areaCtx.forcedCostComp)` 블록 바깥의 새 위치로 옮김.
 
       // ─────────────────────────────────────────────────────────────
       // [2026-09-02 PR #408] Phase 1 — 컬럼 화이트리스트 검증 가드
@@ -12865,6 +12799,68 @@ ${_colHintList}
           console.warn(`[SchemaGuard] systemPrompt 비어있음 → 재생성 스킵`);
         }
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // [2026-09-18 FIX] sys_aimd_cot015 사후 재작성 훅 3종
+    //   forcedCostComp 조건 블록 밖에서 항상 실행되어야 함.
+    //   버그 히스토리:
+    //     PR #491 최초 도입 시 실수로 forcedCostComp 블록 안에 삽입 →
+    //     사용자 케이스 (forcedCostBasis 만 있고 forcedCostComp 없음) 에서
+    //     훅이 아예 발동 안 됨 → KST 20개 강제도 안 되어 15개만 출력.
+    //   이번 수정: 블록 밖으로 이동. sql 이 sys_aimd_cot015 대상이면 조건 없이 실행.
+    //
+    // 실행 순서:
+    //   1) PLANT 강제 (GROUP BY MATERIAL → MATERIAL, PLANT)
+    //   2) KST 20개 강제 (원가요소 조회 시 KST001~039 세트 append)
+    //   3) CostBasis 무결성 soft-warning (alias 오염 감지)
+    // ─────────────────────────────────────────────────────────────
+
+    // [1] PLANT 강제
+    try {
+      const _plantEnforce = enforcePlantGroupingForCot015(sql);
+      if (_plantEnforce.applied) {
+        console.log(
+          `[PlantGrouping] sys_aimd_cot015 제품별 조회에 PLANT 강제 주입 완료. ` +
+          `변경: ${_plantEnforce.changes.join(' | ')}`
+        );
+        sql = _plantEnforce.sql;
+      } else {
+        console.log(`[PlantGrouping] no-op: ${_plantEnforce.changes.join(' | ')}`);
+      }
+    } catch (e) {
+      console.error('[PlantGrouping] 보정 중 예외 (원본 SQL 유지):', e.message);
+    }
+
+    // [2] KST 20개 강제
+    try {
+      const _kstEnforce = enforceCostElementColumnsForCot015(sql, query);
+      if (_kstEnforce.applied) {
+        console.log(
+          `[CostElementCols] sys_aimd_cot015 "원가요소" 조회에 KST 20개 컬럼 강제 주입 완료. ` +
+          `변경: ${_kstEnforce.changes.join(' | ')}`
+        );
+        sql = _kstEnforce.sql;
+      } else {
+        console.log(`[CostElementCols] no-op: ${_kstEnforce.changes.join(' | ')}`);
+      }
+    } catch (e) {
+      console.error('[CostElementCols] 보정 중 예외 (원본 SQL 유지):', e.message);
+    }
+
+    // [3] CostBasis 무결성 soft-warning
+    try {
+      const _costIntegrity = validateCostBasisSqlIntegrity({
+        sql, query, tableWhitelist,
+      });
+      if (!_costIntegrity.valid) {
+        console.warn(
+          `[CostBasisIntegrity] 위반 감지 (soft-warning, SQL 은 실행 허용): ` +
+          _costIntegrity.violations.join(' | ')
+        );
+      }
+    } catch (e) {
+      console.error('[CostBasisIntegrity] 검증 중 예외 (무시):', e.message);
     }
 
     // [2026-08-21] SQL Validator 개선 — CTE(WITH ... SELECT) 허용
