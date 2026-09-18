@@ -4424,7 +4424,10 @@ async function matchSynonymsDirectly(query, domainCode, tableWhitelist) {
  * @param {string} query - 사용자 질문
  * @returns {Promise<{prompt: string, ragContext: Object}>}
  */
-async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
+async function buildRAGSystemPrompt(query, domainCode, tableWhitelist, opts = {}) {
+  // [2026-09-18] opts.areaCtx: 명확화(clarification) UI 로 확정된 forcedCostBasis 등을
+  //   CostBasisHint 트리거에 반영하기 위해 추가. 기존 호출자 (areaCtx 미전달) 는 no-op.
+  const _areaCtxFromOpts = opts && opts.areaCtx ? opts.areaCtx : null;
   let ragContext = null;
   let contextText = '';
 
@@ -4679,9 +4682,21 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   const HAS_COT015_SCOPE = Array.isArray(tableWhitelist)
     && tableWhitelist.includes('sys_aimd_cot015');
   // ZCGUBUN 값 매칭 감지 (사용자 질의에 "실제원가"/"매출원가"/"표준원가" 등 등장)
-  const HAS_ZCGUBUN_MATCH = (columnMatches || []).some(m =>
+  const HAS_ZCGUBUN_MATCH_FROM_QUERY = (columnMatches || []).some(m =>
     String(m.column_name || '').toUpperCase() === 'ZCGUBUN'
   );
+  // [2026-09-18] 명확화(clarification) UI 로 확정된 ZCGUBUN 값도 SPECIFIC 트리거로 취급.
+  //   사용자 신고 케이스: 원 질의 "제품별 원가요소 조회해줘" → 명확화 UI 에서
+  //     [표준원가]/[매출원가의 표준원가] 클릭 → forcedCostBasis 로 확정.
+  //   이 경우 원 질의 텍스트엔 ZCGUBUN 어휘 없음 → 기존 로직은 GENERIC 분기로 판정
+  //   → 하지만 사용자 의도는 "매출원가의 표준원가" (SPECIFIC 확정) → SPECIFIC 힌트 세트 필요.
+  //   → forcedCostBasis 존재 시에도 HAS_ZCGUBUN_MATCH=true 로 취급하여 SPECIFIC 분기 유도.
+  const HAS_FORCED_COST_BASIS = !!(
+    _areaCtxFromOpts && _areaCtxFromOpts.forcedCostBasis
+    && typeof _areaCtxFromOpts.forcedCostBasis.value === 'string'
+    && _areaCtxFromOpts.forcedCostBasis.value.length > 0
+  );
+  const HAS_ZCGUBUN_MATCH = HAS_ZCGUBUN_MATCH_FROM_QUERY || HAS_FORCED_COST_BASIS;
   // 사용자가 명시적으로 "총액" 요청 → 힌트 미주입 (SUM(TOTAL) 중심 조회 허용)
   //   경계 검사: "총액/합계/총금액/총원가/총합" 어절 (다른 단어 안의 부분매칭 방지)
   const EXPLICIT_TOTAL_INTENT_RE = /(총액|총금액|총원가|총합|합계|총\s*발생액|총\s*금액)/;
@@ -4743,10 +4758,19 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
 
   if (canInjectAnyCostHint && HAS_ZCGUBUN_MATCH) {
     // 감지된 ZCGUBUN 값 (예: '실제원가')
+    //   1) 사용자 원 질의에서 매칭된 ZCGUBUN 어휘 (SPECIFIC 정상 경로)
+    //   2) 없으면 명확화 UI 로 확정된 forcedCostBasis.value (2026-09-18 추가)
     const detectedGubun = (columnMatches || [])
       .filter(m => String(m.column_name || '').toUpperCase() === 'ZCGUBUN')
       .map(m => m.matchedKeyword || m.synonym)
       .filter(Boolean);
+    if (detectedGubun.length === 0 && HAS_FORCED_COST_BASIS) {
+      // 명확화 UI 로 확정된 값 사용 (예: '표준원가' + zcgubunD '소비-소비')
+      const fv = _areaCtxFromOpts.forcedCostBasis.value;
+      const fzd = _areaCtxFromOpts.forcedCostBasis.zcgubunD || '';
+      detectedGubun.push(fv);
+      console.log(`[CostBasisHint] 명확화 확정값으로 SPECIFIC 분기 진입: forcedCostBasis.value='${fv}'${fzd ? `, zcgubunD='${fzd}'` : ''}`);
+    }
     const gubunList = detectedGubun.length > 0
       ? detectedGubun.map(v => `'${v}'`).join(', ')
       : "'실제원가' 등";
@@ -12021,7 +12045,11 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           console.log(`[RAG:SeedAugment] manufacturing-cost subArea=${areaCtx.subArea} → 검색 시드에만 라벨 "${areaCtx.subAreaLabel}" 접미 (원 질의·SQL 무변경)`);
         }
       }
-      const buildResult = await buildRAGSystemPrompt(_ragSeedQuery, activeDomain, areaCtx.tableWhitelist);
+      // [2026-09-18] areaCtx 전달 → CostBasisHint 트리거가 명확화 확정값 (forcedCostBasis) 을
+      //   SPECIFIC 분기 판정에 반영할 수 있게 함.
+      //   Before: 명확화 경로에서 원 질의에 ZCGUBUN 어휘 없으면 GENERIC 분기로 판정
+      //   After : forcedCostBasis 있으면 SPECIFIC 분기로 판정 → 개당단가/총액/수량 세트 주입
+      const buildResult = await buildRAGSystemPrompt(_ragSeedQuery, activeDomain, areaCtx.tableWhitelist, { areaCtx });
       // [2026-08-21] BUG B 수정: 상위 스코프의 systemPrompt 에 재할당 (재선언 X)
       //   → else 블록 밖의 SQL 재생성 로직에서도 참조 가능
       systemPrompt = buildResult.prompt;
