@@ -10552,20 +10552,48 @@ function enforceCostElementColumnsForCot015(inputSql, query) {
     for (const km of kstMatches) existingKstSet.add(km.toUpperCase());
   }
 
-  // 6) 20개 중 아직 없는 것만 추가
-  const toAdd = COT015_COST_ELEMENT_KST_COLUMNS.filter(x => !existingKstSet.has(x.col));
-  if (toAdd.length === 0) {
-    return { sql: originalSql, applied: false, changes: ['skip: 이미 20개 KST 컬럼 모두 SELECT 에 포함'] };
+  // [2026-09-18 revB] append 방식 → 치환 방식으로 변경 (사용자 요구: 순서 고정).
+  //   기존 append 방식: LLM 이 뽑은 KST 는 원 위치 유지, 없는 것만 뒤에 append
+  //     → 결과 순서가 KST002, 004, ..., 035, [KST001, 027, 029, 033, 037, 039]
+  //       로 뒤죽박죽 (LLM 이 뽑은 순서에 종속).
+  //   신규 치환 방식: SELECT 에서 KST 를 참조하는 모든 항목을 제거하고,
+  //     20개 KST 를 사용자 지정 순서 (KST001, 002, 004, ..., 039) 로 재삽입.
+  //     → non-KST 컬럼 (자재코드/자재명/플랜트/개당단가/총액 등) 은 원 순서 유지.
+  //     → KST 컬럼 순서 = COT015_COST_ELEMENT_KST_COLUMNS 배열 순서 = 사용자 지정.
+  //     → alias 도 표준 라벨로 통일 (LLM 이 'KST001_by_llm' 같은 임시 alias 로 뽑아도 강제 교체).
+
+  // 6) SELECT 항목을 [non-KST 유지] vs [KST 제거] 로 분류
+  const nonKstItems = [];
+  for (const it of items) {
+    const exprOnly = _stripAlias(it);
+    const hasKstRef = /\bKST\d{3}\b/i.test(exprOnly);
+    if (!hasKstRef) {
+      nonKstItems.push(it.trim());
+    }
+    // KST 참조 항목은 제거 (existingKstSet 에 이미 기록됨)
   }
 
-  // 7) SELECT 뒤쪽에 append (원 항목 순서는 유지, KST 20개는 끝에 순서대로)
-  const kstItemsSql = toAdd.map(x => `SUM(${x.col}) AS '${x.label}'`);
-  const newItems = [...items.map(s => s.trim()), ...kstItemsSql];
+  // 7) 20개 KST 를 사용자 지정 순서로 생성 (alias 도 표준 라벨 강제)
+  const orderedKstItems = COT015_COST_ELEMENT_KST_COLUMNS.map(
+    x => `SUM(${x.col}) AS '${x.label}'`
+  );
+
+  // 8) 최종 SELECT 조립 = [non-KST 원 순서] + [KST 20개 고정 순서]
+  const newItems = [...nonKstItems, ...orderedKstItems];
   const newSelectBody = newItems.join(', ');
   const newSelectFull = selectFull.replace(selectBody, newSelectBody);
   const newSql = originalSql.replace(selectFull, newSelectFull);
 
-  changes.push(`SELECT: KST 원가요소 ${toAdd.length}개 컬럼 append (${toAdd.map(x => x.col).join(', ')})`);
+  // 9) 원본과 완전히 동일하면 no-op (이미 정확한 순서/라벨)
+  if (newSql === originalSql) {
+    return { sql: originalSql, applied: false, changes: ['skip: 이미 20개 KST 컬럼이 정확한 순서/라벨로 존재'] };
+  }
+
+  const preExistingCount = existingKstSet.size;
+  const newlyAddedCount = 20 - preExistingCount;
+  changes.push(
+    `SELECT: KST 원가요소 20개 컬럼 재정렬 (기존 ${preExistingCount}개 재배치 + 신규 ${newlyAddedCount}개 삽입, 고정 순서: KST001→KST039)`
+  );
   return { sql: newSql, applied: true, changes };
 }
 // ═════════════════════════════════════════════════════════════════════════
