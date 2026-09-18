@@ -75,37 +75,44 @@ assert(
   "계산식 ROUND(SUM(TOTAL)/NULLIF(SUM(LBKUM),0),0) AS '개당 단가(원)' 은 그대로 유지 (요구사항 #2)"
 );
 
-// [revA] 컬럼 순서 재정렬 검증 (요구사항 #6):
-//   SPECIFIC 4컬럼 힌트 안 순서: 코드 → 명 → **개당 단가(원)** → 원가 총액 → 생산수량 → 단위
+// [2026-09-18] SPECIFIC 힌트 순서 검증 (MATERIAL+PLANT 확장):
+//   자재코드 → 자재명 → **플랜트** → **플랜트명** → 개당 단가(원) → 원가 총액 → 생산수량 → 단위 (8컬럼)
 {
   const specificHintMatch = serverMjs.match(
-    /★ 제품별 원가 조회 — 4컬럼 세트 필수[\s\S]*?\[중요 규칙\]/
+    /★ 제품별 원가 조회 — MATERIAL\+PLANT 8컬럼 세트 필수[\s\S]*?\[중요 규칙\]/
   );
-  assert(specificHintMatch, '4컬럼 세트 힌트 블록 파싱 가능');
+  assert(specificHintMatch, 'SPECIFIC 8컬럼 세트 힌트 블록 파싱 가능 (MATERIAL+PLANT 확장)');
   if (specificHintMatch) {
     const block = specificHintMatch[0];
+    const idxCode = block.search(/'자재코드'/);
+    const idxName = block.search(/'자재명'/);
+    const idxPlant = block.search(/'플랜트'/);
+    const idxPlantNm = block.search(/'플랜트명'/);
     const idxUnitPrice = block.search(/'개당 단가\(원\)'/);
     const idxTotal = block.search(/'원가 총액/);
     const idxQty = block.search(/'생산수량'/);
     const idxUom = block.search(/'단위'/);
     assert(
-      idxUnitPrice > 0 && idxTotal > idxUnitPrice && idxQty > idxTotal && idxUom > idxQty,
-      `SPECIFIC 4컬럼 힌트 순서 (revA): 개당 단가(원)(${idxUnitPrice}) → 원가 총액(${idxTotal}) → 생산수량(${idxQty}) → 단위(${idxUom})`
+      idxCode > 0 && idxName > idxCode && idxPlant > idxName && idxPlantNm > idxPlant &&
+      idxUnitPrice > idxPlantNm && idxTotal > idxUnitPrice && idxQty > idxTotal && idxUom > idxQty,
+      `SPECIFIC 8컬럼 힌트 순서 (2026-09-18): 자재코드(${idxCode}) → 자재명(${idxName}) → 플랜트(${idxPlant}) → 플랜트명(${idxPlantNm}) → 개당 단가(원)(${idxUnitPrice}) → 원가 총액(${idxTotal}) → 생산수량(${idxQty}) → 단위(${idxUom})`
     );
   }
 }
 
-// [revA] GENERIC 8컬럼 힌트 안 순서도 검증:
-//   자재코드 → 자재명 → 원가 대구분 → 원가구분 → **개당 단가(원)** → 원가 총액 → 생산수량 → 단위
+// [2026-09-18] GENERIC 10컬럼 힌트 안 순서 검증 (MATERIAL+PLANT 확장):
+//   자재코드 → 자재명 → **플랜트** → **플랜트명** → 원가 대구분 → 원가구분 → 개당 단가(원) → 원가 총액 → 생산수량 → 단위
 {
   const genericHintMatch = serverMjs.match(
     /★ 제품별 원가 GENERIC 조회[\s\S]*?\[WHERE \/ GROUP BY \/ ORDER BY/
   );
-  assert(genericHintMatch, 'GENERIC 8컬럼 세트 힌트 블록 파싱 가능');
+  assert(genericHintMatch, 'GENERIC 10컬럼 세트 힌트 블록 파싱 가능 (MATERIAL+PLANT 확장)');
   if (genericHintMatch) {
     const block = genericHintMatch[0];
     const idxCode = block.search(/'자재코드'/);
     const idxName = block.search(/'자재명'/);
+    const idxPlant = block.search(/'플랜트'/);
+    const idxPlantNm = block.search(/'플랜트명'/);
     const idxDvc = block.search(/'원가 대구분'/);
     const idxCat = block.search(/'원가구분'/);
     const idxUnitPrice = block.search(/'개당 단가\(원\)'/);
@@ -113,10 +120,11 @@ assert(
     const idxQty = block.search(/'생산수량'/);
     const idxUom = block.search(/'단위'/);
     assert(
-      idxCode < idxName && idxName < idxDvc && idxDvc < idxCat &&
+      idxCode < idxName && idxName < idxPlant && idxPlant < idxPlantNm &&
+      idxPlantNm < idxDvc && idxDvc < idxCat &&
       idxCat < idxUnitPrice && idxUnitPrice < idxTotal &&
       idxTotal < idxQty && idxQty < idxUom,
-      `GENERIC 8컬럼 힌트 순서 (revA): 자재코드→자재명→원가대구분→원가구분→개당단가(원)(${idxUnitPrice})→원가총액(${idxTotal})→생산수량(${idxQty})→단위(${idxUom})`
+      `GENERIC 10컬럼 힌트 순서 (2026-09-18): 자재코드→자재명→플랜트(${idxPlant})→플랜트명(${idxPlantNm})→원가대구분→원가구분→개당단가(원)(${idxUnitPrice})→원가총액(${idxTotal})→생산수량(${idxQty})→단위(${idxUom})`
     );
   }
 }

@@ -4721,7 +4721,15 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
   //   업무규칙: "제조원가" = "실제원가" 고정 매핑.
   //   → detectManufacturingCostAlias / detectExplicitZcgubunInQuery 가 SPECIFIC 처리.
   //   → 결과적으로 detectSpecificZcgubunFromQueryText (∨) 로 ZCGUBUN 매칭됨.
-  const GENERIC_COST_INTENT_RE = /(?:^|[^가-힣])(원가|자재원가|제품원가)(?![가-힣])/;
+  //
+  // [2026-09-18] "원가요소" 어휘 추가 (사용자 신고).
+  //   사용자 케이스: "2026년 7월 FRT-FIR0003A 자재 제품별 원가요소 조회해줘"
+  //   기존 정규식은 뒤에 [가-힣] 붙으면 매칭 실패 → "원가요소" (요=한글) 미매칭.
+  //   "원가요소" 는 ZCGUBUN 값(실제/표준/매출)이 아니라 COSTELMNT 컬럼 동의어이므로
+  //   ZCGUBUN 은 미확정 상태. GENERIC 분기로 진입해야 원가유형 전체 조회 + PLANT 강제.
+  //   → 명시적 어휘 세트로 별도 매칭: (?:^|[^가-힣])(원가요소|원가 요소)(?![_가-힣])
+  //   ※ '원가요소코드' / '원가요소명' 은 뒤에 [가-힣] 이 붙어서 미매칭 (COSTELMNT 컬럼 언급).
+  const GENERIC_COST_INTENT_RE = /(?:^|[^가-힣])(원가|자재원가|제품원가|원가요소|원가\s요소)(?![_가-힣])/;
   const hasGenericCostIntent = GENERIC_COST_INTENT_RE.test(String(query || ''));
 
   // ────────────────────────────────────────────────────────────────
@@ -4753,24 +4761,32 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       // 형태: (전월 단가) + (당월 단가) + 단위 + (단가 증가액) = 총 6컬럼
       // 정렬 기준: 반드시 "단가 증가액" DESC (총액 증가액 아님!)
       // HAVING 은 유지 — 표시는 안 하지만 두 기간 모두 생산수량 > 0 인 제품만 필터
-      synonymContext += '\n[★★★ 제품별 원가 비교 분석 — 심플 6컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
+      // [2026-09-18] 제품별 집계 기준에 PLANT 추가 (사용자 요구):
+      //   비교 분석에서도 MATERIAL+PLANT 단위로 단가 산정 → 결과행이 (자재,공장) 조합별.
+      //   컬럼 순서: 자재코드 → 자재명 → 플랜트 → 플랜트명 → 전월단가 → 당월단가 → 단위 → 증가액 (8컬럼)
+      synonymContext += '\n[★★★ 제품별 원가 비교 분석 — MATERIAL+PLANT 8컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
       synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 **기간 비교** 분석 중입니다 (전월대비/전년대비/증가액 등 감지).\n`;
       synonymContext += `총액 증가액이 아니라 **단가(SUM(TOTAL)/SUM(LBKUM)) 증가액** 을 기준으로 비교해야 합니다.\n`;
       synonymContext += `가독성을 위해 원가 총액·생산수량 컬럼은 SELECT 에 절대 포함하지 마세요 (내부 계산에만 사용).\n`;
-      synonymContext += `\n[SELECT 절 구성 — 반드시 이 6컬럼 순서 유지, 그 외 컬럼 추가 금지]\n`;
-      synonymContext += `  1. MATERIAL AS '제품코드'\n`;
-      synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'\n`;
-      synonymContext += `  3. ROUND(\n`;
+      synonymContext += `\n[⚠️ 집계 단위 필수 규칙 — sys_aimd_cot015 제품별 조회]\n`;
+      synonymContext += `  - 동일 MATERIAL 이라도 PLANT 별로 원가가 별도 산정됩니다.\n`;
+      synonymContext += `  - 반드시 **MATERIAL + PLANT** 를 기준으로 GROUP BY 해야 하며, MATERIAL 만으로 합치면 안 됩니다.\n`;
+      synonymContext += `\n[SELECT 절 구성 — 반드시 이 8컬럼 순서 유지, 그 외 컬럼 추가 금지]\n`;
+      synonymContext += `  1. MATERIAL AS '자재코드'\n`;
+      synonymContext += `  2. MAX(MATERIAL_NM) AS '자재명'\n`;
+      synonymContext += `  3. PLANT AS '플랜트'\n`;
+      synonymContext += `  4. MAX(PLANT_NM) AS '플랜트명'\n`;
+      synonymContext += `  5. ROUND(\n`;
       synonymContext += `       SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `       / NULLIF(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN LBKUM ELSE 0 END), 0)\n`;
       synonymContext += `     , 0) AS '전월 원가 단가'\n`;
-      synonymContext += `  4. ROUND(\n`;
+      synonymContext += `  6. ROUND(\n`;
       synonymContext += `       SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `       / NULLIF(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END), 0)\n`;
       synonymContext += `     , 0) AS '당월 원가 단가'\n`;
-      synonymContext += `  5. MAX(BASE_UOM) AS '단위'\n`;
+      synonymContext += `  7. MAX(BASE_UOM) AS '단위'\n`;
       synonymContext += `  -- 단가 증가액 (핵심 지표) ← 양수는 상승, 음수는 하락\n`;
-      synonymContext += `  6. (\n`;
+      synonymContext += `  8. (\n`;
       synonymContext += `        ROUND(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
       synonymContext += `            / NULLIF(SUM(CASE WHEN CALMONTH='<당월YYYYMM>' THEN LBKUM ELSE 0 END), 0), 0)\n`;
       synonymContext += `        - ROUND(SUM(CASE WHEN CALMONTH='<전월YYYYMM>' THEN TOTAL ELSE 0 END)\n`;
@@ -4782,8 +4798,8 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       synonymContext += `  → 위 두 컬럼은 HAVING 절 안에서만 계산 필터로 사용하고, SELECT 에는 드러내지 마세요.\n`;
       synonymContext += `\n[WHERE / GROUP BY / HAVING / ORDER BY]\n`;
       synonymContext += `  - WHERE ZCGUBUN=${gubunList} AND CALMONTH IN ('<전월YYYYMM>', '<당월YYYYMM>')\n`;
-      synonymContext += `  - GROUP BY MATERIAL\n`;
-      synonymContext += `  - HAVING: 두 기간 모두 생산수량이 0 이 아닌 제품만 (양쪽 단가 계산 가능)\n`;
+      synonymContext += `  - GROUP BY MATERIAL, PLANT 필수. PLANT 를 빠뜨리면 자재+공장 조합이 잘못 합산됩니다.\n`;
+      synonymContext += `  - HAVING: 두 기간 모두 생산수량이 0 이 아닌 (자재,공장) 조합만 (양쪽 단가 계산 가능)\n`;
       synonymContext += `      SUM(CASE WHEN CALMONTH='<전월>' THEN LBKUM ELSE 0 END) <> 0\n`;
       synonymContext += `      AND SUM(CASE WHEN CALMONTH='<당월>' THEN LBKUM ELSE 0 END) <> 0\n`;
       synonymContext += `  - ORDER BY '원가 단가 증가액' DESC (증가액 큰 순). 총액 증가액 DESC 금지.\n`;
@@ -4815,18 +4831,29 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       //   계산식은 동일 (ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0)).
       //   프론트가 이 alias 를 감지해 결과표 헤더/셀에 연한 노란색 강조 적용.
       //   (주석에는 실제 alias 리터럴을 쓰지 않는다 - 테스트 오탐 방지)
-      synonymContext += '\n[★★★ 제품별 원가 조회 — 4컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
+      // [2026-09-18] 제품별 집계 기준에 PLANT 추가 (사용자 요구):
+      //   동일 MATERIAL 이라도 PLANT 별로 원가가 별도 산정되므로 GROUP BY 에 PLANT 필수.
+      //   SELECT 에 PLANT 코드/PLANT_NM 노출 → 결과행이 자재+공장 조합으로 분리됨.
+      //   (예: FRT-FIR0003A / P200 vs FRT-FIR0003A / P400)
+      synonymContext += '\n[★★★ 제품별 원가 조회 — MATERIAL+PLANT 8컬럼 세트 필수 (sys_aimd_cot015) ★★★]\n';
       synonymContext += `사용자가 ZCGUBUN=${gubunList} 로 제품별 원가를 조회 중입니다.\n`;
-      synonymContext += `사용자 질의에 "총액/합계" 명시가 없으므로 기본 출력은 **총액 단독이 아니라 단가 계산 근거 4컬럼 세트** 입니다.\n`;
+      synonymContext += `사용자 질의에 "총액/합계" 명시가 없으므로 기본 출력은 **총액 단독이 아니라 단가 계산 근거 컬럼 세트** 입니다.\n`;
+      synonymContext += `\n[⚠️ 집계 단위 필수 규칙 — sys_aimd_cot015 제품별 조회]\n`;
+      synonymContext += `  - 동일 MATERIAL(자재코드) 이라도 PLANT(플랜트) 별로 원가가 별도 산정됩니다.\n`;
+      synonymContext += `  - 따라서 제품별 집계는 반드시 **MATERIAL + PLANT** 를 기준으로 해야 하며,\n`;
+      synonymContext += `    MATERIAL 만으로 GROUP BY 하면 잘못된 합산이 발생합니다.\n`;
+      synonymContext += `  - 결과는 (자재코드, 플랜트) 조합별 행으로 분리 노출 (예: 같은 자재라도 P200 / P400 이 별도 행).\n`;
       synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지]\n`;
-      synonymContext += `  1. MATERIAL     AS '제품코드'         (또는 '자재코드')\n`;
-      synonymContext += `  2. MAX(MATERIAL_NM) AS '제품명'       (또는 '자재명')\n`;
-      synonymContext += `  3. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
-      synonymContext += `  4. SUM(TOTAL)   AS '원가 총액(원)'\n`;
-      synonymContext += `  5. SUM(LBKUM)   AS '생산수량'\n`;
-      synonymContext += `  6. MAX(BASE_UOM) AS '단위'\n`;
+      synonymContext += `  1. MATERIAL         AS '자재코드'\n`;
+      synonymContext += `  2. MAX(MATERIAL_NM) AS '자재명'\n`;
+      synonymContext += `  3. PLANT            AS '플랜트'\n`;
+      synonymContext += `  4. MAX(PLANT_NM)    AS '플랜트명'\n`;
+      synonymContext += `  5. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
+      synonymContext += `  6. SUM(TOTAL)       AS '원가 총액(원)'\n`;
+      synonymContext += `  7. SUM(LBKUM)       AS '생산수량'\n`;
+      synonymContext += `  8. MAX(BASE_UOM)    AS '단위'\n`;
       synonymContext += `\n[GROUP BY / HAVING / ORDER BY]\n`;
-      synonymContext += `  - GROUP BY MATERIAL 필수 (제품별 집계)\n`;
+      synonymContext += `  - GROUP BY MATERIAL, PLANT 필수 (자재+공장별 집계). PLANT 를 GROUP BY 에서 절대 빠뜨리지 마세요.\n`;
       synonymContext += `  - TOP N/상위/랭킹 요청이 있으면 HAVING SUM(LBKUM) <> 0 (생산수량 0 제외)\n`;
       synonymContext += `  - ${orderDirective}\n`;
       synonymContext += `\n[중요 규칙]\n`;
@@ -4840,8 +4867,8 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
       synonymContext += `  - ZCGUBUN=${gubunList} 필터는 WHERE 절에 그대로 유지 (dimension value).\n`;
       synonymContext += `  - 기존 필터 (DIVISION / CALMONTH / MATERIAL) 는 그대로 유지.\n`;
       synonymContext += `  - Metric 산식(COST_ACTUAL_UNIT_PRICE) 이 프롬프트에 노출된 경우, 그 산식과\n`;
-      synonymContext += `    이 4컬럼 세트는 서로 보완 관계: metric 은 3번 컬럼(개당 단가(원)) 을 담당하고,\n`;
-      synonymContext += `    4~6번 (총액/수량/단위) 은 이 힌트가 명시.\n`;
+      synonymContext += `    이 컬럼 세트는 서로 보완 관계: metric 은 '개당 단가(원)' 컬럼을 담당하고,\n`;
+      synonymContext += `    총액/수량/단위 는 이 힌트가 명시.\n`;
       console.log(`[CostBasisHint] sys_aimd_cot015 + ZCGUBUN 매칭 [${detectedGubun.join(',')}] + 총액명시없음 → 4컬럼 세트 프롬프트 힌트 주입`);
     }
   } else if (canInjectAnyCostHint && !HAS_ZCGUBUN_MATCH && hasGenericCostIntent) {
@@ -4871,21 +4898,29 @@ async function buildRAGSystemPrompt(query, domainCode, tableWhitelist) {
     //   배경: 핵심 지표를 앞쪽에 배치. 총액/수량/단위 는 계산 근거로 뒤에.
     //   alias 는 정확히 단위 명시 형태로만 (subtypeLabel prefix 금지).
     //   (주석에는 실제 alias 리터럴을 쓰지 않는다 - 테스트가 SELECT 순서 검증 시 오탐 방지)
-    synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지 (8컬럼)]\n`;
+    // [2026-09-18] 제품별 집계 기준에 PLANT 추가 (사용자 요구):
+    //   GENERIC 조회에서도 MATERIAL+PLANT 단위로 분리. 컬럼: 자재코드/자재명/플랜트/플랜트명/원가대구분/원가구분/단가/총액/수량/단위 (10컬럼)
+    synonymContext += `\n[⚠️ 집계 단위 필수 규칙 — sys_aimd_cot015 제품별 조회]\n`;
+    synonymContext += `  - 동일 MATERIAL 이라도 PLANT 별로 원가가 별도 산정됩니다.\n`;
+    synonymContext += `  - 반드시 **MATERIAL + PLANT** 를 기준으로 GROUP BY 해야 하며, MATERIAL 만으로 합치면 안 됩니다.\n`;
+    synonymContext += `  - 결과행이 (자재, 공장, 원가유형) 조합으로 늘어나는 것은 정상.\n`;
+    synonymContext += `\n[SELECT 절 구성 — 반드시 이 순서 유지 (10컬럼)]\n`;
     synonymContext += `  1. MATERIAL          AS '자재코드'\n`;
     synonymContext += `  2. MAX(MATERIAL_NM)  AS '자재명'\n`;
-    synonymContext += `  3. ZCGUBUN_D         AS '원가 대구분'\n`;
-    synonymContext += `  4. ZCGUBUN           AS '원가구분'\n`;
-    synonymContext += `  5. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
-    synonymContext += `  6. SUM(TOTAL)        AS '원가 총액'\n`;
-    synonymContext += `  7. SUM(LBKUM)        AS '생산수량'\n`;
-    synonymContext += `  8. MAX(BASE_UOM)     AS '단위'\n`;
+    synonymContext += `  3. PLANT             AS '플랜트'\n`;
+    synonymContext += `  4. MAX(PLANT_NM)     AS '플랜트명'\n`;
+    synonymContext += `  5. ZCGUBUN_D         AS '원가 대구분'\n`;
+    synonymContext += `  6. ZCGUBUN           AS '원가구분'\n`;
+    synonymContext += `  7. ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) AS '개당 단가(원)'\n`;
+    synonymContext += `  8. SUM(TOTAL)        AS '원가 총액'\n`;
+    synonymContext += `  9. SUM(LBKUM)        AS '생산수량'\n`;
+    synonymContext += ` 10. MAX(BASE_UOM)     AS '단위'\n`;
     synonymContext += `\n[WHERE / GROUP BY / ORDER BY — 반드시 아래 규칙 준수]\n`;
     synonymContext += `  - WHERE 절에 ZCGUBUN 필터를 **절대 넣지 마세요** (예: WHERE ZCGUBUN='실제원가' 금지).\n`;
     synonymContext += `    → 사용자가 원가 유형을 명시하지 않았으므로 전체 조회.\n`;
-    synonymContext += `  - GROUP BY MATERIAL, ZCGUBUN_D, ZCGUBUN 필수 (원가유형별 집계).\n`;
+    synonymContext += `  - GROUP BY MATERIAL, PLANT, ZCGUBUN_D, ZCGUBUN 필수 (자재+공장+원가유형별 집계). PLANT 를 빠뜨리지 마세요.\n`;
     synonymContext += `  - ORDER BY 는 반드시 아래 순서 유지 (표준원가는 각 ZCGUBUN_D 그룹의 마지막):\n`;
-    synonymContext += `      ORDER BY ZCGUBUN_D, CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END\n`;
+    synonymContext += `      ORDER BY MATERIAL, PLANT, ZCGUBUN_D, CASE WHEN ZCGUBUN = '표준원가' THEN 2 ELSE 1 END\n`;
     synonymContext += `  - 그 외 필터 (DIVISION / CALMONTH / MATERIAL) 는 정상적으로 유지.\n`;
     synonymContext += `\n[중요 규칙]\n`;
     synonymContext += `  - '개당 단가(원)'는 반드시 SUM(TOTAL) / NULLIF(SUM(LBKUM), 0) 형태 (0 나누기 방지).\n`;
@@ -10181,6 +10216,174 @@ function _removeCollateralCostElmntConds(sql, values) {
 //   너무 공격적으로 거부하면 사용자 경험이 나빠지므로 로그에만 남기는
 //   soft-warning 옵션도 지원 (initial: hard-fail=true 로 확실히 잡음).
 // ═════════════════════════════════════════════════════════════════════════
+
+// ═════════════════════════════════════════════════════════════════════════
+// [2026-09-18] enforcePlantGroupingForCot015
+// ─────────────────────────────────────────────────────────────────────────
+// 목적:
+//   sys_aimd_cot015 (제조원가) 자연어질의 SQL 에서 제품별 집계를 할 때
+//   반드시 GROUP BY MATERIAL, PLANT 를 기준으로 하도록 결정적 사후 보정.
+//
+// 배경 (사용자 요구 2026-09-18):
+//   동일 MATERIAL 이라도 PLANT 별로 원가가 별도 산정되므로
+//   MATERIAL 만으로 GROUP BY 하면 잘못된 합산이 발생.
+//   프롬프트 힌트만으로는 "원가요소" 같은 어휘가 힌트 트리거에 안 걸려
+//   PLANT 규칙이 미적용되는 케이스가 존재 → 힌트와 무관하게 결정적으로 강제.
+//
+// 동작:
+//   1. SQL 이 sys_aimd_cot015 를 FROM 하는지 확인. 아니면 no-op.
+//   2. GROUP BY 절 존재 + MATERIAL 포함 + PLANT 미포함 → 대상.
+//   3. GROUP BY 에 ", PLANT" 추가.
+//   4. SELECT 절에 PLANT 컬럼 (또는 PLANT_NM) 미포함이면
+//      MATERIAL 다음(또는 MAX(MATERIAL_NM) 다음) 에 두 컬럼 삽입:
+//        PLANT AS '플랜트', MAX(PLANT_NM) AS '플랜트명'
+//   5. 이미 PLANT 존재 시: no-op.
+//   6. 파싱 실패 / 예외 발생 시: 원본 SQL 그대로 반환 (안전).
+//
+// 예외 (건드리지 않는 케이스):
+//   - GROUP BY 절 자체 없음 (전체 집계 = 이미 (자재,공장) 구분 없이 하나의 값)
+//   - MATERIAL 없이 다른 축으로만 GROUP BY (예: PLANT 만, ZCGUBUN 만)
+//   - MATERIAL 이 subquery/CTE 안에서만 사용되는 경우 (외부 SELECT 안건드림)
+//
+// 반환:
+//   { sql: string, applied: boolean, changes: string[] }
+//     applied=true : 원본에서 재작성됨
+//     applied=false: no-op (변경 없음)
+// ═════════════════════════════════════════════════════════════════════════
+function enforcePlantGroupingForCot015(inputSql, opts = {}) {
+  const originalSql = String(inputSql || '');
+  const changes = [];
+
+  // 1) sys_aimd_cot015 FROM 확인
+  if (!/\bFROM\s+sys_aimd_cot015\b/i.test(originalSql)) {
+    return { sql: originalSql, applied: false, changes: ['skip: sys_aimd_cot015 미사용'] };
+  }
+
+  // 2) GROUP BY 절 추출 (대소문자 무관, HAVING/ORDER/LIMIT 등 뒤 절 앞에서 종료)
+  //    여러 GROUP BY 는 첫 번째 (outer query 것) 만 처리.
+  const groupByMatch = originalSql.match(/\bGROUP\s+BY\s+([^;]*?)(\s+(?:HAVING|ORDER\s+BY|LIMIT|WINDOW|FETCH|OFFSET)\b|\s*;|\s*$)/i);
+  if (!groupByMatch) {
+    return { sql: originalSql, applied: false, changes: ['skip: GROUP BY 절 없음 (전체 집계)'] };
+  }
+  const groupByFull = groupByMatch[0];              // "GROUP BY ..."
+  const groupByCols = groupByMatch[1].trim();        // "MATERIAL, ZCGUBUN_D, ZCGUBUN"
+  const groupByTail = groupByMatch[2];               // " ORDER BY ..." 등 다음 절
+
+  // GROUP BY 컬럼 파싱 (콤마 분리, 앞뒤 공백/괄호 정리)
+  const groupCols = groupByCols
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  const hasMaterial = groupCols.some(c => /(^|\.)MATERIAL\b/i.test(c));
+  // PLANT 또는 PLANT_NM 이 있으면 이미 공장 단위로 분리된 것으로 간주 (1:1 관계).
+  //   \bPLANT_NM\b 는 \bPLANT\b 뒤에 _NM 이 붙어 word boundary 가 끊기므로 별도로 검사.
+  const hasPlant = groupCols.some(c => /(^|\.)PLANT(_NM)?\b/i.test(c));
+
+  if (!hasMaterial) {
+    // MATERIAL 축이 없으면 (예: 부서별/월별 등 다른 축 조회) 대상 아님
+    return { sql: originalSql, applied: false, changes: ['skip: GROUP BY 에 MATERIAL 없음'] };
+  }
+  if (hasPlant) {
+    // 이미 PLANT 있음 → no-op
+    return { sql: originalSql, applied: false, changes: ['skip: 이미 PLANT 포함'] };
+  }
+
+  // 3) GROUP BY 재작성 - MATERIAL 다음에 PLANT 삽입 (순서 안정성)
+  //    "MATERIAL, ZCGUBUN_D, ZCGUBUN" → "MATERIAL, PLANT, ZCGUBUN_D, ZCGUBUN"
+  //    MATERIAL 이 마지막이면 "MATERIAL, PLANT" 로 append
+  const newGroupCols = [];
+  let plantInjected = false;
+  for (const c of groupCols) {
+    newGroupCols.push(c);
+    if (!plantInjected && /(^|\.)MATERIAL\b/i.test(c)) {
+      newGroupCols.push('PLANT');
+      plantInjected = true;
+    }
+  }
+  const newGroupByCols = newGroupCols.join(', ');
+  const newGroupByFull = `GROUP BY ${newGroupByCols}${groupByTail}`;
+  let newSql = originalSql.replace(groupByFull, newGroupByFull);
+  changes.push(`GROUP BY: "${groupByCols}" → "${newGroupByCols}"`);
+
+  // 4) SELECT 절에 PLANT 컬럼 삽입 (없으면)
+  //    SELECT 부터 첫 번째 FROM 까지 (outer SELECT)
+  const selectMatch = newSql.match(/\bSELECT\s+([\s\S]+?)\s+\bFROM\b/i);
+  if (!selectMatch) {
+    // SELECT 파싱 실패 → GROUP BY 만 보정하고 종료 (부분 보정도 안전 방향)
+    changes.push('warn: SELECT 절 파싱 실패, SELECT 미보정');
+    return { sql: newSql, applied: true, changes };
+  }
+  const selectFull = selectMatch[0];    // "SELECT ... FROM"
+  const selectBody = selectMatch[1];     // "MATERIAL, MAX(MATERIAL_NM), ..."
+
+  // SELECT 안에 PLANT 언급이 있는지 (컬럼명 / alias 어디든)
+  // 정확도를 위해 alias(') 안의 문자열은 제외하고 검사
+  //   \b PLANT (뒤에 _가 아닌 경계 or PLANT_NM 포함)
+  const selectBodyStripAlias = selectBody.replace(/'[^']*'/g, "''"); // alias 리터럴 제거
+  const selectHasPlant = /\bPLANT\b/i.test(selectBodyStripAlias) || /\bPLANT_NM\b/i.test(selectBodyStripAlias);
+
+  if (!selectHasPlant) {
+    // SELECT 항목을 콤마로 분리해서 MATERIAL 을 담은 항목 다음에 삽입
+    //   콤마 분리 시 함수 안의 콤마 보호 필요 (SUM(TOTAL, 0)... 같은 경우 대비)
+    //   → 괄호 depth 기반 split
+    const items = _splitSelectItems(selectBody);
+    // MATERIAL_NM 을 담은 항목(있으면) 뒤에 삽입. 없으면 MATERIAL 담은 항목 뒤.
+    const idxMatlNm = items.findIndex(it => /\bMATERIAL_NM\b/i.test(_stripAlias(it)));
+    const idxMatl   = items.findIndex(it => /\bMATERIAL\b(?!_NM)/i.test(_stripAlias(it)));
+    const insertAfter = idxMatlNm >= 0 ? idxMatlNm : idxMatl;
+
+    if (insertAfter < 0) {
+      // SELECT 안에 MATERIAL 컬럼이 없음 (희귀 케이스: GROUP BY 는 있지만 SELECT 는 SUM 만)
+      //   → SELECT 는 건드리지 않고 GROUP BY 보정만 유지
+      changes.push('warn: SELECT 에 MATERIAL 컬럼 없음, PLANT 컬럼 삽입 스킵');
+    } else {
+      const newItems = [...items];
+      newItems.splice(insertAfter + 1, 0,
+        "PLANT AS '플랜트'",
+        "MAX(PLANT_NM) AS '플랜트명'"
+      );
+      const newSelectBody = newItems.map(s => s.trim()).join(', ');
+      const newSelectFull = selectFull.replace(selectBody, newSelectBody);
+      newSql = newSql.replace(selectFull, newSelectFull);
+      changes.push(`SELECT: PLANT/PLANT_NM 2컬럼 삽입 (${insertAfter + 1}번째 뒤)`);
+    }
+  } else {
+    changes.push('info: SELECT 에 이미 PLANT 언급 있음, SELECT 미보정');
+  }
+
+  return { sql: newSql, applied: true, changes };
+}
+
+// SELECT 항목 콤마 split (괄호 depth 고려)
+function _splitSelectItems(selectBody) {
+  const items = [];
+  let depth = 0;
+  let cur = '';
+  let inStr = false;
+  for (let i = 0; i < selectBody.length; i++) {
+    const ch = selectBody[i];
+    if (ch === "'" && selectBody[i - 1] !== '\\') inStr = !inStr;
+    if (!inStr) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (ch === ',' && depth === 0) {
+        items.push(cur);
+        cur = '';
+        continue;
+      }
+    }
+    cur += ch;
+  }
+  if (cur.trim()) items.push(cur);
+  return items;
+}
+
+// SELECT 항목에서 alias 부분('...') 제거 후 원 expression 만 남김
+function _stripAlias(item) {
+  return String(item).replace(/'[^']*'/g, '').replace(/\s+AS\s+$/i, '');
+}
+// ═════════════════════════════════════════════════════════════════════════
+
 function validateCostBasisSqlIntegrity({
   sql, query, columnMatches, tableWhitelist,
 } = {}) {
@@ -12313,6 +12516,30 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
         sql = _postValidate.sql;
         explanation = _postValidate.explanation;
         console.warn(`[NLQ:CostCompPostValidate] 오염 정정 완료. SQL alias·explanation 재작성됨.`);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // [2026-09-18] sys_aimd_cot015 제품별 조회 PLANT 강제 (hard-rewrite)
+      //   업무 규칙: 동일 MATERIAL 이라도 PLANT 별로 원가 산정.
+      //   → GROUP BY 에 MATERIAL 만 있고 PLANT 가 없으면 서버가 결정적으로
+      //     GROUP BY MATERIAL, PLANT 로 재작성하고 SELECT 에 PLANT/PLANT_NM 삽입.
+      //   프롬프트 힌트만으로는 "원가요소" 등 일부 어휘 케이스에서 힌트 트리거가
+      //   안 걸려 PLANT 규칙이 미적용되는 문제 → 힌트 트리거와 무관하게 강제.
+      // ─────────────────────────────────────────────────────────────
+      try {
+        const _plantEnforce = enforcePlantGroupingForCot015(sql);
+        if (_plantEnforce.applied) {
+          console.log(
+            `[PlantGrouping] sys_aimd_cot015 제품별 조회에 PLANT 강제 주입 완료. ` +
+            `변경: ${_plantEnforce.changes.join(' | ')}`
+          );
+          sql = _plantEnforce.sql;
+        } else {
+          // no-op 사유 로그 (한 줄, 디버깅용)
+          console.log(`[PlantGrouping] no-op: ${_plantEnforce.changes.join(' | ')}`);
+        }
+      } catch (e) {
+        console.error('[PlantGrouping] 보정 중 예외 (원본 SQL 유지):', e.message);
       }
 
       // ─────────────────────────────────────────────────────────────

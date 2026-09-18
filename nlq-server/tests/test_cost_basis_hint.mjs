@@ -223,32 +223,37 @@ section('[D] server.mjs 소스에 실제 반영 확인 + 프롬프트 문구 스
   assert(src.includes('const EXPLICIT_TOTAL_INTENT_RE'), 'EXPLICIT_TOTAL_INTENT_RE 정의됨');
   assert(src.includes('CostBasisHint'), '[CostBasisHint] 로그 태그 있음');
 
+  // [2026-09-18] MATERIAL + PLANT 집계 기준으로 확장 (사용자 요구)
   // 프롬프트 문구에 필수 요소들이 있는지
   const requiredPhrases = [
-    '4컬럼 세트',
+    '8컬럼 세트',   // [2026-09-18] 4→8 (PLANT/PLANT_NM 2개 추가)
     "SUM(TOTAL)",
     "SUM(LBKUM)",
     "MAX(BASE_UOM)",
+    "MAX(PLANT_NM)", // [2026-09-18] PLANT_NM 노출 확인
     "ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0)",
     "'원가 총액(원)'",
     "'생산수량'",
     "'단위'",
-    "'원가 단가'",
-    "GROUP BY MATERIAL",
+    "'개당 단가(원)'",
+    "'플랜트'",       // [2026-09-18] PLANT alias
+    "'플랜트명'",     // [2026-09-18] PLANT_NM alias
+    "GROUP BY MATERIAL, PLANT", // [2026-09-18] MATERIAL 단독 → MATERIAL, PLANT 로 변경
     "HAVING SUM(LBKUM) <> 0",
     "AVG(TOTAL / LBKUM)", // 금지 예시로 명시
     "NULLIF(SUM(LBKUM), 0)",
+    "MATERIAL + PLANT", // [2026-09-18] 집계 단위 규칙 헤드라인
   ];
   for (const p of requiredPhrases) {
     assert(src.includes(p), `프롬프트 문구에 "${p}" 포함됨`);
   }
 
-  // [2026-09-17 revA] 컬럼 순서 재정렬 (사용자 요구사항):
-  //   기존: 코드(1)→명(2)→총액(3)→수량(4)→단위(5)→단가(6)
-  //   변경: 코드(1)→명(2)→**단가(3)**→총액(4)→수량(5)→단위(6)
-  const orderPattern = /1\.\s*MATERIAL[\s\S]{0,200}2\.\s*MAX\(MATERIAL_NM\)[\s\S]{0,200}3\.\s*ROUND[\s\S]{0,200}4\.\s*SUM\(TOTAL\)[\s\S]{0,200}5\.\s*SUM\(LBKUM\)[\s\S]{0,200}6\.\s*MAX\(BASE_UOM\)/;
+  // [2026-09-18] 컬럼 순서 재정렬 (MATERIAL + PLANT 확장):
+  //   변경: 자재코드(1)→자재명(2)→**플랜트(3)**→**플랜트명(4)**→단가(5)→총액(6)→수량(7)→단위(8)
+  //   PLANT/PLANT_NM 이 3~4번에 삽입되면서 이후 컬럼이 뒤로 밀림.
+  const orderPattern = /1\.\s*MATERIAL[\s\S]{0,200}2\.\s*MAX\(MATERIAL_NM\)[\s\S]{0,200}3\.\s*PLANT[\s\S]{0,200}4\.\s*MAX\(PLANT_NM\)[\s\S]{0,200}5\.\s*ROUND[\s\S]{0,200}6\.\s*SUM\(TOTAL\)[\s\S]{0,200}7\.\s*SUM\(LBKUM\)[\s\S]{0,200}8\.\s*MAX\(BASE_UOM\)/;
   assert(orderPattern.test(src),
-    '프롬프트에 컬럼 순서 1~6 (코드/명/단가/총액/수량/단위) 순차 명시 (revA)');
+    '프롬프트에 컬럼 순서 1~8 (자재코드/자재명/플랜트/플랜트명/단가/총액/수량/단위) 순차 명시 (2026-09-18 PLANT 확장)');
 
   // 정렬 의도 분기 지시 확인
   assert(src.includes("ROUND(SUM(TOTAL) / NULLIF(SUM(LBKUM), 0), 0) DESC"),
