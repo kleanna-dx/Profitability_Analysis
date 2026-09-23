@@ -161,6 +161,8 @@
         .modal input:focus,.modal textarea:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
         .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px;}
     </style>
+    <!-- [2026-09-21] 통합 플랫폼 사이드바 공통 렌더러 (수익성분석 / 경영시뮬레이션 대분류) -->
+    <script src="/platform-sidebar.js" defer></script>
 </head>
 <body>
 
@@ -169,7 +171,8 @@
 <aside id="sidebar" class="sidebar">
     <div class="p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
-            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
+            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
             <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
         </div>
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
@@ -374,19 +377,10 @@ async function renderDynamicSidebar() {
         const res = await fetch('/api/me');
         const me = await res.json();
         if (!me.loggedIn) return;
-        const nav = document.getElementById('sidebarMenu');
-        if (!me.menus || me.menus.length === 0) {
-            nav.innerHTML = '<div style="padding:12px 24px;color:#94a3b8;font-size:12px;">메뉴 없음</div>';
-            return;
+        // [2026-09-21] 통합 플랫폼 사이드바로 렌더링 (대분류 + 하위 메뉴 드롭다운)
+        if (window.PlatformSidebar) {
+            window.PlatformSidebar.render(me.menus || [], { activeUrl: '/permission.html' });
         }
-        const currentPage = '/permission.html';
-        nav.innerHTML = me.menus.map(m => {
-            const isActive = m.menu_url === currentPage ? ' active' : '';
-            if (m.menu_url === '/' || m.menu_url === '/index.html') {
-                return `<a href="/" class="sidebar-menu-item${isActive}" style="text-decoration:none;"><i class="${m.icon_class}"></i><span>${m.menu_name}</span></a>`;
-            }
-            return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive}" style="text-decoration:none;"><i class="${m.icon_class}"></i><span>${m.menu_name}</span></a>`;
-        }).join('');
     } catch(e) { console.error('[Sidebar] 렌더링 실패:', e); }
 }
 
