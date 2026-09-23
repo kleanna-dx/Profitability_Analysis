@@ -41,6 +41,17 @@ dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
 }
 
+// [경영시뮬레이션] module-rolling-planning-simulation 소스를 module-profit.jar 에 함께 포함
+//  - 운영 WAS 는 module-profit.jar 하나만 실행하므로(deploy.sh), 별도 jar 가 아닌 소스 포함 방식으로 통합
+//  - 공통 ApiResponse(com.company.core.*) 를 module-profit 과 공유
+sourceSets {
+    main {
+        java {
+            srcDir '../module-rolling-planning-simulation/src/main/java'
+        }
+    }
+}
+
 bootJar {
     enabled = true
     archiveFileName = 'module-profit.jar'

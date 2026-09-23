@@ -89,6 +89,23 @@ http {
             proxy_busy_buffers_size 128k;
         }
 
+        # [추가] ── 경영시뮬레이션 (module-rolling-planning-simulation) 프록시 ──
+        # module-profit.jar(18093) 에 함께 포함되어 기동됨
+        location /rolling-planning-simulation-api/ {
+            proxy_pass http://profit_backend;
+            proxy_http_version 1.1;
+
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Connection        "";
+
+            proxy_connect_timeout 10s;
+            proxy_read_timeout    120s;
+            proxy_send_timeout    60s;
+        }
+
         # ── Node.js 서버로 프록시 ──
         location / {
             proxy_pass http://nlq_backend;
