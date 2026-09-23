@@ -99,16 +99,18 @@
 #sidebarMenu .menu-group-body{padding:2px 0 4px;}
 #sidebarMenu .menu-group.collapsed > .menu-group-body{display:none;}
 
-/* 하위 메뉴 항목 — 대분류보다 한 단계 작은 크기 + 들여쓰기 (계층 명확) */
+/* 하위 메뉴 항목 — 대분류보다 한 단계 작은 크기 + 들여쓰기 (계층 명확)
+   [2026-09-23 사용자 요청] 하위 메뉴 글씨 1포인트 증가 (12.5px → 13.5px)
+   대분류(14px) 와의 시각적 계층은 여전히 유지되면서 가독성 향상 */
 #sidebarMenu .menu-item{
     display:flex;align-items:center;gap:10px;
     margin:2px 22px 2px 34px;padding:7px 12px;
     border-radius:7px;
-    font-size:12.5px;font-weight:500;color:#cbd5e1;
+    font-size:13.5px;font-weight:500;color:#cbd5e1;
     text-decoration:none;cursor:pointer;
     transition:background .12s,color .12s;
 }
-#sidebarMenu .menu-item > i{width:15px;text-align:center;font-size:11.5px;color:#94a3b8;flex-shrink:0;}
+#sidebarMenu .menu-item > i{width:15px;text-align:center;font-size:12.5px;color:#94a3b8;flex-shrink:0;}
 #sidebarMenu .menu-item:hover{background:rgba(99,102,241,.14);color:#fff;}
 #sidebarMenu .menu-item:hover > i{color:#c7d2fe;}
 #sidebarMenu .menu-item.active{
@@ -117,7 +119,7 @@
 #sidebarMenu .menu-item.active > i{color:#c7d2fe;}
 #sidebarMenu .menu-empty{
     margin:2px 22px 2px 34px;padding:7px 12px;
-    font-size:11.5px;color:#64748b;font-style:italic;
+    font-size:12.5px;color:#64748b;font-style:italic;
 }
 
 /* ─────────────────────────────────────────────────────────────
