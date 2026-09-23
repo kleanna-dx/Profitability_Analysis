@@ -560,6 +560,37 @@ if (PS && PS.render) {
         'L-26e: 그룹 hover 시 shadow 강조 CSS');
 }
 
+// [2026-09-23-5] 하위 메뉴 체크박스 이중 토글 버그 수정 (사용자 리포트)
+//   원인: 브라우저 기본 동작 + onclick 내 재토글 → 서로 상쇄되어 상태 변화 없음
+//   수정: 체크박스 onclick 은 stopPropagation 만 하고, 상태 sync 는 onchange 로 위임
+//   추가: 카운트 뱃지 갱신 selector 를 새 헤더 구조에 맞게 .group-count-badge 로 수정
+// L-26f~L-26k: 회귀 방지 assertion
+{
+    const permHtmlPreCheck = fs.readFileSync(path.resolve(publicDir, 'permission.html'), 'utf8');
+    // L-26f: 하위 메뉴 체크박스는 onchange="syncMenuCheck(id)" 사용 (onclick 재토글 X)
+    assertMatch(permHtmlPreCheck, /onchange="syncMenuCheck\(\$\{m\.menu_id\}\)"/,
+        'L-26f: 하위 메뉴 체크박스에 onchange="syncMenuCheck(id)" 바인딩');
+    // L-26g: 체크박스 onclick 은 stopPropagation 만 하고 재토글 안 함
+    assertMatch(permHtmlPreCheck, /<input type="checkbox"[^>]*onclick="event\.stopPropagation\(\);"/,
+        'L-26g: 체크박스 onclick 은 event.stopPropagation() 만 수행 (재토글 없음)');
+    // L-26h: syncMenuCheck 함수는 cb.checked 를 강제 토글하지 않음 (브라우저 이미 처리)
+    assertMatch(permHtmlPreCheck, /function\s+syncMenuCheck\s*\(menuId\)\s*\{[\s\S]*?item\.classList\.toggle\('checked',\s*cb\.checked\)/,
+        'L-26h: syncMenuCheck 는 cb.checked 상태 재토글 없이 UI 만 동기화');
+    // L-26h2: syncMenuCheck 안에서 cb.checked = !cb.checked 재토글이 없어야 함 (핵심)
+    const syncFn = permHtmlPreCheck.match(/function\s+syncMenuCheck\s*\(menuId\)\s*\{[\s\S]*?\n\}/);
+    assert(syncFn && !/cb\.checked\s*=\s*!cb\.checked/.test(syncFn[0]),
+        'L-26h2: syncMenuCheck 함수 내부에 이중 토글 (cb.checked = !cb.checked) 없음');
+    // L-26i: toggleMenuCheck (항목 div 클릭용) 는 여전히 !cb.checked 로 명시 토글
+    assertMatch(permHtmlPreCheck, /function\s+toggleMenuCheck\s*\(menuId\)\s*\{[\s\S]*?cb\.checked\s*=\s*!cb\.checked[\s\S]*?syncMenuCheck\(menuId\)/,
+        'L-26i: toggleMenuCheck 는 명시 토글 후 syncMenuCheck 위임 (div 클릭 경로)');
+    // L-26j: 카운트 뱃지에 data-group-key + .group-count-badge 클래스
+    assertMatch(permHtmlPreCheck, /class="group-count-badge"\s+data-group-key="\$\{group\.key\}"/,
+        'L-26j: 카운트 뱃지에 .group-count-badge 클래스 + data-group-key 속성');
+    // L-26k: updateGroupHeaderCounts 는 .group-count-badge selector 사용
+    assertMatch(permHtmlPreCheck, /section\.querySelector\('\.group-count-badge'\)/,
+        'L-26k: updateGroupHeaderCounts 는 .group-count-badge selector 로 뱃지 조회');
+}
+
 // L-27~L-32: 권한관리 UI (permission.html) — 그룹별 하위 메뉴 렌더, 대분류 체크 폐지
 const permHtmlPath = path.resolve(publicDir, 'permission.html');
 const permHtml = fs.readFileSync(permHtmlPath, 'utf8');
