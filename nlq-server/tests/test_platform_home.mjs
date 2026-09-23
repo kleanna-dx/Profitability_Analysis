@@ -542,6 +542,24 @@ if (PS && PS.render) {
     }
 }
 
+// [2026-09-23-4] 그룹 시각적 강조: 각 그룹 컨테이너를 굵은 border 로 감쌈 (사용자 요청)
+// L-26b~L-26e: 그룹 컨테이너 border 스타일 검증
+{
+    const permHtmlPreCheck = fs.readFileSync(path.resolve(publicDir, 'permission.html'), 'utf8');
+    // 2.5px solid ${group.color} 인라인 스타일이 render 함수 내에 존재
+    assertMatch(permHtmlPreCheck, /border:2\.5px solid \$\{group\.color\}/,
+        'L-26b: 그룹 컨테이너에 2.5px solid <group.color> border 인라인 스타일 존재');
+    // renderGroupSection 함수 존재
+    assertMatch(permHtmlPreCheck, /function\s+renderGroupSection\s*\(/,
+        'L-26c: renderGroupSection 헬퍼 함수 정의 (그룹 컨테이너 렌더 통합)');
+    // 카운트 뱃지 (n/total)
+    assertMatch(permHtmlPreCheck, /\$\{checkedCount\}\s*\/\s*\$\{totalCount\}/,
+        'L-26d: 그룹 헤더에 (checkedCount / totalCount) 카운트 뱃지');
+    // .menu-group-section hover shadow CSS
+    assertMatch(permHtmlPreCheck, /\.menu-group-section:hover\{box-shadow/,
+        'L-26e: 그룹 hover 시 shadow 강조 CSS');
+}
+
 // L-27~L-32: 권한관리 UI (permission.html) — 그룹별 하위 메뉴 렌더, 대분류 체크 폐지
 const permHtmlPath = path.resolve(publicDir, 'permission.html');
 const permHtml = fs.readFileSync(permHtmlPath, 'utf8');
