@@ -20022,13 +20022,11 @@ async function ensureRbacTables() {
     // 6) 시드 데이터 — 메뉴가 비어있을 때만 삽입
     // [2026-09-21] 통합 플랫폼 HOME 도입: 자연어질의 URL '/' → '/nlq', 인터페이스 관리 추가
     // [2026-09-23] 통합 플랫폼 대분류 권한: simulation (경영시뮬레이션) 대분류 메뉴 추가
-    //   - simulation 은 아직 하위 URL 이 없어 menu_url='#simulation' (dummy 앵커).
-    //   - 이 메뉴가 role_menus 에 매핑된 사용자에게만 사이드바 [경영시뮬레이션] 대분류 노출.
-    // [2026-09-23-2] 통합 플랫폼 사이드바 재구성:
-    //   - sysadmin (시스템관리) 대분류 신규 추가 (dummy 앵커 '#sysadmin')
-    //     · 하위 메뉴 [권한 관리] 를 수익성분석 그룹에서 시스템관리 그룹으로 이동
-    //   - simulation-test (테스트 메뉴, 빈 페이지) 신규 추가 → 경영시뮬레이션 그룹 하위
-    //   ⚠️ 기존 menu_code 값은 그대로 유지 (permission 등) — 그룹핑은 프론트 GROUPS.codes 로 처리
+    // [2026-09-23-2] sysadmin (시스템관리) 대분류 + simulation-test 하위 추가
+    // [2026-09-23-3] 대분류 별도 권한 폐지 (사용자 요청):
+    //   - 대분류(수익성분석/경영시뮬레이션/시스템관리) 는 하위 메뉴 권한 존재 여부로 자동 노출
+    //   - dummy 앵커 대분류 메뉴 (simulation, sysadmin) 는 role_menus 관리 대상에서 제거
+    //   - 기존 DB 에 남아있으면 마이그레이션 블록에서 안전 삭제 (아래 참조)
     const [menuCount] = await pool.query('SELECT COUNT(*) AS cnt FROM menus');
     if (menuCount[0].cnt === 0) {
       await pool.query(`
@@ -20040,9 +20038,7 @@ async function ensureRbacTables() {
         ('permission',     '권한 관리',           '/permission.html',        'fas fa-shield-alt',        5),
         ('batch',          '배치 관리',            '/batch.html',             'fas fa-sync-alt',          6),
         ('interface',      '인터페이스 관리',      '/interface.html',         'fas fa-plug',              7),
-        ('simulation',     '경영시뮬레이션',       '#simulation',             'fas fa-flask',             100),
-        ('simulation-test','테스트 메뉴',          '/simulation-test.html',   'fas fa-vial',              101),
-        ('sysadmin',       '시스템관리',           '#sysadmin',               'fas fa-cogs',              200)
+        ('simulation-test','테스트 메뉴',          '/simulation-test.html',   'fas fa-vial',              101)
       `);
       console.log('[RBAC] 기본 메뉴 시드 데이터 삽입');
     } else {
@@ -20072,24 +20068,8 @@ async function ensureRbacTables() {
           console.log('[RBAC] interface 메뉴 신규 추가 + admin 매핑');
         }
       } catch (e) { console.error('[RBAC] interface 메뉴 추가 실패:', e.message); }
-      // [2026-09-23] simulation 대분류 메뉴가 아직 없으면 추가 (기존 배포된 DB 마이그레이션)
-      try {
-        const [simRow] = await pool.query(`SELECT id FROM menus WHERE menu_code = 'simulation'`);
-        if (simRow.length === 0) {
-          await pool.query(`
-            INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order)
-            VALUES ('simulation', '경영시뮬레이션', '#simulation', 'fas fa-flask', 100)
-          `);
-          // admin 역할에 자동 매핑 (일반 user 는 관리자가 수동 부여)
-          await pool.query(`
-            INSERT IGNORE INTO role_menus (role_id, menu_id)
-            SELECT r.id, m.id FROM roles r CROSS JOIN menus m
-            WHERE r.role_code = 'admin' AND m.menu_code = 'simulation'
-          `);
-          console.log('[RBAC] simulation 대분류 메뉴 신규 추가 + admin 매핑');
-        }
-      } catch (e) { console.error('[RBAC] simulation 메뉴 추가 실패:', e.message); }
       // [2026-09-23-2] simulation-test (경영시뮬레이션 하위 테스트 메뉴) 자동 추가
+      //   (하위 메뉴는 실제 URL 이 있으므로 그대로 유지)
       try {
         const [stRow] = await pool.query(`SELECT id FROM menus WHERE menu_code = 'simulation-test'`);
         if (stRow.length === 0) {
@@ -20105,22 +20085,22 @@ async function ensureRbacTables() {
           console.log('[RBAC] simulation-test 하위 메뉴 신규 추가 + admin 매핑');
         }
       } catch (e) { console.error('[RBAC] simulation-test 메뉴 추가 실패:', e.message); }
-      // [2026-09-23-2] sysadmin (시스템관리) 대분류 메뉴 자동 추가
-      try {
-        const [saRow] = await pool.query(`SELECT id FROM menus WHERE menu_code = 'sysadmin'`);
-        if (saRow.length === 0) {
-          await pool.query(`
-            INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order)
-            VALUES ('sysadmin', '시스템관리', '#sysadmin', 'fas fa-cogs', 200)
-          `);
-          await pool.query(`
-            INSERT IGNORE INTO role_menus (role_id, menu_id)
-            SELECT r.id, m.id FROM roles r CROSS JOIN menus m
-            WHERE r.role_code = 'admin' AND m.menu_code = 'sysadmin'
-          `);
-          console.log('[RBAC] sysadmin 대분류 메뉴 신규 추가 + admin 매핑');
-        }
-      } catch (e) { console.error('[RBAC] sysadmin 메뉴 추가 실패:', e.message); }
+
+      // [2026-09-23-3] 대분류 별도 권한 폐지 마이그레이션 (사용자 요청):
+      //   - 기존 DB 에 남아있는 대분류 dummy 메뉴 (simulation, sysadmin) 를 정리.
+      //   - 대분류는 이제 하위 메뉴 권한 존재 여부로 자동 판정 → 별도 코드 불필요.
+      //   - role_menus 매핑도 함께 삭제 (FK 안전).
+      for (const legacyCode of ['simulation', 'sysadmin']) {
+        try {
+          const [row] = await pool.query(`SELECT id FROM menus WHERE menu_code = ?`, [legacyCode]);
+          if (row.length > 0) {
+            const menuId = row[0].id;
+            await pool.query(`DELETE FROM role_menus WHERE menu_id = ?`, [menuId]);
+            await pool.query(`DELETE FROM menus WHERE id = ?`, [menuId]);
+            console.log(`[RBAC] 대분류 dummy 메뉴 정리: '${legacyCode}' 제거 (하위 메뉴 기준 자동 노출로 대체)`);
+          }
+        } catch (e) { console.error(`[RBAC] '${legacyCode}' dummy 메뉴 정리 실패:`, e.message); }
+      }
     }
 
     // 7) 시드 데이터 — role_menus 매핑이 비어있을 때만 삽입
@@ -20474,6 +20454,8 @@ async function ensureErrorReportsTable() {
 //     · 권한이 있어야만 사이드바에 '경영시뮬레이션' 대분류 노출
 //   - 대분류 [수익성분석] 자체는 하위 메뉴(nlq/builder 등) 중 하나라도 있으면 자동 노출됨
 //     (별도 'profitability' 대분류 코드는 만들지 않음 — UI 그룹핑 규칙으로 처리)
+// [2026-09-23-3] 대분류 메뉴 코드 (simulation/sysadmin) 폐지:
+//   대분류는 하위 메뉴 권한 존재 여부로 자동 노출됨 → 별도 dummy 메뉴 코드 불필요.
 const DEFAULT_MENUS_ALL = [
   { menu_code:'nlq',             menu_name:'자연어 질의',        menu_url:'/nlq',                  icon_class:'fas fa-comments',        sort_order:1 },
   { menu_code:'builder',         menu_name:'비주얼 쿼리 빌더',  menu_url:'/builder.html',         icon_class:'fas fa-th-large',        sort_order:2 },
@@ -20482,9 +20464,7 @@ const DEFAULT_MENUS_ALL = [
   { menu_code:'permission',      menu_name:'권한 관리',           menu_url:'/permission.html',      icon_class:'fas fa-shield-alt',      sort_order:5 },
   { menu_code:'batch',           menu_name:'배치 관리',          menu_url:'/batch.html',           icon_class:'fas fa-sync-alt',        sort_order:6 },
   { menu_code:'interface',       menu_name:'인터페이스 관리',    menu_url:'/interface.html',       icon_class:'fas fa-plug',            sort_order:7 },
-  { menu_code:'simulation',      menu_name:'경영시뮬레이션',     menu_url:'#simulation',           icon_class:'fas fa-flask',           sort_order:100 },
   { menu_code:'simulation-test', menu_name:'테스트 메뉴',         menu_url:'/simulation-test.html', icon_class:'fas fa-vial',            sort_order:101 },
-  { menu_code:'sysadmin',        menu_name:'시스템관리',          menu_url:'#sysadmin',             icon_class:'fas fa-cogs',            sort_order:200 },
 ];
 const DEFAULT_MENUS_USER = DEFAULT_MENUS_ALL.filter(m => ['nlq','builder','report'].includes(m.menu_code));
 
