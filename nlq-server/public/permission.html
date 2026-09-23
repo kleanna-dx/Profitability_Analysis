@@ -631,9 +631,15 @@ function renderMenuCheckList(menuData) {
         const c = menuColors[colorIdx++ % menuColors.length];
         const checked = m.is_mapped ? 'checked' : '';
         const checkedClass = m.is_mapped ? ' checked' : '';
+        // [2026-09-23-5] 이중 토글 버그 수정:
+        //   - 체크박스 직접 클릭은 브라우저가 이미 상태 토글 → onclick 에서 다시 토글하면 결과가 원래대로 돌아옴.
+        //   - 해결: 체크박스는 event.stopPropagation() 만 하고 상태 sync 는 onchange 로 위임.
+        //   - 항목 div 클릭 시에만 toggleMenuCheck(id) 로 명시적 토글 (기존 동작 유지).
         return `
         <div class="menu-check-item${checkedClass}" id="menuItem-${m.menu_id}" data-menu-code="${m.menu_code}" onclick="toggleMenuCheck(${m.menu_id})">
-            <input type="checkbox" ${checked} data-menu-id="${m.menu_id}" onclick="event.stopPropagation();toggleMenuCheck(${m.menu_id})">
+            <input type="checkbox" ${checked} data-menu-id="${m.menu_id}"
+                   onclick="event.stopPropagation();"
+                   onchange="syncMenuCheck(${m.menu_id})">
             <div class="menu-icon" style="background:${c.bg};color:${c.color};"><i class="${m.icon_class || 'fas fa-file'}"></i></div>
             <div>
                 <div class="menu-name">${m.menu_name}</div>
@@ -670,7 +676,8 @@ function renderMenuCheckList(menuData) {
                            onclick="event.stopPropagation();toggleGroupSelect('${group.key}', this.checked)"
                            style="width:18px;height:18px;accent-color:${group.color};cursor:pointer;flex-shrink:0;">`;
         const countBadge = isOther ? '' :
-            `<span style="font-size:12px;color:${group.color};font-weight:600;background:#fff;padding:2px 10px;border-radius:12px;border:1px solid ${group.border};">
+            `<span class="group-count-badge" data-group-key="${group.key}"
+                   style="font-size:12px;color:${group.color};font-weight:600;background:#fff;padding:2px 10px;border-radius:12px;border:1px solid ${group.border};">
                 ${checkedCount} / ${totalCount}
             </span>`;
 
@@ -758,15 +765,24 @@ function updateGroupHeaderCounts(groupKey) {
         gcb.checked = all.length > 0 && checked.length === all.length;
         gcb.indeterminate = checked.length > 0 && checked.length < all.length;
     }
-    // 헤더 카운트 텍스트 (n / total)
-    const countSpan = section.querySelector('.menu-section-title label > span:nth-of-type(2)');
-    if (countSpan) countSpan.textContent = `(${checked.length} / ${all.length})`;
+    // [2026-09-23-5] 새 헤더 구조: 카운트 뱃지는 .group-count-badge 로 명시 표시
+    const badge = section.querySelector('.group-count-badge');
+    if (badge) badge.textContent = `${checked.length} / ${all.length}`;
 }
 
+// 항목 div 클릭 시: 체크 상태를 명시적으로 토글
 function toggleMenuCheck(menuId) {
     const cb = document.querySelector(`input[data-menu-id="${menuId}"]`);
     if (!cb) return;
     cb.checked = !cb.checked;
+    syncMenuCheck(menuId);
+}
+
+// [2026-09-23-5] 체크박스 직접 클릭(change 이벤트) 시: 이미 브라우저가 상태를 바꿔놨으므로
+//   여기서는 재토글하지 않고 UI(카드 하이라이트, 그룹 헤더 카운트) 만 동기화.
+function syncMenuCheck(menuId) {
+    const cb = document.querySelector(`input[data-menu-id="${menuId}"]`);
+    if (!cb) return;
     const item = document.getElementById('menuItem-' + menuId);
     if (item) item.classList.toggle('checked', cb.checked);
     // 소속 그룹 헤더 상태/카운트 갱신
