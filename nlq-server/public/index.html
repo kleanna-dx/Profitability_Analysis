@@ -7,6 +7,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+    <!-- [2026-09-21] 통합 플랫폼 사이드바 공통 렌더러 (수익성분석 / 경영시뮬레이션 대분류) -->
+    <script src="/platform-sidebar.js" defer></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         *{font-family:'Noto Sans KR',sans-serif;box-sizing:border-box;margin:0;padding:0;}
@@ -1334,10 +1336,11 @@
 <aside id="sidebar" class="sidebar">
     <div class="p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
-            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
+            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
             <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
         </div>
-        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+        <p class="text-xs text-indigo-300 opacity-80">수익성분석 · 경영시뮬레이션</p>
     </div>
     <div class="sidebar-divider"></div>
 
@@ -1390,7 +1393,10 @@
         <button class="hamburger-btn" onclick="openSidebar()" title="메뉴">
             <i class="fas fa-bars"></i>
         </button>
-        <h1 class="text-sm font-bold text-gray-800">수익성분석 AI</h1>
+        <!-- [2026-09-21] 통합 플랫폼 HOME 링크: 사용자가 언제든 홈으로 복귀 가능 -->
+        <a href="/" title="통합 플랫폼 HOME" style="text-decoration:none;color:inherit;display:inline-flex;align-items:center;gap:6px;">
+            <h1 class="text-sm font-bold text-gray-800">수익성분석 AI</h1>
+        </a>
 
         <!-- 도메인 선택 (모든 사용자) -->
         <div id="domainSelectorBar" class="domain-selector-bar" style="display:none;"></div>
@@ -1804,28 +1810,41 @@ async function initDomainAndRole() {
             uid.style.display = '';
         }
 
-        const nav = document.getElementById('sidebarMenu');
-        if (nav && me.menus && me.menus.length > 0) {
+        // [2026-09-21] 통합 플랫폼 사이드바: 대분류(수익성분석/경영시뮬레이션) 드롭다운 구조.
+        //   기존 자연어 질의 메뉴의 [ⓘ 사용법] 버튼은 별도 재부착 (통합 렌더 후 후처리).
+        if (window.PlatformSidebar) {
             const currentPath = window.location.pathname;
-            nav.innerHTML = me.menus.map(m => {
-                const isActive = (m.menu_url === '/') ? (currentPath === '/' || currentPath === '/index.html') : (currentPath === m.menu_url);
-                if (m.menu_url === '/') {
-                    // 자연어 질의 메뉴 → 옆에 [ⓘ 사용법] 버튼 부착 (튜토리얼 재실행용)
-                    //   - 물음표만 있으면 기능이 잘 안 드러남 → 아이콘 + '사용법' 텍스트 조합으로 변경
-                    //   - 클릭 시 startCoachMark('manual') 호출, 이벤트 버블링 방지 (메뉴 클릭 startNewChat 과 분리)
-                    //   - 사이드바는 열린 상태 유지 (사용자가 튜토리얼 종료 후 다시 메뉴 접근 가능)
-                    //   - 메뉴명보다 강조되지 않도록 작은 폰트/얇은 보더의 pill 형태
-                    return `<div class="sidebar-menu-item${isActive ? ' active' : ''}" onclick="startNewChat();closeSidebar()">
-                        <i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span>
-                        <button class="sidebar-help-btn" onclick="event.stopPropagation();closeSidebar();startCoachMark('manual');" title="자연어 질의 사용법 보기" aria-label="자연어 질의 사용법 보기">
-                            <i class="fas fa-info-circle" aria-hidden="true"></i><span class="sidebar-help-btn-label">사용법</span>
-                        </button>
-                    </div>`;
-                }
-                return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive ? ' active' : ''}" style="text-decoration:none;">
-                    <i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span>
-                </a>`;
-            }).join('');
+            // /nlq 또는 /index.html 은 자연어질의 화면
+            const activeUrl = (currentPath === '/' || currentPath === '/index.html') ? '/nlq' : currentPath;
+            window.PlatformSidebar.render(me.menus || [], { activeUrl });
+            // 자연어 질의 메뉴에 [ⓘ 사용법] 버튼 재부착 (튜토리얼 재실행용)
+            const nlqLink = document.querySelector('#sidebarMenu .menu-item[data-menu-code="nlq"]');
+            if (nlqLink) {
+                // 링크 클릭 시 새 채팅 시작 (기존 동작 유지)
+                nlqLink.addEventListener('click', (ev) => {
+                    // 통합 사이드바는 <a href> 로 렌더링되므로 페이지 이동이 기본
+                    // 자연어질의 페이지 안에서 클릭한 경우에만 startNewChat 호출
+                    if (activeUrl === '/nlq') {
+                        ev.preventDefault();
+                        try { startNewChat(); } catch(_) {}
+                        try { closeSidebar(); } catch(_) {}
+                    }
+                });
+                // [ⓘ 사용법] 버튼 부착
+                const helpBtn = document.createElement('button');
+                helpBtn.className = 'sidebar-help-btn';
+                helpBtn.title = '자연어 질의 사용법 보기';
+                helpBtn.setAttribute('aria-label', '자연어 질의 사용법 보기');
+                helpBtn.style.marginLeft = 'auto';
+                helpBtn.innerHTML = '<i class="fas fa-info-circle" aria-hidden="true"></i><span class="sidebar-help-btn-label">사용법</span>';
+                helpBtn.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                    try { closeSidebar(); } catch(_) {}
+                    try { startCoachMark('manual'); } catch(_) {}
+                });
+                nlqLink.appendChild(helpBtn);
+            }
         }
 
         try { const dRes = await fetch('/api/domains'); domainsList = await dRes.json(); } catch(e) { domainsList = [{domain_code:'PS',domain_name:'페이퍼솔루션사업부'},{domain_code:'HL',domain_name:'홈앤리빙사업부'}]; }
@@ -1847,7 +1866,8 @@ async function initDomainAndRole() {
         try { if (typeof maybeAutoStartCoachMark === 'function' && userDefaultDomain) maybeAutoStartCoachMark(); } catch(_) {}
 
         const params = new URLSearchParams(window.location.search);
-        if (params.get('denied') === '1') { window.history.replaceState({}, '', '/'); setTimeout(() => alert('접근 권한이 없습니다.'), 300); }
+        // [2026-09-21] 통합 플랫폼 HOME 도입: 자연어질의 URL 은 '/nlq' 이므로 replaceState 대상도 /nlq 로 변경
+        if (params.get('denied') === '1') { window.history.replaceState({}, '', '/nlq'); setTimeout(() => alert('접근 권한이 없습니다.'), 300); }
     } catch(e) { console.error('[Domain] init 실패:', e); }
 }
 

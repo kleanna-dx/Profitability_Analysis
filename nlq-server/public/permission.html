@@ -80,6 +80,12 @@
         .menu-check-item .menu-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
         .menu-check-item .menu-name{font-weight:600;font-size:14px;color:#1e293b;}
         .menu-check-item .menu-url{font-size:11px;color:#94a3b8;font-family:'Fira Code',monospace;}
+        /* [2026-09-23-4] 그룹 컨테이너 내부의 하위 항목 padding/margin 조정 */
+        .menu-group-section .menu-group-items .menu-check-item{padding:12px 14px;margin-bottom:6px;}
+        .menu-group-section .menu-group-items .menu-check-item:last-child{margin-bottom:8px;}
+        /* 그룹 컨테이너 hover 강조: 그룹 전체 hover 시 살짝 shadow */
+        .menu-group-section{transition:box-shadow .15s,transform .15s;}
+        .menu-group-section:hover{box-shadow:0 4px 12px rgba(0,0,0,0.07);}
 
         /* User table */
         table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -161,6 +167,8 @@
         .modal input:focus,.modal textarea:focus{outline:none;border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
         .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px;}
     </style>
+    <!-- [2026-09-21] 통합 플랫폼 사이드바 공통 렌더러 (수익성분석 / 경영시뮬레이션 대분류) -->
+    <script src="/platform-sidebar.js" defer></script>
 </head>
 <body>
 
@@ -169,7 +177,8 @@
 <aside id="sidebar" class="sidebar">
     <div class="p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
-            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
+            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
             <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
         </div>
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
@@ -374,19 +383,10 @@ async function renderDynamicSidebar() {
         const res = await fetch('/api/me');
         const me = await res.json();
         if (!me.loggedIn) return;
-        const nav = document.getElementById('sidebarMenu');
-        if (!me.menus || me.menus.length === 0) {
-            nav.innerHTML = '<div style="padding:12px 24px;color:#94a3b8;font-size:12px;">메뉴 없음</div>';
-            return;
+        // [2026-09-21] 통합 플랫폼 사이드바로 렌더링 (대분류 + 하위 메뉴 드롭다운)
+        if (window.PlatformSidebar) {
+            window.PlatformSidebar.render(me.menus || [], { activeUrl: '/permission.html' });
         }
-        const currentPage = '/permission.html';
-        nav.innerHTML = me.menus.map(m => {
-            const isActive = m.menu_url === currentPage ? ' active' : '';
-            if (m.menu_url === '/' || m.menu_url === '/index.html') {
-                return `<a href="/" class="sidebar-menu-item${isActive}" style="text-decoration:none;"><i class="${m.icon_class}"></i><span>${m.menu_name}</span></a>`;
-            }
-            return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive}" style="text-decoration:none;"><i class="${m.icon_class}"></i><span>${m.menu_name}</span></a>`;
-        }).join('');
     } catch(e) { console.error('[Sidebar] 렌더링 실패:', e); }
 }
 
@@ -586,45 +586,235 @@ const menuColors = [
     {bg:'#ecfdf5',color:'#047857'}, {bg:'#fff7ed',color:'#c2410c'},
 ];
 
+// [2026-09-23-3] 대분류 별도 권한 폐지 (사용자 요청):
+//   - 하위 메뉴 권한만 관리. 대분류(수익성분석/경영시뮬레이션/시스템관리) 는 별도 저장/체크하지 않음.
+//   - 사이드바에서는 하위 메뉴 권한 1개 이상 존재 시 대분류 자동 노출.
+//   - 그룹 헤더의 체크박스는 "그 그룹 하위 전체 선택/해제" UI 편의 기능 (실제 권한 아님).
+//   - 각 그룹의 하위 메뉴 코드는 사이드바 GROUPS 정의와 동기화되어야 함.
+const GROUP_LAYOUT = [
+    {
+        key: 'profitability',
+        title: '수익성분석',
+        icon: 'fas fa-chart-pie',
+        // 헤더/아이콘 색상
+        color: '#7c3aed', bg: '#faf5ff', border: '#e9d5ff',
+        codes: ['nlq', 'builder', 'learning', 'batch', 'interface', 'report'],
+        desc: '자연어 질의, 비주얼 쿼리 빌더, 학습 관리 등 수익성분석 서비스의 하위 메뉴 권한.',
+    },
+    {
+        key: 'simulation',
+        title: '경영시뮬레이션',
+        icon: 'fas fa-flask',
+        color: '#b45309', bg: '#fef3c7', border: '#fde68a',
+        codes: ['simulation-test'],
+        desc: '경영시뮬레이션 서비스의 하위 메뉴 권한. (예: 테스트 메뉴)',
+    },
+    {
+        key: 'sysadmin',
+        title: '시스템관리',
+        icon: 'fas fa-cogs',
+        color: '#334155', bg: '#f1f5f9', border: '#cbd5e1',
+        codes: ['permission'],
+        desc: '시스템 운영/관리자용 메뉴 권한. (예: 권한 관리)',
+    },
+];
+
 function renderMenuCheckList(menuData) {
     const container = document.getElementById('menuCheckList');
-    container.innerHTML = menuData.map((m, i) => {
-        const c = menuColors[i % menuColors.length];
+
+    // 그룹 매핑
+    const byCode = {};
+    for (const m of menuData) byCode[m.menu_code] = m;
+
+    let colorIdx = 0;
+    function renderItem(m) {
+        const c = menuColors[colorIdx++ % menuColors.length];
         const checked = m.is_mapped ? 'checked' : '';
         const checkedClass = m.is_mapped ? ' checked' : '';
+        // [2026-09-23-5] 이중 토글 버그 수정:
+        //   - 체크박스 직접 클릭은 브라우저가 이미 상태 토글 → onclick 에서 다시 토글하면 결과가 원래대로 돌아옴.
+        //   - 해결: 체크박스는 event.stopPropagation() 만 하고 상태 sync 는 onchange 로 위임.
+        //   - 항목 div 클릭 시에만 toggleMenuCheck(id) 로 명시적 토글 (기존 동작 유지).
         return `
-        <div class="menu-check-item${checkedClass}" id="menuItem-${m.menu_id}" onclick="toggleMenuCheck(${m.menu_id})">
-            <input type="checkbox" ${checked} data-menu-id="${m.menu_id}" onclick="event.stopPropagation();toggleMenuCheck(${m.menu_id})">
+        <div class="menu-check-item${checkedClass}" id="menuItem-${m.menu_id}" data-menu-code="${m.menu_code}" onclick="toggleMenuCheck(${m.menu_id})">
+            <input type="checkbox" ${checked} data-menu-id="${m.menu_id}"
+                   onclick="event.stopPropagation();"
+                   onchange="syncMenuCheck(${m.menu_id})">
             <div class="menu-icon" style="background:${c.bg};color:${c.color};"><i class="${m.icon_class || 'fas fa-file'}"></i></div>
             <div>
                 <div class="menu-name">${m.menu_name}</div>
                 <div class="menu-url">${m.menu_url}</div>
             </div>
         </div>`;
-    }).join('');
+    }
+
+    // 사용자 요구: 대분류 dummy 코드(simulation/sysadmin)는 렌더 대상 아님.
+    //   기존 DB 에 남아있으면 서버 마이그레이션에서 삭제되지만, 방어적으로 여기서도 필터.
+    const HIDDEN_LEGACY_CATEGORY_CODES = new Set(['simulation', 'sysadmin']);
+    const html = [];
+    const knownCodes = new Set();
+    for (const group of GROUP_LAYOUT) group.codes.forEach(c => knownCodes.add(c));
+
+    // [2026-09-23-4] 사용자 요청: 그룹 전체를 감싸는 굵은 테두리로 시각적 그룹핑 명확화.
+    //   - 그룹 컨테이너: 2.5px solid <group.color> + 라운드 코너
+    //   - 헤더: 컨테이너 상단에 붙어서 라운드 코너 상단만 (border 없음, 배경만 <group.bg>)
+    //   - 하위 항목: 흰 배경, 옅은 회색 구분선
+    //   - 설명 텍스트: 헤더 바로 아래, 옅은 배경 그대로
+    function renderGroupSection(group, items, otherOpts) {
+        const opts = otherOpts || {};
+        const isOther = opts.isOther === true;
+        const allChecked = items.every(m => !!m.is_mapped);
+        const someChecked = items.some(m => !!m.is_mapped);
+        const groupCheckState = allChecked ? 'checked' : '';
+        const checkedCount = items.filter(m => m.is_mapped).length;
+        const totalCount = items.length;
+
+        // "기타" 그룹은 체크박스 없이 안내만
+        const headerCheckboxHtml = isOther ? '' : `
+                    <input type="checkbox" class="group-toggle" data-group-key="${group.key}"
+                           ${groupCheckState}
+                           onclick="event.stopPropagation();toggleGroupSelect('${group.key}', this.checked)"
+                           style="width:18px;height:18px;accent-color:${group.color};cursor:pointer;flex-shrink:0;">`;
+        const countBadge = isOther ? '' :
+            `<span class="group-count-badge" data-group-key="${group.key}"
+                   style="font-size:12px;color:${group.color};font-weight:600;background:#fff;padding:2px 10px;border-radius:12px;border:1px solid ${group.border};">
+                ${checkedCount} / ${totalCount}
+            </span>`;
+
+        return `
+        <div class="menu-group-section" data-group-key="${group.key}"
+             style="margin:0 0 20px;border:2.5px solid ${group.color};border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+            <!-- 그룹 헤더 (배경색 + 전체선택 체크박스 + 카운트) -->
+            <div class="menu-section-title"
+                 style="padding:12px 16px;background:${group.bg};border-bottom:1.5px solid ${group.border};display:flex;align-items:center;gap:12px;">
+                <label style="display:flex;align-items:center;gap:10px;cursor:${isOther ? 'default' : 'pointer'};user-select:none;flex:1;margin:0;">
+                    ${headerCheckboxHtml}
+                    <span style="font-size:14px;font-weight:800;color:${group.color};display:flex;align-items:center;gap:8px;">
+                        <i class="${group.icon}" style="font-size:15px;"></i>${group.title}
+                    </span>
+                </label>
+                ${countBadge}
+            </div>
+            <!-- 그룹 설명 (선택적) -->
+            <div style="padding:10px 16px 4px;font-size:11.5px;color:#64748b;line-height:1.55;background:#fafbff;border-bottom:1px dashed ${group.border};">
+                ${group.desc}<br>
+                <span style="color:#94a3b8;">${isOther
+                    ? '아직 대분류가 지정되지 않은 메뉴입니다.'
+                    : `※ 하위 메뉴 권한이 하나라도 있으면 사이드바에 <b style="color:${group.color};">${group.title}</b> 대분류가 자동 노출됩니다.`}</span>
+            </div>
+            <!-- 하위 메뉴 리스트 -->
+            <div class="menu-group-items" style="padding:12px 12px 4px;">
+                ${items.map(renderItem).join('')}
+            </div>
+        </div>`;
+    }
+
+    for (const group of GROUP_LAYOUT) {
+        const items = group.codes.map(code => byCode[code]).filter(Boolean);
+        if (items.length === 0) continue; // 그룹에 표시할 메뉴가 하나도 없으면 섹션 자체 생략
+        html.push(renderGroupSection(group, items));
+    }
+
+    // 기타 그룹 (안전망): GROUP_LAYOUT 및 legacy 대분류 코드에 속하지 않는 메뉴
+    const otherItems = menuData.filter(m => !knownCodes.has(m.menu_code) && !HIDDEN_LEGACY_CATEGORY_CODES.has(m.menu_code));
+    if (otherItems.length > 0) {
+        const otherGroup = {
+            key: '_other', title: '기타', icon: 'fas fa-question-circle',
+            color: '#9a3412', bg: '#fff7ed', border: '#fed7aa',
+            desc: '분류가 지정되지 않은 메뉴입니다. 필요 시 permission.html 의 GROUP_LAYOUT 에 코드 추가.',
+        };
+        html.push(renderGroupSection(otherGroup, otherItems, { isOther: true }));
+    }
+
+    container.innerHTML = html.join('');
+
+    // indeterminate 상태 반영 (일부만 체크된 그룹의 헤더 체크박스)
+    for (const group of GROUP_LAYOUT) {
+        const items = group.codes.map(code => byCode[code]).filter(Boolean);
+        if (items.length === 0) continue;
+        const allChecked = items.every(m => !!m.is_mapped);
+        const someChecked = items.some(m => !!m.is_mapped);
+        const gcb = container.querySelector(`input.group-toggle[data-group-key="${group.key}"]`);
+        if (gcb) gcb.indeterminate = someChecked && !allChecked;
+    }
 }
 
+// 그룹 헤더 체크박스: 해당 그룹 하위 전체 선택/해제 (UI 편의 기능)
+function toggleGroupSelect(groupKey, state) {
+    const section = document.querySelector(`.menu-group-section[data-group-key="${groupKey}"]`);
+    if (!section) return;
+    section.querySelectorAll('.menu-group-items input[type="checkbox"]').forEach(cb => {
+        cb.checked = state;
+        const item = cb.closest('.menu-check-item');
+        if (item) item.classList.toggle('checked', state);
+    });
+    // 그룹 헤더의 indeterminate 리셋
+    const gcb = document.querySelector(`input.group-toggle[data-group-key="${groupKey}"]`);
+    if (gcb) gcb.indeterminate = false;
+    updateGroupHeaderCounts(groupKey);
+}
+
+// 개별 항목 상태 변화 후 그룹 헤더 카운트/상태 갱신
+function updateGroupHeaderCounts(groupKey) {
+    const section = document.querySelector(`.menu-group-section[data-group-key="${groupKey}"]`);
+    if (!section) return;
+    const all = section.querySelectorAll('.menu-group-items input[type="checkbox"]');
+    const checked = section.querySelectorAll('.menu-group-items input[type="checkbox"]:checked');
+    const gcb = section.querySelector('input.group-toggle');
+    if (gcb) {
+        gcb.checked = all.length > 0 && checked.length === all.length;
+        gcb.indeterminate = checked.length > 0 && checked.length < all.length;
+    }
+    // [2026-09-23-5] 새 헤더 구조: 카운트 뱃지는 .group-count-badge 로 명시 표시
+    const badge = section.querySelector('.group-count-badge');
+    if (badge) badge.textContent = `${checked.length} / ${all.length}`;
+}
+
+// 항목 div 클릭 시: 체크 상태를 명시적으로 토글
 function toggleMenuCheck(menuId) {
     const cb = document.querySelector(`input[data-menu-id="${menuId}"]`);
     if (!cb) return;
     cb.checked = !cb.checked;
+    syncMenuCheck(menuId);
+}
+
+// [2026-09-23-5] 체크박스 직접 클릭(change 이벤트) 시: 이미 브라우저가 상태를 바꿔놨으므로
+//   여기서는 재토글하지 않고 UI(카드 하이라이트, 그룹 헤더 카운트) 만 동기화.
+function syncMenuCheck(menuId) {
+    const cb = document.querySelector(`input[data-menu-id="${menuId}"]`);
+    if (!cb) return;
     const item = document.getElementById('menuItem-' + menuId);
     if (item) item.classList.toggle('checked', cb.checked);
+    // 소속 그룹 헤더 상태/카운트 갱신
+    const section = cb.closest('.menu-group-section');
+    if (section) {
+        const groupKey = section.dataset.groupKey;
+        if (groupKey) updateGroupHeaderCounts(groupKey);
+    }
 }
 
 function toggleAllMenus(state) {
-    document.querySelectorAll('#menuCheckList input[type="checkbox"]').forEach(cb => {
+    // 하위 메뉴 체크박스만 대상 (그룹 헤더 .group-toggle 제외)
+    document.querySelectorAll('#menuCheckList .menu-group-items input[type="checkbox"]').forEach(cb => {
         cb.checked = state;
         const item = cb.closest('.menu-check-item');
         if (item) item.classList.toggle('checked', state);
+    });
+    // 모든 그룹 헤더 체크박스 상태 동기화
+    document.querySelectorAll('#menuCheckList .menu-group-section').forEach(section => {
+        const gk = section.dataset.groupKey;
+        if (gk) updateGroupHeaderCounts(gk);
     });
 }
 
 async function saveMenuMapping() {
     if (!selectedRoleId) return;
     const menuIds = [];
-    document.querySelectorAll('#menuCheckList input[type="checkbox"]:checked').forEach(cb => {
-        menuIds.push(parseInt(cb.dataset.menuId));
+    // [2026-09-23-3] 그룹 헤더 체크박스 (.group-toggle) 는 UI 편의용이므로 저장 대상 아님.
+    //   data-menu-id 속성이 있는 개별 항목 체크박스만 수집.
+    document.querySelectorAll('#menuCheckList .menu-group-items input[type="checkbox"]:checked').forEach(cb => {
+        const id = parseInt(cb.dataset.menuId);
+        if (!isNaN(id)) menuIds.push(id);
     });
     const btn = document.getElementById('saveMenuBtn');
     btn.disabled = true;

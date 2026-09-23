@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>통합 플랫폼 - 수익성분석 AI & 경영시뮬레이션</title>
+    <!-- Tailwind + Font Awesome + Noto Sans KR (기존 페이지들과 톤 일치) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- 통합 사이드바 공통 스크립트 -->
+    <script src="/platform-sidebar.js" defer></script>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        html, body{height:100%;font-family:'Noto Sans KR',-apple-system,BlinkMacSystemFont,sans-serif;background:#f5f7fb;color:#111827;}
+        /* ===== 좌측 사이드바 (다른 페이지들과 동일 톤: 딥 네이비) ===== */
+        .sidebar{
+            position:fixed;top:0;left:0;bottom:0;width:260px;
+            background:linear-gradient(180deg,#0f1a3a 0%,#111c3e 60%,#131e42 100%);
+            color:#cbd5e1;display:flex;flex-direction:column;z-index:30;
+            transition:transform .2s ease;
+        }
+        @media (max-width:960px){
+            .sidebar{transform:translateX(-100%);}
+            .sidebar.open{transform:translateX(0);}
+        }
+        .sidebar-overlay{
+            position:fixed;inset:0;background:rgba(15,23,42,.55);
+            opacity:0;pointer-events:none;transition:opacity .2s ease;z-index:29;
+        }
+        .sidebar-overlay.active{opacity:1;pointer-events:auto;}
+        @media (min-width:961px){
+            .sidebar-overlay{display:none;}
+            .sidebar-close-x{display:none;}
+        }
+        .brand{
+            padding:20px 22px 14px;
+            border-bottom:1px solid rgba(255,255,255,.08);
+        }
+        .brand a{text-decoration:none;color:inherit;display:block;}
+        .brand-title{font-size:16px;font-weight:800;color:#ffffff;letter-spacing:-.3px;}
+        .brand-sub{font-size:11px;color:#94a3b8;margin-top:3px;font-weight:500;}
+        .brand a:hover .brand-title{color:#a5b4fc;transition:color .15s;}
+        .brand a:hover .brand-sub{color:#c7d2fe;transition:color .15s;}
+
+        /* 대분류 (수익성분석 / 경영시뮬레이션) */
+        .menu-group{margin-top:8px;}
+        .menu-group-header{
+            display:flex;align-items:center;gap:8px;
+            padding:10px 22px;font-size:12px;font-weight:700;
+            color:#e5e7eb;cursor:pointer;user-select:none;
+            transition:background .12s;
+        }
+        .menu-group-header:hover{background:rgba(255,255,255,.05);}
+        .menu-group-header i.chevron{font-size:10px;margin-left:auto;color:#94a3b8;transition:transform .18s;}
+        .menu-group.collapsed .menu-group-header i.chevron{transform:rotate(-90deg);}
+        .menu-group-header i.group-icon{color:#a5b4fc;font-size:13px;}
+        .menu-group-body{padding:2px 0 6px;}
+        .menu-group.collapsed .menu-group-body{display:none;}
+        .menu-group.disabled .menu-group-header{color:#64748b;cursor:default;}
+        .menu-group.disabled .menu-group-header:hover{background:transparent;}
+
+        /* 하위 메뉴 아이템 */
+        .menu-item{
+            display:flex;align-items:center;gap:10px;
+            padding:8px 22px 8px 40px;font-size:13px;color:#cbd5e1;
+            text-decoration:none;cursor:pointer;transition:background .12s,color .12s;
+        }
+        .menu-item i{width:16px;text-align:center;font-size:12px;color:#94a3b8;}
+        .menu-item:hover{background:rgba(99,102,241,.15);color:#fff;}
+        .menu-item:hover i{color:#c7d2fe;}
+        .menu-item.active{background:rgba(99,102,241,.25);color:#fff;font-weight:600;}
+        .menu-item.active i{color:#c7d2fe;}
+        .menu-empty{
+            padding:8px 22px 8px 40px;font-size:12px;color:#64748b;font-style:italic;
+        }
+
+        .sidebar-close-x{
+            position:absolute;top:14px;right:14px;background:transparent;border:0;
+            color:#94a3b8;font-size:20px;cursor:pointer;
+        }
+
+        /* ===== 메인 영역 ===== */
+        .main-wrap{margin-left:260px;min-height:100vh;display:flex;flex-direction:column;}
+        @media (max-width:960px){ .main-wrap{margin-left:0;} }
+
+        .top-bar{
+            display:flex;align-items:center;gap:12px;
+            padding:14px 24px;background:#ffffff;border-bottom:1px solid #e5e7eb;
+        }
+        .hamburger{
+            display:none;background:transparent;border:0;font-size:20px;color:#374151;cursor:pointer;padding:4px 8px;
+        }
+        @media (max-width:960px){ .hamburger{display:inline-flex;} }
+        .top-user{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:13px;color:#374151;}
+        .top-user .user-badge i{color:#6366f1;margin-right:6px;}
+        .logout-btn{
+            display:inline-flex;align-items:center;gap:6px;padding:6px 12px;
+            background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:12px;color:#6b7280;
+            cursor:pointer;transition:all .15s;font-family:inherit;
+        }
+        .logout-btn:hover{background:#fef2f2;color:#dc2626;border-color:#fecaca;}
+
+        /* ===== 콘텐츠 (2 카드) ===== */
+        .content{flex:1;padding:36px 32px 40px;max-width:1100px;margin:0 auto;width:100%;}
+        .page-title{font-size:24px;font-weight:800;color:#0f172a;letter-spacing:-.4px;}
+        .page-subtitle{font-size:14px;color:#64748b;margin-top:8px;line-height:1.55;}
+
+        .cards{
+            display:grid;grid-template-columns:repeat(2,1fr);gap:24px;margin-top:28px;
+        }
+        @media (max-width:820px){ .cards{grid-template-columns:1fr;} }
+        .service-card{
+            background:#fff;border:1px solid #e5e7eb;border-radius:14px;
+            padding:26px 26px 22px;box-shadow:0 4px 14px rgba(15,23,42,.04);
+            display:flex;flex-direction:column;gap:14px;position:relative;
+        }
+        .card-icon{
+            width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+            font-size:22px;color:#fff;
+        }
+        .card-icon.profit{background:linear-gradient(135deg,#6366f1,#4338ca);}
+        .card-icon.sim{background:linear-gradient(135deg,#06b6d4,#0891b2);}
+        .card-title{
+            font-size:18px;font-weight:800;color:#0f172a;display:flex;align-items:center;gap:8px;
+        }
+        .card-title .ready-badge{
+            display:inline-block;font-size:11px;font-weight:600;color:#64748b;background:#f1f5f9;
+            padding:3px 10px;border-radius:999px;letter-spacing:0;
+        }
+        .card-desc{font-size:13.5px;color:#475569;line-height:1.65;}
+        .card-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;}
+        .card-tag{
+            font-size:11.5px;font-weight:600;color:#4f46e5;background:#eef2ff;
+            padding:5px 10px;border-radius:999px;
+        }
+        .card-tag.mono{color:#64748b;background:#f1f5f9;}
+        .card-cta{
+            margin-top:6px;display:inline-flex;align-items:center;gap:8px;justify-content:center;
+            padding:12px 16px;border-radius:10px;font-size:14px;font-weight:700;
+            border:0;cursor:pointer;transition:all .15s;font-family:inherit;
+        }
+        .card-cta.primary{background:linear-gradient(135deg,#6366f1,#4338ca);color:#fff;}
+        .card-cta.primary:hover{filter:brightness(1.08);transform:translateY(-1px);box-shadow:0 8px 18px rgba(79,70,229,.28);}
+        .card-cta.disabled{background:#e2e8f0;color:#64748b;cursor:not-allowed;}
+
+        .footer{
+            text-align:center;color:#94a3b8;font-size:12px;padding:16px 12px 24px;
+        }
+
+        /* 접근 안내 (로그인 안된 경우) */
+        .login-required{
+            padding:16px 18px;background:#fef3c7;border:1px solid #fde68a;border-radius:10px;
+            color:#92400e;font-size:13px;display:flex;align-items:center;gap:10px;margin-bottom:20px;
+        }
+    </style>
+</head>
+<body>
+
+<!-- ========== SIDEBAR ========== -->
+<aside id="sidebar" class="sidebar">
+    <div class="brand">
+        <a href="/" title="통합 플랫폼 HOME">
+            <div class="brand-title">통합 플랫폼</div>
+            <div class="brand-sub">수익성분석 · 경영시뮬레이션</div>
+        </a>
+        <button class="sidebar-close-x" onclick="closeSidebar()"><i class="fas fa-times"></i></button>
+    </div>
+    <!-- 대분류 그룹은 platform-sidebar.js 가 /api/me 응답 기반으로 렌더링 -->
+    <nav id="sidebarMenu" style="flex:1;overflow-y:auto;padding:4px 0 20px;"></nav>
+</aside>
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<!-- ========== MAIN ========== -->
+<div class="main-wrap">
+    <div class="top-bar">
+        <button class="hamburger" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
+        <div class="top-user">
+            <span id="userBadge" class="user-badge"><i class="fas fa-user-circle"></i>로그인 확인 중...</span>
+            <button class="logout-btn" onclick="doLogout()"><i class="fas fa-sign-out-alt"></i>로그아웃</button>
+        </div>
+    </div>
+
+    <div class="content">
+        <!-- 미로그인 시 안내 -->
+        <div id="loginRequired" class="login-required" style="display:none;">
+            <i class="fas fa-exclamation-triangle"></i>
+            <span>로그인이 필요합니다. <a href="/login" style="color:#b45309;text-decoration:underline;font-weight:700;">로그인 화면으로 이동</a></span>
+        </div>
+
+        <h1 class="page-title">통합 플랫폼</h1>
+        <p class="page-subtitle">수익성분석과 경영시뮬레이션을 하나의 화면에서. 필요한 분석 도구를 선택해 시작하세요.</p>
+
+        <div class="cards">
+            <!-- 수익성분석 AI -->
+            <div class="service-card">
+                <div class="card-icon profit"><i class="fas fa-chart-pie"></i></div>
+                <div class="card-title">수익성분석 AI</div>
+                <div class="card-desc">
+                    <!-- [2026-09-23 사용자 요청] "AI가" 문구 제거 -->
+                    월 마감 완료 후 사용자가 자연어로 질문하면,
+                    내부 수익성 데이터를 분석하여 결과를 <b>표와 차트 형태로 제공</b>합니다.
+                </div>
+                <div class="card-tags">
+                    <span class="card-tag">자연어 질의</span>
+                    <span class="card-tag">비주얼 쿼리 빌더</span>
+                    <span class="card-tag">학습 관리</span>
+                </div>
+                <button class="card-cta primary" onclick="enterProfitability()">
+                    <i class="fas fa-play"></i>시작하기
+                </button>
+            </div>
+
+            <!-- 경영시뮬레이션 -->
+            <div class="service-card">
+                <div class="card-icon sim"><i class="fas fa-flask"></i></div>
+                <div class="card-title">경영시뮬레이션 <span class="ready-badge">준비중</span></div>
+                <div class="card-desc">
+                    가정치 기반의 시나리오 시뮬레이션, 손익 예측, 민감도 분석을 통해
+                    전략적 의사결정을 지원합니다. 곧 서비스 예정입니다.
+                </div>
+                <div class="card-tags">
+                    <span class="card-tag mono">시나리오</span>
+                    <span class="card-tag mono">손익 예측</span>
+                    <span class="card-tag mono">민감도 분석</span>
+                    <span class="card-tag mono">리포트</span>
+                </div>
+                <button class="card-cta disabled" disabled title="준비 중">
+                    <i class="fas fa-clock"></i>시작하기 (준비 중)
+                </button>
+            </div>
+        </div>
+
+        <div class="footer">© 통합 플랫폼 · 수익성분석 AI &amp; 경영시뮬레이션</div>
+    </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// 통합 플랫폼 HOME 페이지 로직
+// ─────────────────────────────────────────────
+
+// 사이드바 열기/닫기 (모바일)
+function openSidebar(){ const s=document.getElementById('sidebar'), o=document.getElementById('sidebarOverlay'); s&&s.classList.add('open'); o&&o.classList.add('active'); }
+function closeSidebar(){ const s=document.getElementById('sidebar'), o=document.getElementById('sidebarOverlay'); s&&s.classList.remove('open'); o&&o.classList.remove('active'); }
+
+// 수익성분석 AI 시작하기 → 자연어질의로 이동
+// [2026-09-23-2] 사이드바 GROUPS.profitability.codes 와 동기화
+//   - permission 은 시스템관리 그룹으로 이관됨 → 여기서도 제거
+function enterProfitability(){
+    // 사용자에게 부여된 첫 번째 수익성분석 하위 메뉴로 이동
+    // (기본: /nlq 자연어질의)
+    // menus 없어도 안전하게 /nlq 로 이동
+    const menus = window.__myMenus || [];
+    const PROFIT_CODES = ['nlq','builder','learning','batch','interface','report'];
+    const first = menus.find(m => PROFIT_CODES.includes(m.menu_code));
+    if (first) {
+        window.location.href = first.menu_url;
+    } else {
+        // 권한이 없는 경우 안내
+        alert('수익성분석 하위 메뉴 접근 권한이 없습니다. 관리자에게 문의하세요.');
+    }
+}
+
+async function doLogout(){
+    try { await fetch('/api/logout', { method:'POST' }); } catch(_) {}
+    window.location.href = '/login';
+}
+
+// /api/me 로드 → 로그인 여부, 사용자명, 사이드바 메뉴 렌더
+(async function init(){
+    try {
+        const res = await fetch('/api/me');
+        const me = await res.json();
+        if (!me.loggedIn) {
+            document.getElementById('userBadge').innerHTML = '<i class="fas fa-user-circle"></i>미로그인';
+            document.getElementById('loginRequired').style.display = 'flex';
+            // 사이드바 메뉴도 빈 상태로 렌더 (게스트)
+            if (window.PlatformSidebar) window.PlatformSidebar.render([], { activeUrl: '/' });
+            return;
+        }
+        // 사용자 뱃지
+        const uname = me.name || me.user;
+        document.getElementById('userBadge').innerHTML = `<i class="fas fa-user-circle"></i><b>${uname}</b> 님, 환영합니다.`;
+        // 전역에 menus 캐시 (enterProfitability 등에서 사용)
+        window.__myMenus = me.menus || [];
+        // 사이드바 렌더 (공통 스크립트)
+        if (window.PlatformSidebar) {
+            window.PlatformSidebar.render(me.menus || [], { activeUrl: '/' });
+        }
+        // ?denied=1 파라미터 (권한 없는 페이지 접근 후 리다이렉트) → 알림
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('denied') === '1') {
+            window.history.replaceState({}, '', '/');
+            setTimeout(() => alert('접근 권한이 없습니다.'), 300);
+        }
+    } catch(e) {
+        console.error('[HOME] init 실패', e);
+        document.getElementById('userBadge').innerHTML = '<i class="fas fa-user-circle"></i>로드 실패';
+    }
+})();
+</script>
+
+</body>
+</html>

@@ -1187,20 +1187,26 @@ app.use(async (req, res, next) => {
 
   if (req.session && req.session.user) {
     // RBAC: 메뉴 권한 체크 — HTML 페이지 요청 시 허용 여부 확인
-    const menuPages = ['/builder.html', '/report', '/learning.html',
-                       '/permission.html', '/batch.html', '/upload.html'];
-    const checkPath = req.path === '/index.html' ? '/' : req.path;
+    // [2026-09-21] 통합 플랫폼 HOME 도입에 따라 자연어질의는 /nlq 경로로 이동.
+    //   /interface.html 도 사용자 요청에 따라 정식 메뉴로 편입.
+    //   / (통합 플랫폼 HOME) 자체는 권한 체크 대상이 아님 (로그인만 되어 있으면 누구나 접근).
+    // [2026-09-23-2] /simulation-test.html (경영시뮬레이션 하위 테스트 메뉴) 추가.
+    const menuPages = ['/nlq', '/builder.html', '/report', '/learning.html',
+                       '/permission.html', '/batch.html', '/interface.html', '/upload.html',
+                       '/simulation-test.html'];
+    // 기존 /index.html 직접 접근은 자연어질의(/nlq) 로 취급하여 권한 체크
+    const checkPath = (req.path === '/index.html') ? '/nlq' : req.path;
     if (menuPages.includes(checkPath)) {
       try {
         const allowed = await isMenuAllowed(req.session.user.id, checkPath);
         if (!allowed) {
-          // HTML 요청이면 접근 차단 페이지 또는 메인으로 리다이렉트
+          // HTML 요청이면 접근 차단 후 통합 플랫폼 HOME 으로 리다이렉트
           return res.redirect('/?denied=1');
         }
       } catch (e) {
         console.error('[RBAC] 접근 권한 체크 실패:', e.message);
         // 체크 실패 시 기존 admin 방식으로 폴백
-        const adminOnlyPages = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
+        const adminOnlyPages = ['/learning.html', '/upload.html', '/batch.html', '/permission.html', '/interface.html'];
         if (adminOnlyPages.includes(req.path) && req.session.user.role !== 'admin') {
           return res.redirect('/');
         }
@@ -1215,6 +1221,26 @@ app.use(async (req, res, next) => {
   }
   // 페이지 요청이면 리다이렉트
   return res.redirect('/login');
+});
+
+// ────────────────────────────────────────────────────────────────
+// [2026-09-21] 통합 플랫폼 HOME 라우팅
+//   변경 배경: 사용자 요청 — 최초 진입 화면을 자연어질의(index.html) 대신
+//     별도의 통합 플랫폼 HOME (platform.html) 으로 변경.
+//     기존 자연어질의는 /nlq 명시 경로로 이동.
+//   원칙:
+//     - GET /       → public/platform.html   (통합 플랫폼 HOME, 신규)
+//     - GET /nlq    → public/index.html      (기존 자연어질의)
+//     - 기존 /index.html 직접 접근도 그대로 동작 (express.static 유지)
+//     - catch-all(SPA fallback) 은 그대로 index.html 유지 → 기존 라우트 무영향
+//     ⚠️ express.static 이 GET / 요청에서 자동으로 index.html 을 반환하므로,
+//        이 두 명시 라우트는 반드시 express.static 이전에 정의해야 함.
+// ────────────────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.sendFile(path.join(import.meta.dirname, 'public', 'platform.html'));
+});
+app.get('/nlq', (req, res) => {
+  res.sendFile(path.join(import.meta.dirname, 'public', 'index.html'));
 });
 
 // 정적 파일 서빙 (인증 미들웨어 뒤에 배치)
@@ -19994,18 +20020,87 @@ async function ensureRbacTables() {
     }
 
     // 6) 시드 데이터 — 메뉴가 비어있을 때만 삽입
+    // [2026-09-21] 통합 플랫폼 HOME 도입: 자연어질의 URL '/' → '/nlq', 인터페이스 관리 추가
+    // [2026-09-23] 통합 플랫폼 대분류 권한: simulation (경영시뮬레이션) 대분류 메뉴 추가
+    // [2026-09-23-2] sysadmin (시스템관리) 대분류 + simulation-test 하위 추가
+    // [2026-09-23-3] 대분류 별도 권한 폐지 (사용자 요청):
+    //   - 대분류(수익성분석/경영시뮬레이션/시스템관리) 는 하위 메뉴 권한 존재 여부로 자동 노출
+    //   - dummy 앵커 대분류 메뉴 (simulation, sysadmin) 는 role_menus 관리 대상에서 제거
+    //   - 기존 DB 에 남아있으면 마이그레이션 블록에서 안전 삭제 (아래 참조)
     const [menuCount] = await pool.query('SELECT COUNT(*) AS cnt FROM menus');
     if (menuCount[0].cnt === 0) {
       await pool.query(`
         INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order) VALUES
-        ('nlq',       '자연어 질의',          '/',               'fas fa-comments',          1),
-        ('builder',   '비주얼 쿼리 빌더',    '/builder.html',   'fas fa-th-large',          2),
-        ('report',    'PPT 분석 장표 생성',   '/report',         'fas fa-file-powerpoint',   3),
-        ('learning',  '학습 관리',            '/learning.html',  'fas fa-graduation-cap',    4),
-        ('permission','권한 관리',           '/permission.html','fas fa-shield-alt',        5),
-        ('batch',     '배치 관리',            '/batch.html',     'fas fa-sync-alt',          6)
+        ('nlq',            '자연어 질의',          '/nlq',                    'fas fa-comments',          1),
+        ('builder',        '비주얼 쿼리 빌더',    '/builder.html',           'fas fa-th-large',          2),
+        ('report',         'PPT 분석 장표 생성',   '/report',                 'fas fa-file-powerpoint',   3),
+        ('learning',       '학습 관리',            '/learning.html',          'fas fa-graduation-cap',    4),
+        ('permission',     '권한 관리',           '/permission.html',        'fas fa-shield-alt',        5),
+        ('batch',          '배치 관리',            '/batch.html',             'fas fa-sync-alt',          6),
+        ('interface',      '인터페이스 관리',      '/interface.html',         'fas fa-plug',              7),
+        ('simulation-test','테스트 메뉴',          '/simulation-test.html',   'fas fa-vial',              101)
       `);
       console.log('[RBAC] 기본 메뉴 시드 데이터 삽입');
+    } else {
+      // 기존 DB 마이그레이션: nlq 의 menu_url 이 '/' 로 남아 있으면 '/nlq' 로 자동 갱신
+      // (사용자 요청 반영: 통합 플랫폼 HOME 은 '/' 이 되어야 함)
+      try {
+        const [nlqRow] = await pool.query(`SELECT id, menu_url FROM menus WHERE menu_code = 'nlq'`);
+        if (nlqRow.length > 0 && nlqRow[0].menu_url === '/') {
+          await pool.query(`UPDATE menus SET menu_url = '/nlq' WHERE id = ?`, [nlqRow[0].id]);
+          console.log('[RBAC] 기존 nlq 메뉴 URL 마이그레이션: / → /nlq');
+        }
+      } catch (e) { console.error('[RBAC] nlq URL 마이그레이션 실패:', e.message); }
+      // interface 메뉴가 아직 없으면 추가 (기존 배포된 DB 마이그레이션)
+      try {
+        const [ifRow] = await pool.query(`SELECT id FROM menus WHERE menu_code = 'interface'`);
+        if (ifRow.length === 0) {
+          await pool.query(`
+            INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order)
+            VALUES ('interface', '인터페이스 관리', '/interface.html', 'fas fa-plug', 7)
+          `);
+          // admin 역할에 자동 매핑
+          await pool.query(`
+            INSERT IGNORE INTO role_menus (role_id, menu_id)
+            SELECT r.id, m.id FROM roles r CROSS JOIN menus m
+            WHERE r.role_code = 'admin' AND m.menu_code = 'interface'
+          `);
+          console.log('[RBAC] interface 메뉴 신규 추가 + admin 매핑');
+        }
+      } catch (e) { console.error('[RBAC] interface 메뉴 추가 실패:', e.message); }
+      // [2026-09-23-2] simulation-test (경영시뮬레이션 하위 테스트 메뉴) 자동 추가
+      //   (하위 메뉴는 실제 URL 이 있으므로 그대로 유지)
+      try {
+        const [stRow] = await pool.query(`SELECT id FROM menus WHERE menu_code = 'simulation-test'`);
+        if (stRow.length === 0) {
+          await pool.query(`
+            INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order)
+            VALUES ('simulation-test', '테스트 메뉴', '/simulation-test.html', 'fas fa-vial', 101)
+          `);
+          await pool.query(`
+            INSERT IGNORE INTO role_menus (role_id, menu_id)
+            SELECT r.id, m.id FROM roles r CROSS JOIN menus m
+            WHERE r.role_code = 'admin' AND m.menu_code = 'simulation-test'
+          `);
+          console.log('[RBAC] simulation-test 하위 메뉴 신규 추가 + admin 매핑');
+        }
+      } catch (e) { console.error('[RBAC] simulation-test 메뉴 추가 실패:', e.message); }
+
+      // [2026-09-23-3] 대분류 별도 권한 폐지 마이그레이션 (사용자 요청):
+      //   - 기존 DB 에 남아있는 대분류 dummy 메뉴 (simulation, sysadmin) 를 정리.
+      //   - 대분류는 이제 하위 메뉴 권한 존재 여부로 자동 판정 → 별도 코드 불필요.
+      //   - role_menus 매핑도 함께 삭제 (FK 안전).
+      for (const legacyCode of ['simulation', 'sysadmin']) {
+        try {
+          const [row] = await pool.query(`SELECT id FROM menus WHERE menu_code = ?`, [legacyCode]);
+          if (row.length > 0) {
+            const menuId = row[0].id;
+            await pool.query(`DELETE FROM role_menus WHERE menu_id = ?`, [menuId]);
+            await pool.query(`DELETE FROM menus WHERE id = ?`, [menuId]);
+            console.log(`[RBAC] 대분류 dummy 메뉴 정리: '${legacyCode}' 제거 (하위 메뉴 기준 자동 노출로 대체)`);
+          }
+        } catch (e) { console.error(`[RBAC] '${legacyCode}' dummy 메뉴 정리 실패:`, e.message); }
+      }
     }
 
     // 7) 시드 데이터 — role_menus 매핑이 비어있을 때만 삽입
@@ -20349,13 +20444,27 @@ async function ensureErrorReportsTable() {
 
 // ── RBAC 기본 메뉴 (폴백용) ──
 // RBAC 테이블이 아직 준비 안 됐거나, role_id가 NULL인 경우 role_code로 폴백
+// [2026-09-21] 통합 플랫폼 HOME 도입:
+//   - '/' 는 통합 플랫폼 HOME (platform.html) 로 예약 → 자연어질의는 '/nlq' 로 이동
+//   - 사용자 요청으로 '인터페이스 관리' 를 정식 메뉴에 편입 (interface.html 은 기존부터 존재했음)
+// [2026-09-23] 통합 플랫폼 대분류 권한 도입:
+//   - 'simulation' (경영시뮬레이션) 을 대분류 메뉴 권한으로 추가
+//     · 아직 하위 URL 없음 → menu_url = '#simulation' (dummy 앵커, 라우팅 대상 아님)
+//     · icon: fa-flask (플랫폼 카드와 동일 아이콘)
+//     · 권한이 있어야만 사이드바에 '경영시뮬레이션' 대분류 노출
+//   - 대분류 [수익성분석] 자체는 하위 메뉴(nlq/builder 등) 중 하나라도 있으면 자동 노출됨
+//     (별도 'profitability' 대분류 코드는 만들지 않음 — UI 그룹핑 규칙으로 처리)
+// [2026-09-23-3] 대분류 메뉴 코드 (simulation/sysadmin) 폐지:
+//   대분류는 하위 메뉴 권한 존재 여부로 자동 노출됨 → 별도 dummy 메뉴 코드 불필요.
 const DEFAULT_MENUS_ALL = [
-  { menu_code:'nlq',       menu_name:'자연어 질의',        menu_url:'/',               icon_class:'fas fa-comments',        sort_order:1 },
-  { menu_code:'builder',   menu_name:'비주얼 쿼리 빌더',  menu_url:'/builder.html',   icon_class:'fas fa-th-large',        sort_order:2 },
-  { menu_code:'report',    menu_name:'PPT 분석 장표 생성', menu_url:'/report',         icon_class:'fas fa-file-powerpoint', sort_order:3 },
-  { menu_code:'learning',  menu_name:'학습 관리',          menu_url:'/learning.html',  icon_class:'fas fa-graduation-cap',  sort_order:4 },
-  { menu_code:'permission',menu_name:'권한 관리',           menu_url:'/permission.html',icon_class:'fas fa-shield-alt',      sort_order:5 },
-  { menu_code:'batch',     menu_name:'배치 관리',          menu_url:'/batch.html',     icon_class:'fas fa-sync-alt',        sort_order:6 },
+  { menu_code:'nlq',             menu_name:'자연어 질의',        menu_url:'/nlq',                  icon_class:'fas fa-comments',        sort_order:1 },
+  { menu_code:'builder',         menu_name:'비주얼 쿼리 빌더',  menu_url:'/builder.html',         icon_class:'fas fa-th-large',        sort_order:2 },
+  { menu_code:'report',          menu_name:'PPT 분석 장표 생성', menu_url:'/report',               icon_class:'fas fa-file-powerpoint', sort_order:3 },
+  { menu_code:'learning',        menu_name:'학습 관리',          menu_url:'/learning.html',        icon_class:'fas fa-graduation-cap',  sort_order:4 },
+  { menu_code:'permission',      menu_name:'권한 관리',           menu_url:'/permission.html',      icon_class:'fas fa-shield-alt',      sort_order:5 },
+  { menu_code:'batch',           menu_name:'배치 관리',          menu_url:'/batch.html',           icon_class:'fas fa-sync-alt',        sort_order:6 },
+  { menu_code:'interface',       menu_name:'인터페이스 관리',    menu_url:'/interface.html',       icon_class:'fas fa-plug',            sort_order:7 },
+  { menu_code:'simulation-test', menu_name:'테스트 메뉴',         menu_url:'/simulation-test.html', icon_class:'fas fa-vial',            sort_order:101 },
 ];
 const DEFAULT_MENUS_USER = DEFAULT_MENUS_ALL.filter(m => ['nlq','builder','report'].includes(m.menu_code));
 
@@ -20425,7 +20534,12 @@ async function getUserAllowedMenus(userId) {
  */
 async function isMenuAllowed(userId, urlPath) {
   try {
-    const normalizedPath = urlPath === '/index.html' ? '/' : urlPath;
+    // [2026-09-21] 통합 플랫폼 HOME 도입:
+    //   기존 자연어질의 URL '/' → '/nlq' 로 이동. 하위 호환을 위해 '/index.html' 및 '/'
+    //   요청도 모두 '/nlq' 로 정규화하여 권한 체크. (통합 플랫폼 HOME '/' 자체는
+    //   호출부에서 menuPages 필터로 제외되므로 여기까지 오지 않음.)
+    let normalizedPath = urlPath;
+    if (urlPath === '/index.html' || urlPath === '/') normalizedPath = '/nlq';
 
     // 먼저 role_id 확인
     const [userRow] = await pool.query(
@@ -20438,7 +20552,7 @@ async function isMenuAllowed(userId, urlPath) {
 
     // role_id NULL → 기존 방식 폴백
     if (!user.role_id) {
-      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
+      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html', '/interface.html'];
       if (adminOnly.includes(normalizedPath)) return user.role_code === 'admin';
       return true; // 기본 페이지는 모두 허용
     }
@@ -20457,7 +20571,7 @@ async function isMenuAllowed(userId, urlPath) {
     const [totalMappings] = await pool.query('SELECT COUNT(*) AS cnt FROM role_menus WHERE role_id = ?', [user.role_id]);
     if (totalMappings[0].cnt === 0) {
       // 매핑이 아예 없으면 시드 전 상태 → 기존 방식
-      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
+      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html', '/interface.html'];
       if (adminOnly.includes(normalizedPath)) return user.role_code === 'admin';
       return true;
     }
@@ -20472,7 +20586,7 @@ async function isMenuAllowed(userId, urlPath) {
          FROM users u LEFT JOIN roles r ON r.id = u.role_id
          WHERE u.user_id = ?`, [userId]);
       if (u.length === 0) return false;
-      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html'];
+      const adminOnly = ['/learning.html', '/upload.html', '/batch.html', '/permission.html', '/interface.html'];
       if (adminOnly.includes(urlPath)) return u[0].role_code === 'admin';
       return true;
     } catch (e2) {

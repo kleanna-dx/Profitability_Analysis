@@ -284,6 +284,8 @@
         .month-labels span{flex:1;text-align:center;font-size:9px;color:#94a3b8;min-width:0;overflow:hidden;text-overflow:ellipsis;}
         .month-empty{color:#94a3b8;font-size:12px;padding:20px;text-align:center;width:100%;}
     </style>
+    <!-- [2026-09-21] 통합 플랫폼 사이드바 공통 렌더러 (수익성분석 / 경영시뮬레이션 대분류) -->
+    <script src="/platform-sidebar.js" defer></script>
 </head>
 <body>
 
@@ -292,7 +294,8 @@
 <aside id="sidebar" class="sidebar">
     <div class="p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
-            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
+            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
             <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
         </div>
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
@@ -807,13 +810,9 @@ async function init(){
     if(uid && me.name){uid.innerHTML=`<strong style="font-size:13px;color:#1e293b;">${me.name}님</strong><br><span style="font-size:11px;color:#6b7280;font-weight:700;">(${me.user})</span>`;uid.style.display='';}
     const hasInterface=me.menus && me.menus.some(m=>m.menu_url==='/interface.html');
     if(!hasInterface && me.role!=='admin'){window.location.href='/?denied=1';return;}
-    // 사이드바
-    const nav=document.getElementById('sidebarMenu');
-    if(nav && me.menus){
-      nav.innerHTML=me.menus.map(m=>{
-        const active=m.menu_url==='/interface.html';
-        return `<a href="${m.menu_url}" class="sidebar-menu-item${active?' active':''}"><i class="${m.icon_class||'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
-      }).join('');
+    // [2026-09-21] 통합 플랫폼 사이드바로 렌더링 (대분류 + 하위 메뉴 드롭다운)
+    if (window.PlatformSidebar) {
+      window.PlatformSidebar.render(me.menus || [], { activeUrl: '/interface.html' });
     }
   }catch(e){window.location.href='/login';return;}
 
