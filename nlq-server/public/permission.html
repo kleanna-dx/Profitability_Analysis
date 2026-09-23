@@ -80,6 +80,12 @@
         .menu-check-item .menu-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
         .menu-check-item .menu-name{font-weight:600;font-size:14px;color:#1e293b;}
         .menu-check-item .menu-url{font-size:11px;color:#94a3b8;font-family:'Fira Code',monospace;}
+        /* [2026-09-23-4] 그룹 컨테이너 내부의 하위 항목 padding/margin 조정 */
+        .menu-group-section .menu-group-items .menu-check-item{padding:12px 14px;margin-bottom:6px;}
+        .menu-group-section .menu-group-items .menu-check-item:last-child{margin-bottom:8px;}
+        /* 그룹 컨테이너 hover 강조: 그룹 전체 hover 시 살짝 shadow */
+        .menu-group-section{transition:box-shadow .15s,transform .15s;}
+        .menu-group-section:hover{box-shadow:0 4px 12px rgba(0,0,0,0.07);}
 
         /* User table */
         table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -643,58 +649,74 @@ function renderMenuCheckList(menuData) {
     const knownCodes = new Set();
     for (const group of GROUP_LAYOUT) group.codes.forEach(c => knownCodes.add(c));
 
-    for (const group of GROUP_LAYOUT) {
-        const items = group.codes.map(code => byCode[code]).filter(Boolean);
-        if (items.length === 0) continue; // 그룹에 표시할 메뉴가 하나도 없으면 섹션 자체 생략
-
+    // [2026-09-23-4] 사용자 요청: 그룹 전체를 감싸는 굵은 테두리로 시각적 그룹핑 명확화.
+    //   - 그룹 컨테이너: 2.5px solid <group.color> + 라운드 코너
+    //   - 헤더: 컨테이너 상단에 붙어서 라운드 코너 상단만 (border 없음, 배경만 <group.bg>)
+    //   - 하위 항목: 흰 배경, 옅은 회색 구분선
+    //   - 설명 텍스트: 헤더 바로 아래, 옅은 배경 그대로
+    function renderGroupSection(group, items, otherOpts) {
+        const opts = otherOpts || {};
+        const isOther = opts.isOther === true;
         const allChecked = items.every(m => !!m.is_mapped);
         const someChecked = items.some(m => !!m.is_mapped);
         const groupCheckState = allChecked ? 'checked' : '';
-        const groupIndeterminate = (someChecked && !allChecked) ? 'true' : 'false';
+        const checkedCount = items.filter(m => m.is_mapped).length;
+        const totalCount = items.length;
 
-        html.push(`
-        <div class="menu-group-section" data-group-key="${group.key}" style="margin:16px 0 8px;">
-            <div class="menu-section-title" style="padding:10px 14px;background:${group.bg};border:1px solid ${group.border};border-radius:8px;display:flex;align-items:center;gap:10px;">
-                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;flex:1;margin:0;">
+        // "기타" 그룹은 체크박스 없이 안내만
+        const headerCheckboxHtml = isOther ? '' : `
                     <input type="checkbox" class="group-toggle" data-group-key="${group.key}"
                            ${groupCheckState}
                            onclick="event.stopPropagation();toggleGroupSelect('${group.key}', this.checked)"
-                           style="width:16px;height:16px;accent-color:${group.color};cursor:pointer;">
-                    <span style="font-size:13px;font-weight:700;color:${group.color};">
-                        <i class="${group.icon}" style="margin-right:6px;"></i>${group.title}
-                    </span>
-                    <span style="font-size:11px;color:#64748b;font-weight:500;margin-left:6px;">
-                        (${items.filter(m => m.is_mapped).length} / ${items.length})
+                           style="width:18px;height:18px;accent-color:${group.color};cursor:pointer;flex-shrink:0;">`;
+        const countBadge = isOther ? '' :
+            `<span style="font-size:12px;color:${group.color};font-weight:600;background:#fff;padding:2px 10px;border-radius:12px;border:1px solid ${group.border};">
+                ${checkedCount} / ${totalCount}
+            </span>`;
+
+        return `
+        <div class="menu-group-section" data-group-key="${group.key}"
+             style="margin:0 0 20px;border:2.5px solid ${group.color};border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+            <!-- 그룹 헤더 (배경색 + 전체선택 체크박스 + 카운트) -->
+            <div class="menu-section-title"
+                 style="padding:12px 16px;background:${group.bg};border-bottom:1.5px solid ${group.border};display:flex;align-items:center;gap:12px;">
+                <label style="display:flex;align-items:center;gap:10px;cursor:${isOther ? 'default' : 'pointer'};user-select:none;flex:1;margin:0;">
+                    ${headerCheckboxHtml}
+                    <span style="font-size:14px;font-weight:800;color:${group.color};display:flex;align-items:center;gap:8px;">
+                        <i class="${group.icon}" style="font-size:15px;"></i>${group.title}
                     </span>
                 </label>
+                ${countBadge}
             </div>
-            <div style="font-size:11px;color:#64748b;margin:6px 4px 8px;line-height:1.5;padding-left:4px;">
+            <!-- 그룹 설명 (선택적) -->
+            <div style="padding:10px 16px 4px;font-size:11.5px;color:#64748b;line-height:1.55;background:#fafbff;border-bottom:1px dashed ${group.border};">
                 ${group.desc}<br>
-                <span style="color:#94a3b8;">※ 하위 메뉴 권한이 하나라도 있으면 사이드바에 <b>${group.title}</b> 대분류가 자동 노출됩니다.</span>
+                <span style="color:#94a3b8;">${isOther
+                    ? '아직 대분류가 지정되지 않은 메뉴입니다.'
+                    : `※ 하위 메뉴 권한이 하나라도 있으면 사이드바에 <b style="color:${group.color};">${group.title}</b> 대분류가 자동 노출됩니다.`}</span>
             </div>
-            <div class="menu-group-items">
+            <!-- 하위 메뉴 리스트 -->
+            <div class="menu-group-items" style="padding:12px 12px 4px;">
                 ${items.map(renderItem).join('')}
             </div>
-        </div>`);
-        // indeterminate 는 JS 로만 설정 가능 → 렌더 후 처리 위해 group-toggle 에 data 저장
-        // (아래 setGroupCheckboxStates 에서 처리)
+        </div>`;
+    }
+
+    for (const group of GROUP_LAYOUT) {
+        const items = group.codes.map(code => byCode[code]).filter(Boolean);
+        if (items.length === 0) continue; // 그룹에 표시할 메뉴가 하나도 없으면 섹션 자체 생략
+        html.push(renderGroupSection(group, items));
     }
 
     // 기타 그룹 (안전망): GROUP_LAYOUT 및 legacy 대분류 코드에 속하지 않는 메뉴
     const otherItems = menuData.filter(m => !knownCodes.has(m.menu_code) && !HIDDEN_LEGACY_CATEGORY_CODES.has(m.menu_code));
     if (otherItems.length > 0) {
-        html.push(`
-        <div class="menu-group-section" data-group-key="_other" style="margin:16px 0 8px;">
-            <div class="menu-section-title" style="padding:10px 14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;">
-                <span style="font-size:13px;font-weight:700;color:#9a3412;">
-                    <i class="fas fa-question-circle" style="margin-right:6px;"></i>기타
-                </span>
-            </div>
-            <div style="font-size:11px;color:#64748b;margin:6px 4px 8px;line-height:1.5;padding-left:4px;">
-                아직 대분류가 지정되지 않은 메뉴입니다. 필요 시 <code>permission.html</code> 의 <b>GROUP_LAYOUT</b> 에 코드 추가.
-            </div>
-            <div class="menu-group-items">${otherItems.map(renderItem).join('')}</div>
-        </div>`);
+        const otherGroup = {
+            key: '_other', title: '기타', icon: 'fas fa-question-circle',
+            color: '#9a3412', bg: '#fff7ed', border: '#fed7aa',
+            desc: '분류가 지정되지 않은 메뉴입니다. 필요 시 permission.html 의 GROUP_LAYOUT 에 코드 추가.',
+        };
+        html.push(renderGroupSection(otherGroup, otherItems, { isOther: true }));
     }
 
     container.innerHTML = html.join('');
