@@ -48,7 +48,10 @@
  *   - active 상태 명확 (배경/테두리 강조)
  *   - 기존 사이드바 컬러톤 유지 (indigo 계열 tint)
  * ────────────────────────────────────────────────────────────*/
-#sidebarMenu{padding:8px 0 20px;}
+/* [2026-09-23 사용자 요청] 마지막 대분류(경영시뮬레이션) 아래 여백 제거.
+   기존 padding-bottom:20px 은 사이드바 하단의 "새 채팅" / "질의 이력" 영역과 사이에
+   시각적으로 불필요한 공백을 만들었음. 상단은 로고와 첫 카드 사이 살짝 여유(8px)만 유지. */
+#sidebarMenu{padding:8px 0 4px;}
 #sidebarMenu .category-item{
     /* 공통 base: 홈/수익성분석/경영시뮬레이션 모두 이 스타일을 상속 */
     display:flex;align-items:center;gap:12px;
@@ -98,6 +101,9 @@
 #sidebarMenu .menu-group{margin:0;}
 #sidebarMenu .menu-group-body{padding:2px 0 4px;}
 #sidebarMenu .menu-group.collapsed > .menu-group-body{display:none;}
+/* [2026-09-23 사용자 요청] 마지막 대분류(경영시뮬레이션) 카드의 하단 여백 제거 */
+#sidebarMenu > .menu-group:last-child > .category-item{margin-bottom:0;}
+#sidebarMenu > .menu-group:last-child > .menu-group-body{padding-bottom:0;}
 
 /* 하위 메뉴 항목 — 대분류보다 한 단계 작은 크기 + 들여쓰기 (계층 명확)
    [2026-09-23 사용자 요청] 하위 메뉴 글씨 1포인트 증가 (12.5px → 13.5px)

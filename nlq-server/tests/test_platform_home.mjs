@@ -343,6 +343,21 @@ if (PS && PS.render) {
 }
 
 // ============================================================
+// J. 마지막 대분류(경영시뮬레이션) 아래 여백 제거 (2026-09-23 사용자 요청)
+//   - #sidebarMenu 컨테이너 padding-bottom 을 20px → 4px 로 축소
+//   - 마지막 그룹(:last-child)의 .category-item 하단 마진 및
+//     .menu-group-body 하단 padding 제거
+// ============================================================
+// J-1: #sidebarMenu 하단 padding 이 4px 이하 (기존 20px 이 아니어야 함)
+assertMatch(sidebarSrc, /#sidebarMenu\s*\{\s*padding:8px 0 4px\s*;\s*\}/, 'J-1: #sidebarMenu padding 이 8px 0 4px 로 축소됨 (기존 20px 제거)');
+// J-2: 기존 padding:8px 0 20px 이 남아있지 않음
+assert(!/#sidebarMenu\s*\{\s*padding:8px 0 20px/.test(sidebarSrc), 'J-2: 기존 padding:8px 0 20px 완전 제거');
+// J-3: 마지막 그룹의 category-item 하단 margin 제거
+assertMatch(sidebarSrc, /#sidebarMenu\s*>\s*\.menu-group:last-child\s*>\s*\.category-item\s*\{\s*margin-bottom:0\s*;?\s*\}/, 'J-3: 마지막 대분류 카드 margin-bottom:0');
+// J-4: 마지막 그룹 body 하단 padding 제거
+assertMatch(sidebarSrc, /#sidebarMenu\s*>\s*\.menu-group:last-child\s*>\s*\.menu-group-body\s*\{\s*padding-bottom:0\s*;?\s*\}/, 'J-4: 마지막 대분류 body padding-bottom:0');
+
+// ============================================================
 // 리포트
 // ============================================================
 console.log('');
