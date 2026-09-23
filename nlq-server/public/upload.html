@@ -130,6 +130,8 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner { animation: spin 1s linear infinite; }
     </style>
+    <!-- [2026-09-21] 통합 플랫폼 사이드바 공통 렌더러 (수익성분석 / 경영시뮬레이션 대분류) -->
+    <script src="/platform-sidebar.js" defer></script>
 </head>
 <body>
 
@@ -138,7 +140,8 @@
 <aside id="sidebar" class="sidebar">
     <div class="p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
-            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
+            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
             <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
         </div>
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
@@ -446,11 +449,15 @@
 // ===== State =====
 let previewData = null; // API preview 응답 저장
 
-// ===== 사용자 정보 표시 =====
+// ===== 사용자 정보 표시 + 통합 플랫폼 사이드바 렌더링 =====
 fetch('/api/me').then(r=>r.json()).then(me=>{
     if(!me.loggedIn) return;
     const uid = document.getElementById('userInfoDisplay');
     if(uid && me.name){uid.innerHTML=`<strong style="font-size:13px;color:#1e293b;">${me.name}님</strong><br><span style="font-size:11px;color:#6b7280;font-weight:700;">(${me.user})</span>`;uid.style.display='';}
+    // [2026-09-21] 통합 플랫폼 사이드바 (upload 는 정식 메뉴 없음 → 대분류만 표시)
+    if (window.PlatformSidebar) {
+        window.PlatformSidebar.render(me.menus || [], { activeUrl: '/upload.html' });
+    }
 }).catch(()=>{});
 
 // ===== Sidebar =====

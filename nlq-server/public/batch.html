@@ -143,6 +143,8 @@
         .content-area::-webkit-scrollbar{width:6px;}
         .content-area::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
     </style>
+    <!-- [2026-09-21] 통합 플랫폼 사이드바 공통 렌더러 (수익성분석 / 경영시뮬레이션 대분류) -->
+    <script src="/platform-sidebar.js" defer></script>
 </head>
 <body>
 
@@ -151,7 +153,8 @@
 <aside id="sidebar" class="sidebar">
     <div class="p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
-            <h2 class="text-lg font-bold">수익성분석 AI</h2>
+            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
+            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
             <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
         </div>
         <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
@@ -349,13 +352,9 @@ async function init() {
         // RBAC: 메뉴 권한 체크 (서버에서도 체크하지만 클라이언트에서도 체크)
         const hasBatch = me.menus && me.menus.some(m => m.menu_url === '/batch.html');
         if (!hasBatch && me.role !== 'admin') { window.location.href = '/?denied=1'; return; }
-        // RBAC: 동적 사이드바 메뉴 렌더링
-        const nav = document.getElementById('sidebarMenu');
-        if (nav && me.menus && me.menus.length > 0) {
-            nav.innerHTML = me.menus.map(m => {
-                const isActive = m.menu_url === '/batch.html';
-                return `<a href="${m.menu_url}" class="sidebar-menu-item${isActive ? ' active' : ''}" style="text-decoration:none;"><i class="${m.icon_class || 'fas fa-circle'}"></i><span>${m.menu_name}</span></a>`;
-            }).join('');
+        // [2026-09-21] 통합 플랫폼 사이드바로 렌더링 (대분류 + 하위 메뉴 드롭다운)
+        if (window.PlatformSidebar) {
+            window.PlatformSidebar.render(me.menus || [], { activeUrl: '/batch.html' });
         }
     } catch(e) { window.location.href = '/login'; return; }
 
