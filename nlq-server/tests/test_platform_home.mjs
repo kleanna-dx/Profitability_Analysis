@@ -215,6 +215,52 @@ assertMatch(server, /req\.path === '\/index\.html'\s*\)\s*\?\s*'\/nlq'\s*:\s*req
 assertMatch(server, /urlPath === '\/index\.html' \|\| urlPath === '\/'\s*\)\s*normalizedPath = '\/nlq'/, 'G-1: isMenuAllowed 가 / 및 /index.html → /nlq 정규화');
 
 // ============================================================
+// H. [홈] 버튼 (2026-09-23 사용자 요청)
+//   - 사이드바 최상단, 대분류 위에 독립 [홈] 버튼 표시
+//   - href="/" 로 통합 플랫폼 HOME 이동
+//   - 현재 페이지가 / 이면 active 스타일
+// ============================================================
+// H-1: platform-sidebar.js 소스에 home-link CSS + HTML 정의
+const sidebarSrcForHome = fs.readFileSync(sidebarJsPath, 'utf8');
+assertMatch(sidebarSrcForHome, /#sidebarMenu\s+\.home-link\s*\{/, 'H-1: home-link CSS 정의');
+assertMatch(sidebarSrcForHome, /<a href="\/" class="home-link\$\{homeActive\}"/, 'H-2: home-link HTML 이 render() 안에 있음');
+assertMatch(sidebarSrcForHome, /class="fas fa-home home-icon"/, 'H-3: 홈 아이콘 (fa-home) 사용');
+assertMatch(sidebarSrcForHome, /<span>홈<\/span>/, 'H-4: "홈" 텍스트');
+assertMatch(sidebarSrcForHome, /isActive\('\/', activeUrl\)/, 'H-5: 홈 active 판정 (activeUrl === "/")');
+assertMatch(sidebarSrcForHome, /container\.innerHTML\s*=\s*homeHtml\s*\+\s*groupsHtml/, 'H-6: innerHTML 에 homeHtml 이 groups 앞에 삽입됨');
+
+// H-7~H-11: 실제 렌더링 결과 검증 (isActive 판정, HTML 마크업)
+if (PS && PS.render) {
+    // fakeDocument 를 innerHTML 캡처 가능한 스텁으로 교체
+    const capture = { innerHTML: '' };
+    const originalGet = fakeDocument.getElementById;
+    fakeDocument.getElementById = (id) => id === 'sidebarMenu'
+        ? { set innerHTML(v){ capture.innerHTML = v; }, get innerHTML(){ return capture.innerHTML; } }
+        : null;
+    try {
+        // H-7: HOME 페이지 (activeUrl='/') → home-link 에 active 클래스
+        capture.innerHTML = '';
+        PS.render([], { activeUrl: '/' });
+        assertMatch(capture.innerHTML, /class="home-link active"/, 'H-7: HOME 페이지에서 home-link 에 active 클래스');
+        assertMatch(capture.innerHTML, /<a href="\/"/, 'H-8: 홈 링크 href="/"');
+        assertMatch(capture.innerHTML, /<span>홈<\/span>/, 'H-9: 홈 텍스트 렌더링');
+        // H-10: 다른 페이지 (activeUrl='/nlq') → home-link 는 active 아님
+        capture.innerHTML = '';
+        PS.render([], { activeUrl: '/nlq' });
+        assert(/class="home-link"/.test(capture.innerHTML) && !/class="home-link active"/.test(capture.innerHTML),
+            'H-10: /nlq 페이지에서 home-link 는 active 아님');
+        // H-11: 홈 링크가 대분류 앞에 위치
+        capture.innerHTML = '';
+        PS.render([], { activeUrl: '/builder.html' });
+        const homeIdx = capture.innerHTML.indexOf('home-link');
+        const groupIdx = capture.innerHTML.indexOf('menu-group');
+        assert(homeIdx > -1 && groupIdx > -1 && homeIdx < groupIdx, 'H-11: 홈 링크가 대분류 이전에 위치');
+    } finally {
+        fakeDocument.getElementById = originalGet;
+    }
+}
+
+// ============================================================
 // 리포트
 // ============================================================
 console.log('');
