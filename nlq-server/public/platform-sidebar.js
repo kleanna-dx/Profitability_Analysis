@@ -147,14 +147,19 @@
     }
 
     // ─────────────────────────────────────────────────────────────
-    // 대분류 정의 (사용자 요구: 수익성분석 / 경영시뮬레이션)
+    // 대분류 정의 (사용자 요구: 수익성분석 / 경영시뮬레이션 / 시스템관리)
     // [2026-09-23] 통합 플랫폼 대분류 권한 도입:
     //   - 각 그룹의 표시 여부는 사용자 메뉴 권한(me.menus) 기준으로 결정.
     //   - profitability: codes 중 하나라도 me.menus 에 있으면 노출
     //     (하위 메뉴가 하나도 없으면 그룹 자체 숨김)
-    //   - simulation: menu_code='simulation' 이 me.menus 에 있으면 노출
-    //     (준비중이지만 대분류 카드는 표시. 하위 메뉴는 없음.)
+    //   - simulation: menu_code='simulation' 이 me.menus 에 있어야만 노출
+    //   - sysadmin: menu_code='sysadmin' 이 me.menus 에 있어야만 노출
     //   → 프론트에서 임의 판단하지 않고, 서버가 반환한 실제 메뉴 권한만 사용.
+    //
+    // [2026-09-23-2] 사이드바 재구성 — 사용자 요구:
+    //   - [권한 관리] 를 수익성분석 그룹 → 시스템관리 그룹으로 이동
+    //   - [경영시뮬레이션] 하위에 [테스트 메뉴] 추가 (drop-down 열림 가능)
+    //   - [시스템관리] 대분류 신규 (drop-down: 권한 관리)
     // ─────────────────────────────────────────────────────────────
     const GROUPS = [
         {
@@ -163,7 +168,8 @@
             icon: 'fas fa-chart-pie',
             // 이 codes 안에 해당하는 menu 만 이 그룹의 하위 메뉴로 매핑됨.
             // 하위 메뉴가 0개이면 자동으로 그룹 자체가 숨김 (아래 render() 참조).
-            codes: ['nlq', 'builder', 'learning', 'permission', 'batch', 'interface', 'report'],
+            // [2026-09-23-2] permission 제거 → 시스템관리 그룹으로 이동
+            codes: ['nlq', 'builder', 'learning', 'batch', 'interface', 'report'],
             // 이 그룹을 표시하기 위해 요구되는 me.menus 의 menu_code (하나라도 매칭되어야 함).
             // profitability 는 별도의 대분류 menu_code 가 없으므로 codes 를 그대로 사용 → 하위 메뉴가 하나라도 있으면 노출.
             requiredCodes: null,  // null = codes 중 하나라도 있으면 표시
@@ -172,11 +178,21 @@
             key: 'simulation',
             name: '경영시뮬레이션',
             icon: 'fas fa-flask',
-            codes: [],       // 아직 하위 메뉴 없음 (준비중)
-            disabled: true,  // 준비중 표시 + 클릭 비활성
+            // [2026-09-23-2] simulation-test (테스트 메뉴, 빈 페이지) 하위로 추가
+            codes: ['simulation-test'],
             // 이 그룹은 'simulation' 이라는 고유 대분류 menu_code 가 me.menus 에 있어야만 노출.
             // 사용자가 권한관리에서 이 메뉴를 부여받아야만 사이드바에 표시됨.
             requiredCodes: ['simulation'],
+        },
+        {
+            // [2026-09-23-2] 시스템관리 대분류 신규
+            // 하위: 권한 관리 (기존 수익성분석에서 이관)
+            key: 'sysadmin',
+            name: '시스템관리',
+            icon: 'fas fa-cogs',
+            codes: ['permission'],
+            // 이 그룹은 'sysadmin' 대분류 menu_code 가 me.menus 에 있어야만 노출.
+            requiredCodes: ['sysadmin'],
         },
     ];
 
