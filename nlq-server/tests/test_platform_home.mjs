@@ -127,25 +127,42 @@ if (PS && PS.GROUPS) {
     }
 }
 
-// B-12: groupMenus 로직 검증
+// B-12: groupMenus 로직 검증 (2026-09-23 권한 필터링 규칙)
+//   - profitability 는 codes 중 하나라도 있으면 표시, 하위 메뉴가 0개면 그룹 자체 숨김
+//   - simulation 은 requiredCodes 인 'simulation' 이 있어야만 표시
 if (PS && PS.groupMenus) {
-    const sample = [
-        { menu_code:'nlq',       menu_name:'자연어 질의',        menu_url:'/nlq',            icon_class:'fas fa-comments',        sort_order:1 },
-        { menu_code:'builder',   menu_name:'비주얼 쿼리 빌더',  menu_url:'/builder.html',   icon_class:'fas fa-th-large',        sort_order:2 },
-        { menu_code:'interface', menu_name:'인터페이스 관리',    menu_url:'/interface.html', icon_class:'fas fa-plug',            sort_order:7 },
-    ];
-    const grouped = PS.groupMenus(sample);
-    assert(grouped.length === 2, 'B-12: groupMenus 결과 2개 그룹');
-    assert(grouped[0].group.key === 'profitability', 'B-13: 첫 번째 그룹 = profitability');
-    assert(grouped[0].items.length === 3, 'B-14: 수익성분석 그룹에 3개 메뉴 매핑');
-    assert(grouped[1].items.length === 0, 'B-15: 경영시뮬레이션 그룹에 0개 (준비중)');
+    const M_NLQ      = { menu_code:'nlq',      menu_name:'자연어 질의',   menu_url:'/nlq',            icon_class:'fas fa-comments',   sort_order:1 };
+    const M_BUILDER  = { menu_code:'builder',  menu_name:'비주얼',        menu_url:'/builder.html',   icon_class:'fas fa-th-large',   sort_order:2 };
+    const M_INTERFACE= { menu_code:'interface',menu_name:'인터페이스',    menu_url:'/interface.html', icon_class:'fas fa-plug',       sort_order:7 };
+    const M_SIM      = { menu_code:'simulation',menu_name:'경영시뮬레이션',menu_url:'#simulation',    icon_class:'fas fa-flask',      sort_order:100 };
 
-    // 권한이 nlq, builder 만 있을 때 → 딱 그 2개만
-    const restricted = PS.groupMenus([sample[0], sample[1]]);
-    assert(restricted[0].items.length === 2, 'B-16: 권한 제한 시 그 메뉴만 그룹에 포함');
-    // 없는 메뉴 (unknown) 는 무시
+    // 시나리오 A: nlq + builder + interface (수익성분석만) → profitability 그룹만 표시
+    const groupedA = PS.groupMenus([M_NLQ, M_BUILDER, M_INTERFACE]);
+    assert(groupedA.length === 1, 'B-12: 수익성분석만 있으면 1개 그룹 (경영시뮬 숨김)');
+    assert(groupedA[0].group.key === 'profitability', 'B-13: 첫 그룹 = profitability');
+    assert(groupedA[0].items.length === 3, 'B-14: 수익성분석 3개 하위 메뉴');
+
+    // 시나리오 B: simulation 만 → simulation 그룹만 표시 (profitability 는 하위 0개라 숨김)
+    const groupedB = PS.groupMenus([M_SIM]);
+    assert(groupedB.length === 1, 'B-15: 경영시뮬만 있으면 1개 그룹 (수익성분석 숨김)');
+    assert(groupedB[0].group.key === 'simulation', 'B-15b: 유일한 그룹 = simulation');
+
+    // 시나리오 C: 둘 다 → 2개 그룹 모두 표시
+    const groupedC = PS.groupMenus([M_NLQ, M_SIM]);
+    assert(groupedC.length === 2, 'B-15c: 둘 다 있으면 2개 그룹 모두 표시');
+    assert(groupedC[0].group.key === 'profitability' && groupedC[1].group.key === 'simulation', 'B-15d: 순서 profitability → simulation');
+
+    // 시나리오 D: 완전 무권한 → 그룹 0개
+    const groupedD = PS.groupMenus([]);
+    assert(groupedD.length === 0, 'B-15e: 무권한 → 0개 그룹 (홈은 render()가 별도 처리)');
+
+    // 시나리오 E: nlq, builder 만 → profitability 만, 하위 2개
+    const restricted = PS.groupMenus([M_NLQ, M_BUILDER]);
+    assert(restricted.length === 1 && restricted[0].items.length === 2, 'B-16: 권한 제한 시 그 메뉴만 그룹에 포함');
+
+    // 시나리오 F: 알려지지 않은 코드는 어느 그룹에도 매핑 안 됨 → 그룹 0개
     const unknown = PS.groupMenus([{ menu_code:'unknown', menu_name:'X', menu_url:'/x', icon_class:'', sort_order:99 }]);
-    assert(unknown[0].items.length === 0, 'B-17: 알려지지 않은 menu_code 는 어느 그룹에도 매핑 안 됨');
+    assert(unknown.length === 0, 'B-17: 알려지지 않은 menu_code 는 어느 그룹도 매칭 못 함 → 0개 그룹');
 }
 
 // B-18: isActive 로직
@@ -251,9 +268,10 @@ if (PS && PS.render) {
         PS.render([], { activeUrl: '/nlq' });
         assert(/class="home-link category-item"/.test(capture.innerHTML) && !/class="home-link category-item active"/.test(capture.innerHTML),
             'H-9: /nlq 페이지에서 home-link 는 active 아님');
-        // H-10: 홈 링크가 대분류 앞에 위치
+        // H-10: 홈 링크가 대분류 앞에 위치 (실제 대분류 그룹이 렌더링되어야 하므로 nlq 메뉴 포함)
         capture.innerHTML = '';
-        PS.render([], { activeUrl: '/builder.html' });
+        PS.render([{ menu_code:'nlq', menu_name:'X', menu_url:'/nlq', icon_class:'', sort_order:1 }],
+                  { activeUrl: '/builder.html' });
         const homeIdx = capture.innerHTML.indexOf('home-link');
         const groupIdx = capture.innerHTML.indexOf('menu-group');
         assert(homeIdx > -1 && groupIdx > -1 && homeIdx < groupIdx, 'H-10: 홈 링크가 대분류 이전에 위치');
@@ -304,10 +322,14 @@ if (PS && PS.render) {
         ? { set innerHTML(v){ capture.innerHTML = v; }, get innerHTML(){ return capture.innerHTML; } }
         : null;
     try {
+        // [2026-09-23] simulation 대분류가 렌더링되려면 me.menus 에 simulation 권한이 있어야 함.
+        //   → I-13/I-15 검증을 위해 sample 에 simulation 메뉴 포함.
+        const sampleAll = [
+            { menu_code:'nlq',        menu_name:'자연어 질의',   menu_url:'/nlq',        icon_class:'fas fa-comments', sort_order:1 },
+            { menu_code:'simulation', menu_name:'경영시뮬레이션',menu_url:'#simulation', icon_class:'fas fa-flask',    sort_order:100 },
+        ];
         capture.innerHTML = '';
-        PS.render([
-            { menu_code:'nlq', menu_name:'자연어 질의', menu_url:'/nlq', icon_class:'fas fa-comments', sort_order:1 },
-        ], { activeUrl: '/' });
+        PS.render(sampleAll, { activeUrl: '/' });
         // I-11: 홈이 .category-item 클래스
         assertMatch(capture.innerHTML, /class="home-link category-item active"[^>]*>[\s\S]*?<span class="cat-label">홈</, 'I-11: 홈 대분류 카드 클래스 통일');
         // I-12: 수익성분석이 .category-item 클래스
@@ -329,9 +351,7 @@ if (PS && PS.render) {
 
         // I-17: /nlq 페이지에서는 수익성분석이 active
         capture.innerHTML = '';
-        PS.render([
-            { menu_code:'nlq', menu_name:'자연어 질의', menu_url:'/nlq', icon_class:'fas fa-comments', sort_order:1 },
-        ], { activeUrl: '/nlq' });
+        PS.render(sampleAll, { activeUrl: '/nlq' });
         assertMatch(capture.innerHTML, /menu-group-header category-item active/, 'I-17: /nlq 페이지에서 수익성분석 대분류가 active');
         assert(!/home-link category-item active/.test(capture.innerHTML), 'I-18: /nlq 페이지에서 홈은 비-active');
 
@@ -388,6 +408,84 @@ assertMatch(builderHtml, /getElementById\(['"]topDbLabel['"]\)[\s\S]*?['"]DB 오
 
 // K-11: DOMContentLoaded 시 initDbStatusPill 호출
 assertMatch(builderHtml, /DOMContentLoaded[\s\S]*?initDbStatusPill\s*\(\s*\)/, 'K-11: DOMContentLoaded 시 initDbStatusPill 호출');
+
+// ============================================================
+// L. 통합 플랫폼 대분류 권한 (경영시뮬레이션) 도입 (2026-09-23 사용자 요청)
+//   - menus 테이블에 'simulation' 메뉴 추가 (menu_url='#simulation', dummy 앵커)
+//   - admin 역할에 자동 매핑
+//   - 사용자에게 'simulation' 메뉴 권한이 있어야만 사이드바 대분류 노출
+//   - 권한관리 UI 에서 [통합 플랫폼 대분류 메뉴] 섹션에 별도 표시
+// ============================================================
+// L-1: DEFAULT_MENUS_ALL 에 simulation 메뉴 포함
+assertMatch(server, /menu_code:'simulation',[\s\S]*?menu_name:'경영시뮬레이션',[\s\S]*?menu_url:'#simulation',[\s\S]*?icon_class:'fas fa-flask'/, 'L-1: DEFAULT_MENUS_ALL 에 simulation 메뉴 (menu_url=#simulation, fa-flask)');
+// L-2: 시드 데이터 INSERT 에도 simulation 포함
+assertMatch(server, /INSERT INTO menus[\s\S]*?'simulation',\s*'경영시뮬레이션',\s*'#simulation',\s*'fas fa-flask'/, 'L-2: 시드 INSERT 에 simulation 포함');
+// L-3: 기존 배포 DB 마이그레이션 (simulation 없으면 자동 추가)
+assertMatch(server, /SELECT id FROM menus WHERE menu_code = 'simulation'/, 'L-3: 기존 DB 에 simulation 존재 확인 마이그레이션');
+assertMatch(server, /INSERT INTO menus[\s\S]*?VALUES\s*\('simulation',\s*'경영시뮬레이션',\s*'#simulation',\s*'fas fa-flask',\s*100\)/, 'L-4: 마이그레이션 INSERT 구문');
+// L-5: admin 에 simulation 자동 매핑 마이그레이션
+assertMatch(server, /INSERT IGNORE INTO role_menus[\s\S]*?WHERE r\.role_code = 'admin' AND m\.menu_code = 'simulation'/, 'L-5: admin 역할에 simulation 자동 매핑');
+
+// L-6~L-9: platform-sidebar.js GROUPS 정의
+if (PS && PS.GROUPS) {
+    const simGroup = PS.GROUPS.find(g => g.key === 'simulation');
+    assert(simGroup && Array.isArray(simGroup.requiredCodes) && simGroup.requiredCodes.includes('simulation'),
+        'L-6: simulation 그룹의 requiredCodes 에 "simulation" 명시');
+    const profitGroup = PS.GROUPS.find(g => g.key === 'profitability');
+    assert(profitGroup && profitGroup.requiredCodes == null,
+        'L-7: profitability 그룹의 requiredCodes 는 null (하위 메뉴 존재 여부로 판정)');
+}
+
+// L-8~L-15: 사용자 시나리오 검증 (사용자 요구사항 3번 그대로)
+if (PS && PS.render) {
+    const M_NLQ = { menu_code:'nlq',        menu_name:'자연어 질의',   menu_url:'/nlq',        icon_class:'fas fa-comments', sort_order:1 };
+    const M_SIM = { menu_code:'simulation', menu_name:'경영시뮬레이션',menu_url:'#simulation', icon_class:'fas fa-flask',    sort_order:100 };
+
+    const capture = { innerHTML: '' };
+    const originalGet = fakeDocument.getElementById;
+    fakeDocument.getElementById = (id) => id === 'sidebarMenu'
+        ? { set innerHTML(v){ capture.innerHTML = v; }, get innerHTML(){ return capture.innerHTML; } }
+        : null;
+    try {
+        // 시나리오 1: "수익성분석 권한만 있음" → 홈 + 수익성분석, 경영시뮬 숨김
+        capture.innerHTML = '';
+        PS.render([M_NLQ], { activeUrl: '/nlq' });
+        assertMatch(capture.innerHTML, /home-link/, 'L-8: 수익성분석만 → 홈 표시');
+        assertMatch(capture.innerHTML, /data-group-key="profitability"/, 'L-9: 수익성분석만 → 수익성분석 그룹 표시');
+        assert(!/data-group-key="simulation"/.test(capture.innerHTML), 'L-10: 수익성분석만 → 경영시뮬 숨김');
+
+        // 시나리오 2: "경영시뮬레이션 권한만 있음" → 홈 + 경영시뮬, 수익성분석 숨김
+        capture.innerHTML = '';
+        PS.render([M_SIM], { activeUrl: '/' });
+        assertMatch(capture.innerHTML, /home-link/, 'L-11: 경영시뮬만 → 홈 표시');
+        assertMatch(capture.innerHTML, /data-group-key="simulation"/, 'L-12: 경영시뮬만 → 경영시뮬 그룹 표시');
+        assert(!/data-group-key="profitability"/.test(capture.innerHTML), 'L-13: 경영시뮬만 → 수익성분석 숨김');
+
+        // 시나리오 3: "두 권한 모두 있음" → 홈 + 수익성분석 + 경영시뮬
+        capture.innerHTML = '';
+        PS.render([M_NLQ, M_SIM], { activeUrl: '/nlq' });
+        assertMatch(capture.innerHTML, /home-link/, 'L-14: 둘 다 → 홈 표시');
+        assertMatch(capture.innerHTML, /data-group-key="profitability"/, 'L-14b: 둘 다 → 수익성분석 표시');
+        assertMatch(capture.innerHTML, /data-group-key="simulation"/, 'L-14c: 둘 다 → 경영시뮬 표시');
+
+        // 시나리오 4: 완전 무권한 → 홈만 표시, 두 대분류 모두 숨김
+        capture.innerHTML = '';
+        PS.render([], { activeUrl: '/' });
+        assertMatch(capture.innerHTML, /home-link/, 'L-15: 무권한 → 홈만 표시 (항상 노출)');
+        assert(!/data-group-key="profitability"/.test(capture.innerHTML) && !/data-group-key="simulation"/.test(capture.innerHTML),
+            'L-16: 무권한 → 두 대분류 모두 숨김');
+    } finally {
+        fakeDocument.getElementById = originalGet;
+    }
+}
+
+// L-17~L-20: 권한관리 UI (permission.html) — 대분류 계층 가시화
+const permHtmlPath = path.resolve(publicDir, 'permission.html');
+const permHtml = fs.readFileSync(permHtmlPath, 'utf8');
+assertMatch(permHtml, /PLATFORM_CATEGORY_CODES\s*=\s*new\s+Set\(\s*\[\s*['"]simulation['"]\s*\]\s*\)/, 'L-17: 권한관리 UI 에 PLATFORM_CATEGORY_CODES 정의 (simulation 포함)');
+assertMatch(permHtml, /통합 플랫폼 대분류 메뉴/, 'L-18: 권한관리 UI 에 "통합 플랫폼 대분류 메뉴" 섹션 타이틀');
+assertMatch(permHtml, /수익성분석\/제조원가는[\s\S]*?수익성분석 서비스 내부의 업무영역 권한/, 'L-19: 업무영역 권한과 대분류 권한 분리 안내 문구');
+assertMatch(permHtml, /수익성분석 하위 메뉴/, 'L-20: 권한관리 UI 에 "수익성분석 하위 메뉴" 섹션 타이틀');
 
 // ============================================================
 // 리포트
