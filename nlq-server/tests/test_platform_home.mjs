@@ -358,6 +358,38 @@ assertMatch(sidebarSrc, /#sidebarMenu\s*>\s*\.menu-group:last-child\s*>\s*\.cate
 assertMatch(sidebarSrc, /#sidebarMenu\s*>\s*\.menu-group:last-child\s*>\s*\.menu-group-body\s*\{\s*padding-bottom:0\s*;?\s*\}/, 'J-4: 마지막 대분류 body padding-bottom:0');
 
 // ============================================================
+// K. [비주얼 쿼리 빌더] DB 연결 UI 위치 이동 (2026-09-23 사용자 요청)
+//   - 사이드바 "시스템 정보 / DB 연결됨" 영역 삭제
+//   - 상단 우측에 자연어질의(index.html) 와 동일한 .status-pill 배지 노출
+//   - 컴포넌트/디자인/아이콘/색상/id 완전 재사용
+//   - 실제 /api/status 호출로 상태 반영 (기존 하드코딩 초록 대체)
+// ============================================================
+const builderHtmlPath = path.resolve(publicDir, 'builder.html');
+const builderHtml = fs.readFileSync(builderHtmlPath, 'utf8');
+
+// K-1: 사이드바 시스템 정보 영역 완전 삭제 (DOM 노드 기준)
+//   주석 안 언급은 허용, 실제 사용 태그 <p>시스템 정보</p>, <span id="sideDbDot">, <span>DB 연결됨</span> 없음
+assert(!/<p[^>]*>시스템 정보<\/p>/.test(builderHtml), 'K-1: <p>시스템 정보</p> 태그 삭제됨');
+assert(!/id="sideDbDot"/.test(builderHtml), 'K-2: id="sideDbDot" 요소 삭제됨');
+assert(!/<span[^>]*>DB 연결됨<\/span>/.test(builderHtml), 'K-3: <span>DB 연결됨</span> 태그 삭제됨');
+
+// K-4: 상단 .status-pill CSS 정의 (index.html 과 동일 스타일)
+assertMatch(builderHtml, /\.status-pill\{[\s\S]*?display:flex[\s\S]*?border-radius:20px/, 'K-4: .status-pill CSS 정의 (index.html 과 동일)');
+assertMatch(builderHtml, /\.status-pill\s+\.dot\.green\{background:#22c55e/, 'K-5: .status-pill .dot.green (동일 색상)');
+
+// K-6: 상단바에 topDbDot / topDbLabel 배지 DOM 추가 (index.html 과 동일 id)
+assertMatch(builderHtml, /<div class="status-pill">[\s\S]*?<span id="topDbDot" class="dot"><\/span>[\s\S]*?<span id="topDbLabel">DB<\/span>[\s\S]*?<\/div>/, 'K-6: 상단바 DB 배지 (topDbDot/topDbLabel, index.html 과 동일 마크업)');
+
+// K-7: /api/status 호출로 상태 갱신 로직 (index.html 과 동일)
+assertMatch(builderHtml, /function initDbStatusPill\s*\(\s*\)\s*\{[\s\S]*?fetch\(['"]\/api\/status['"]\)/, 'K-7: initDbStatusPill 함수 정의 (/api/status 호출)');
+assertMatch(builderHtml, /getElementById\(['"]topDbDot['"]\)[\s\S]*?classList\.add\(['"]green['"]\)/, 'K-8: 성공 시 topDbDot 에 green 클래스');
+assertMatch(builderHtml, /getElementById\(['"]topDbLabel['"]\)[\s\S]*?['"]DB 연결['"]/, 'K-9: 성공 시 topDbLabel = "DB 연결"');
+assertMatch(builderHtml, /getElementById\(['"]topDbLabel['"]\)[\s\S]*?['"]DB 오류['"]/, 'K-10: 실패 시 topDbLabel = "DB 오류"');
+
+// K-11: DOMContentLoaded 시 initDbStatusPill 호출
+assertMatch(builderHtml, /DOMContentLoaded[\s\S]*?initDbStatusPill\s*\(\s*\)/, 'K-11: DOMContentLoaded 시 initDbStatusPill 호출');
+
+// ============================================================
 // 리포트
 // ============================================================
 console.log('');
