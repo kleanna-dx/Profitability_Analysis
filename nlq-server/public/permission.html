@@ -580,9 +580,19 @@ const menuColors = [
     {bg:'#ecfdf5',color:'#047857'}, {bg:'#fff7ed',color:'#c2410c'},
 ];
 
+// [2026-09-23] 통합 플랫폼 대분류 권한 도입:
+//   - PLATFORM_CATEGORY_CODES 에 속하는 메뉴는 "통합 플랫폼 대분류" 섹션에 별도 표시.
+//   - 그 외 나머지 메뉴는 기존 "수익성분석 하위 메뉴" 섹션에 표시.
+//   - 현재: simulation 만 대분류. 향후 다른 대분류가 추가되면 여기에 코드 추가.
+const PLATFORM_CATEGORY_CODES = new Set(['simulation']);
+
 function renderMenuCheckList(menuData) {
     const container = document.getElementById('menuCheckList');
-    container.innerHTML = menuData.map((m, i) => {
+    // 대분류 vs 하위메뉴 분리
+    const categoryMenus = menuData.filter(m => PLATFORM_CATEGORY_CODES.has(m.menu_code));
+    const subMenus      = menuData.filter(m => !PLATFORM_CATEGORY_CODES.has(m.menu_code));
+
+    function renderItem(m, i) {
         const c = menuColors[i % menuColors.length];
         const checked = m.is_mapped ? 'checked' : '';
         const checkedClass = m.is_mapped ? ' checked' : '';
@@ -595,7 +605,36 @@ function renderMenuCheckList(menuData) {
                 <div class="menu-url">${m.menu_url}</div>
             </div>
         </div>`;
-    }).join('');
+    }
+
+    const html = [];
+    // 1) 통합 플랫폼 대분류 섹션 (수익성분석/제조원가 업무영역 권한과 분리)
+    if (categoryMenus.length > 0) {
+        html.push(`<div class="menu-section-title" style="margin:4px 0 8px;padding:8px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;">
+            <div style="font-size:13px;font-weight:700;color:#0369a1;">
+                <i class="fas fa-th-large" style="margin-right:6px;"></i>통합 플랫폼 대분류 메뉴
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-top:3px;line-height:1.5;">
+                통합 플랫폼 사이드바의 최상위 대분류 메뉴 노출 권한입니다. (예: 경영시뮬레이션)<br>
+                ⚠️ 수익성분석/제조원가는 <b>수익성분석 서비스 내부의 업무영역 권한</b>이므로 위쪽 [업무영역 권한] 탭에서 관리하세요.
+            </div>
+        </div>`);
+        html.push(...categoryMenus.map((m, i) => renderItem(m, i)));
+    }
+    // 2) 수익성분석 하위 메뉴 섹션 (기존 역할-메뉴 매핑)
+    if (subMenus.length > 0) {
+        html.push(`<div class="menu-section-title" style="margin:16px 0 8px;padding:8px 12px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;">
+            <div style="font-size:13px;font-weight:700;color:#7c3aed;">
+                <i class="fas fa-chart-pie" style="margin-right:6px;"></i>수익성분석 하위 메뉴
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-top:3px;line-height:1.5;">
+                수익성분석 대분류 안의 하위 메뉴 (자연어 질의, 비주얼 쿼리 빌더, 학습 관리 등) 접근 권한.
+            </div>
+        </div>`);
+        // 인덱스는 대분류 카운트를 오프셋해서 색상 겹침 방지
+        html.push(...subMenus.map((m, i) => renderItem(m, categoryMenus.length + i)));
+    }
+    container.innerHTML = html.join('');
 }
 
 function toggleMenuCheck(menuId) {
