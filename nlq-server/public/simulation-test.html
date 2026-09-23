@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>테스트 메뉴 - 경영시뮬레이션</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
+        *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
+        body{margin:0;background:#f1f5f9;display:flex;height:100vh;overflow:hidden;}
+        @media (min-width:901px){ body{padding-left:280px;} }
+
+        /* Sidebar (batch.html 과 동일 구조) */
+        .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;}
+        .sidebar-overlay.active{display:block;}
+        .sidebar{position:fixed;top:0;left:0;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
+        .sidebar.open{left:0;}
+        @media (max-width:900px){
+            .sidebar{left:-300px;}
+            .sidebar.open{left:0;}
+        }
+        @media (min-width:901px){
+            .sidebar-overlay{display:none !important;}
+            .sidebar-close-x{display:none;}
+        }
+        .sidebar-divider{height:1px;background:rgba(255,255,255,.1);margin:0 16px;}
+
+        /* Main */
+        .main-wrapper{display:flex;flex-direction:column;flex:1;overflow:hidden;}
+        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+        .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
+        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
+        @media (min-width:901px){ .hamburger-btn{display:none;} }
+        .content-area{flex:1;overflow-y:auto;padding:24px;background:#fff;}
+    </style>
+    <!-- 통합 플랫폼 사이드바 공통 렌더러 -->
+    <script src="/platform-sidebar.js" defer></script>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<aside id="sidebar" class="sidebar">
+    <div class="p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
+            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav id="sidebarMenu" class="py-2">
+        <!-- RBAC 동적 렌더링 -->
+    </nav>
+    <div class="sidebar-divider"></div>
+</aside>
+
+<!-- MAIN -->
+<div class="main-wrapper">
+    <div class="top-bar">
+        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
+        <h1 class="text-sm font-bold text-gray-800">
+            <i class="fas fa-vial text-indigo-500 mr-1"></i>테스트 메뉴
+        </h1>
+        <span class="text-xs text-gray-400 ml-2">경영시뮬레이션 · 준비중</span>
+        <div class="ml-auto flex items-center gap-2">
+            <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
+            <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
+        </div>
+    </div>
+
+    <div class="content-area">
+        <!-- [2026-09-23] 사용자 요청: 경영시뮬레이션 하위 [테스트 메뉴] 는 그냥 흰 페이지 하나 -->
+        <!-- 추후 실제 컨텐츠가 채워질 자리 -->
+    </div>
+</div>
+
+<script>
+function openSidebar() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebarOverlay').classList.add('active');
+}
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('active');
+}
+async function doLogout(){
+    try { await fetch('/api/logout', { method:'POST' }); } catch(_) {}
+    window.location.href = '/login';
+}
+
+// /api/me 로드 → 로그인 여부, 사용자명, 사이드바 메뉴 렌더
+(async function init(){
+    try {
+        const r = await fetch('/api/me');
+        const me = await r.json();
+        if (!me.loggedIn) { window.location.href = '/login'; return; }
+        // 사용자 정보 표시
+        const uid = document.getElementById('userInfoDisplay');
+        if (uid && me.name) {
+            uid.innerHTML = `<strong style="font-size:13px;color:#1e293b;">${me.name}님</strong><br><span style="font-size:11px;color:#6b7280;font-weight:700;">(${me.user})</span>`;
+            uid.style.display = '';
+        }
+        // RBAC: simulation-test 메뉴 권한 체크
+        const hasAccess = me.menus && me.menus.some(m => m.menu_code === 'simulation-test');
+        if (!hasAccess && me.role !== 'admin') { window.location.href = '/?denied=1'; return; }
+        // 통합 플랫폼 사이드바 렌더
+        if (window.PlatformSidebar) {
+            window.PlatformSidebar.render(me.menus || [], { activeUrl: '/simulation-test.html' });
+        }
+    } catch(e) { window.location.href = '/login'; }
+})();
+</script>
+</body>
+</html>

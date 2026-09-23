@@ -245,12 +245,14 @@ function openSidebar(){ const s=document.getElementById('sidebar'), o=document.g
 function closeSidebar(){ const s=document.getElementById('sidebar'), o=document.getElementById('sidebarOverlay'); s&&s.classList.remove('open'); o&&o.classList.remove('active'); }
 
 // 수익성분석 AI 시작하기 → 자연어질의로 이동
+// [2026-09-23-2] 사이드바 GROUPS.profitability.codes 와 동기화
+//   - permission 은 시스템관리 그룹으로 이관됨 → 여기서도 제거
 function enterProfitability(){
     // 사용자에게 부여된 첫 번째 수익성분석 하위 메뉴로 이동
     // (기본: /nlq 자연어질의)
     // menus 없어도 안전하게 /nlq 로 이동
     const menus = window.__myMenus || [];
-    const PROFIT_CODES = ['nlq','builder','learning','permission','batch','interface','report'];
+    const PROFIT_CODES = ['nlq','builder','learning','batch','interface','report'];
     const first = menus.find(m => PROFIT_CODES.includes(m.menu_code));
     if (first) {
         window.location.href = first.menu_url;

@@ -1190,8 +1190,10 @@ app.use(async (req, res, next) => {
     // [2026-09-21] 통합 플랫폼 HOME 도입에 따라 자연어질의는 /nlq 경로로 이동.
     //   /interface.html 도 사용자 요청에 따라 정식 메뉴로 편입.
     //   / (통합 플랫폼 HOME) 자체는 권한 체크 대상이 아님 (로그인만 되어 있으면 누구나 접근).
+    // [2026-09-23-2] /simulation-test.html (경영시뮬레이션 하위 테스트 메뉴) 추가.
     const menuPages = ['/nlq', '/builder.html', '/report', '/learning.html',
-                       '/permission.html', '/batch.html', '/interface.html', '/upload.html'];
+                       '/permission.html', '/batch.html', '/interface.html', '/upload.html',
+                       '/simulation-test.html'];
     // 기존 /index.html 직접 접근은 자연어질의(/nlq) 로 취급하여 권한 체크
     const checkPath = (req.path === '/index.html') ? '/nlq' : req.path;
     if (menuPages.includes(checkPath)) {
@@ -20022,18 +20024,25 @@ async function ensureRbacTables() {
     // [2026-09-23] 통합 플랫폼 대분류 권한: simulation (경영시뮬레이션) 대분류 메뉴 추가
     //   - simulation 은 아직 하위 URL 이 없어 menu_url='#simulation' (dummy 앵커).
     //   - 이 메뉴가 role_menus 에 매핑된 사용자에게만 사이드바 [경영시뮬레이션] 대분류 노출.
+    // [2026-09-23-2] 통합 플랫폼 사이드바 재구성:
+    //   - sysadmin (시스템관리) 대분류 신규 추가 (dummy 앵커 '#sysadmin')
+    //     · 하위 메뉴 [권한 관리] 를 수익성분석 그룹에서 시스템관리 그룹으로 이동
+    //   - simulation-test (테스트 메뉴, 빈 페이지) 신규 추가 → 경영시뮬레이션 그룹 하위
+    //   ⚠️ 기존 menu_code 값은 그대로 유지 (permission 등) — 그룹핑은 프론트 GROUPS.codes 로 처리
     const [menuCount] = await pool.query('SELECT COUNT(*) AS cnt FROM menus');
     if (menuCount[0].cnt === 0) {
       await pool.query(`
         INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order) VALUES
-        ('nlq',       '자연어 질의',          '/nlq',            'fas fa-comments',          1),
-        ('builder',   '비주얼 쿼리 빌더',    '/builder.html',   'fas fa-th-large',          2),
-        ('report',    'PPT 분석 장표 생성',   '/report',         'fas fa-file-powerpoint',   3),
-        ('learning',  '학습 관리',            '/learning.html',  'fas fa-graduation-cap',    4),
-        ('permission','권한 관리',           '/permission.html','fas fa-shield-alt',        5),
-        ('batch',     '배치 관리',            '/batch.html',     'fas fa-sync-alt',          6),
-        ('interface', '인터페이스 관리',      '/interface.html', 'fas fa-plug',              7),
-        ('simulation','경영시뮬레이션',       '#simulation',     'fas fa-flask',             100)
+        ('nlq',            '자연어 질의',          '/nlq',                    'fas fa-comments',          1),
+        ('builder',        '비주얼 쿼리 빌더',    '/builder.html',           'fas fa-th-large',          2),
+        ('report',         'PPT 분석 장표 생성',   '/report',                 'fas fa-file-powerpoint',   3),
+        ('learning',       '학습 관리',            '/learning.html',          'fas fa-graduation-cap',    4),
+        ('permission',     '권한 관리',           '/permission.html',        'fas fa-shield-alt',        5),
+        ('batch',          '배치 관리',            '/batch.html',             'fas fa-sync-alt',          6),
+        ('interface',      '인터페이스 관리',      '/interface.html',         'fas fa-plug',              7),
+        ('simulation',     '경영시뮬레이션',       '#simulation',             'fas fa-flask',             100),
+        ('simulation-test','테스트 메뉴',          '/simulation-test.html',   'fas fa-vial',              101),
+        ('sysadmin',       '시스템관리',           '#sysadmin',               'fas fa-cogs',              200)
       `);
       console.log('[RBAC] 기본 메뉴 시드 데이터 삽입');
     } else {
@@ -20080,6 +20089,38 @@ async function ensureRbacTables() {
           console.log('[RBAC] simulation 대분류 메뉴 신규 추가 + admin 매핑');
         }
       } catch (e) { console.error('[RBAC] simulation 메뉴 추가 실패:', e.message); }
+      // [2026-09-23-2] simulation-test (경영시뮬레이션 하위 테스트 메뉴) 자동 추가
+      try {
+        const [stRow] = await pool.query(`SELECT id FROM menus WHERE menu_code = 'simulation-test'`);
+        if (stRow.length === 0) {
+          await pool.query(`
+            INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order)
+            VALUES ('simulation-test', '테스트 메뉴', '/simulation-test.html', 'fas fa-vial', 101)
+          `);
+          await pool.query(`
+            INSERT IGNORE INTO role_menus (role_id, menu_id)
+            SELECT r.id, m.id FROM roles r CROSS JOIN menus m
+            WHERE r.role_code = 'admin' AND m.menu_code = 'simulation-test'
+          `);
+          console.log('[RBAC] simulation-test 하위 메뉴 신규 추가 + admin 매핑');
+        }
+      } catch (e) { console.error('[RBAC] simulation-test 메뉴 추가 실패:', e.message); }
+      // [2026-09-23-2] sysadmin (시스템관리) 대분류 메뉴 자동 추가
+      try {
+        const [saRow] = await pool.query(`SELECT id FROM menus WHERE menu_code = 'sysadmin'`);
+        if (saRow.length === 0) {
+          await pool.query(`
+            INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order)
+            VALUES ('sysadmin', '시스템관리', '#sysadmin', 'fas fa-cogs', 200)
+          `);
+          await pool.query(`
+            INSERT IGNORE INTO role_menus (role_id, menu_id)
+            SELECT r.id, m.id FROM roles r CROSS JOIN menus m
+            WHERE r.role_code = 'admin' AND m.menu_code = 'sysadmin'
+          `);
+          console.log('[RBAC] sysadmin 대분류 메뉴 신규 추가 + admin 매핑');
+        }
+      } catch (e) { console.error('[RBAC] sysadmin 메뉴 추가 실패:', e.message); }
     }
 
     // 7) 시드 데이터 — role_menus 매핑이 비어있을 때만 삽입
@@ -20434,14 +20475,16 @@ async function ensureErrorReportsTable() {
 //   - 대분류 [수익성분석] 자체는 하위 메뉴(nlq/builder 등) 중 하나라도 있으면 자동 노출됨
 //     (별도 'profitability' 대분류 코드는 만들지 않음 — UI 그룹핑 규칙으로 처리)
 const DEFAULT_MENUS_ALL = [
-  { menu_code:'nlq',       menu_name:'자연어 질의',        menu_url:'/nlq',            icon_class:'fas fa-comments',        sort_order:1 },
-  { menu_code:'builder',   menu_name:'비주얼 쿼리 빌더',  menu_url:'/builder.html',   icon_class:'fas fa-th-large',        sort_order:2 },
-  { menu_code:'report',    menu_name:'PPT 분석 장표 생성', menu_url:'/report',         icon_class:'fas fa-file-powerpoint', sort_order:3 },
-  { menu_code:'learning',  menu_name:'학습 관리',          menu_url:'/learning.html',  icon_class:'fas fa-graduation-cap',  sort_order:4 },
-  { menu_code:'permission',menu_name:'권한 관리',           menu_url:'/permission.html',icon_class:'fas fa-shield-alt',      sort_order:5 },
-  { menu_code:'batch',     menu_name:'배치 관리',          menu_url:'/batch.html',     icon_class:'fas fa-sync-alt',        sort_order:6 },
-  { menu_code:'interface', menu_name:'인터페이스 관리',    menu_url:'/interface.html', icon_class:'fas fa-plug',            sort_order:7 },
-  { menu_code:'simulation',menu_name:'경영시뮬레이션',     menu_url:'#simulation',     icon_class:'fas fa-flask',           sort_order:100 },
+  { menu_code:'nlq',             menu_name:'자연어 질의',        menu_url:'/nlq',                  icon_class:'fas fa-comments',        sort_order:1 },
+  { menu_code:'builder',         menu_name:'비주얼 쿼리 빌더',  menu_url:'/builder.html',         icon_class:'fas fa-th-large',        sort_order:2 },
+  { menu_code:'report',          menu_name:'PPT 분석 장표 생성', menu_url:'/report',               icon_class:'fas fa-file-powerpoint', sort_order:3 },
+  { menu_code:'learning',        menu_name:'학습 관리',          menu_url:'/learning.html',        icon_class:'fas fa-graduation-cap',  sort_order:4 },
+  { menu_code:'permission',      menu_name:'권한 관리',           menu_url:'/permission.html',      icon_class:'fas fa-shield-alt',      sort_order:5 },
+  { menu_code:'batch',           menu_name:'배치 관리',          menu_url:'/batch.html',           icon_class:'fas fa-sync-alt',        sort_order:6 },
+  { menu_code:'interface',       menu_name:'인터페이스 관리',    menu_url:'/interface.html',       icon_class:'fas fa-plug',            sort_order:7 },
+  { menu_code:'simulation',      menu_name:'경영시뮬레이션',     menu_url:'#simulation',           icon_class:'fas fa-flask',           sort_order:100 },
+  { menu_code:'simulation-test', menu_name:'테스트 메뉴',         menu_url:'/simulation-test.html', icon_class:'fas fa-vial',            sort_order:101 },
+  { menu_code:'sysadmin',        menu_name:'시스템관리',          menu_url:'#sysadmin',             icon_class:'fas fa-cogs',            sort_order:200 },
 ];
 const DEFAULT_MENUS_USER = DEFAULT_MENUS_ALL.filter(m => ['nlq','builder','report'].includes(m.menu_code));
 
