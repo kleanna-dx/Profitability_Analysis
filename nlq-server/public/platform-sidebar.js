@@ -148,51 +148,34 @@
 
     // ─────────────────────────────────────────────────────────────
     // 대분류 정의 (사용자 요구: 수익성분석 / 경영시뮬레이션 / 시스템관리)
-    // [2026-09-23] 통합 플랫폼 대분류 권한 도입:
-    //   - 각 그룹의 표시 여부는 사용자 메뉴 권한(me.menus) 기준으로 결정.
-    //   - profitability: codes 중 하나라도 me.menus 에 있으면 노출
-    //     (하위 메뉴가 하나도 없으면 그룹 자체 숨김)
-    //   - simulation: menu_code='simulation' 이 me.menus 에 있어야만 노출
-    //   - sysadmin: menu_code='sysadmin' 이 me.menus 에 있어야만 노출
-    //   → 프론트에서 임의 판단하지 않고, 서버가 반환한 실제 메뉴 권한만 사용.
-    //
-    // [2026-09-23-2] 사이드바 재구성 — 사용자 요구:
-    //   - [권한 관리] 를 수익성분석 그룹 → 시스템관리 그룹으로 이동
-    //   - [경영시뮬레이션] 하위에 [테스트 메뉴] 추가 (drop-down 열림 가능)
-    //   - [시스템관리] 대분류 신규 (drop-down: 권한 관리)
+    // [2026-09-23-3] 대분류 별도 권한 폐지 (사용자 요청):
+    //   - 각 대분류의 노출 여부는 오직 "하위 메뉴 권한 존재 여부" 로 자동 결정.
+    //   - 하위 메뉴 1개 이상 me.menus 에 있음 → 대분류 노출
+    //   - 하위 메뉴 0개 → 대분류 숨김
+    //   - dummy 대분류 코드 (simulation, sysadmin) 및 requiredCodes 로직 제거.
+    //   → 권한 구조 단순화 + 프론트/백엔드 규칙 통일
     // ─────────────────────────────────────────────────────────────
     const GROUPS = [
         {
             key: 'profitability',
             name: '수익성분석',
             icon: 'fas fa-chart-pie',
-            // 이 codes 안에 해당하는 menu 만 이 그룹의 하위 메뉴로 매핑됨.
-            // 하위 메뉴가 0개이면 자동으로 그룹 자체가 숨김 (아래 render() 참조).
-            // [2026-09-23-2] permission 제거 → 시스템관리 그룹으로 이동
+            // 이 codes 안에 해당하는 하위 메뉴 중 하나라도 me.menus 에 있으면 대분류 노출.
             codes: ['nlq', 'builder', 'learning', 'batch', 'interface', 'report'],
-            // 이 그룹을 표시하기 위해 요구되는 me.menus 의 menu_code (하나라도 매칭되어야 함).
-            // profitability 는 별도의 대분류 menu_code 가 없으므로 codes 를 그대로 사용 → 하위 메뉴가 하나라도 있으면 노출.
-            requiredCodes: null,  // null = codes 중 하나라도 있으면 표시
         },
         {
             key: 'simulation',
             name: '경영시뮬레이션',
             icon: 'fas fa-flask',
-            // [2026-09-23-2] simulation-test (테스트 메뉴, 빈 페이지) 하위로 추가
+            // 현재 하위: 테스트 메뉴 (simulation-test). 향후 추가 시 이 배열에 append.
             codes: ['simulation-test'],
-            // 이 그룹은 'simulation' 이라는 고유 대분류 menu_code 가 me.menus 에 있어야만 노출.
-            // 사용자가 권한관리에서 이 메뉴를 부여받아야만 사이드바에 표시됨.
-            requiredCodes: ['simulation'],
         },
         {
-            // [2026-09-23-2] 시스템관리 대분류 신규
-            // 하위: 권한 관리 (기존 수익성분석에서 이관)
             key: 'sysadmin',
             name: '시스템관리',
             icon: 'fas fa-cogs',
+            // 하위: 권한 관리. 향후 시스템관리 관련 메뉴는 여기에 추가.
             codes: ['permission'],
-            // 이 그룹은 'sysadmin' 대분류 menu_code 가 me.menus 에 있어야만 노출.
-            requiredCodes: ['sysadmin'],
         },
     ];
 
@@ -214,13 +197,11 @@
     }
 
     /**
-     * menus 배열을 대분류 그룹별로 분류. 권한 없는 그룹은 반환 제외.
-     * [2026-09-23] 대분류 표시 규칙:
-     *   - requiredCodes 가 명시된 그룹(예: simulation):
-     *       me.menus 에 requiredCodes 중 하나라도 있어야 반환.
-     *   - requiredCodes = null 인 그룹(예: profitability):
-     *       codes 중 하나라도 me.menus 에 있어야 반환.
-     *       (하위 메뉴가 하나도 없으면 자동으로 그룹 자체 숨김)
+     * menus 배열을 대분류 그룹별로 분류. 하위 메뉴가 0개인 그룹은 반환 제외.
+     * [2026-09-23-3] 대분류 표시 규칙 단순화 (사용자 요청):
+     *   - 하위 메뉴 (codes 매칭) 가 1개 이상이면 그룹 반환 → 대분류 노출
+     *   - 하위 메뉴 0개면 그룹 자체 미반환 → 대분류 숨김
+     *   - 별도의 대분류 권한 코드는 사용하지 않음.
      * 반환: [{group, items:[menu,...]}, ...]
      */
     function groupMenus(menus) {
@@ -235,17 +216,8 @@
                 .map(code => menusByCode[code])
                 .filter(Boolean);
             items.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-
-            // 그룹 표시 여부 판정
-            let show;
-            if (Array.isArray(g.requiredCodes) && g.requiredCodes.length > 0) {
-                // 명시된 requiredCodes 중 하나라도 me.menus 에 있어야 표시
-                show = g.requiredCodes.some(code => menusByCode[code]);
-            } else {
-                // codes 중 하나라도 있어야 표시 (하위 메뉴가 0개이면 숨김)
-                show = items.length > 0;
-            }
-            if (!show) continue; // 권한 없으면 그룹 자체 미노출
+            // 하위 메뉴가 하나도 없으면 그룹 자체 숨김
+            if (items.length === 0) continue;
             result.push({ group: g, items });
         }
         return result;
@@ -299,46 +271,32 @@
         // active 그룹은 강제로 펼침 (collapsed 무시)
         if (activeGroupKey) collapsed[activeGroupKey] = false;
 
-        // [2026-09-23 사용자 요청] 3개 대분류(홈/수익성분석/경영시뮬레이션)를
-        //   동일한 카드 스타일 (.category-item) 로 통일. 대분류 간 UI 통일성 확보.
-        //   - 홈: <a> 태그 (링크)
-        //   - 수익성분석: 클릭 시 접힘/펼침 토글 + chevron 표시
-        //   - 경영시뮬레이션: 준비중 뱃지, 클릭 비활성
+        // [2026-09-23-3] 대분류는 하위 메뉴가 1개 이상일 때만 groupMenus 가 반환하므로
+        //   disabled/menu-empty 분기는 더 이상 필요 없음 (단순화).
+        //   모든 대분류가 홈과 동일한 .category-item 스타일 + chevron drop-down 을 가진다.
+        //   - 홈: <a> 태그 (링크, 권한 무관 항상 노출)
+        //   - 각 대분류: 클릭 시 접힘/펼침 토글 + chevron 표시
         const homeActive = isActive('/', activeUrl) ? ' active' : '';
-        // .home-link 는 하위호환용, 실제 스타일은 .category-item 이 담당
         const homeHtml = `<a href="/" class="home-link category-item${homeActive}" title="통합 플랫폼 HOME">
             <i class="fas fa-home cat-icon"></i><span class="cat-label">홈</span>
         </a>`;
 
         const groupsHtml = grouped.map(g => {
             const isCollapsed = !!collapsed[g.group.key];
-            const isDisabled = !!g.group.disabled;
-            const groupCls = ['menu-group', isCollapsed ? 'collapsed' : '', isDisabled ? 'disabled' : ''].filter(Boolean).join(' ');
-            // 대분류가 현재 활성 페이지를 포함하면 active
-            const headerActive = isDisabled ? '' :
-                (g.items.some(m => isActive(m.menu_url, activeUrl)) ? ' active' : '');
-            // 우측 요소: 활성 대분류 → chevron, 준비중 → 뱃지, 나머지 → chevron
-            const rightHtml = isDisabled
-                ? '<span class="ready-badge">준비중</span>'
-                : '<i class="fas fa-chevron-down chevron"></i>';
-            const itemsHtml = isDisabled
-                ? '' // 준비중 그룹은 하위 항목 없음
-                : (g.items.length === 0
-                    ? '<div class="menu-empty">접근 가능한 메뉴가 없습니다</div>'
-                    : g.items.map(m => {
-                        const active = isActive(m.menu_url, activeUrl) ? ' active' : '';
-                        return `<a href="${escapeHtml(m.menu_url)}" class="menu-item${active}" data-menu-code="${escapeHtml(m.menu_code)}">
-                            <i class="${escapeHtml(m.icon_class || 'fas fa-circle')}"></i><span>${escapeHtml(m.menu_name)}</span>
-                        </a>`;
-                    }).join(''));
-
-            // 대분류 header 도 .category-item 을 사용해 홈과 동일 스타일
-            //   - menu-group-header 클래스는 하위 호환으로 함께 유지
+            const groupCls = ['menu-group', isCollapsed ? 'collapsed' : ''].filter(Boolean).join(' ');
+            const headerActive = g.items.some(m => isActive(m.menu_url, activeUrl)) ? ' active' : '';
+            const itemsHtml = g.items.map(m => {
+                const active = isActive(m.menu_url, activeUrl) ? ' active' : '';
+                return `<a href="${escapeHtml(m.menu_url)}" class="menu-item${active}" data-menu-code="${escapeHtml(m.menu_code)}">
+                    <i class="${escapeHtml(m.icon_class || 'fas fa-circle')}"></i><span>${escapeHtml(m.menu_name)}</span>
+                </a>`;
+            }).join('');
+            // .menu-group-header 클래스는 하위 호환으로 함께 유지
             return `<div class="${groupCls}" data-group-key="${g.group.key}">
-                <div class="menu-group-header category-item${headerActive}" ${isDisabled ? '' : `onclick="window.PlatformSidebar.toggle('${g.group.key}')"`}>
+                <div class="menu-group-header category-item${headerActive}" onclick="window.PlatformSidebar.toggle('${g.group.key}')">
                     <i class="${escapeHtml(g.group.icon)} cat-icon"></i>
                     <span class="cat-label">${escapeHtml(g.group.name)}</span>
-                    ${rightHtml}
+                    <i class="fas fa-chevron-down chevron"></i>
                 </div>
                 <div class="menu-group-body">${itemsHtml}</div>
             </div>`;

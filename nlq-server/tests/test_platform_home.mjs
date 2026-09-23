@@ -134,42 +134,58 @@ if (PS && PS.GROUPS) {
     assert(!profitCodes.includes('permission'), 'B-11-permission-removed: 수익성분석 그룹에서 permission 제거');
 }
 
-// B-12: groupMenus 로직 검증 (2026-09-23 권한 필터링 규칙)
-//   - profitability 는 codes 중 하나라도 있으면 표시, 하위 메뉴가 0개면 그룹 자체 숨김
-//   - simulation 은 requiredCodes 인 'simulation' 이 있어야만 표시
+// B-12~B-17: groupMenus 로직 검증
+// [2026-09-23-3] 대분류 별도 권한 폐지 (사용자 요청):
+//   - 오직 하위 메뉴 코드로 판정. 대분류 코드(simulation/sysadmin) 는 GROUPS 에 존재하지 않아야 함.
+//   - 하위 메뉴 1개 이상 → 그룹 표시. 0개 → 그룹 숨김.
 if (PS && PS.groupMenus) {
-    const M_NLQ      = { menu_code:'nlq',      menu_name:'자연어 질의',   menu_url:'/nlq',            icon_class:'fas fa-comments',   sort_order:1 };
-    const M_BUILDER  = { menu_code:'builder',  menu_name:'비주얼',        menu_url:'/builder.html',   icon_class:'fas fa-th-large',   sort_order:2 };
-    const M_INTERFACE= { menu_code:'interface',menu_name:'인터페이스',    menu_url:'/interface.html', icon_class:'fas fa-plug',       sort_order:7 };
-    const M_SIM      = { menu_code:'simulation',menu_name:'경영시뮬레이션',menu_url:'#simulation',    icon_class:'fas fa-flask',      sort_order:100 };
+    const M_NLQ      = { menu_code:'nlq',             menu_name:'자연어 질의', menu_url:'/nlq',                  icon_class:'fas fa-comments', sort_order:1 };
+    const M_BUILDER  = { menu_code:'builder',         menu_name:'비주얼',      menu_url:'/builder.html',         icon_class:'fas fa-th-large', sort_order:2 };
+    const M_INTERFACE= { menu_code:'interface',       menu_name:'인터페이스',  menu_url:'/interface.html',       icon_class:'fas fa-plug',     sort_order:7 };
+    const M_STEST    = { menu_code:'simulation-test', menu_name:'테스트',      menu_url:'/simulation-test.html', icon_class:'fas fa-vial',     sort_order:101 };
+    const M_PERM     = { menu_code:'permission',      menu_name:'권한 관리',   menu_url:'/permission.html',      icon_class:'fas fa-shield-alt', sort_order:5 };
+    // [2026-09-23-3] simulation / sysadmin dummy 코드는 이제 GROUPS 에 매칭 안 됨 → 무시됨
+    const M_LEGACY_SIM  = { menu_code:'simulation', menu_name:'X', menu_url:'#simulation', icon_class:'fas fa-flask', sort_order:100 };
+    const M_LEGACY_SADM = { menu_code:'sysadmin',   menu_name:'X', menu_url:'#sysadmin',   icon_class:'fas fa-cogs',  sort_order:200 };
 
-    // 시나리오 A: nlq + builder + interface (수익성분석만) → profitability 그룹만 표시
+    // 시나리오 A: 수익성분석 하위 3개 → profitability 그룹만 표시
     const groupedA = PS.groupMenus([M_NLQ, M_BUILDER, M_INTERFACE]);
-    assert(groupedA.length === 1, 'B-12: 수익성분석만 있으면 1개 그룹 (경영시뮬 숨김)');
+    assert(groupedA.length === 1, 'B-12: 수익성분석 하위 3개 → profitability 그룹만');
     assert(groupedA[0].group.key === 'profitability', 'B-13: 첫 그룹 = profitability');
     assert(groupedA[0].items.length === 3, 'B-14: 수익성분석 3개 하위 메뉴');
 
-    // 시나리오 B: simulation 만 → simulation 그룹만 표시 (profitability 는 하위 0개라 숨김)
-    const groupedB = PS.groupMenus([M_SIM]);
-    assert(groupedB.length === 1, 'B-15: 경영시뮬만 있으면 1개 그룹 (수익성분석 숨김)');
+    // 시나리오 B: simulation-test 하위 1개만 → simulation 그룹만 표시
+    //   (M_LEGACY_SIM 을 함께 넣어도 대분류 dummy 코드는 GROUPS 매칭 안 됨 → 무시됨)
+    const groupedB = PS.groupMenus([M_STEST, M_LEGACY_SIM]);
+    assert(groupedB.length === 1, 'B-15: 경영시뮬 하위 1개만 → 1개 그룹');
     assert(groupedB[0].group.key === 'simulation', 'B-15b: 유일한 그룹 = simulation');
+    assert(groupedB[0].items.length === 1 && groupedB[0].items[0].menu_code === 'simulation-test',
+        'B-15b2: simulation 그룹 items = [simulation-test] (dummy 대분류 코드 무시)');
 
-    // 시나리오 C: 둘 다 → 2개 그룹 모두 표시
-    const groupedC = PS.groupMenus([M_NLQ, M_SIM]);
-    assert(groupedC.length === 2, 'B-15c: 둘 다 있으면 2개 그룹 모두 표시');
-    assert(groupedC[0].group.key === 'profitability' && groupedC[1].group.key === 'simulation', 'B-15d: 순서 profitability → simulation');
+    // 시나리오 C: permission 하위만 → sysadmin 그룹만
+    const groupedC = PS.groupMenus([M_PERM, M_LEGACY_SADM]);
+    assert(groupedC.length === 1, 'B-15c: 권한관리 1개만 → 1개 그룹 (sysadmin)');
+    assert(groupedC[0].group.key === 'sysadmin', 'B-15d: 유일한 그룹 = sysadmin');
+    assert(groupedC[0].items.length === 1 && groupedC[0].items[0].menu_code === 'permission',
+        'B-15d2: sysadmin 그룹 items = [permission]');
 
     // 시나리오 D: 완전 무권한 → 그룹 0개
     const groupedD = PS.groupMenus([]);
     assert(groupedD.length === 0, 'B-15e: 무권한 → 0개 그룹 (홈은 render()가 별도 처리)');
 
-    // 시나리오 E: nlq, builder 만 → profitability 만, 하위 2개
-    const restricted = PS.groupMenus([M_NLQ, M_BUILDER]);
-    assert(restricted.length === 1 && restricted[0].items.length === 2, 'B-16: 권한 제한 시 그 메뉴만 그룹에 포함');
+    // 시나리오 E: 관리자 (전체) → 3개 그룹 모두
+    const groupedE = PS.groupMenus([M_NLQ, M_BUILDER, M_INTERFACE, M_STEST, M_PERM]);
+    assert(groupedE.length === 3, 'B-16: 3개 그룹 모두 표시 (수익성분석/경영시뮬/시스템관리)');
+    assert(groupedE[0].group.key === 'profitability' && groupedE[1].group.key === 'simulation' && groupedE[2].group.key === 'sysadmin',
+        'B-16b: 순서 profitability → simulation → sysadmin');
 
-    // 시나리오 F: 알려지지 않은 코드는 어느 그룹에도 매핑 안 됨 → 그룹 0개
+    // 시나리오 F: 대분류 dummy 코드만 (하위 X) → 그룹 0개 (더 이상 대분류 권한은 유효하지 않음)
+    const dummyOnly = PS.groupMenus([M_LEGACY_SIM, M_LEGACY_SADM]);
+    assert(dummyOnly.length === 0, 'B-16c: 대분류 dummy 코드만 있으면 그룹 0개 (하위 없음)');
+
+    // 시나리오 G: 알려지지 않은 코드 → 그룹 0개
     const unknown = PS.groupMenus([{ menu_code:'unknown', menu_name:'X', menu_url:'/x', icon_class:'', sort_order:99 }]);
-    assert(unknown.length === 0, 'B-17: 알려지지 않은 menu_code 는 어느 그룹도 매칭 못 함 → 0개 그룹');
+    assert(unknown.length === 0, 'B-17: 알려지지 않은 menu_code → 0개 그룹');
 }
 
 // B-18: isActive 로직
@@ -329,11 +345,11 @@ if (PS && PS.render) {
         ? { set innerHTML(v){ capture.innerHTML = v; }, get innerHTML(){ return capture.innerHTML; } }
         : null;
     try {
-        // [2026-09-23] simulation 대분류가 렌더링되려면 me.menus 에 simulation 권한이 있어야 함.
-        //   → I-13/I-15 검증을 위해 sample 에 simulation 메뉴 포함.
+        // [2026-09-23-3] 대분류는 하위 메뉴 존재 여부로 자동 노출.
+        //   → I-13/I-15 검증을 위해 sample 에 simulation 하위 (simulation-test) 포함.
         const sampleAll = [
-            { menu_code:'nlq',        menu_name:'자연어 질의',   menu_url:'/nlq',        icon_class:'fas fa-comments', sort_order:1 },
-            { menu_code:'simulation', menu_name:'경영시뮬레이션',menu_url:'#simulation', icon_class:'fas fa-flask',    sort_order:100 },
+            { menu_code:'nlq',             menu_name:'자연어 질의', menu_url:'/nlq',                  icon_class:'fas fa-comments', sort_order:1 },
+            { menu_code:'simulation-test', menu_name:'테스트 메뉴',  menu_url:'/simulation-test.html', icon_class:'fas fa-vial',     sort_order:101 },
         ];
         capture.innerHTML = '';
         PS.render(sampleAll, { activeUrl: '/' });
@@ -418,126 +434,71 @@ assertMatch(builderHtml, /getElementById\(['"]topDbLabel['"]\)[\s\S]*?['"]DB 오
 assertMatch(builderHtml, /DOMContentLoaded[\s\S]*?initDbStatusPill\s*\(\s*\)/, 'K-11: DOMContentLoaded 시 initDbStatusPill 호출');
 
 // ============================================================
-// L. 통합 플랫폼 대분류 권한 (경영시뮬레이션) 도입 (2026-09-23 사용자 요청)
-//   - menus 테이블에 'simulation' 메뉴 추가 (menu_url='#simulation', dummy 앵커)
-//   - admin 역할에 자동 매핑
-//   - 사용자에게 'simulation' 메뉴 권한이 있어야만 사이드바 대분류 노출
-//   - 권한관리 UI 에서 [통합 플랫폼 대분류 메뉴] 섹션에 별도 표시
+// L 섹션 (2026-09-23-3): 대분류 별도 권한 폐지 (사용자 요청)
+//   - 대분류(수익성분석/경영시뮬레이션/시스템관리) 는 하위 메뉴 권한 존재 여부로 자동 노출
+//   - simulation / sysadmin dummy 대분류 메뉴 코드 폐기
+//   - DEFAULT_MENUS_ALL / 시드 INSERT 에서 두 코드 제거
+//   - 기존 DB 마이그레이션 블록에서 두 코드 자동 삭제
 // ============================================================
-// L-1: DEFAULT_MENUS_ALL 에 simulation 메뉴 포함
-assertMatch(server, /menu_code:'simulation',[\s\S]*?menu_name:'경영시뮬레이션',[\s\S]*?menu_url:'#simulation',[\s\S]*?icon_class:'fas fa-flask'/, 'L-1: DEFAULT_MENUS_ALL 에 simulation 메뉴 (menu_url=#simulation, fa-flask)');
-// L-2: 시드 데이터 INSERT 에도 simulation 포함
-assertMatch(server, /INSERT INTO menus[\s\S]*?'simulation',\s*'경영시뮬레이션',\s*'#simulation',\s*'fas fa-flask'/, 'L-2: 시드 INSERT 에 simulation 포함');
-// L-3: 기존 배포 DB 마이그레이션 (simulation 없으면 자동 추가)
-assertMatch(server, /SELECT id FROM menus WHERE menu_code = 'simulation'/, 'L-3: 기존 DB 에 simulation 존재 확인 마이그레이션');
-assertMatch(server, /INSERT INTO menus[\s\S]*?VALUES\s*\('simulation',\s*'경영시뮬레이션',\s*'#simulation',\s*'fas fa-flask',\s*100\)/, 'L-4: 마이그레이션 INSERT 구문');
-// L-5: admin 에 simulation 자동 매핑 마이그레이션
-assertMatch(server, /INSERT IGNORE INTO role_menus[\s\S]*?WHERE r\.role_code = 'admin' AND m\.menu_code = 'simulation'/, 'L-5: admin 역할에 simulation 자동 매핑');
+// L-1: DEFAULT_MENUS_ALL 에 simulation dummy 코드가 없어야 함
+assert(!/menu_code:'simulation',[\s\S]*?menu_url:'#simulation'/.test(server),
+    'L-1: DEFAULT_MENUS_ALL 에서 simulation dummy 대분류 제거');
+// L-2: DEFAULT_MENUS_ALL 에 sysadmin dummy 코드가 없어야 함
+assert(!/menu_code:'sysadmin',[\s\S]*?menu_url:'#sysadmin'/.test(server),
+    'L-2: DEFAULT_MENUS_ALL 에서 sysadmin dummy 대분류 제거');
+// L-3: 시드 INSERT 에도 없어야 함
+assert(!/INSERT INTO menus[\s\S]*?'simulation',\s*'경영시뮬레이션',\s*'#simulation'/.test(server),
+    'L-3: 시드 INSERT 에서 simulation dummy 제거');
+assert(!/INSERT INTO menus[\s\S]*?'sysadmin',\s*'시스템관리',\s*'#sysadmin'/.test(server),
+    'L-4: 시드 INSERT 에서 sysadmin dummy 제거');
+// L-5: 기존 DB 마이그레이션 — 두 legacy 코드 DELETE 로직 존재
+assertMatch(server, /for\s*\(\s*const legacyCode of\s*\[\s*'simulation'\s*,\s*'sysadmin'\s*\]\s*\)/,
+    'L-5: 기존 DB 마이그레이션에서 legacy dummy 코드 DELETE 루프 존재');
+assertMatch(server, /DELETE FROM role_menus WHERE menu_id = \?/,
+    'L-5b: role_menus 매핑도 함께 DELETE (FK 안전)');
+assertMatch(server, /DELETE FROM menus WHERE id = \?/,
+    'L-5c: menus 테이블에서 legacy 코드 DELETE');
+// L-6: simulation-test 하위 메뉴는 여전히 DEFAULT_MENUS_ALL 에 유지
+assertMatch(server, /menu_code:'simulation-test',[\s\S]*?menu_name:'테스트 메뉴',[\s\S]*?menu_url:'\/simulation-test\.html'/,
+    'L-6: simulation-test (하위 메뉴, 실제 URL) 는 DEFAULT_MENUS_ALL 에 유지');
+// L-7: simulation-test 시드/마이그레이션도 유지
+assertMatch(server, /INSERT INTO menus[\s\S]*?'simulation-test',\s*'테스트 메뉴',\s*'\/simulation-test\.html'/,
+    'L-7: simulation-test 시드 INSERT 유지');
+assertMatch(server, /SELECT id FROM menus WHERE menu_code = 'simulation-test'/,
+    'L-8: simulation-test 마이그레이션 SELECT 유지');
 
-// L-6~L-9: platform-sidebar.js GROUPS 정의
+// L-9~L-11: platform-sidebar.js GROUPS — requiredCodes 폐기, codes 기반만 사용
 if (PS && PS.GROUPS) {
-    const simGroup = PS.GROUPS.find(g => g.key === 'simulation');
-    assert(simGroup && Array.isArray(simGroup.requiredCodes) && simGroup.requiredCodes.includes('simulation'),
-        'L-6: simulation 그룹의 requiredCodes 에 "simulation" 명시');
-    const profitGroup = PS.GROUPS.find(g => g.key === 'profitability');
-    assert(profitGroup && profitGroup.requiredCodes == null,
-        'L-7: profitability 그룹의 requiredCodes 는 null (하위 메뉴 존재 여부로 판정)');
-}
-
-// L-8~L-15: 사용자 시나리오 검증 (사용자 요구사항 3번 그대로)
-if (PS && PS.render) {
-    const M_NLQ = { menu_code:'nlq',        menu_name:'자연어 질의',   menu_url:'/nlq',        icon_class:'fas fa-comments', sort_order:1 };
-    const M_SIM = { menu_code:'simulation', menu_name:'경영시뮬레이션',menu_url:'#simulation', icon_class:'fas fa-flask',    sort_order:100 };
-
-    const capture = { innerHTML: '' };
-    const originalGet = fakeDocument.getElementById;
-    fakeDocument.getElementById = (id) => id === 'sidebarMenu'
-        ? { set innerHTML(v){ capture.innerHTML = v; }, get innerHTML(){ return capture.innerHTML; } }
-        : null;
-    try {
-        // 시나리오 1: "수익성분석 권한만 있음" → 홈 + 수익성분석, 경영시뮬 숨김
-        capture.innerHTML = '';
-        PS.render([M_NLQ], { activeUrl: '/nlq' });
-        assertMatch(capture.innerHTML, /home-link/, 'L-8: 수익성분석만 → 홈 표시');
-        assertMatch(capture.innerHTML, /data-group-key="profitability"/, 'L-9: 수익성분석만 → 수익성분석 그룹 표시');
-        assert(!/data-group-key="simulation"/.test(capture.innerHTML), 'L-10: 수익성분석만 → 경영시뮬 숨김');
-
-        // 시나리오 2: "경영시뮬레이션 권한만 있음" → 홈 + 경영시뮬, 수익성분석 숨김
-        capture.innerHTML = '';
-        PS.render([M_SIM], { activeUrl: '/' });
-        assertMatch(capture.innerHTML, /home-link/, 'L-11: 경영시뮬만 → 홈 표시');
-        assertMatch(capture.innerHTML, /data-group-key="simulation"/, 'L-12: 경영시뮬만 → 경영시뮬 그룹 표시');
-        assert(!/data-group-key="profitability"/.test(capture.innerHTML), 'L-13: 경영시뮬만 → 수익성분석 숨김');
-
-        // 시나리오 3: "두 권한 모두 있음" → 홈 + 수익성분석 + 경영시뮬
-        capture.innerHTML = '';
-        PS.render([M_NLQ, M_SIM], { activeUrl: '/nlq' });
-        assertMatch(capture.innerHTML, /home-link/, 'L-14: 둘 다 → 홈 표시');
-        assertMatch(capture.innerHTML, /data-group-key="profitability"/, 'L-14b: 둘 다 → 수익성분석 표시');
-        assertMatch(capture.innerHTML, /data-group-key="simulation"/, 'L-14c: 둘 다 → 경영시뮬 표시');
-
-        // 시나리오 4: 완전 무권한 → 홈만 표시, 두 대분류 모두 숨김
-        capture.innerHTML = '';
-        PS.render([], { activeUrl: '/' });
-        assertMatch(capture.innerHTML, /home-link/, 'L-15: 무권한 → 홈만 표시 (항상 노출)');
-        assert(!/data-group-key="profitability"/.test(capture.innerHTML) && !/data-group-key="simulation"/.test(capture.innerHTML),
-            'L-16: 무권한 → 두 대분류 모두 숨김');
-    } finally {
-        fakeDocument.getElementById = originalGet;
+    for (const g of PS.GROUPS) {
+        assert(!('requiredCodes' in g),
+            `L-9-${g.key}: GROUPS[${g.key}] 에 requiredCodes 필드 없음 (폐기됨)`);
+        assert(Array.isArray(g.codes) && g.codes.length > 0,
+            `L-10-${g.key}: GROUPS[${g.key}].codes 는 비어있지 않은 배열`);
+        assert(!g.disabled,
+            `L-11-${g.key}: GROUPS[${g.key}] 에 disabled 필드 없음 (모든 그룹 정상 drop-down)`);
     }
-}
-
-// L-17~L-20: 권한관리 UI (permission.html) — 대분류 계층 가시화
-const permHtmlPath = path.resolve(publicDir, 'permission.html');
-const permHtml = fs.readFileSync(permHtmlPath, 'utf8');
-// [2026-09-23-2] PLATFORM_CATEGORY_CODES 에 sysadmin 추가됨
-assertMatch(permHtml, /PLATFORM_CATEGORY_CODES\s*=\s*new\s+Set\(\s*\[[^\]]*['"]simulation['"][^\]]*\]\s*\)/, 'L-17: 권한관리 UI 에 PLATFORM_CATEGORY_CODES 정의 (simulation 포함)');
-assertMatch(permHtml, /PLATFORM_CATEGORY_CODES\s*=\s*new\s+Set\(\s*\[[^\]]*['"]sysadmin['"][^\]]*\]\s*\)/, 'L-17b: PLATFORM_CATEGORY_CODES 에 sysadmin 포함');
-assertMatch(permHtml, /통합 플랫폼 대분류 메뉴/, 'L-18: 권한관리 UI 에 "통합 플랫폼 대분류 메뉴" 섹션 타이틀');
-assertMatch(permHtml, /수익성분석\/제조원가는[\s\S]*?수익성분석 서비스 내부의 업무영역 권한/, 'L-19: 업무영역 권한과 대분류 권한 분리 안내 문구');
-assertMatch(permHtml, /수익성분석 하위 메뉴/, 'L-20: 권한관리 UI 에 "수익성분석 하위 메뉴" 섹션 타이틀');
-
-// ============================================================
-// M 섹션 (2026-09-23-2): 사이드바 재구성
-//   - 권한 관리: 수익성분석 그룹 → 시스템관리 그룹 이동
-//   - 경영시뮬레이션 하위: 테스트 메뉴 (simulation-test) 추가
-//   - 시스템관리 (sysadmin) 대분류 신규
-// ============================================================
-// M-1~M-4: server.mjs — 신규 메뉴 코드
-assertMatch(server, /menu_code:'simulation-test',[\s\S]*?menu_name:'테스트 메뉴',[\s\S]*?menu_url:'\/simulation-test\.html',[\s\S]*?icon_class:'fas fa-vial'/, 'M-1: DEFAULT_MENUS_ALL 에 simulation-test 메뉴');
-assertMatch(server, /menu_code:'sysadmin',[\s\S]*?menu_name:'시스템관리',[\s\S]*?menu_url:'#sysadmin',[\s\S]*?icon_class:'fas fa-cogs'/, 'M-2: DEFAULT_MENUS_ALL 에 sysadmin 메뉴');
-assertMatch(server, /INSERT INTO menus[\s\S]*?'simulation-test',\s*'테스트 메뉴',\s*'\/simulation-test\.html',\s*'fas fa-vial'/, 'M-3: 시드 INSERT 에 simulation-test');
-assertMatch(server, /INSERT INTO menus[\s\S]*?'sysadmin',\s*'시스템관리',\s*'#sysadmin',\s*'fas fa-cogs'/, 'M-4: 시드 INSERT 에 sysadmin');
-// M-5~M-6: 마이그레이션 블록
-assertMatch(server, /SELECT id FROM menus WHERE menu_code = 'simulation-test'/, 'M-5: simulation-test 마이그레이션 SELECT');
-assertMatch(server, /SELECT id FROM menus WHERE menu_code = 'sysadmin'/, 'M-6: sysadmin 마이그레이션 SELECT');
-assertMatch(server, /INSERT IGNORE INTO role_menus[\s\S]*?WHERE r\.role_code = 'admin' AND m\.menu_code = 'simulation-test'/, 'M-7: admin 에 simulation-test 자동 매핑');
-assertMatch(server, /INSERT IGNORE INTO role_menus[\s\S]*?WHERE r\.role_code = 'admin' AND m\.menu_code = 'sysadmin'/, 'M-8: admin 에 sysadmin 자동 매핑');
-
-// M-9~M-13: platform-sidebar.js GROUPS 재구성
-if (PS && PS.GROUPS) {
-    const profitGroup = PS.GROUPS.find(g => g.key === 'profitability');
-    assert(profitGroup && !profitGroup.codes.includes('permission'),
-        'M-9: profitability 그룹 codes 에서 permission 제거');
-    assert(profitGroup && profitGroup.codes.includes('nlq') && profitGroup.codes.includes('builder') && profitGroup.codes.includes('learning'),
-        'M-10: profitability 그룹 codes 에 nlq/builder/learning 유지');
+    // sysadmin 그룹은 여전히 존재해야 함
+    const saGroup = PS.GROUPS.find(g => g.key === 'sysadmin');
+    assert(saGroup && saGroup.codes.includes('permission'),
+        'L-12: sysadmin 그룹 codes 에 permission 유지');
     const simGroup = PS.GROUPS.find(g => g.key === 'simulation');
     assert(simGroup && simGroup.codes.includes('simulation-test'),
-        'M-11: simulation 그룹 codes 에 simulation-test 추가');
-    const saGroup = PS.GROUPS.find(g => g.key === 'sysadmin');
-    assert(saGroup && Array.isArray(saGroup.requiredCodes) && saGroup.requiredCodes.includes('sysadmin'),
-        'M-12: sysadmin 그룹 신규 + requiredCodes 에 sysadmin');
-    assert(saGroup && saGroup.codes.includes('permission'),
-        'M-13: sysadmin 그룹 codes 에 permission 이관');
+        'L-13: simulation 그룹 codes 에 simulation-test 유지');
+    const profitGroup = PS.GROUPS.find(g => g.key === 'profitability');
+    assert(profitGroup && !profitGroup.codes.includes('permission'),
+        'L-14: profitability 그룹 codes 에 permission 없음 (sysadmin 소속)');
 }
 
-// M-14~M-20: 사용자 시나리오 (재구성 후)
+// L-15~L-25: 사용자 시나리오 (사용자 요구 5번 그대로)
 if (PS && PS.render) {
-    const M_NLQ    = { menu_code:'nlq',             menu_name:'자연어 질의',   menu_url:'/nlq',                  icon_class:'fas fa-comments',   sort_order:1 };
-    const M_PERM   = { menu_code:'permission',      menu_name:'권한 관리',      menu_url:'/permission.html',      icon_class:'fas fa-shield-alt', sort_order:5 };
-    const M_SIM    = { menu_code:'simulation',      menu_name:'경영시뮬레이션', menu_url:'#simulation',           icon_class:'fas fa-flask',      sort_order:100 };
-    const M_STEST  = { menu_code:'simulation-test', menu_name:'테스트 메뉴',    menu_url:'/simulation-test.html', icon_class:'fas fa-vial',       sort_order:101 };
-    const M_SADM   = { menu_code:'sysadmin',        menu_name:'시스템관리',     menu_url:'#sysadmin',             icon_class:'fas fa-cogs',       sort_order:200 };
+    const M_NLQ     = { menu_code:'nlq',             menu_name:'자연어 질의', menu_url:'/nlq',                  icon_class:'fas fa-comments',   sort_order:1 };
+    const M_BUILDER = { menu_code:'builder',         menu_name:'비주얼',       menu_url:'/builder.html',         icon_class:'fas fa-th-large',   sort_order:2 };
+    const M_LEARN   = { menu_code:'learning',        menu_name:'학습',         menu_url:'/learning.html',        icon_class:'fas fa-graduation-cap', sort_order:4 };
+    const M_PERM    = { menu_code:'permission',      menu_name:'권한 관리',    menu_url:'/permission.html',      icon_class:'fas fa-shield-alt', sort_order:5 };
+    const M_STEST   = { menu_code:'simulation-test', menu_name:'테스트',       menu_url:'/simulation-test.html', icon_class:'fas fa-vial',       sort_order:101 };
+    // Legacy dummy 코드가 서버 응답에 남아있어도 무시되어야 함
+    const M_LEGACY_SIM  = { menu_code:'simulation', menu_name:'X', menu_url:'#simulation', icon_class:'fas fa-flask', sort_order:100 };
+    const M_LEGACY_SADM = { menu_code:'sysadmin',   menu_name:'X', menu_url:'#sysadmin',   icon_class:'fas fa-cogs',  sort_order:200 };
 
     const capture = { innerHTML: '' };
     const originalGet = fakeDocument.getElementById;
@@ -545,66 +506,84 @@ if (PS && PS.render) {
         ? { set innerHTML(v){ capture.innerHTML = v; }, get innerHTML(){ return capture.innerHTML; } }
         : null;
     try {
-        // groupMenus 결과로 각 그룹별 items 를 정확히 검증 (렌더 문자열보다 안정적)
-        const groupedAdmin = PS.groupMenus([M_NLQ, M_PERM, M_SIM, M_STEST, M_SADM]);
-        const gaProfit = groupedAdmin.find(g => g.group.key === 'profitability');
-        const gaSim    = groupedAdmin.find(g => g.group.key === 'simulation');
-        const gaSys    = groupedAdmin.find(g => g.group.key === 'sysadmin');
-        // 렌더 결과에서 세 그룹 모두 노출 확인
+        // 시나리오 A (사용자 요구 예시): 사용자 A = [자연어 질의, 비주얼 쿼리 빌더]
+        //   → 홈 + 수익성분석 ▼(2개), 경영시뮬레이션/시스템관리 숨김
         capture.innerHTML = '';
-        PS.render([M_NLQ, M_PERM, M_SIM, M_STEST, M_SADM], { activeUrl: '/permission.html' });
-        assertMatch(capture.innerHTML, /data-group-key="profitability"/, 'M-14: admin → profitability 그룹 노출');
-        assertMatch(capture.innerHTML, /data-group-key="simulation"/, 'M-15: admin → simulation 그룹 노출');
-        assertMatch(capture.innerHTML, /data-group-key="sysadmin"/, 'M-16: admin → sysadmin 그룹 노출');
-        // 그룹별 items 검증 — 각 하위 메뉴가 올바른 그룹에 속하는지
-        assert(gaSys && gaSys.items.some(m => m.menu_code === 'permission'),
-            'M-17: 권한 관리(permission) 가 시스템관리 그룹 items 에 배치');
-        assert(gaProfit && !gaProfit.items.some(m => m.menu_code === 'permission'),
-            'M-18: 권한 관리가 수익성분석 그룹 items 에 더 이상 없음');
-        assert(gaSim && gaSim.items.some(m => m.menu_code === 'simulation-test'),
-            'M-19: 경영시뮬레이션 그룹 items 에 simulation-test 하위 메뉴');
-        // 실제 링크가 렌더 결과에 존재하는지도 확인 (사용자 관점)
-        assertMatch(capture.innerHTML, /href="\/permission\.html"/, 'M-19b: 렌더 결과에 /permission.html 링크 존재');
-        assertMatch(capture.innerHTML, /href="\/simulation-test\.html"/, 'M-19c: 렌더 결과에 /simulation-test.html 링크 존재');
+        PS.render([M_NLQ, M_BUILDER], { activeUrl: '/nlq' });
+        assertMatch(capture.innerHTML, /home-link/, 'L-15: 사용자 A → 홈 노출');
+        assertMatch(capture.innerHTML, /data-group-key="profitability"/, 'L-16: 사용자 A → 수익성분석 대분류 노출');
+        assert(!/data-group-key="simulation"/.test(capture.innerHTML), 'L-17: 사용자 A → 경영시뮬레이션 숨김');
+        assert(!/data-group-key="sysadmin"/.test(capture.innerHTML), 'L-18: 사용자 A → 시스템관리 숨김');
 
-        // 시나리오: 수익성분석만 (permission 없음) → sysadmin/simulation 숨김
+        // 시나리오 B (사용자 요구 예시): 사용자 B = [경영시뮬레이션 하위(simulation-test)]
+        //   → 홈 + 경영시뮬레이션, 수익성분석/시스템관리 숨김
         capture.innerHTML = '';
-        PS.render([M_NLQ], { activeUrl: '/nlq' });
-        assert(!/data-group-key="sysadmin"/.test(capture.innerHTML) && !/data-group-key="simulation"/.test(capture.innerHTML),
-            'M-20: 수익성분석 하위만 있음 → sysadmin/simulation 대분류 숨김');
+        PS.render([M_STEST], { activeUrl: '/simulation-test.html' });
+        assertMatch(capture.innerHTML, /data-group-key="simulation"/, 'L-19: 사용자 B → 경영시뮬레이션 대분류 노출');
+        assert(!/data-group-key="profitability"/.test(capture.innerHTML), 'L-20: 사용자 B → 수익성분석 숨김');
+        assert(!/data-group-key="sysadmin"/.test(capture.innerHTML), 'L-21: 사용자 B → 시스템관리 숨김');
 
-        // 시나리오: sysadmin 대분류만 부여 (permission 하위도 있음) → sysadmin 만 표시
+        // 시나리오 C: 관리자 = 전체 → 홈 + 3개 대분류 모두
         capture.innerHTML = '';
-        PS.render([M_SADM, M_PERM], { activeUrl: '/permission.html' });
-        assertMatch(capture.innerHTML, /data-group-key="sysadmin"/, 'M-21: sysadmin 대분류 + permission → sysadmin 그룹 표시');
-        assert(!/data-group-key="profitability"/.test(capture.innerHTML),
-            'M-22: sysadmin 만 있음 → profitability 숨김 (permission 은 이제 sysadmin 소속)');
+        PS.render([M_NLQ, M_BUILDER, M_LEARN, M_PERM, M_STEST], { activeUrl: '/' });
+        assertMatch(capture.innerHTML, /data-group-key="profitability"/, 'L-22: 관리자 → 수익성분석 노출');
+        assertMatch(capture.innerHTML, /data-group-key="simulation"/, 'L-23: 관리자 → 경영시뮬레이션 노출');
+        assertMatch(capture.innerHTML, /data-group-key="sysadmin"/, 'L-24: 관리자 → 시스템관리 노출');
 
-        // 시나리오: simulation 대분류만 (simulation-test 없음) → 그룹 헤더만 표시, 하위는 "접근 가능한 메뉴가 없습니다"
+        // 시나리오 D: 서버 응답에 legacy dummy 코드가 있어도 대분류 표시 여부는 하위 메뉴로만 결정
+        //   → dummy 만 있으면 아무 그룹도 노출 안 됨
         capture.innerHTML = '';
-        PS.render([M_SIM], { activeUrl: '/' });
-        assertMatch(capture.innerHTML, /data-group-key="simulation"/, 'M-23: simulation 대분류만 → 그룹 표시');
-        assertMatch(capture.innerHTML, /접근 가능한 메뉴가 없습니다/, 'M-24: 하위 없으면 "접근 가능한 메뉴가 없습니다" 안내');
+        PS.render([M_LEGACY_SIM, M_LEGACY_SADM], { activeUrl: '/' });
+        assertMatch(capture.innerHTML, /home-link/, 'L-25: dummy 만 있어도 홈은 노출');
+        assert(!/data-group-key="/.test(capture.innerHTML),
+            'L-26: legacy dummy (simulation/sysadmin) 만 있으면 대분류 그룹 0개');
     } finally {
         fakeDocument.getElementById = originalGet;
     }
 }
 
-// M-25~M-28: permission.html — 그룹별 섹션 렌더
-assertMatch(permHtml, /GROUP_SUB_CODES\s*=\s*\{/, 'M-25: permission.html 에 GROUP_SUB_CODES 정의');
-assertMatch(permHtml, /경영시뮬레이션 하위 메뉴/, 'M-26: permission.html 에 "경영시뮬레이션 하위 메뉴" 섹션');
-assertMatch(permHtml, /시스템관리 하위 메뉴/, 'M-27: permission.html 에 "시스템관리 하위 메뉴" 섹션');
-assertMatch(permHtml, /permission['"]?\s*\]\s*\)/, 'M-28: GROUP_SUB_CODES.sysadmin 에 permission 포함');
+// L-27~L-32: 권한관리 UI (permission.html) — 그룹별 하위 메뉴 렌더, 대분류 체크 폐지
+const permHtmlPath = path.resolve(publicDir, 'permission.html');
+const permHtml = fs.readFileSync(permHtmlPath, 'utf8');
+// PLATFORM_CATEGORY_CODES 는 더 이상 사용되지 않아야 함 (또는 존재해도 실제 렌더에는 영향 없음)
+assert(!/const PLATFORM_CATEGORY_CODES/.test(permHtml),
+    'L-27: permission.html 에서 PLATFORM_CATEGORY_CODES 상수 폐지');
+// GROUP_LAYOUT 배열로 대체
+assertMatch(permHtml, /const GROUP_LAYOUT\s*=\s*\[/,
+    'L-28: permission.html 에 GROUP_LAYOUT 배열 정의 (그룹별 렌더 설정)');
+assertMatch(permHtml, /key:\s*'profitability'[\s\S]*?codes:\s*\[[\s\S]*?'nlq'/,
+    'L-29: GROUP_LAYOUT 에 profitability 항목 (codes 에 nlq)');
+assertMatch(permHtml, /key:\s*'simulation'[\s\S]*?codes:\s*\[[\s\S]*?'simulation-test'/,
+    'L-30: GROUP_LAYOUT 에 simulation 항목 (codes 에 simulation-test)');
+assertMatch(permHtml, /key:\s*'sysadmin'[\s\S]*?codes:\s*\[[\s\S]*?'permission'/,
+    'L-31: GROUP_LAYOUT 에 sysadmin 항목 (codes 에 permission)');
+// 그룹 전체선택 체크박스 (UI 편의 기능)
+assertMatch(permHtml, /function\s+toggleGroupSelect\s*\(/,
+    'L-32: 그룹 전체선택 체크박스 핸들러 (toggleGroupSelect) 존재');
+assertMatch(permHtml, /class="group-toggle"/,
+    'L-33: 그룹 헤더에 .group-toggle 체크박스 클래스');
+// 저장 시 그룹 헤더 체크박스는 제외 (menu-group-items 하위만 저장)
+assertMatch(permHtml, /#menuCheckList\s+\.menu-group-items\s+input\[type="checkbox"\]:checked/,
+    'L-34: saveMenuMapping — group-toggle 제외, menu-group-items 내부만 저장');
 
-// M-29: simulation-test.html 페이지 파일 존재
+// L-35~L-38: 새 3그룹 섹션 타이틀
+assertMatch(permHtml, /수익성분석[\s\S]*?자연어 질의/,
+    'L-35: 권한관리 UI 에 [수익성분석] 그룹 설명 (자연어 질의 언급)');
+assertMatch(permHtml, /경영시뮬레이션[\s\S]*?테스트 메뉴/,
+    'L-36: 권한관리 UI 에 [경영시뮬레이션] 그룹 설명 (테스트 메뉴 언급)');
+assertMatch(permHtml, /시스템관리[\s\S]*?권한 관리/,
+    'L-37: 권한관리 UI 에 [시스템관리] 그룹 설명 (권한 관리 언급)');
+assertMatch(permHtml, /하위 메뉴 권한이 하나라도 있으면[\s\S]*?자동 노출/,
+    'L-38: 권한관리 UI 에 "하위 메뉴 권한 → 대분류 자동 노출" 안내');
+
+// L-39: simulation-test.html 페이지 파일 존재 (기존 유지)
 const stestPath = path.resolve(publicDir, 'simulation-test.html');
-assert(fs.existsSync(stestPath), 'M-29: simulation-test.html 파일 존재');
+assert(fs.existsSync(stestPath), 'L-39: simulation-test.html 파일 존재');
 if (fs.existsSync(stestPath)) {
     const stestHtml = fs.readFileSync(stestPath, 'utf8');
-    assertMatch(stestHtml, /platform-sidebar\.js/, 'M-30: simulation-test.html 이 platform-sidebar.js 로드');
-    assertMatch(stestHtml, /PlatformSidebar\.render/, 'M-31: simulation-test.html 이 PlatformSidebar.render 호출');
-    assertMatch(stestHtml, /activeUrl:\s*['"]\/simulation-test\.html['"]/, 'M-32: activeUrl = /simulation-test.html');
-    assertMatch(stestHtml, /menu_code === ['"]simulation-test['"]/, 'M-33: simulation-test 메뉴 권한 체크');
+    assertMatch(stestHtml, /platform-sidebar\.js/, 'L-40: simulation-test.html 이 platform-sidebar.js 로드');
+    assertMatch(stestHtml, /PlatformSidebar\.render/, 'L-41: simulation-test.html 이 PlatformSidebar.render 호출');
+    assertMatch(stestHtml, /activeUrl:\s*['"]\/simulation-test\.html['"]/, 'L-42: activeUrl = /simulation-test.html');
 }
 
 // ============================================================
