@@ -40,6 +40,24 @@
         const style = document.createElement('style');
         style.id = 'platform-sidebar-style';
         style.textContent = `
+/* 통합 사이드바 [홈] 버튼 — 대분류 위 독립 항목 (사용자 요청 2026-09-23) */
+#sidebarMenu .home-link{
+    display:flex;align-items:center;gap:10px;
+    margin:10px 16px 6px;padding:10px 14px;
+    background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.28);
+    border-radius:10px;color:#e0e7ff;font-size:13px;font-weight:700;
+    text-decoration:none;cursor:pointer;transition:all .15s;
+}
+#sidebarMenu .home-link i.home-icon{color:#a5b4fc;font-size:14px;width:16px;text-align:center;}
+#sidebarMenu .home-link:hover{
+    background:rgba(99,102,241,.28);border-color:rgba(99,102,241,.45);color:#fff;
+    transform:translateY(-1px);box-shadow:0 4px 10px rgba(99,102,241,.18);
+}
+#sidebarMenu .home-link.active{
+    background:rgba(99,102,241,.35);border-color:rgba(165,180,252,.6);color:#fff;
+}
+#sidebarMenu .home-link.active i.home-icon{color:#c7d2fe;}
+
 /* 통합 사이드바 대분류 그룹 */
 #sidebarMenu .menu-group{margin-top:6px;}
 #sidebarMenu .menu-group-header{
@@ -186,7 +204,16 @@
         // active 그룹은 강제로 펼침 (collapsed 무시)
         if (activeGroupKey) collapsed[activeGroupKey] = false;
 
-        const html = grouped.map(g => {
+        // [2026-09-23 사용자 요청] 대분류 위에 [홈] 버튼 독립 항목 표시.
+        //   - 사이드바 로고 아래 빈 공간이 홈 접근 방법으로 명확하지 않다는 사용자 지적 반영.
+        //   - 로고 클릭도 그대로 동작하되, 이 [홈] 버튼이 시각적으로 훨씬 명확.
+        //   - 현재 페이지가 HOME('/') 이면 active 스타일.
+        const homeActive = isActive('/', activeUrl) ? ' active' : '';
+        const homeHtml = `<a href="/" class="home-link${homeActive}" title="통합 플랫폼 HOME">
+            <i class="fas fa-home home-icon"></i><span>홈</span>
+        </a>`;
+
+        const groupsHtml = grouped.map(g => {
             const isCollapsed = !!collapsed[g.group.key];
             const isDisabled = !!g.group.disabled;
             const groupCls = ['menu-group', isCollapsed ? 'collapsed' : '', isDisabled ? 'disabled' : ''].filter(Boolean).join(' ');
@@ -214,7 +241,7 @@
             </div>`;
         }).join('');
 
-        container.innerHTML = html;
+        container.innerHTML = homeHtml + groupsHtml;
         return true;
     }
 
