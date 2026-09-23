@@ -20019,6 +20019,9 @@ async function ensureRbacTables() {
 
     // 6) 시드 데이터 — 메뉴가 비어있을 때만 삽입
     // [2026-09-21] 통합 플랫폼 HOME 도입: 자연어질의 URL '/' → '/nlq', 인터페이스 관리 추가
+    // [2026-09-23] 통합 플랫폼 대분류 권한: simulation (경영시뮬레이션) 대분류 메뉴 추가
+    //   - simulation 은 아직 하위 URL 이 없어 menu_url='#simulation' (dummy 앵커).
+    //   - 이 메뉴가 role_menus 에 매핑된 사용자에게만 사이드바 [경영시뮬레이션] 대분류 노출.
     const [menuCount] = await pool.query('SELECT COUNT(*) AS cnt FROM menus');
     if (menuCount[0].cnt === 0) {
       await pool.query(`
@@ -20029,7 +20032,8 @@ async function ensureRbacTables() {
         ('learning',  '학습 관리',            '/learning.html',  'fas fa-graduation-cap',    4),
         ('permission','권한 관리',           '/permission.html','fas fa-shield-alt',        5),
         ('batch',     '배치 관리',            '/batch.html',     'fas fa-sync-alt',          6),
-        ('interface', '인터페이스 관리',      '/interface.html', 'fas fa-plug',              7)
+        ('interface', '인터페이스 관리',      '/interface.html', 'fas fa-plug',              7),
+        ('simulation','경영시뮬레이션',       '#simulation',     'fas fa-flask',             100)
       `);
       console.log('[RBAC] 기본 메뉴 시드 데이터 삽입');
     } else {
@@ -20059,6 +20063,23 @@ async function ensureRbacTables() {
           console.log('[RBAC] interface 메뉴 신규 추가 + admin 매핑');
         }
       } catch (e) { console.error('[RBAC] interface 메뉴 추가 실패:', e.message); }
+      // [2026-09-23] simulation 대분류 메뉴가 아직 없으면 추가 (기존 배포된 DB 마이그레이션)
+      try {
+        const [simRow] = await pool.query(`SELECT id FROM menus WHERE menu_code = 'simulation'`);
+        if (simRow.length === 0) {
+          await pool.query(`
+            INSERT INTO menus (menu_code, menu_name, menu_url, icon_class, sort_order)
+            VALUES ('simulation', '경영시뮬레이션', '#simulation', 'fas fa-flask', 100)
+          `);
+          // admin 역할에 자동 매핑 (일반 user 는 관리자가 수동 부여)
+          await pool.query(`
+            INSERT IGNORE INTO role_menus (role_id, menu_id)
+            SELECT r.id, m.id FROM roles r CROSS JOIN menus m
+            WHERE r.role_code = 'admin' AND m.menu_code = 'simulation'
+          `);
+          console.log('[RBAC] simulation 대분류 메뉴 신규 추가 + admin 매핑');
+        }
+      } catch (e) { console.error('[RBAC] simulation 메뉴 추가 실패:', e.message); }
     }
 
     // 7) 시드 데이터 — role_menus 매핑이 비어있을 때만 삽입
@@ -20405,6 +20426,13 @@ async function ensureErrorReportsTable() {
 // [2026-09-21] 통합 플랫폼 HOME 도입:
 //   - '/' 는 통합 플랫폼 HOME (platform.html) 로 예약 → 자연어질의는 '/nlq' 로 이동
 //   - 사용자 요청으로 '인터페이스 관리' 를 정식 메뉴에 편입 (interface.html 은 기존부터 존재했음)
+// [2026-09-23] 통합 플랫폼 대분류 권한 도입:
+//   - 'simulation' (경영시뮬레이션) 을 대분류 메뉴 권한으로 추가
+//     · 아직 하위 URL 없음 → menu_url = '#simulation' (dummy 앵커, 라우팅 대상 아님)
+//     · icon: fa-flask (플랫폼 카드와 동일 아이콘)
+//     · 권한이 있어야만 사이드바에 '경영시뮬레이션' 대분류 노출
+//   - 대분류 [수익성분석] 자체는 하위 메뉴(nlq/builder 등) 중 하나라도 있으면 자동 노출됨
+//     (별도 'profitability' 대분류 코드는 만들지 않음 — UI 그룹핑 규칙으로 처리)
 const DEFAULT_MENUS_ALL = [
   { menu_code:'nlq',       menu_name:'자연어 질의',        menu_url:'/nlq',            icon_class:'fas fa-comments',        sort_order:1 },
   { menu_code:'builder',   menu_name:'비주얼 쿼리 빌더',  menu_url:'/builder.html',   icon_class:'fas fa-th-large',        sort_order:2 },
@@ -20413,6 +20441,7 @@ const DEFAULT_MENUS_ALL = [
   { menu_code:'permission',menu_name:'권한 관리',           menu_url:'/permission.html',icon_class:'fas fa-shield-alt',      sort_order:5 },
   { menu_code:'batch',     menu_name:'배치 관리',          menu_url:'/batch.html',     icon_class:'fas fa-sync-alt',        sort_order:6 },
   { menu_code:'interface', menu_name:'인터페이스 관리',    menu_url:'/interface.html', icon_class:'fas fa-plug',            sort_order:7 },
+  { menu_code:'simulation',menu_name:'경영시뮬레이션',     menu_url:'#simulation',     icon_class:'fas fa-flask',           sort_order:100 },
 ];
 const DEFAULT_MENUS_USER = DEFAULT_MENUS_ALL.filter(m => ['nlq','builder','report'].includes(m.menu_code));
 
