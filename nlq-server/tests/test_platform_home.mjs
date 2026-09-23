@@ -215,46 +215,121 @@ assertMatch(server, /req\.path === '\/index\.html'\s*\)\s*\?\s*'\/nlq'\s*:\s*req
 assertMatch(server, /urlPath === '\/index\.html' \|\| urlPath === '\/'\s*\)\s*normalizedPath = '\/nlq'/, 'G-1: isMenuAllowed 가 / 및 /index.html → /nlq 정규화');
 
 // ============================================================
-// H. [홈] 버튼 (2026-09-23 사용자 요청)
+// H. [홈] 버튼 (2026-09-23 사용자 요청 1차)
 //   - 사이드바 최상단, 대분류 위에 독립 [홈] 버튼 표시
 //   - href="/" 로 통합 플랫폼 HOME 이동
 //   - 현재 페이지가 / 이면 active 스타일
 // ============================================================
-// H-1: platform-sidebar.js 소스에 home-link CSS + HTML 정의
 const sidebarSrcForHome = fs.readFileSync(sidebarJsPath, 'utf8');
-assertMatch(sidebarSrcForHome, /#sidebarMenu\s+\.home-link\s*\{/, 'H-1: home-link CSS 정의');
-assertMatch(sidebarSrcForHome, /<a href="\/" class="home-link\$\{homeActive\}"/, 'H-2: home-link HTML 이 render() 안에 있음');
-assertMatch(sidebarSrcForHome, /class="fas fa-home home-icon"/, 'H-3: 홈 아이콘 (fa-home) 사용');
-assertMatch(sidebarSrcForHome, /<span>홈<\/span>/, 'H-4: "홈" 텍스트');
-assertMatch(sidebarSrcForHome, /isActive\('\/', activeUrl\)/, 'H-5: 홈 active 판정 (activeUrl === "/")');
-assertMatch(sidebarSrcForHome, /container\.innerHTML\s*=\s*homeHtml\s*\+\s*groupsHtml/, 'H-6: innerHTML 에 homeHtml 이 groups 앞에 삽입됨');
+assertMatch(sidebarSrcForHome, /<a href="\/" class="home-link category-item\$\{homeActive\}"/, 'H-1: 홈 링크 HTML (home-link + category-item 공통 클래스)');
+assertMatch(sidebarSrcForHome, /class="fas fa-home cat-icon"/, 'H-2: 홈 아이콘 (fa-home, cat-icon 공통 클래스)');
+assertMatch(sidebarSrcForHome, /<span class="cat-label">홈<\/span>/, 'H-3: 홈 텍스트 (cat-label 공통 클래스)');
+assertMatch(sidebarSrcForHome, /isActive\('\/', activeUrl\)/, 'H-4: 홈 active 판정 (activeUrl === "/")');
+assertMatch(sidebarSrcForHome, /container\.innerHTML\s*=\s*homeHtml\s*\+\s*groupsHtml/, 'H-5: innerHTML 에 homeHtml 이 groups 앞에 삽입됨');
 
-// H-7~H-11: 실제 렌더링 결과 검증 (isActive 판정, HTML 마크업)
+// H-6~H-10: 실제 렌더링 결과 검증
 if (PS && PS.render) {
-    // fakeDocument 를 innerHTML 캡처 가능한 스텁으로 교체
     const capture = { innerHTML: '' };
     const originalGet = fakeDocument.getElementById;
     fakeDocument.getElementById = (id) => id === 'sidebarMenu'
         ? { set innerHTML(v){ capture.innerHTML = v; }, get innerHTML(){ return capture.innerHTML; } }
         : null;
     try {
-        // H-7: HOME 페이지 (activeUrl='/') → home-link 에 active 클래스
+        // H-6: HOME 페이지 (activeUrl='/') → home-link 에 active 클래스
         capture.innerHTML = '';
         PS.render([], { activeUrl: '/' });
-        assertMatch(capture.innerHTML, /class="home-link active"/, 'H-7: HOME 페이지에서 home-link 에 active 클래스');
-        assertMatch(capture.innerHTML, /<a href="\/"/, 'H-8: 홈 링크 href="/"');
-        assertMatch(capture.innerHTML, /<span>홈<\/span>/, 'H-9: 홈 텍스트 렌더링');
-        // H-10: 다른 페이지 (activeUrl='/nlq') → home-link 는 active 아님
+        assertMatch(capture.innerHTML, /class="home-link category-item active"/, 'H-6: HOME 페이지에서 home-link 에 active');
+        assertMatch(capture.innerHTML, /<a href="\/"/, 'H-7: 홈 링크 href="/"');
+        assertMatch(capture.innerHTML, /<span class="cat-label">홈<\/span>/, 'H-8: 홈 텍스트 렌더링');
+        // H-9: 다른 페이지 → home-link 비-active
         capture.innerHTML = '';
         PS.render([], { activeUrl: '/nlq' });
-        assert(/class="home-link"/.test(capture.innerHTML) && !/class="home-link active"/.test(capture.innerHTML),
-            'H-10: /nlq 페이지에서 home-link 는 active 아님');
-        // H-11: 홈 링크가 대분류 앞에 위치
+        assert(/class="home-link category-item"/.test(capture.innerHTML) && !/class="home-link category-item active"/.test(capture.innerHTML),
+            'H-9: /nlq 페이지에서 home-link 는 active 아님');
+        // H-10: 홈 링크가 대분류 앞에 위치
         capture.innerHTML = '';
         PS.render([], { activeUrl: '/builder.html' });
         const homeIdx = capture.innerHTML.indexOf('home-link');
         const groupIdx = capture.innerHTML.indexOf('menu-group');
-        assert(homeIdx > -1 && groupIdx > -1 && homeIdx < groupIdx, 'H-11: 홈 링크가 대분류 이전에 위치');
+        assert(homeIdx > -1 && groupIdx > -1 && homeIdx < groupIdx, 'H-10: 홈 링크가 대분류 이전에 위치');
+    } finally {
+        fakeDocument.getElementById = originalGet;
+    }
+}
+
+// ============================================================
+// I. 3개 대분류 UI 통일 (2026-09-23 사용자 요청 2차)
+//   - 홈 / 수익성분석 / 경영시뮬레이션이 동일한 카드 스타일(.category-item)
+//   - 동일한 높이/여백/아이콘/글자 크기, 둥근 박스
+//   - 선택된 대분류 active 표시 명확
+//   - 수익성분석: chevron 유지, 하위 계층 명확
+//   - 경영시뮬레이션: 준비중 뱃지 유지, 대분류 디자인 동일
+// ============================================================
+// sidebarSrc 는 파일 상단(B 섹션)에서 이미 로드됨. 재사용.
+
+// I-1: .category-item 공통 CSS 클래스 정의
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*\{[\s\S]*?border-radius:10px/, 'I-1: .category-item 공통 CSS 정의 (border-radius 10px)');
+// I-2: 공통 min-height 및 padding
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*\{[\s\S]*?min-height:46px/, 'I-2: 공통 min-height 46px (높이 통일)');
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*\{[\s\S]*?padding:12px 16px/, 'I-3: 공통 padding 12px 16px');
+// I-4: 공통 font-size 14px + font-weight 700 (사용자 요구: 조금 더 크게 + font-weight 높게)
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*\{[\s\S]*?font-size:14px[\s\S]*?font-weight:700/, 'I-4: 공통 font 14px/700');
+// I-5: 공통 아이콘 크기 (.cat-icon 15px)
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*>\s*\.cat-icon\s*\{[\s\S]*?font-size:15px/, 'I-5: 공통 아이콘 15px');
+// I-6: active 상태 정의 (배경 강화 + 테두리)
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\.active\s*\{[\s\S]*?border-color:rgba\(165,180,252/, 'I-6: active 상태 border-color 강화');
+
+// I-7: 하위 메뉴는 대분류보다 작음 (12.5px < 14px)
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.menu-item\s*\{[\s\S]*?font-size:12\.5px/, 'I-7: 하위 메뉴 font 12.5px (대분류보다 작음)');
+// I-8: 하위 메뉴 들여쓰기 (margin-left 34px 이상)
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.menu-item\s*\{[\s\S]*?margin:2px 22px 2px 34px/, 'I-8: 하위 메뉴 좌측 들여쓰기 (margin-left 34px)');
+
+// I-9: 준비중 뱃지 스타일
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*>\s*\.ready-badge\s*\{/, 'I-9: 준비중 뱃지 스타일 정의');
+// I-10: 준비중 그룹은 hover transform 억제
+assertMatch(sidebarSrc, /\.menu-group\.disabled\s*>\s*\.category-item:hover\s*\{[\s\S]*?transform:none/, 'I-10: 준비중 그룹 hover 시 transform 없음');
+
+// I-11: 렌더링 결과 — 3개 카테고리가 모두 .category-item 클래스 보유
+if (PS && PS.render) {
+    const capture = { innerHTML: '' };
+    const originalGet = fakeDocument.getElementById;
+    fakeDocument.getElementById = (id) => id === 'sidebarMenu'
+        ? { set innerHTML(v){ capture.innerHTML = v; }, get innerHTML(){ return capture.innerHTML; } }
+        : null;
+    try {
+        capture.innerHTML = '';
+        PS.render([
+            { menu_code:'nlq', menu_name:'자연어 질의', menu_url:'/nlq', icon_class:'fas fa-comments', sort_order:1 },
+        ], { activeUrl: '/' });
+        // I-11: 홈이 .category-item 클래스
+        assertMatch(capture.innerHTML, /class="home-link category-item active"[^>]*>[\s\S]*?<span class="cat-label">홈</, 'I-11: 홈 대분류 카드 클래스 통일');
+        // I-12: 수익성분석이 .category-item 클래스
+        assertMatch(capture.innerHTML, /class="menu-group-header category-item"[^>]*>[\s\S]*?<span class="cat-label">수익성분석</, 'I-12: 수익성분석 대분류 카드 클래스 통일');
+        // I-13: 경영시뮬레이션이 .category-item 클래스 (준비중 뱃지 포함)
+        assertMatch(capture.innerHTML, /class="menu-group-header category-item"[^>]*>[\s\S]*?<span class="cat-label">경영시뮬레이션[\s\S]*?<span class="ready-badge">준비중<\/span>/, 'I-13: 경영시뮬레이션 대분류 카드 클래스 통일 + 준비중 뱃지');
+        // I-14: 수익성분석에 chevron 유지 (fas fa-chevron-down)
+        assertMatch(capture.innerHTML, /<span class="cat-label">수익성분석[\s\S]*?fa-chevron-down/, 'I-14: 수익성분석 chevron 유지');
+        // I-15: 경영시뮬레이션에는 chevron 대신 준비중 뱃지 (chevron 없음)
+        const simCard = capture.innerHTML.match(/<span class="cat-label">경영시뮬레이션[\s\S]*?<\/div>/);
+        assert(simCard && !/fa-chevron-down/.test(simCard[0]), 'I-15: 경영시뮬레이션 카드 안에 chevron 없음');
+
+        // I-16: 홈 페이지에서는 홈만 active, 수익성분석은 비-active
+        assert(
+            /home-link category-item active/.test(capture.innerHTML) &&
+            !/menu-group-header category-item active/.test(capture.innerHTML),
+            'I-16: HOME 페이지에서 홈만 active, 수익성분석 비-active'
+        );
+
+        // I-17: /nlq 페이지에서는 수익성분석이 active
+        capture.innerHTML = '';
+        PS.render([
+            { menu_code:'nlq', menu_name:'자연어 질의', menu_url:'/nlq', icon_class:'fas fa-comments', sort_order:1 },
+        ], { activeUrl: '/nlq' });
+        assertMatch(capture.innerHTML, /menu-group-header category-item active/, 'I-17: /nlq 페이지에서 수익성분석 대분류가 active');
+        assert(!/home-link category-item active/.test(capture.innerHTML), 'I-18: /nlq 페이지에서 홈은 비-active');
+
+        // I-19: 하위 메뉴에 .menu-item 클래스 유지 (계층 구조 유지)
+        assertMatch(capture.innerHTML, /<a[^>]*class="menu-item active"[^>]*data-menu-code="nlq"/, 'I-19: 하위 메뉴 .menu-item.active 유지');
     } finally {
         fakeDocument.getElementById = originalGet;
     }
