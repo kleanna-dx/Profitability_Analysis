@@ -40,53 +40,91 @@
         const style = document.createElement('style');
         style.id = 'platform-sidebar-style';
         style.textContent = `
-/* 통합 사이드바 [홈] 버튼 — 대분류 위 독립 항목 (사용자 요청 2026-09-23) */
-#sidebarMenu .home-link{
-    display:flex;align-items:center;gap:10px;
-    margin:10px 16px 6px;padding:10px 14px;
-    background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.28);
-    border-radius:10px;color:#e0e7ff;font-size:13px;font-weight:700;
-    text-decoration:none;cursor:pointer;transition:all .15s;
+/* ─────────────────────────────────────────────────────────────
+ * 통합 대분류 카드 (홈 / 수익성분석 / 경영시뮬레이션 공통)
+ *   [2026-09-23 사용자 요청] 3개 대분류를 완전히 동일한 카드 스타일로 통일
+ *   - 동일한 높이 / 여백 / 아이콘 / 폰트 크기
+ *   - 둥근 박스 디자인 공통 적용
+ *   - active 상태 명확 (배경/테두리 강조)
+ *   - 기존 사이드바 컬러톤 유지 (indigo 계열 tint)
+ * ────────────────────────────────────────────────────────────*/
+#sidebarMenu{padding:8px 0 20px;}
+#sidebarMenu .category-item{
+    /* 공통 base: 홈/수익성분석/경영시뮬레이션 모두 이 스타일을 상속 */
+    display:flex;align-items:center;gap:12px;
+    margin:6px 14px;padding:12px 16px;
+    min-height:46px;box-sizing:border-box;
+    background:rgba(99,102,241,.10);
+    border:1px solid rgba(99,102,241,.22);
+    border-radius:10px;
+    color:#e0e7ff;font-size:14px;font-weight:700;letter-spacing:-.2px;
+    text-decoration:none;cursor:pointer;user-select:none;
+    transition:background .15s,border-color .15s,color .15s,box-shadow .15s,transform .15s;
 }
-#sidebarMenu .home-link i.home-icon{color:#a5b4fc;font-size:14px;width:16px;text-align:center;}
-#sidebarMenu .home-link:hover{
-    background:rgba(99,102,241,.28);border-color:rgba(99,102,241,.45);color:#fff;
-    transform:translateY(-1px);box-shadow:0 4px 10px rgba(99,102,241,.18);
+#sidebarMenu .category-item > .cat-icon{
+    color:#a5b4fc;font-size:15px;width:18px;text-align:center;flex-shrink:0;
 }
-#sidebarMenu .home-link.active{
-    background:rgba(99,102,241,.35);border-color:rgba(165,180,252,.6);color:#fff;
+#sidebarMenu .category-item > .cat-label{flex:1;}
+#sidebarMenu .category-item:hover{
+    background:rgba(99,102,241,.22);border-color:rgba(99,102,241,.42);color:#fff;
+    transform:translateY(-1px);box-shadow:0 4px 10px rgba(99,102,241,.15);
 }
-#sidebarMenu .home-link.active i.home-icon{color:#c7d2fe;}
+#sidebarMenu .category-item:hover > .cat-icon{color:#c7d2fe;}
+#sidebarMenu .category-item.active{
+    background:rgba(99,102,241,.32);border-color:rgba(165,180,252,.62);color:#fff;
+    box-shadow:0 0 0 1px rgba(165,180,252,.20) inset;
+}
+#sidebarMenu .category-item.active > .cat-icon{color:#c7d2fe;}
+/* 대분류(그룹) 헤더 특화: chevron 회전 */
+#sidebarMenu .category-item > .chevron{
+    font-size:11px;color:#a5b4fc;transition:transform .18s;flex-shrink:0;
+}
+#sidebarMenu .menu-group.collapsed > .category-item > .chevron{transform:rotate(-90deg);}
+/* 준비중 뱃지 (경영시뮬레이션) — 대분류 카드 안에 우측 정렬 */
+#sidebarMenu .category-item > .ready-badge{
+    font-size:11px;font-weight:600;color:#cbd5e1;
+    background:rgba(148,163,184,.18);border:1px solid rgba(148,163,184,.28);
+    padding:3px 9px;border-radius:999px;letter-spacing:0;flex-shrink:0;
+}
+/* 준비중 그룹은 hover 시 transform/shadow 없음 (클릭 불가) */
+#sidebarMenu .menu-group.disabled > .category-item{cursor:default;color:#cbd5e1;}
+#sidebarMenu .menu-group.disabled > .category-item:hover{
+    background:rgba(99,102,241,.10);border-color:rgba(99,102,241,.22);color:#cbd5e1;
+    transform:none;box-shadow:none;
+}
+#sidebarMenu .menu-group.disabled > .category-item:hover > .cat-icon{color:#a5b4fc;}
 
-/* 통합 사이드바 대분류 그룹 */
-#sidebarMenu .menu-group{margin-top:6px;}
-#sidebarMenu .menu-group-header{
-    display:flex;align-items:center;gap:8px;
-    padding:10px 22px;font-size:12px;font-weight:700;
-    color:#e5e7eb;cursor:pointer;user-select:none;
-    transition:background .12s;
-}
-#sidebarMenu .menu-group-header:hover{background:rgba(255,255,255,.05);}
-#sidebarMenu .menu-group-header i.chevron{font-size:10px;margin-left:auto;color:#94a3b8;transition:transform .18s;}
-#sidebarMenu .menu-group.collapsed .menu-group-header i.chevron{transform:rotate(-90deg);}
-#sidebarMenu .menu-group-header i.group-icon{color:#a5b4fc;font-size:13px;}
-#sidebarMenu .menu-group-body{padding:2px 0 6px;}
-#sidebarMenu .menu-group.collapsed .menu-group-body{display:none;}
-#sidebarMenu .menu-group.disabled .menu-group-header{color:#64748b;cursor:default;}
-#sidebarMenu .menu-group.disabled .menu-group-header:hover{background:transparent;}
+/* 대분류 그룹 body (수익성분석 하위 메뉴 컨테이너) */
+#sidebarMenu .menu-group{margin:0;}
+#sidebarMenu .menu-group-body{padding:2px 0 4px;}
+#sidebarMenu .menu-group.collapsed > .menu-group-body{display:none;}
+
+/* 하위 메뉴 항목 — 대분류보다 한 단계 작은 크기 + 들여쓰기 (계층 명확) */
 #sidebarMenu .menu-item{
     display:flex;align-items:center;gap:10px;
-    padding:8px 22px 8px 40px;font-size:13px;color:#cbd5e1;
-    text-decoration:none;cursor:pointer;transition:background .12s,color .12s;
+    margin:2px 22px 2px 34px;padding:7px 12px;
+    border-radius:7px;
+    font-size:12.5px;font-weight:500;color:#cbd5e1;
+    text-decoration:none;cursor:pointer;
+    transition:background .12s,color .12s;
 }
-#sidebarMenu .menu-item i{width:16px;text-align:center;font-size:12px;color:#94a3b8;}
-#sidebarMenu .menu-item:hover{background:rgba(99,102,241,.15);color:#fff;}
-#sidebarMenu .menu-item:hover i{color:#c7d2fe;}
-#sidebarMenu .menu-item.active{background:rgba(99,102,241,.25);color:#fff;font-weight:600;}
-#sidebarMenu .menu-item.active i{color:#c7d2fe;}
+#sidebarMenu .menu-item > i{width:15px;text-align:center;font-size:11.5px;color:#94a3b8;flex-shrink:0;}
+#sidebarMenu .menu-item:hover{background:rgba(99,102,241,.14);color:#fff;}
+#sidebarMenu .menu-item:hover > i{color:#c7d2fe;}
+#sidebarMenu .menu-item.active{
+    background:rgba(99,102,241,.24);color:#fff;font-weight:600;
+}
+#sidebarMenu .menu-item.active > i{color:#c7d2fe;}
 #sidebarMenu .menu-empty{
-    padding:8px 22px 8px 40px;font-size:12px;color:#64748b;font-style:italic;
+    margin:2px 22px 2px 34px;padding:7px 12px;
+    font-size:11.5px;color:#64748b;font-style:italic;
 }
+
+/* ─────────────────────────────────────────────────────────────
+ * 하위 호환 (이전 클래스가 남아 있을 때) — 새 .category-item 스타일 우선
+ * .home-link 는 이제 .category-item 과 함께 쓰이며, 둘 다 있으면 위 스타일이 이김.
+ * ────────────────────────────────────────────────────────────*/
+#sidebarMenu .home-link{ /* 신규 렌더는 .category-item 을 사용, 이 규칙은 캐시된 예전 마크업 대비 */ }
 
 /* 사이드바 상단 로고: '통합 플랫폼' 링크 스타일 */
 .sidebar .platform-brand-link{
@@ -204,21 +242,27 @@
         // active 그룹은 강제로 펼침 (collapsed 무시)
         if (activeGroupKey) collapsed[activeGroupKey] = false;
 
-        // [2026-09-23 사용자 요청] 대분류 위에 [홈] 버튼 독립 항목 표시.
-        //   - 사이드바 로고 아래 빈 공간이 홈 접근 방법으로 명확하지 않다는 사용자 지적 반영.
-        //   - 로고 클릭도 그대로 동작하되, 이 [홈] 버튼이 시각적으로 훨씬 명확.
-        //   - 현재 페이지가 HOME('/') 이면 active 스타일.
+        // [2026-09-23 사용자 요청] 3개 대분류(홈/수익성분석/경영시뮬레이션)를
+        //   동일한 카드 스타일 (.category-item) 로 통일. 대분류 간 UI 통일성 확보.
+        //   - 홈: <a> 태그 (링크)
+        //   - 수익성분석: 클릭 시 접힘/펼침 토글 + chevron 표시
+        //   - 경영시뮬레이션: 준비중 뱃지, 클릭 비활성
         const homeActive = isActive('/', activeUrl) ? ' active' : '';
-        const homeHtml = `<a href="/" class="home-link${homeActive}" title="통합 플랫폼 HOME">
-            <i class="fas fa-home home-icon"></i><span>홈</span>
+        // .home-link 는 하위호환용, 실제 스타일은 .category-item 이 담당
+        const homeHtml = `<a href="/" class="home-link category-item${homeActive}" title="통합 플랫폼 HOME">
+            <i class="fas fa-home cat-icon"></i><span class="cat-label">홈</span>
         </a>`;
 
         const groupsHtml = grouped.map(g => {
             const isCollapsed = !!collapsed[g.group.key];
             const isDisabled = !!g.group.disabled;
             const groupCls = ['menu-group', isCollapsed ? 'collapsed' : '', isDisabled ? 'disabled' : ''].filter(Boolean).join(' ');
-            const chevron = isDisabled
-                ? '<span style="font-size:10.5px;font-weight:600;color:#94a3b8;margin-left:auto;">준비중</span>'
+            // 대분류가 현재 활성 페이지를 포함하면 active
+            const headerActive = isDisabled ? '' :
+                (g.items.some(m => isActive(m.menu_url, activeUrl)) ? ' active' : '');
+            // 우측 요소: 활성 대분류 → chevron, 준비중 → 뱃지, 나머지 → chevron
+            const rightHtml = isDisabled
+                ? '<span class="ready-badge">준비중</span>'
                 : '<i class="fas fa-chevron-down chevron"></i>';
             const itemsHtml = isDisabled
                 ? '' // 준비중 그룹은 하위 항목 없음
@@ -231,11 +275,13 @@
                         </a>`;
                     }).join(''));
 
+            // 대분류 header 도 .category-item 을 사용해 홈과 동일 스타일
+            //   - menu-group-header 클래스는 하위 호환으로 함께 유지
             return `<div class="${groupCls}" data-group-key="${g.group.key}">
-                <div class="menu-group-header" ${isDisabled ? '' : `onclick="window.PlatformSidebar.toggle('${g.group.key}')"`}>
-                    <i class="${escapeHtml(g.group.icon)} group-icon"></i>
-                    <span>${escapeHtml(g.group.name)}</span>
-                    ${chevron}
+                <div class="menu-group-header category-item${headerActive}" ${isDisabled ? '' : `onclick="window.PlatformSidebar.toggle('${g.group.key}')"`}>
+                    <i class="${escapeHtml(g.group.icon)} cat-icon"></i>
+                    <span class="cat-label">${escapeHtml(g.group.name)}</span>
+                    ${rightHtml}
                 </div>
                 <div class="menu-group-body">${itemsHtml}</div>
             </div>`;
