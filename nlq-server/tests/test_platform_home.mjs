@@ -68,6 +68,11 @@ assertMatch(platformHtml, /학습 관리/, 'A-8: "학습 관리" 태그');
 // 사용자 요구: 'PPT 장표 생성' 태그 삭제됨
 assert(!/PPT 장표 생성/.test(platformHtml), 'A-9: 수익성분석 AI 카드에서 "PPT 장표 생성" 태그 삭제됨');
 
+// [2026-09-23 사용자 요청] 카드 설명 문구에서 "AI가" 제거
+//   원문 "AI가 내부 수익성 데이터를 분석하여..." → "내부 수익성 데이터를 분석하여..."
+assert(!/AI가\s*내부\s*수익성/.test(platformHtml), 'A-9b: 카드 설명 문구에서 "AI가 내부 수익성" 표현 제거됨');
+assertMatch(platformHtml, /월 마감 완료 후 사용자가 자연어로 질문하면,[\s\S]*?내부 수익성 데이터를 분석하여/, 'A-9c: 카드 설명 새 문구 ("내부 수익성 데이터를 분석하여") 확인');
+
 // disabled 시작 버튼
 assertMatch(platformHtml, /card-cta disabled/, 'A-10: 경영시뮬레이션 시작 버튼 비활성화');
 // 로그인 확인 로직
@@ -279,8 +284,10 @@ assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*>\s*\.cat-icon\s*\{[\s
 // I-6: active 상태 정의 (배경 강화 + 테두리)
 assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\.active\s*\{[\s\S]*?border-color:rgba\(165,180,252/, 'I-6: active 상태 border-color 강화');
 
-// I-7: 하위 메뉴는 대분류보다 작음 (12.5px < 14px)
-assertMatch(sidebarSrc, /#sidebarMenu\s+\.menu-item\s*\{[\s\S]*?font-size:12\.5px/, 'I-7: 하위 메뉴 font 12.5px (대분류보다 작음)');
+// I-7: 하위 메뉴는 대분류보다 작음 (13.5px < 14px)
+//   [2026-09-23 사용자 요청] 하위 메뉴 글씨 1포인트 증가 (12.5px → 13.5px).
+//   대분류(14px) 와의 계층 여전히 유지되면서 가독성 향상.
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.menu-item\s*\{[\s\S]*?font-size:13\.5px/, 'I-7: 하위 메뉴 font 13.5px (대분류 14px 보다 작음)');
 // I-8: 하위 메뉴 들여쓰기 (margin-left 34px 이상)
 assertMatch(sidebarSrc, /#sidebarMenu\s+\.menu-item\s*\{[\s\S]*?margin:2px 22px 2px 34px/, 'I-8: 하위 메뉴 좌측 들여쓰기 (margin-left 34px)');
 
