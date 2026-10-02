@@ -904,6 +904,82 @@ assertMatch(_sidebarSrcN, /aside#sidebar\s*>\s*\.sidebar-history-section\s*>\s*\
     'O-26: history-list 내부 스크롤 (overflow-y:auto)');
 
 // ============================================================
+// P. [2026-10-02] Header / Main 레이아웃 중복 offset 방지
+//    문제:
+//      platform.html 이 .main-wrap{margin-left:260px} 를 선언하고 있었는데,
+//      공통 CSS 가 이미 body.has-platform-sidebar{padding-left:280px} 를 적용 →
+//      총 540px offset 누적 → Header 왼쪽에 260px 빈 공간, 홈 콘텐츠 좌측 쏠림.
+//
+//    정책:
+//      - 사이드바 공간 확보는 공통 CSS (body.has-platform-sidebar padding-left) 로 단일화
+//      - 각 페이지의 .main-wrap / .main-wrapper 는 추가 margin-left/padding-left 금지
+//      - .main-wrap / .main-wrapper 는 width:100% 여야 함
+//      - .top-bar (Header) 는 background:#fff + width:100% 로 body padding 안쪽 전체 사용
+// ============================================================
+const LAYOUT_PAGES = ['platform.html', 'index.html', 'builder.html', 'learning.html', 'batch.html',
+                      'interface.html', 'report.html', 'upload.html', 'permission.html', 'simulation-test.html'];
+let dupOffsetLeak = [];
+for (const p of LAYOUT_PAGES) {
+    const fp = path.resolve(publicDir, p);
+    if (!fs.existsSync(fp)) continue;
+    const html = fs.readFileSync(fp, 'utf8');
+    // .main-wrap 또는 .main-wrapper 의 CSS 블록에서 margin-left/padding-left 가 사이드바 폭 값
+    // (240px ~ 320px 범위) 을 가지면 FAIL → 공통 CSS 와 중복 offset 발생
+    const blockRegex = /\.(main-wrap|main-wrapper)\s*\{([^}]*)\}/g;
+    let bm;
+    while ((bm = blockRegex.exec(html)) !== null) {
+        const block = bm[2];
+        if (/(margin-left|padding-left)\s*:\s*(2[4-9]\d|3[01]\d)px/.test(block)) {
+            dupOffsetLeak.push(`${p}: .${bm[1]} 에 사이드바 폭 margin/padding-left 중복`);
+        }
+    }
+}
+assert(dupOffsetLeak.length === 0,
+    `P-1: 어떤 페이지도 .main-wrap/.main-wrapper 에 사이드바 폭 margin-left/padding-left 중복 없음 (leak: ${dupOffsetLeak.join(', ') || 'none'})`);
+
+// P-2: platform.html .main-wrap 블록에 margin-left 자체가 없음 (안전 가드)
+const platformHtmlP = fs.readFileSync(path.resolve(publicDir, 'platform.html'), 'utf8');
+const platformMainWrapBlock = platformHtmlP.match(/\.main-wrap\s*\{([^}]*)\}/);
+assert(platformMainWrapBlock, 'P-2a: platform.html 에 .main-wrap CSS 블록 존재');
+if (platformMainWrapBlock) {
+    assert(!/margin-left\s*:/.test(platformMainWrapBlock[1]),
+        'P-2b: platform.html .main-wrap 에 margin-left 선언 없음 (공통 body padding-left 와 중복 금지)');
+    assertMatch(platformMainWrapBlock[1], /width\s*:\s*100%/,
+        'P-2c: platform.html .main-wrap 는 width:100% (body padding 안쪽 전체 사용)');
+}
+
+// P-3: platform.html .top-bar 는 background:#ffffff + width:100% (Header 흰색 전체 폭)
+const platformTopBarBlock = platformHtmlP.match(/\.top-bar\s*\{([^}]*)\}/);
+assert(platformTopBarBlock, 'P-3a: platform.html 에 .top-bar CSS 블록 존재');
+if (platformTopBarBlock) {
+    assertMatch(platformTopBarBlock[1], /background\s*:\s*#(fff|ffffff)/i,
+        'P-3b: platform.html .top-bar background 는 흰색');
+    assertMatch(platformTopBarBlock[1], /width\s*:\s*100%/,
+        'P-3c: platform.html .top-bar 는 width:100% (사이드바 오른쪽 끝까지 흰색)');
+}
+
+// P-4: platform.html .content 는 max-width + margin:0 auto (MainContent 안 중앙 정렬)
+const platformContentBlock = platformHtmlP.match(/\.content\s*\{([^}]*)\}/);
+assert(platformContentBlock, 'P-4a: platform.html 에 .content CSS 블록 존재');
+if (platformContentBlock) {
+    assertMatch(platformContentBlock[1], /max-width\s*:\s*\d+px/,
+        'P-4b: platform.html .content max-width 지정');
+    assertMatch(platformContentBlock[1], /margin\s*:\s*0\s+auto/,
+        'P-4c: platform.html .content margin:0 auto (MainContent 영역 안 중앙 정렬)');
+    assertMatch(platformContentBlock[1], /width\s*:\s*100%/,
+        'P-4d: platform.html .content width:100% (max-width 까지 늘어나도록)');
+}
+
+// P-5: 공통 CSS 의 body.has-platform-sidebar{padding-left:--sb-width} 는 변경 없음 (유일한 사이드바 offset 소스)
+assertMatch(_sidebarSrcN, /body\.has-platform-sidebar\s*\{\s*padding-left\s*:\s*var\(--sb-width\)/,
+    'P-5: 공통 CSS body.has-platform-sidebar padding-left=--sb-width (유일한 사이드바 offset 소스)');
+
+// P-6: platform.html 에 레거시 .sidebar{width:260px} 자체 선언이 없음
+// (공통 사이드바 폭은 280px, 과거 260px 선언이 남아있으면 혼동 유발)
+assert(!/\.sidebar\s*\{[^}]*width\s*:\s*260px/.test(platformHtmlP),
+    'P-6: platform.html 에 레거시 .sidebar{width:260px} 선언 없음 (공통 --sb-width:280px 로 통일)');
+
+// ============================================================
 // 리포트
 // ============================================================
 console.log('');
