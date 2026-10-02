@@ -30,9 +30,15 @@
     'use strict';
 
     // ─────────────────────────────────────────────────────────────
-    // CSS 자동 주입 (기존 페이지 스타일과 공존)
-    //   - .sidebar-menu-item (기존) 과 .menu-item/.menu-group (통합) 을 함께 지원
-    //   - 각 페이지 CSS 를 건드리지 않고도 통합 사이드바 스타일 적용
+    // [2026-10-02] 통합 사이드바 공통 CSS — 모든 페이지가 유일하게 참조하는 소스.
+    //
+    // 설계 원칙:
+    //   1. CSS 변수(:root 수준) 로 사이드바 색상/간격 토큰 정의 → 중복 하드코딩 금지
+    //   2. 모든 사이드바 관련 selector 는 매우 높은 specificity 로 각 페이지의 중복
+    //      .sidebar 규칙을 덮어쓰기 (!important 없이 cascade 로 승리)
+    //   3. 각 페이지의 레거시 .sidebar / .sidebar-divider / .sidebar-menu-item /
+    //      .sidebar-overlay CSS 는 전부 삭제됐으므로, 이 CSS 가 유일한 소스.
+    //   4. 홈 버튼 위쪽 여백 (brand/divider 아래) 은 공통으로 작게 유지.
     // ─────────────────────────────────────────────────────────────
     function injectCssOnce() {
         if (typeof document === 'undefined') return;
@@ -40,110 +46,329 @@
         const style = document.createElement('style');
         style.id = 'platform-sidebar-style';
         style.textContent = `
-/* ─────────────────────────────────────────────────────────────
- * 통합 대분류 카드 (홈 / 수익성분석 / 경영시뮬레이션 공통)
- *   [2026-09-23 사용자 요청] 3개 대분류를 완전히 동일한 카드 스타일로 통일
- *   - 동일한 높이 / 여백 / 아이콘 / 폰트 크기
- *   - 둥근 박스 디자인 공통 적용
- *   - active 상태 명확 (배경/테두리 강조)
- *   - 기존 사이드바 컬러톤 유지 (indigo 계열 tint)
- * ────────────────────────────────────────────────────────────*/
-/* [2026-09-23 사용자 요청] 마지막 대분류(경영시뮬레이션) 아래 여백 제거.
-   기존 padding-bottom:20px 은 사이드바 하단의 "새 채팅" / "질의 이력" 영역과 사이에
-   시각적으로 불필요한 공백을 만들었음. 상단은 로고와 첫 카드 사이 살짝 여유(8px)만 유지. */
-#sidebarMenu{padding:8px 0 4px;}
+/* ===== design tokens (유일한 색상/치수 소스) ===== */
+:root{
+    /* 사이드바 배경: 사용자 요청 2번 이미지 기준 보라빛 네이비 */
+    --sb-bg-top: #1e1b4b;
+    --sb-bg-bottom: #312e81;
+    --sb-text: #e0e7ff;
+    --sb-text-dim: #c7d2fe;
+    --sb-border: rgba(255,255,255,0.08);
+    /* 사이드바 치수 */
+    --sb-width: 280px;
+    --sb-brand-pt: 20px;      /* brand 영역 상단 padding */
+    --sb-brand-pb: 14px;      /* brand 영역 하단 padding (divider 와의 간격) */
+    --sb-brand-px: 20px;
+    --sb-menu-pt: 10px;       /* divider 와 첫 '홈' 버튼 사이 여백 (작게) */
+    --sb-menu-pb: 8px;
+    /* 메뉴 카드 색상 (indigo tint) */
+    --sb-cat-bg:          rgba(99,102,241,.10);
+    --sb-cat-border:      rgba(99,102,241,.22);
+    --sb-cat-hover-bg:    rgba(99,102,241,.22);
+    --sb-cat-hover-bd:    rgba(99,102,241,.42);
+    --sb-cat-active-bg:   rgba(99,102,241,.32);
+    --sb-cat-active-bd:   rgba(165,180,252,.62);
+    --sb-cat-icon:        #a5b4fc;
+    --sb-cat-icon-hover:  #c7d2fe;
+    /* 하위 메뉴 */
+    --sb-sub-text:        #cbd5e1;
+    --sb-sub-icon:        #94a3b8;
+    --sb-sub-hover-bg:    rgba(99,102,241,.14);
+    --sb-sub-active-bg:   rgba(99,102,241,.24);
+}
+
+/* ===== 사이드바 뼈대 (shell) — 모든 페이지 공통 ===== */
+aside#sidebar.sidebar{
+    position:fixed; top:0; left:0;
+    width:var(--sb-width); height:100vh;
+    background:linear-gradient(180deg, var(--sb-bg-top) 0%, var(--sb-bg-bottom) 100%);
+    color:var(--sb-text);
+    z-index:100;
+    display:flex; flex-direction:column;
+    overflow-y:auto; overflow-x:hidden;
+    font-family:'Noto Sans KR','Segoe UI',sans-serif;
+    font-size:14px;
+    box-shadow:4px 0 24px rgba(0,0,0,0.15);
+    transition:transform .3s ease;
+    box-sizing:border-box;
+    /* 모바일에서는 숨김 (open 클래스로 노출) */
+}
+@media (max-width:900px){
+    aside#sidebar.sidebar{transform:translateX(-100%);}
+    aside#sidebar.sidebar.open{transform:translateX(0);}
+}
+@media (min-width:901px){
+    aside#sidebar.sidebar{transform:none !important;}
+}
+aside#sidebar.sidebar::-webkit-scrollbar{width:6px;}
+aside#sidebar.sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:3px;}
+
+/* ===== brand 영역 ===== */
+aside#sidebar .sb-brand{
+    padding:var(--sb-brand-pt) var(--sb-brand-px) var(--sb-brand-pb);
+    flex-shrink:0;
+}
+aside#sidebar .sb-brand-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;}
+aside#sidebar .sb-brand-link{
+    display:flex;flex-direction:column;gap:2px;
+    text-decoration:none;color:inherit;flex:1;
+    transition:opacity .15s;
+}
+aside#sidebar .sb-brand-link:hover{opacity:.85;}
+aside#sidebar .sb-brand-title{
+    font-size:18px;font-weight:800;letter-spacing:-.3px;color:#fff;line-height:1.2;margin:0;
+    transition:color .15s;
+}
+aside#sidebar .sb-brand-link:hover .sb-brand-title{color:#a5b4fc;}
+aside#sidebar .sb-brand-sub{
+    font-size:11.5px;color:#a5b4fc;opacity:.85;margin:0;line-height:1.3;
+}
+aside#sidebar .sb-close{
+    width:30px;height:30px;display:flex;align-items:center;justify-content:center;
+    border:0;background:transparent;color:#a5b4fc;cursor:pointer;border-radius:6px;
+    font-size:16px;flex-shrink:0;
+}
+aside#sidebar .sb-close:hover{background:rgba(255,255,255,.08);color:#fff;}
+@media (min-width:901px){
+    aside#sidebar .sb-close{display:none;}
+}
+
+/* ===== divider ===== */
+aside#sidebar .sb-divider{
+    height:1px;background:var(--sb-border);margin:0 var(--sb-brand-px);flex-shrink:0;
+}
+
+/* ===== menu 영역 ===== */
+/* [2026-10-02 수정] history 영역(/nlq, /builder.html)이 nav 이후에 올 수 있으므로
+ *   nav 는 flex:1 로 모든 공간을 차지하지 않고 '내용 크기 만큼' 차지한다.
+ *   - history 영역이 없는 페이지 (대부분): nav 만 flex:1 로 늘어나야 하므로 아래 스타일 유지
+ *   - history 영역이 있는 페이지 (/nlq, /builder.html): nav 는 flex-shrink:0 (내용 크기),
+ *     history 영역이 flex:1 로 나머지 공간을 차지하면서 내부 스크롤
+ *   → :has() 셀렉터를 사용하여 history 영역 유무로 분기.
+ *   → 레거시 fallback: :has() 미지원 브라우저에서도 nav 단독일 때 flex:1 유지됨.
+ */
+aside#sidebar nav#sidebarMenu{
+    flex:1;overflow-y:auto;overflow-x:hidden;
+    padding:var(--sb-menu-pt) 0 var(--sb-menu-pb);
+    margin:0;
+}
+/* history 영역이 존재할 때: nav 는 내용 크기, history 가 남은 공간 차지 */
+aside#sidebar:has(> .sidebar-history-section, > .sidebar-divider) nav#sidebarMenu{
+    flex:0 0 auto;overflow:visible;
+}
+
+/* ===== 페이지별 하단 history 영역 (nav 이후, 조건부) =====
+ *   /nlq (자연어 질의): "+ 새 채팅" + "질의 이력" + 탭 + 리스트
+ *   /builder.html (비주얼 쿼리 빌더): .sidebar-history-section wrapper 로 감쌈
+ *   → 두 페이지는 각자 inline CSS 로 .history-list / .history-header / .history-tabs 등을
+ *     이미 가지고 있으므로, 여기서는 "aside 안에서의 레이아웃 정렬"만 담당.
+ */
+aside#sidebar > .sidebar-divider{
+    height:1px;background:var(--sb-border);margin:4px var(--sb-brand-px);flex-shrink:0;
+}
+/* /builder.html: .sidebar-history-section 이 flex:1 로 남은 공간 차지, 내부 .history-list 스크롤 */
+aside#sidebar > .sidebar-history-section{
+    flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden;
+}
+aside#sidebar > .sidebar-history-section > .history-header,
+aside#sidebar > .sidebar-history-section > .new-builder-btn,
+aside#sidebar > .sidebar-history-section > .history-tabs{flex-shrink:0;}
+aside#sidebar > .sidebar-history-section > .history-list{flex:1 1 auto;min-height:0;overflow-y:auto;}
+
+/* /nlq (index.html): .sidebar-history-section 래퍼가 없고 aside 직속 자식 (div > history-header, tabs, list)
+ *   구조이므로, nav 다음에 오는 요소들을 그룹으로 묶지 못함.
+ *   → aside 자체가 flex column 이고 overflow:auto 이므로 nav 이후 요소들은 자연 흐름.
+ *   → 다만 history-list 가 내부 스크롤이 되도록 .history-list 의 max-height 기존 CSS 유지.
+ *   → /nlq 는 inline CSS 에 .history-list{max-height:calc(100vh - 420px);overflow-y:auto;} 이미 있음.
+ */
+
+
+/* ===== 대분류 카드 (홈 / 수익성분석 / 경영시뮬레이션 / 시스템관리 공통) ===== */
 #sidebarMenu .category-item{
-    /* 공통 base: 홈/수익성분석/경영시뮬레이션 모두 이 스타일을 상속 */
     display:flex;align-items:center;gap:12px;
     margin:6px 14px;padding:12px 16px;
     min-height:46px;box-sizing:border-box;
-    background:rgba(99,102,241,.10);
-    border:1px solid rgba(99,102,241,.22);
+    background:var(--sb-cat-bg);
+    border:1px solid var(--sb-cat-border);
     border-radius:10px;
-    color:#e0e7ff;font-size:14px;font-weight:700;letter-spacing:-.2px;
+    color:var(--sb-text);font-size:14px;font-weight:700;letter-spacing:-.2px;
     text-decoration:none;cursor:pointer;user-select:none;
     transition:background .15s,border-color .15s,color .15s,box-shadow .15s,transform .15s;
 }
 #sidebarMenu .category-item > .cat-icon{
-    color:#a5b4fc;font-size:15px;width:18px;text-align:center;flex-shrink:0;
+    color:var(--sb-cat-icon);font-size:15px;width:18px;text-align:center;flex-shrink:0;
 }
 #sidebarMenu .category-item > .cat-label{flex:1;}
 #sidebarMenu .category-item:hover{
-    background:rgba(99,102,241,.22);border-color:rgba(99,102,241,.42);color:#fff;
+    background:var(--sb-cat-hover-bg);border-color:var(--sb-cat-hover-bd);color:#fff;
     transform:translateY(-1px);box-shadow:0 4px 10px rgba(99,102,241,.15);
 }
-#sidebarMenu .category-item:hover > .cat-icon{color:#c7d2fe;}
+#sidebarMenu .category-item:hover > .cat-icon{color:var(--sb-cat-icon-hover);}
 #sidebarMenu .category-item.active{
-    background:rgba(99,102,241,.32);border-color:rgba(165,180,252,.62);color:#fff;
+    background:var(--sb-cat-active-bg);border-color:var(--sb-cat-active-bd);color:#fff;
     box-shadow:0 0 0 1px rgba(165,180,252,.20) inset;
 }
-#sidebarMenu .category-item.active > .cat-icon{color:#c7d2fe;}
-/* 대분류(그룹) 헤더 특화: chevron 회전 */
+#sidebarMenu .category-item.active > .cat-icon{color:var(--sb-cat-icon-hover);}
 #sidebarMenu .category-item > .chevron{
-    font-size:11px;color:#a5b4fc;transition:transform .18s;flex-shrink:0;
+    font-size:11px;color:var(--sb-cat-icon);transition:transform .18s;flex-shrink:0;
 }
 #sidebarMenu .menu-group.collapsed > .category-item > .chevron{transform:rotate(-90deg);}
-/* 준비중 뱃지 (경영시뮬레이션) — 대분류 카드 안에 우측 정렬 */
+/* 준비중 뱃지 (레거시, 현재는 사용 X) */
 #sidebarMenu .category-item > .ready-badge{
     font-size:11px;font-weight:600;color:#cbd5e1;
     background:rgba(148,163,184,.18);border:1px solid rgba(148,163,184,.28);
     padding:3px 9px;border-radius:999px;letter-spacing:0;flex-shrink:0;
 }
-/* 준비중 그룹은 hover 시 transform/shadow 없음 (클릭 불가) */
-#sidebarMenu .menu-group.disabled > .category-item{cursor:default;color:#cbd5e1;}
-#sidebarMenu .menu-group.disabled > .category-item:hover{
-    background:rgba(99,102,241,.10);border-color:rgba(99,102,241,.22);color:#cbd5e1;
-    transform:none;box-shadow:none;
-}
-#sidebarMenu .menu-group.disabled > .category-item:hover > .cat-icon{color:#a5b4fc;}
 
-/* 대분류 그룹 body (수익성분석 하위 메뉴 컨테이너) */
+/* 대분류 그룹 body */
 #sidebarMenu .menu-group{margin:0;}
 #sidebarMenu .menu-group-body{padding:2px 0 4px;}
 #sidebarMenu .menu-group.collapsed > .menu-group-body{display:none;}
-/* [2026-09-23 사용자 요청] 마지막 대분류(경영시뮬레이션) 카드의 하단 여백 제거 */
 #sidebarMenu > .menu-group:last-child > .category-item{margin-bottom:0;}
 #sidebarMenu > .menu-group:last-child > .menu-group-body{padding-bottom:0;}
 
-/* 하위 메뉴 항목 — 대분류보다 한 단계 작은 크기 + 들여쓰기 (계층 명확)
-   [2026-09-23 사용자 요청] 하위 메뉴 글씨 1포인트 증가 (12.5px → 13.5px)
-   대분류(14px) 와의 시각적 계층은 여전히 유지되면서 가독성 향상 */
+/* ===== 하위 메뉴 (들여쓰기) ===== */
 #sidebarMenu .menu-item{
     display:flex;align-items:center;gap:10px;
     margin:2px 22px 2px 34px;padding:7px 12px;
     border-radius:7px;
-    font-size:13.5px;font-weight:500;color:#cbd5e1;
+    font-size:13.5px;font-weight:500;color:var(--sb-sub-text);
     text-decoration:none;cursor:pointer;
     transition:background .12s,color .12s;
 }
-#sidebarMenu .menu-item > i{width:15px;text-align:center;font-size:12.5px;color:#94a3b8;flex-shrink:0;}
-#sidebarMenu .menu-item:hover{background:rgba(99,102,241,.14);color:#fff;}
-#sidebarMenu .menu-item:hover > i{color:#c7d2fe;}
-#sidebarMenu .menu-item.active{
-    background:rgba(99,102,241,.24);color:#fff;font-weight:600;
-}
-#sidebarMenu .menu-item.active > i{color:#c7d2fe;}
+#sidebarMenu .menu-item > i{width:15px;text-align:center;font-size:12.5px;color:var(--sb-sub-icon);flex-shrink:0;}
+#sidebarMenu .menu-item:hover{background:var(--sb-sub-hover-bg);color:#fff;}
+#sidebarMenu .menu-item:hover > i{color:var(--sb-cat-icon-hover);}
+#sidebarMenu .menu-item.active{background:var(--sb-sub-active-bg);color:#fff;font-weight:600;}
+#sidebarMenu .menu-item.active > i{color:var(--sb-cat-icon-hover);}
 #sidebarMenu .menu-empty{
     margin:2px 22px 2px 34px;padding:7px 12px;
     font-size:12.5px;color:#64748b;font-style:italic;
 }
 
-/* ─────────────────────────────────────────────────────────────
- * 하위 호환 (이전 클래스가 남아 있을 때) — 새 .category-item 스타일 우선
- * .home-link 는 이제 .category-item 과 함께 쓰이며, 둘 다 있으면 위 스타일이 이김.
- * ────────────────────────────────────────────────────────────*/
-#sidebarMenu .home-link{ /* 신규 렌더는 .category-item 을 사용, 이 규칙은 캐시된 예전 마크업 대비 */ }
-
-/* 사이드바 상단 로고: '통합 플랫폼' 링크 스타일 */
-.sidebar .platform-brand-link{
-    display:block;text-decoration:none;color:inherit;
-    transition:opacity .15s;
+/* ===== 모바일 오버레이 ===== */
+.sidebar-overlay{
+    position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;
 }
-.sidebar .platform-brand-link:hover{opacity:0.85;}
-.sidebar .platform-brand-link:hover h2,
-.sidebar .platform-brand-link:hover .platform-brand-title{color:#a5b4fc !important;}
+.sidebar-overlay.active{display:block;}
+@media (min-width:901px){
+    .sidebar-overlay{display:none !important;}
+}
+
+/* ===== 레거시 class 호환 (삭제 예정) ===== */
+/* 기존 각 페이지가 .sidebar-menu-item 를 참조해도 사이드바 색상이 깨지지 않도록
+   최소한의 reset 만 유지. 신규 구현은 모두 .category-item/.menu-item 사용. */
+aside#sidebar .sidebar-menu-item{color:var(--sb-sub-text);text-decoration:none;}
+
+/* 공통 PC 레이아웃 보정: body 좌측 padding (사이드바 폭 확보) */
+@media (min-width:901px){
+    body.has-platform-sidebar{padding-left:var(--sb-width);}
+}
 `;
         document.head.appendChild(style);
+    }
+
+    /**
+     * 사이드바 전체 shell (brand + divider + nav) 을 DOM 에 보장.
+     * 각 페이지의 HTML 은 <aside id="sidebar" class="sidebar"></aside> 빈 shell 만 두면 됨.
+     * 이미 shell 내부가 채워져 있으면 (brand/nav) 그대로 유지.
+     * 모바일 overlay (<div id="sidebarOverlay" class="sidebar-overlay">) 도 함께 보장.
+     * [2026-10-02] 추가: 모든 페이지에서 동일한 DOM 구조 보장.
+     */
+    function ensureShell() {
+        if (typeof document === 'undefined') return;
+        // body 에 공통 class 부여 (좌측 padding 확보)
+        if (document.body && !document.body.classList.contains('has-platform-sidebar')) {
+            document.body.classList.add('has-platform-sidebar');
+        }
+        // overlay
+        if (!document.getElementById('sidebarOverlay')) {
+            const ov = document.createElement('div');
+            ov.id = 'sidebarOverlay';
+            ov.className = 'sidebar-overlay';
+            // onclick 바인딩: setAttribute 가 아니라 직접 핸들러 할당 (jsdom 호환)
+            ov.onclick = function(){ try { global.PlatformSidebar.close(); } catch(_) {} };
+            document.body.appendChild(ov);
+        }
+        // aside shell
+        let aside = document.getElementById('sidebar');
+        if (!aside) {
+            aside = document.createElement('aside');
+            aside.id = 'sidebar';
+            aside.className = 'sidebar';
+            document.body.insertBefore(aside, document.body.firstChild);
+        }
+        // 사이드바 class 보장 (일부 페이지는 class 없이 id 만 가짐)
+        if (!aside.classList.contains('sidebar')) aside.classList.add('sidebar');
+        // brand 영역이 없으면 생성 (공통 템플릿)
+        let brand = aside.querySelector('.sb-brand');
+        if (!brand) {
+            // 기존 .brand / .p-5 등 레거시 wrapper 제거 (중복 방지)
+            const legacyBrands = aside.querySelectorAll('.brand, .p-5, .pb-3');
+            legacyBrands.forEach(el => el.remove());
+            // [2026-10-02 BUGFIX] .sidebar-divider 전역 삭제는 제거.
+            //   이유: /nlq, /builder.html 는 "메뉴 아래 전용 하단 영역 (질의 이력 / 쿼리 이력)"
+            //         시작 지점에 <div class="sidebar-divider"></div> 를 두는데,
+            //         구 로직은 이 divider 까지 지워버려 하단 영역의 시각적 구분이 사라짐.
+            //   현재 모든 페이지의 레거시 .brand / .p-5 wrapper 는 이미 제거되었고
+            //   (PR #512 참조), 신규 .sb-divider 는 brand 바로 뒤에 별도로 생성되므로
+            //   .sidebar-divider 를 그대로 둬도 레거시 wrapper 와 겹치지 않는다.
+            //   → .sidebar-divider 는 각 페이지 하단 영역 전용 divider 로만 사용.
+            brand = document.createElement('div');
+            brand.className = 'sb-brand';
+            brand.innerHTML = `
+                <div class="sb-brand-row">
+                    <a href="/" class="sb-brand-link" title="통합 플랫폼 HOME">
+                        <span class="sb-brand-title">통합 플랫폼</span>
+                        <span class="sb-brand-sub">수익성분석 · 경영시뮬레이션</span>
+                    </a>
+                    <button type="button" class="sb-close" onclick="window.PlatformSidebar.close();" title="닫기">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>`;
+            aside.insertBefore(brand, aside.firstChild);
+        }
+        // divider
+        let divider = aside.querySelector('.sb-divider');
+        if (!divider) {
+            divider = document.createElement('div');
+            divider.className = 'sb-divider';
+            brand.insertAdjacentElement('afterend', divider);
+        }
+        // nav
+        //   [2026-10-02] nav 는 반드시 'sb-divider 바로 뒤' 위치에 삽입한다.
+        //   이유: /nlq, /builder.html 처럼 aside 안에 이미 하단 전용 영역
+        //         (<div class="sidebar-divider"> + history panel) 이 markup 으로
+        //         들어있는 경우, nav 를 aside.appendChild() 하면 history 영역 뒤로
+        //         밀려서 "메뉴가 이력 아래에 표시" 되는 역순이 되어버린다.
+        //   → 신규 nav 생성 시: divider 바로 뒤에 insertAdjacentElement('afterend')
+        //   → 기존 nav 가 다른 위치에 있을 때도: divider 뒤로 재배치.
+        let nav = document.getElementById('sidebarMenu');
+        if (!nav) {
+            nav = document.createElement('nav');
+            nav.id = 'sidebarMenu';
+            divider.insertAdjacentElement('afterend', nav);
+        } else if (nav.parentElement !== aside) {
+            divider.insertAdjacentElement('afterend', nav);
+        } else if (nav.previousElementSibling !== divider) {
+            // aside 자식이지만 divider 바로 뒤가 아니면 재배치
+            divider.insertAdjacentElement('afterend', nav);
+        }
+        return { aside, brand, divider, nav };
+    }
+
+    /** 모바일 사이드바 열기/닫기 */
+    function open() {
+        const aside = document.getElementById('sidebar');
+        const ov = document.getElementById('sidebarOverlay');
+        if (aside) aside.classList.add('open');
+        if (ov) ov.classList.add('active');
+    }
+    function close() {
+        const aside = document.getElementById('sidebar');
+        const ov = document.getElementById('sidebarOverlay');
+        if (aside) aside.classList.remove('open');
+        if (ov) ov.classList.remove('active');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -251,6 +476,9 @@
         const containerId = options.containerId || 'sidebarMenu';
         const activeUrl = options.activeUrl || (typeof location !== 'undefined' ? location.pathname : '');
         injectCssOnce();
+        // [2026-10-02] shell 자동 보장 — 각 페이지가 HTML 로 brand/divider 를 직접
+        //   정의하지 않아도 공통 DOM 이 자동 생성됨 → 모든 페이지 UI 100% 동일.
+        ensureShell();
         const container = document.getElementById(containerId);
         if (!container) {
             // 컨테이너 없으면 조용히 no-op (해당 페이지가 아직 통합 사이드바 도입 전일 수 있음)
@@ -318,10 +546,52 @@
         writeCollapsedState(state);
     }
 
+    /**
+     * [2026-10-02] 자동 부트스트랩:
+     *   - DOMContentLoaded 시점에 /api/me 를 호출하여 사이드바를 자동 렌더.
+     *   - 각 페이지의 init() 가 render() 를 또 호출해도 idempotent (menus 는 같은 응답).
+     *   - 이 자동 렌더는 "defer timing 버그" (각 페이지 inline async script 가
+     *     PlatformSidebar 로드 전에 render 를 호출하려다 undefined 참조) 를 근본 해결.
+     *   - 각 페이지의 render(...) 호출은 하위호환으로 유지되지만, 호출되지 않더라도
+     *     이 bootstrap 이 사이드바를 보장함.
+     */
+    async function bootstrap() {
+        try {
+            ensureShell();
+            // /api/me 는 각 페이지가 어차피 호출하지만, 사이드바는 즉시 그릴 수 있도록
+            //   별도로 미리 호출. 404/401 등은 조용히 무시 (사이드바만 빈 상태).
+            let menus = [];
+            try {
+                const r = await fetch('/api/me');
+                if (r.ok) {
+                    const me = await r.json();
+                    menus = (me && me.menus) || [];
+                }
+            } catch(_) { /* no-op */ }
+            render(menus, { activeUrl: location.pathname });
+        } catch(e) {
+            // 사이드바 렌더 실패해도 페이지는 계속 작동해야 함
+            if (typeof console !== 'undefined') console.warn('[PlatformSidebar] bootstrap 실패:', e);
+        }
+    }
+    if (typeof document !== 'undefined') {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
+        } else {
+            // DOMContentLoaded 이미 발생 → 즉시 실행
+            bootstrap();
+        }
+    }
+
     // 전역 export
     global.PlatformSidebar = {
         render,
         toggle,
+        ensureShell,     // 공통 shell 보장 (brand + divider + nav)
+        bootstrap,       // 외부에서 재부트 트리거 가능
+        open,            // 모바일: 사이드바 열기
+        close,           // 모바일: 사이드바 닫기
+        injectCssOnce,   // 테스트에서 사용
         groupMenus,      // 테스트에서 사용
         isActive,        // 테스트에서 사용
         GROUPS,          // 테스트에서 사용

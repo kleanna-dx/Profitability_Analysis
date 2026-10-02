@@ -1082,25 +1082,18 @@
 <body>
 
 <!-- ========== SIDEBAR ========== -->
-<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<!-- [2026-10-02 복구] 통합 사이드바 공통화 (PR #512) 이후 비주얼 쿼리 빌더 전용 하단
+     이력 영역이 사라져 있던 것을 복구. 상단 공통 영역 (brand / divider / nav) 은
+     platform-sidebar.js 의 ensureShell() 이 자동 생성하므로 건드리지 않는다.
+     그 아래 "쿼리 이력 + 새 쿼리빌더" 전용 영역만 aside 안에 직접 두어 라우트별 조건부 노출을 구현. -->
 <aside id="sidebar" class="sidebar">
-    <div class="p-5 pb-3">
-        <div class="flex items-center justify-between mb-1">
-            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
-            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
-            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
-        </div>
-        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
-    </div>
-    <div class="sidebar-divider"></div>
-    <nav id="sidebarMenu" class="py-2">
-        <!-- RBAC 동적 렌더링 -->
-    </nav>
-    <!-- [2026-09-23 사용자 요청] 사이드바 "시스템 정보 / DB 연결됨" 영역 삭제.
-         DB 연결 상태는 자연어질의와 동일하게 상단 우측 .status-pill 로 이동. -->
+    <!-- platform-sidebar.js 가 ensureShell() 로 brand + sb-divider + nav#sidebarMenu 를
+         자동 삽입 (여기 markup 앞에 insert) → 아래 요소는 nav 뒤에 자연스럽게 이어진다. -->
+
+    <!-- ─── 비주얼 쿼리 빌더 전용 하단 영역 (route = /builder.html) ─── -->
     <div class="sidebar-divider"></div>
 
-    <!-- [2026-06-16] 사용자 요청: 사이드바 전체 스크롤 제거 + 쿼리 이력 영역만 내부 스크롤.
+    <!-- [2026-06-16] 사이드바 전체 스크롤 제거 + 쿼리 이력 영역만 내부 스크롤.
          .sidebar-history-section 클래스로 flex:1 컨테이너 지정 → 자식 .history-list 만 스크롤. -->
     <!-- 최근 이력 / 즐겨찾기 / 보관함 -->
     <div class="sidebar-history-section">

@@ -1332,32 +1332,22 @@
 <body>
 
 <!-- ========== SIDEBAR ========== -->
-<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+<!-- [2026-10-02 복구] 통합 사이드바 공통화 (PR #512) 이후 자연어 질의 전용 하단 영역이
+     사라져 있던 것을 복구. 상단 공통 영역 (brand / divider / nav) 은 platform-sidebar.js
+     의 ensureShell() 이 자동 생성하므로 건드리지 않는다. 그 아래 "+ 새 채팅" + "질의 이력"
+     전용 영역만 aside 안에 직접 두어 라우트별 조건부 노출을 구현. -->
 <aside id="sidebar" class="sidebar">
-    <div class="p-5 pb-3">
-        <div class="flex items-center justify-between mb-1">
-            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
-            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
-            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
-        </div>
-        <p class="text-xs text-indigo-300 opacity-80">수익성분석 · 경영시뮬레이션</p>
-    </div>
+    <!-- platform-sidebar.js 가 ensureShell() 로 brand + sb-divider + nav#sidebarMenu 를
+         자동 삽입 (여기 markup 앞에 insert) → 아래 요소는 nav 뒤에 자연스럽게 이어진다. -->
+
+    <!-- ─── 자연어 질의 전용 하단 영역 (route = /nlq, /index.html) ─── -->
     <div class="sidebar-divider"></div>
-
-    <!-- Menu Items (RBAC 동적 렌더링) -->
-    <nav id="sidebarMenu" class="py-2">
-        <!-- /api/me에서 menus 로드 후 동적 렌더링 -->
-    </nav>
-
-    <div class="sidebar-divider"></div>
-
     <!-- New Chat Button -->
     <div style="padding:0 16px 8px;">
         <button onclick="startNewChat();closeSidebar();" style="width:100%;padding:8px 12px;background:rgba(99,102,241,0.2);border:1px solid rgba(99,102,241,0.3);border-radius:8px;color:#c7d2fe;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all .15s;" onmouseover="this.style.background='rgba(99,102,241,0.35)'" onmouseout="this.style.background='rgba(99,102,241,0.2)'">
             <i class="fas fa-plus"></i> 새 채팅
         </button>
     </div>
-
     <!-- Recent History / Bookmarks -->
     <div>
         <div class="history-header">
