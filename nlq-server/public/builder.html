@@ -1082,7 +1082,38 @@
 <body>
 
 <!-- ========== SIDEBAR ========== -->
-<aside id="sidebar" class="sidebar"><!-- 통합 사이드바: platform-sidebar.js 가 shell + 메뉴를 자동 생성 --></aside>
+<!-- [2026-10-02 복구] 통합 사이드바 공통화 (PR #512) 이후 비주얼 쿼리 빌더 전용 하단
+     이력 영역이 사라져 있던 것을 복구. 상단 공통 영역 (brand / divider / nav) 은
+     platform-sidebar.js 의 ensureShell() 이 자동 생성하므로 건드리지 않는다.
+     그 아래 "쿼리 이력 + 새 쿼리빌더" 전용 영역만 aside 안에 직접 두어 라우트별 조건부 노출을 구현. -->
+<aside id="sidebar" class="sidebar">
+    <!-- platform-sidebar.js 가 ensureShell() 로 brand + sb-divider + nav#sidebarMenu 를
+         자동 삽입 (여기 markup 앞에 insert) → 아래 요소는 nav 뒤에 자연스럽게 이어진다. -->
+
+    <!-- ─── 비주얼 쿼리 빌더 전용 하단 영역 (route = /builder.html) ─── -->
+    <div class="sidebar-divider"></div>
+
+    <!-- [2026-06-16] 사이드바 전체 스크롤 제거 + 쿼리 이력 영역만 내부 스크롤.
+         .sidebar-history-section 클래스로 flex:1 컨테이너 지정 → 자식 .history-list 만 스크롤. -->
+    <!-- 최근 이력 / 즐겨찾기 / 보관함 -->
+    <div class="sidebar-history-section">
+        <div class="history-header">
+            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>쿼리 이력</p>
+            <span id="historyClearBtn" class="history-clear-btn" onclick="clearAllBuilderHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
+        </div>
+        <button class="new-builder-btn" onclick="newQueryBuilder()" title="현재 쿼리빌더를 초기화하고 새로 시작합니다">
+            <i class="fas fa-plus"></i> 새 쿼리빌더
+        </button>
+        <div class="history-tabs">
+            <div class="history-tab active" data-tab="recent" onclick="switchHistoryTab('recent')"><i class="fas fa-clock" style="margin-right:3px;"></i>최근</div>
+            <div class="history-tab" data-tab="bookmarked" onclick="switchHistoryTab('bookmarked')"><i class="fas fa-star" style="margin-right:3px;"></i>즐겨찾기</div>
+            <div class="history-tab" data-tab="shared" onclick="switchHistoryTab('shared')"><i class="fas fa-inbox" style="margin-right:3px;"></i>보관함<span id="sharedBadge" class="tab-badge" style="display:none;">0</span></div>
+        </div>
+        <div id="historyList" class="history-list">
+            <div class="history-empty"><i class="fas fa-inbox"></i><br>아직 실행 이력이 없습니다</div>
+        </div>
+    </div>
+</aside>
 
 <!-- 공유 모달 -->
 <div id="shareModal" class="share-modal-overlay" onclick="if(event.target===this)closeShareModal()">
