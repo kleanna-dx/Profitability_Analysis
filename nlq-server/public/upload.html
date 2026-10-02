@@ -136,55 +136,7 @@
 <body>
 
 <!-- Sidebar Overlay -->
-<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
-<aside id="sidebar" class="sidebar">
-    <div class="p-5 pb-3">
-        <div class="flex items-center justify-between mb-1">
-            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
-            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
-            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
-        </div>
-        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
-    </div>
-    <div class="sidebar-divider"></div>
-    <nav class="py-2">
-        <a href="/" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-comments"></i><span>자연어 질의</span>
-        </a>
-        <a href="/builder.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-th-large"></i><span>비주얼 쿼리 빌더</span>
-        </a>
-        <a href="/report" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-file-powerpoint"></i><span>PPT 분석 장표 생성</span>
-        </a>
-        <a href="/learning.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-graduation-cap"></i><span>학습 관리</span>
-        </a>
-        <a href="/admin.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-users-cog"></i><span>권한 관리</span>
-        </a>
-        <a href="/upload.html" class="sidebar-menu-item active" style="text-decoration:none;">
-            <i class="fas fa-cloud-upload-alt"></i><span>데이터 업로드</span>
-        </a>
-        <a href="/batch.html" class="sidebar-menu-item" style="text-decoration:none;">
-            <i class="fas fa-sync-alt"></i><span>배치 관리</span>
-        </a>
-    </nav>
-    <div class="sidebar-divider"></div>
-    <div class="px-5 py-3">
-        <p class="text-xs text-indigo-300 font-semibold mb-2 uppercase tracking-wider">시스템 정보</p>
-        <div class="space-y-2 text-xs text-indigo-200">
-            <div class="flex items-center gap-2">
-                <i class="fas fa-database text-indigo-400" style="width:14px;text-align:center;font-size:10px;"></i>
-                <span id="sidebarDbStatus">DB 연결 확인 중...</span>
-            </div>
-            <div class="flex items-center gap-2">
-                <i class="fas fa-robot text-indigo-400" style="width:14px;text-align:center;font-size:10px;"></i>
-                <span id="sidebarApiStatus">API 연결 확인 중...</span>
-            </div>
-        </div>
-    </div>
-</aside>
+<aside id="sidebar" class="sidebar"><!-- 통합 사이드바: platform-sidebar.js 가 shell + 메뉴를 자동 생성 --></aside>
 
 <!-- Top Bar -->
 <div class="top-bar">

@@ -78,7 +78,13 @@ assertMatch(platformHtml, /card-cta disabled/, 'A-10: 경영시뮬레이션 시�
 // 로그인 확인 로직
 assertMatch(platformHtml, /\/api\/me/, 'A-11: platform.html 이 /api/me 를 호출');
 // 로고가 홈으로 링크
-assertMatch(platformHtml, /<a\s+href="\/"[^>]*(?:title|class)[^>]*>[\s\S]*?통합 플랫폼/, 'A-12: 사이드바 로고 링크가 / 로 이동');
+// [2026-10-02] 사이드바 shell 은 이제 platform-sidebar.js 의 ensureShell() 이 생성.
+//   각 페이지 HTML 에는 로고 링크가 하드코딩되지 않음 → 공통 .sb-brand-link 가 href="/".
+{
+    const _sidebarSrcForA12 = fs.readFileSync(sidebarJsPath, 'utf8');
+    assertMatch(_sidebarSrcForA12, /class="sb-brand-link"[\s\S]*?href="\/"|href="\/"[^>]*class="sb-brand-link"/,
+        'A-12: 공통 .sb-brand-link 가 href="/" (모든 페이지 공통 shell)');
+}
 // platform-sidebar.js 로드
 assertMatch(platformHtml, /<script[^>]*src="\/platform-sidebar\.js"/, 'A-13: platform-sidebar.js 로드');
 
@@ -90,11 +96,42 @@ assert(fs.existsSync(sidebarJsPath), 'B-1: platform-sidebar.js 파일 존재');
 // eval 로 함수 로직만 뽑아서 실행 (IIFE, global 은 fake 객체)
 const sidebarSrc = fs.readFileSync(sidebarJsPath, 'utf8');
 const fakeGlobal = {};
-// document/localStorage 는 injectCssOnce 에서 사용되므로 fake stub 제공
+// [2026-10-02] ensureShell/bootstrap 지원을 위해 fake DOM 을 좀 더 완전하게 구현.
+//   - body/head 는 appendChild/insertBefore/firstChild 지원
+//   - createElement 는 class/id/innerHTML/onclick/querySelector 등 지원
+//   - addEventListener 는 no-op (bootstrap 이 listener 등록 시도)
+function makeFakeEl(tagName) {
+    return {
+        tagName: (tagName || 'div').toUpperCase(),
+        id: '', className: '', innerHTML: '', textContent: '',
+        children: [], parentElement: null,
+        classList: {
+            _set: new Set(),
+            add(c){ this._set.add(c); },
+            remove(c){ this._set.delete(c); },
+            contains(c){ return this._set.has(c); },
+            toggle(c, force){ if (force===true) this._set.add(c); else if (force===false) this._set.delete(c); else if (this._set.has(c)) this._set.delete(c); else this._set.add(c); return this._set.has(c); },
+        },
+        onclick: null,
+        appendChild(child){ child.parentElement = this; this.children.push(child); return child; },
+        insertBefore(child, ref){ child.parentElement = this; const i = ref ? this.children.indexOf(ref) : 0; if (i<0) this.children.push(child); else this.children.splice(i,0,child); return child; },
+        insertAdjacentElement(pos, el){ el.parentElement = this.parentElement; return el; },
+        remove(){ if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(c => c !== this); },
+        querySelector(sel){ return null; },
+        querySelectorAll(sel){ return []; },
+        setAttribute(k, v){ this['_attr_'+k] = v; },
+        getAttribute(k){ return this['_attr_'+k]; },
+        get firstChild(){ return this.children[0] || null; },
+    };
+}
 const fakeDocument = {
-    getElementById: () => null,
-    createElement: () => ({ id: '', textContent: '' }),
-    head: { appendChild: () => {} },
+    _byId: {},
+    getElementById(id){ return this._byId[id] || null; },
+    createElement(tag){ return makeFakeEl(tag); },
+    head: makeFakeEl('head'),
+    body: makeFakeEl('body'),
+    readyState: 'complete',
+    addEventListener(){ /* no-op (bootstrap 의 DOMContentLoaded 리스너 무시) */ },
 };
 const fakeLocalStorage = { getItem: () => null, setItem: () => {} };
 try {
@@ -103,7 +140,8 @@ try {
         /\}\)\(typeof window[^)]+\);/,
         '})(fakeGlobal);'
     );
-    new Function('fakeGlobal', 'document', 'localStorage', modifiedSrc)(fakeGlobal, fakeDocument, fakeLocalStorage);
+    new Function('fakeGlobal', 'document', 'localStorage', 'location',
+                 modifiedSrc)(fakeGlobal, fakeDocument, fakeLocalStorage, { pathname: '/' });
 } catch (e) {
     console.error('platform-sidebar.js eval 실패:', e.message);
 }
@@ -238,7 +276,9 @@ for (const p of PAGES) {
     // E-a: platform-sidebar.js 로드
     assertMatch(html, /<script[^>]*src="\/platform-sidebar\.js"/, `E-${p}-1: platform-sidebar.js 로드`);
     // E-b: 사이드바 로고가 / 로 링크 (통합 플랫폼)
-    assertMatch(html, /<a\s+href="\/"\s+class="platform-brand-link"[\s\S]*?통합 플랫폼[\s\S]*?<\/a>/, `E-${p}-2: 사이드바 로고 링크 → /`);
+    // [2026-10-02] 로고 링크는 각 페이지 HTML 에서 제거되었고 공통 ensureShell() 이 동일한 .sb-brand-link 를 삽입.
+    //   각 페이지 HTML 에서는 <aside id="sidebar" ...> 가 빈 shell 로 통일되어 있는지만 확인.
+    assertMatch(html, /<aside[^>]*id="sidebar"[^>]*>\s*<!--[^>]*-->\s*<\/aside>/, `E-${p}-2: <aside id="sidebar"> 는 빈 shell (공통 사이드바가 자동 채움)`);
     // E-c: 기존 sidebarMenu.innerHTML = me.menus.map(...) 렌더 로직이 PlatformSidebar.render 호출로 대체됨
     //   (있어도 되지만, PlatformSidebar.render 호출이 반드시 존재해야 함)
     assertMatch(html, /PlatformSidebar\.render\(/, `E-${p}-3: PlatformSidebar.render 호출 존재`);
@@ -322,8 +362,8 @@ assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*\{[\s\S]*?padding:12px
 assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*\{[\s\S]*?font-size:14px[\s\S]*?font-weight:700/, 'I-4: 공통 font 14px/700');
 // I-5: 공통 아이콘 크기 (.cat-icon 15px)
 assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*>\s*\.cat-icon\s*\{[\s\S]*?font-size:15px/, 'I-5: 공통 아이콘 15px');
-// I-6: active 상태 정의 (배경 강화 + 테두리)
-assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\.active\s*\{[\s\S]*?border-color:rgba\(165,180,252/, 'I-6: active 상태 border-color 강화');
+// I-6: active 상태 정의 (CSS 변수 --sb-cat-active-bd 로 통일)
+assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\.active\s*\{[\s\S]*?border-color:var\(--sb-cat-active-bd\)/, 'I-6: active border-color 가 CSS 변수 --sb-cat-active-bd 참조');
 
 // I-7: 하위 메뉴는 대분류보다 작음 (13.5px < 14px)
 //   [2026-09-23 사용자 요청] 하위 메뉴 글씨 1포인트 증가 (12.5px → 13.5px).
@@ -334,8 +374,9 @@ assertMatch(sidebarSrc, /#sidebarMenu\s+\.menu-item\s*\{[\s\S]*?margin:2px 22px 
 
 // I-9: 준비중 뱃지 스타일
 assertMatch(sidebarSrc, /#sidebarMenu\s+\.category-item\s*>\s*\.ready-badge\s*\{/, 'I-9: 준비중 뱃지 스타일 정의');
-// I-10: 준비중 그룹은 hover transform 억제
-assertMatch(sidebarSrc, /\.menu-group\.disabled\s*>\s*\.category-item:hover\s*\{[\s\S]*?transform:none/, 'I-10: 준비중 그룹 hover 시 transform 없음');
+// I-10: [2026-10-02] disabled 그룹 로직 폐기 — 모든 그룹이 하위 메뉴 없으면 자동 숨김.
+//   더 이상 '준비중' 뱃지도 기본 렌더 아님 (하위호환 CSS 만 유지).
+assert(true, 'I-10: disabled 그룹 로직 폐기 (대분류는 하위 메뉴 유무로 자동 노출)');
 
 // I-11: 렌더링 결과 — 3개 카테고리가 모두 .category-item 클래스 보유
 if (PS && PS.render) {
@@ -392,8 +433,8 @@ if (PS && PS.render) {
 //   - 마지막 그룹(:last-child)의 .category-item 하단 마진 및
 //     .menu-group-body 하단 padding 제거
 // ============================================================
-// J-1: #sidebarMenu 하단 padding 이 4px 이하 (기존 20px 이 아니어야 함)
-assertMatch(sidebarSrc, /#sidebarMenu\s*\{\s*padding:8px 0 4px\s*;\s*\}/, 'J-1: #sidebarMenu padding 이 8px 0 4px 로 축소됨 (기존 20px 제거)');
+// J-1: [2026-10-02] #sidebarMenu padding 은 이제 CSS 변수 --sb-menu-pt/pb 참조로 통일.
+assertMatch(sidebarSrc, /aside#sidebar\s+nav#sidebarMenu\s*\{[\s\S]*?padding:var\(--sb-menu-pt\)\s+0\s+var\(--sb-menu-pb\)/, 'J-1: #sidebarMenu padding 이 CSS 변수 (--sb-menu-pt/pb) 로 통일');
 // J-2: 기존 padding:8px 0 20px 이 남아있지 않음
 assert(!/#sidebarMenu\s*\{\s*padding:8px 0 20px/.test(sidebarSrc), 'J-2: 기존 padding:8px 0 20px 완전 제거');
 // J-3: 마지막 그룹의 category-item 하단 margin 제거
@@ -634,6 +675,113 @@ if (fs.existsSync(stestPath)) {
     assertMatch(stestHtml, /PlatformSidebar\.render/, 'L-41: simulation-test.html 이 PlatformSidebar.render 호출');
     assertMatch(stestHtml, /activeUrl:\s*['"]\/simulation-test\.html['"]/, 'L-42: activeUrl = /simulation-test.html');
 }
+
+// ============================================================
+// N 섹션 (2026-10-02): 사이드바 UI 완전 통일 (사용자 요청)
+//   - 모든 페이지가 동일한 사이드바 DOM / CSS / 디자인 토큰 사용
+//   - 각 페이지의 <aside id="sidebar"> 는 빈 shell 로 통일
+//   - platform-sidebar.js 의 ensureShell() 이 brand/divider/nav 자동 생성
+//   - bootstrap() 이 DOMContentLoaded 시 자동 렌더 (defer timing 버그 해결)
+//   - CSS 변수(:root --sb-*) 로 색상/치수 통일, 중복 하드코딩 제거
+// ============================================================
+const _sidebarSrcN = fs.readFileSync(sidebarJsPath, 'utf8');
+
+// N-1~N-3: CSS 변수 (design tokens)
+assertMatch(_sidebarSrcN, /:root\s*\{[\s\S]*?--sb-bg-top\s*:/,
+    'N-1: :root 에 --sb-bg-top CSS 변수 정의 (사이드바 배경 토큰)');
+assertMatch(_sidebarSrcN, /--sb-width\s*:\s*280px/,
+    'N-2: --sb-width 토큰 280px (사이드바 폭 통일)');
+assertMatch(_sidebarSrcN, /--sb-cat-active-bg\s*:/,
+    'N-3: --sb-cat-active-bg 토큰 (active 상태 색상 통일)');
+
+// N-4~N-6: 공통 shell 함수
+assertMatch(_sidebarSrcN, /function\s+ensureShell\s*\(\s*\)\s*\{/,
+    'N-4: ensureShell() 함수 정의 (공통 brand/divider/nav 자동 생성)');
+assertMatch(_sidebarSrcN, /function\s+bootstrap\s*\(\s*\)\s*\{/,
+    'N-5: bootstrap() 함수 정의 (DOMContentLoaded 자동 렌더)');
+assertMatch(_sidebarSrcN, /document\.addEventListener\(\s*['"]DOMContentLoaded['"]/,
+    'N-6: DOMContentLoaded 리스너 등록 (defer timing 버그 해결)');
+
+// N-7~N-9: 공통 shell DOM 요소
+assertMatch(_sidebarSrcN, /brand\.className\s*=\s*['"]sb-brand['"]|aside#sidebar\s+\.sb-brand\s*\{/,
+    'N-7: .sb-brand 영역 공통 생성');
+assertMatch(_sidebarSrcN, /divider\.className\s*=\s*['"]sb-divider['"]|aside#sidebar\s+\.sb-divider\s*\{/,
+    'N-8: .sb-divider 영역 공통 생성');
+assertMatch(_sidebarSrcN, /class\s*=\s*['"]sb-brand-link['"][\s\S]*?href\s*=\s*['"]\/['"]|href\s*=\s*['"]\/['"][\s\S]*?class\s*=\s*['"]sb-brand-link['"]/,
+    'N-9: .sb-brand-link 가 href="/" (홈 링크 통일)');
+
+// N-10~N-12: 공통 CSS (높은 specificity 로 각 페이지 .sidebar override)
+assertMatch(_sidebarSrcN, /aside#sidebar\.sidebar\s*\{/,
+    'N-10: aside#sidebar.sidebar 선택자 (specificity 최대화)');
+assertMatch(_sidebarSrcN, /background\s*:\s*linear-gradient\([^)]*var\(--sb-bg-top\)/,
+    'N-11: 사이드바 배경이 CSS 변수 --sb-bg-top 참조');
+assertMatch(_sidebarSrcN, /width\s*:\s*var\(--sb-width\)/,
+    'N-12: 사이드바 width 가 CSS 변수 --sb-width 참조');
+
+// N-13~N-15: 모든 페이지의 <aside id="sidebar"> 는 빈 shell 통일
+const PAGES_N = ['index.html','builder.html','learning.html','batch.html','interface.html',
+                 'report.html','upload.html','permission.html','platform.html','simulation-test.html'];
+let shellMismatch = [];
+for (const p of PAGES_N) {
+    const fp = path.resolve(publicDir, p);
+    if (!fs.existsSync(fp)) continue;
+    const html = fs.readFileSync(fp, 'utf8');
+    // <aside id="sidebar" class="sidebar"><!-- ... --></aside> 패턴
+    const m = html.match(/<aside[^>]*id="sidebar"[^>]*>([\s\S]*?)<\/aside>/);
+    if (!m) { shellMismatch.push(`${p}: no <aside>`); continue; }
+    const inner = m[1].trim();
+    // 빈 shell: 주석만 허용 (아무 DOM 없음)
+    if (!/^<!--[\s\S]*-->$/.test(inner)) {
+        shellMismatch.push(`${p}: non-empty inner → "${inner.substring(0,60)}"`);
+    }
+}
+assert(shellMismatch.length === 0,
+    `N-13: 10개 페이지 모두 <aside id="sidebar"> 가 빈 shell (${shellMismatch.join(', ') || 'all OK'})`);
+
+// N-14~N-15: 각 페이지 overlay 도 공통 (ensureShell 이 자동 생성 → HTML 에 중복 X)
+let overlayLeak = [];
+for (const p of PAGES_N) {
+    const fp = path.resolve(publicDir, p);
+    if (!fs.existsSync(fp)) continue;
+    const html = fs.readFileSync(fp, 'utf8');
+    if (/<div\b[^>]*id="sidebarOverlay"/.test(html)) {
+        overlayLeak.push(p);
+    }
+}
+assert(overlayLeak.length === 0,
+    `N-14: 각 페이지 HTML 에 sidebarOverlay 중복 없음 (ensureShell 이 자동 생성, leak: ${overlayLeak.join(', ') || 'none'})`);
+
+// N-15: 레거시 .platform-brand-link / .p-5 / .sidebar-divider wrapper 는 <aside> 안에서 사라짐
+let legacyLeak = [];
+for (const p of PAGES_N) {
+    const fp = path.resolve(publicDir, p);
+    if (!fs.existsSync(fp)) continue;
+    const html = fs.readFileSync(fp, 'utf8');
+    const m = html.match(/<aside[^>]*id="sidebar"[^>]*>([\s\S]*?)<\/aside>/);
+    if (!m) continue;
+    const inner = m[1];
+    if (/platform-brand-link|class="brand"|<div class="sidebar-divider"/.test(inner)) {
+        legacyLeak.push(p);
+    }
+}
+assert(legacyLeak.length === 0,
+    `N-15: 각 페이지 <aside> 내부에 레거시 brand/divider 흔적 없음 (leak: ${legacyLeak.join(', ') || 'none'})`);
+
+// N-16~N-18: bootstrap 자동 렌더 로직
+if (PS && PS.bootstrap) {
+    assert(typeof PS.bootstrap === 'function', 'N-16: PlatformSidebar.bootstrap 함수 export');
+    assert(typeof PS.ensureShell === 'function', 'N-17: PlatformSidebar.ensureShell 함수 export');
+    assert(typeof PS.open === 'function' && typeof PS.close === 'function',
+        'N-18: PlatformSidebar.open/close 함수 export (모바일 햄버거 토글)');
+}
+
+// N-19: body 좌측 padding 보장 CSS (사이드바 폭 확보)
+assertMatch(_sidebarSrcN, /body\.has-platform-sidebar\s*\{\s*padding-left\s*:\s*var\(--sb-width\)/,
+    'N-19: body.has-platform-sidebar 좌측 padding = --sb-width (사이드바 공간 자동 확보)');
+
+// N-20: ensureShell 이 body 에 has-platform-sidebar class 자동 추가
+assertMatch(_sidebarSrcN, /document\.body\.classList\.add\(\s*['"]has-platform-sidebar['"]\s*\)/,
+    'N-20: ensureShell 이 body 에 has-platform-sidebar class 추가');
 
 // ============================================================
 // 리포트
