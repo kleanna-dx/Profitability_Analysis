@@ -1727,6 +1727,22 @@ function newQueryBuilder(){
     renderFavoriteResultBtn();
     renderDomainSelectorBar();
 
+    // [2026-10-02] 업무영역(수익/제조) 잠금도 해제 → 새 쿼리에서 영역 선택 가능
+    //   history mode 에서 area 가 lock 되어 있으면 상단 [수익성분석][제조원가] 탭이
+    //   confirm alert 로 변경을 막기 때문에 반드시 unlock 해야 함.
+    //   사용자 요구: new query mode → domain selectable
+    try {
+        if (window.AreaTabs && typeof window.AreaTabs.unlock === 'function') {
+            window.AreaTabs.unlock();
+            console.log('[VQB:NewQuery] AreaTabs unlock — 업무영역 선택 가능');
+        }
+    } catch (_) {}
+
+    // [2026-10-02] 사이드바 history item active 표시 해제 (현재 열린 이력이 없음을 명시)
+    try {
+        document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+    } catch (_) {}
+
     // 9) 정렬/제한 초기화
     const orderBy = document.getElementById('orderBySelect');
     if(orderBy) orderBy.value = '';
@@ -3196,6 +3212,44 @@ async function executeQuery() {
         alert('조회할 필드를 하나 이상 선택해주세요.');
         return;
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // [2026-10-02] 쿼리 실행 전 최종 업무영역 검증 (사용자 요구사항 §13)
+    //
+    // 목적:
+    //   UI 상태 버그로 selectedFields 와 현재 active area 가 불일치할 때
+    //   잘못된 schema 로 backend query 가 실행되는 것을 한 번 더 차단.
+    //
+    // 검증 로직:
+    //   1) 현재 _currentBuilderArea() = payload.area 로 전송될 값
+    //   2) selectedFields 의 모든 column 이 allColumns (현재 영역의 metadata) 에 존재하는지 확인
+    //   3) 하나라도 metadata 에 없는 field 가 있으면 → 영역 불일치 가능성 → alert 로 사용자에게 안내 + 중단
+    //
+    // 정상 flow 에서는 사용자에게 보이지 않음 (allColumns 에 selectedFields 가 모두 포함되므로).
+    // ─────────────────────────────────────────────────────────────
+    try {
+        const _activeArea = _currentBuilderArea();
+        const _availableColNames = new Set((allColumns || []).map(c => c && c.name).filter(Boolean));
+        const _invalidFields = selectedFields
+            .map(f => (f && f.column))
+            .filter(col => col && !_availableColNames.has(col));
+        if (_invalidFields.length > 0 && _availableColNames.size > 0) {
+            const _areaLabel = _activeArea === 'manufacturing-cost' ? '제조원가' : '수익성분석';
+            console.error('[VQB:AreaValidation] 영역 불일치 감지:',
+                { activeArea: _activeArea, invalidFields: _invalidFields });
+            alert(
+                `현재 업무영역(${_areaLabel}) 의 필드 목록에 존재하지 않는 필드가 포함되어 있습니다.\n\n` +
+                `문제 필드: ${_invalidFields.slice(0, 5).join(', ')}${_invalidFields.length > 5 ? ' 외 ' + (_invalidFields.length - 5) + '개' : ''}\n\n` +
+                `이 쿼리는 다른 업무영역에서 생성된 이력일 가능성이 큽니다.\n` +
+                `사이드바의 "+ 새 쿼리빌더" 를 눌러 영역을 다시 선택해주세요.`
+            );
+            return;
+        }
+    } catch (e) {
+        // 검증 실패해도 본 쿼리 실행은 중단하지 않음 (safeguard 는 best-effort)
+        console.warn('[VQB:AreaValidation] 검증 로직 실패 (비치명):', e && e.message);
+    }
+
     // ★ 기간 필드(CALMONTH/CALDAY) 1개 이상 선택 필수
     //   백엔드가 더 이상 CALMONTH를 자동 추가하지 않으므로 사용자가 명시 선택해야 함
     //   (비교모드는 백엔드에서 자동 CALMONTH 표시 유지 — [전월대비/전년대비] 클릭 자체가 월 비교 명시)
@@ -4502,6 +4556,60 @@ async function loadUnreadSharedCount() {
     } catch(e) {}
 }
 
+// ============================================================
+// [2026-10-02] 비주얼 쿼리 빌더 업무영역-aware 유틸리티
+// ------------------------------------------------------------
+// 핵심 상수: 자연어 질의 (index.html line 7341) 와 동일한 매핑.
+// ============================================================
+const _BAC_TO_AREA = {
+    'PROFITABILITY':      'profitability',
+    'MANUFACTURING_COST': 'manufacturing-cost',
+};
+const _AREA_TO_BAC = {
+    'profitability':      'PROFITABILITY',
+    'manufacturing-cost': 'MANUFACTURING_COST',
+};
+
+/**
+ * [2026-10-02] 레거시 history 의 업무영역을 추론 (business_area_code=NULL 일 때)
+ *
+ * 전제: 사용자 요구사항에 따라 "임의로 수익 기본값" 은 절대 사용하지 않는다.
+ *       확실하게 판별 가능한 경우에만 추론, 그 외에는 null 반환 → 사용자 선택 요구.
+ *
+ * 판별 근거 (강→약):
+ *   1) generated_sql 안에 'sys_aimd_cot015' (제조원가 target table) 가 있으면 → MANUFACTURING_COST
+ *   2) generated_sql 안에 'bw_profitability_data' (수익성분석 target table) 가 있으면 → PROFITABILITY
+ *   3) fields_json 의 column 이름이 제조원가 전용 필드 (ZCGUBUN, ZZKVGR7 등) 를 포함하면 → MANUFACTURING_COST
+ *   4) 그 외 → null (추론 불가 — 사용자에게 영역 선택 요구)
+ *
+ * @param {Object} item - builder_query_history row (fields_json/generated_sql 포함)
+ * @returns {string|null} 'PROFITABILITY' | 'MANUFACTURING_COST' | null
+ */
+function _inferBusinessAreaFromHistory(item) {
+    if (!item) return null;
+    // 1) SQL 기반 (가장 확실)
+    const sql = String(item.generated_sql || '').toLowerCase();
+    if (sql.includes('sys_aimd_cot015')) return 'MANUFACTURING_COST';
+    if (sql.includes('bw_profitability_data')) return 'PROFITABILITY';
+    // 2) 필드 이름 기반 (제조원가 전용 컬럼)
+    try {
+        const fields = Array.isArray(item.fields_json) ? item.fields_json
+                      : (typeof item.fields_json === 'string' ? JSON.parse(item.fields_json || '[]') : []);
+        const MFG_EXCLUSIVE_FIELDS = new Set([
+            'ZCGUBUN', 'ZCGUBUN_D',    // 제조원가 구분 (소비/투입/산출 등)
+            'ZZKVGR7', 'ZZKVGR7_D',    // 제조원가 전용 분류
+            'KSTAR',                    // 원가요소
+            'KOSTL', 'KOSTL_D',        // 코스트센터 (제조원가 전용 레벨)
+        ]);
+        for (const f of fields) {
+            const col = (f && f.column || '').toUpperCase();
+            if (MFG_EXCLUSIVE_FIELDS.has(col)) return 'MANUFACTURING_COST';
+        }
+    } catch (_) {}
+    // 3) 추론 불가 — 임의 기본값 사용 금지 (사용자 요구사항)
+    return null;
+}
+
 function renderBuilderHistory(items) {
     const container = document.getElementById('historyList');
     if (!items || items.length === 0) {
@@ -4523,12 +4631,21 @@ function renderBuilderHistory(items) {
             const fromName = item.from_user_name || item.from_user_id || '?';
             const unreadDot = item.is_read ? '' : '<span class="unread-dot"></span>';
             const memoHtml = item.memo ? `<div style="font-size:10px;color:#a5b4fc;margin-top:2px;font-style:italic;">"${escHistHtml(item.memo)}"</div>` : '';
+            // [2026-10-02] 공유 이력도 업무영역/도메인 배지 표시 (동일 inline style)
+            const dc_s = item.domain_code;
+            const _dcDisp_s = (window.__domainDisplayCode ? window.__domainDisplayCode(dc_s) : dc_s);
+            const domainBadge_s = dc_s ? `<span style="display:inline-block;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;background:${dc_s==='PS'?'#dbeafe':dc_s==='HL'?'#dcfce7':'#fef3c7'};color:${dc_s==='PS'?'#2563eb':dc_s==='HL'?'#16a34a':'#d97706'};">[${_dcDisp_s}]</span>` : '';
+            const bac_s = item.business_area_code || _inferBusinessAreaFromHistory(item);
+            const _bacDisp_s = bac_s === 'PROFITABILITY' ? '수익' : (bac_s === 'MANUFACTURING_COST' ? '제조' : null);
+            const areaBadge_s = _bacDisp_s
+                ? `<span style="display:inline-block;background:${bac_s==='PROFITABILITY'?'#885DF6':'#0373AE'};color:#ffffff;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${_bacDisp_s}]</span>`
+                : '';
             html += `
                 <div class="history-item" data-shared-id="${item.id}" onclick="restoreSharedHistory(${item.id})">
                     ${unreadDot}
                     <div class="history-item-icon" style="background:rgba(99,102,241,0.15);color:#818cf8;"><i class="fas fa-share-alt"></i></div>
                     <div class="history-item-text">
-                        <div class="history-item-query">${escHistHtml(item.title)}</div>
+                        <div class="history-item-query">${areaBadge_s}${domainBadge_s}${escHistHtml(item.title)}</div>
                         <div class="history-item-meta"><span class="shared-from-badge"><i class="fas fa-user" style="margin-right:3px;"></i>${escHistHtml(fromName)}</span> · ${time}</div>
                         ${memoHtml}
                     </div>
@@ -4557,13 +4674,28 @@ function renderBuilderHistory(items) {
             // [2026-07-30] 질의 이력 배지 표기는 사용자 표시명(MGMT → '통합'). 내부 코드는 dc 로 유지 (색상/힌트용).
             const _dcDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(dc) : dc);
             const domainBadge = dc ? `<span style="display:inline-block;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;background:${dc==='PS'?'#dbeafe':dc==='HL'?'#dcfce7':'#fef3c7'};color:${dc==='PS'?'#2563eb':dc==='HL'?'#16a34a':'#d97706'};">[${_dcDisp}]</span>` : '';
-            // 클릭 시 사이드바에 표시된 도메인을 hint 로 전달 → 상단 배지를 정확히 동기화
-            const hintArg = dc ? `,'${dc}'` : '';
+            // [2026-10-02] 업무영역(수익성분석/제조원가) 배지 — 자연어 질의 (index.html line 7207~7211) 와 완전히 동일한 inline style 재사용.
+            //   - 서버 저장: builder_query_history.business_area_code ('PROFITABILITY' / 'MANUFACTURING_COST' / NULL)
+            //   - 표시 색상 (자연어 질의와 100% 동일):
+            //       · [수익] (PROFITABILITY)      → 배경 #885DF6, 글씨 #ffffff (보라)
+            //       · [제조] (MANUFACTURING_COST) → 배경 #0373AE, 글씨 #ffffff (파랑)
+            //   - 레거시 이력(business_area_code=NULL) 은 fallback 함수로 추론 시도
+            //     (fields_json / generated_sql 에 제조원가 전용 패턴이 있으면 '제조' 표시).
+            //   - domainBadge 앞에 렌더링 → 예: [수익] [PS] 손익센터별 총매출 합계
+            const bac = item.business_area_code || _inferBusinessAreaFromHistory(item);
+            const _bacDisp = bac === 'PROFITABILITY' ? '수익' : (bac === 'MANUFACTURING_COST' ? '제조' : null);
+            const areaBadge = _bacDisp
+                ? `<span style="display:inline-block;background:${bac==='PROFITABILITY'?'#885DF6':'#0373AE'};color:#ffffff;font-size:9px;font-weight:800;padding:1px 5px;border-radius:4px;margin-right:4px;">[${_bacDisp}]</span>`
+                : '';
+            // 클릭 시 사이드바에 표시된 도메인/영역을 hint 로 전달 → 상단 배지를 정확히 동기화
+            //   - hintDomain  = dc (PS/HL/MGMT)
+            //   - hintAreaBac = bac (PROFITABILITY/MANUFACTURING_COST/null)
+            const hintArg = `,${dc ? `'${dc}'` : 'null'},${bac ? `'${bac}'` : 'null'}`;
             html += `
                 <div class="history-item" data-id="${item.id}" onclick="restoreBuilderHistory(${item.id}${hintArg})">
                     <div class="history-item-icon ${iconCls}"><i class="fas ${icon}"></i></div>
                     <div class="history-item-text">
-                        <div class="history-item-query">${domainBadge}${escHistHtml(item.title)}</div>
+                        <div class="history-item-query">${areaBadge}${domainBadge}${escHistHtml(item.title)}</div>
                         <div class="history-item-meta">${meta}</div>
                     </div>
                     <div class="history-item-actions">
@@ -4618,11 +4750,64 @@ async function switchDomainForHistory(domainCode) {
     updateDomainInfoBanner();
 }
 
+// ============================================================
+// [2026-10-02] 이력 복원 시 업무영역(수익/제조) 전환 + 잠금
+// ------------------------------------------------------------
+// 복원 순서는 반드시 다음과 같아야 한다 (사용자 요구사항 Step 1~5):
+//   1) history.business_area_code 확인
+//   2) 현재 활성 업무영역을 history 의 업무영역으로 먼저 변경 (unlock → set(force) → lock)
+//   3) 해당 영역의 schema/metadata (loadColumns) 완전 로딩 await
+//   4) 그 후에 필드/조건/정렬 등 쿼리 상태 복원
+//
+// 자연어 질의 (index.html line 7338~7353) 와 동일한 패턴 — 공통 window.AreaTabs API 사용.
+// targetBac: 'PROFITABILITY' | 'MANUFACTURING_COST' | null
+// ============================================================
+async function switchAreaForHistory(targetBac) {
+    // 1. 영역 코드 → AreaTabs 키 변환
+    const targetAreaKey = targetBac ? _BAC_TO_AREA[targetBac] : null;
+    if (!window.AreaTabs) {
+        // AreaTabs 가 아직 로드되지 않은 edge case — await 로 기다릴 수 없으므로 그냥 return
+        console.warn('[VQB:AreaRestore] AreaTabs 미로드 상태 → area 전환 스킵');
+        return;
+    }
+    try {
+        if (targetAreaKey && window.AreaTabs.current !== targetAreaKey) {
+            // 2. 영역 전환 필요 — unlock → force set → areachange 이벤트 발생
+            //    (setArea 는 lock 상태에서 force 없이 호출하면 confirm alert 뜨고 return 됨)
+            if (typeof window.AreaTabs.unlock === 'function') window.AreaTabs.unlock();
+            window.AreaTabs.set(targetAreaKey, { force: true });
+            console.log(`[VQB:AreaRestore] area 전환: → ${targetAreaKey} (from history bac=${targetBac})`);
+            // 3. loadColumns() 대기 — area 전환 후 필드 metadata 가 새 영역 것으로 갱신될 때까지 await
+            //    (이 await 가 없으면 race condition: 아직 수익성 필드 목록인데 제조 필드를 selectedFields 에 넣게 됨)
+            try {
+                await loadColumns();
+            } catch (e) {
+                console.warn('[VQB:AreaRestore] loadColumns 실패 (비치명):', e && e.message);
+            }
+            // 추가로 날짜 context 도 새 영역 기준으로 갱신 (있으면)
+            try {
+                if (typeof _fetchAndApplyLatestMonth === 'function') {
+                    await _fetchAndApplyLatestMonth();
+                }
+            } catch (_) {}
+        } else if (targetAreaKey && window.AreaTabs.current === targetAreaKey) {
+            console.log(`[VQB:AreaRestore] area 이미 일치: ${targetAreaKey} (전환 불필요)`);
+        } else {
+            console.log(`[VQB:AreaRestore] history bac=null → area 유지 (현재: ${window.AreaTabs.current})`);
+        }
+        // 4. 영역이 일치하거나 null 이어도 lock 은 항상 수행 (history mode 임을 명시)
+        if (typeof window.AreaTabs.lock === 'function') window.AreaTabs.lock();
+    } catch (e) {
+        console.error('[VQB:AreaRestore] 실패:', e);
+    }
+}
+
 // --- 이력 복원 (최근이력/즐겨찾기) ---
-// hintDomain: 사이드바 이력 리스트가 표시한 도메인 코드 (renderHistoryList 에서 전달)
-//   - 옛날 이력의 domain_code 가 NULL 인 경우에도 상단 배지를 정확히 동기화하기 위함
-//   - 우선순위: hintDomain > item.domain_code > 현재 currentDomain 유지
-async function restoreBuilderHistory(id, hintDomain) {
+// hintDomain:  사이드바 이력 리스트가 표시한 도메인 코드 (renderHistoryList 에서 전달)
+// hintAreaBac: 사이드바 이력 리스트가 표시한 업무영역 코드 (PROFITABILITY/MANUFACTURING_COST/null)
+//   - [2026-10-02] 추가 — business_area_code 가 서버 응답에 없는 레거시 이력도 사이드바가
+//     fallback 추론한 결과를 그대로 전달받아 영역 전환 수행.
+async function restoreBuilderHistory(id, hintDomain, hintAreaBac) {
     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
     const target = document.querySelector(`.history-item[data-id="${id}"]`);
     if (target) target.classList.add('active');
@@ -4635,13 +4820,25 @@ async function restoreBuilderHistory(id, hintDomain) {
             alert('이력을 불러올 수 없습니다: ' + item.error); return;
         }
         loadedHistoryId = id; // 기존 이력 → 재실행 시 UPDATE
-        // [2026-06-15] 즐겨찾기 상태 동기화 — 사용자가 즐겨찾기 목록에서 클릭해서 들어왔으면
-        //   별이 채워진 상태로 보여야 함 (사용자 요청 핵심 요구사항)
+        // [2026-06-15] 즐겨찾기 상태 동기화
         loadedIsBookmarked = !!item.is_bookmarked;
         renderFavoriteResultBtn();
-        // 이력의 도메인으로 전환 + 잠금 (자연어 질의와 동일)
-        // hintDomain 우선 사용 — item.domain_code 가 NULL 이어도 사이드바 배지와 일치
+
+        // [2026-10-02] 복원 순서 — CRITICAL (업무영역 → schema 로드 → 쿼리 상태):
+        //   1) business_area_code 결정 (우선순위: hintAreaBac > item.business_area_code > fallback 추론)
+        //      사용자 요구: 임의로 '수익' 기본값 사용 금지 → fallback 추론도 실패하면 null 유지.
+        //   2) switchAreaForHistory() — area 전환 + loadColumns() 완료까지 await
+        //   3) switchDomainForHistory() — PS/HL/MGMT 도메인 전환 + loadColumns() 완료까지 await
+        //   4) applyHistoryToBuilder() — 완전히 준비된 schema 위에 필드/조건 복원
+        const _bacFinal = hintAreaBac || item.business_area_code || _inferBusinessAreaFromHistory(item);
+        if (!_bacFinal) {
+            console.warn(`[VQB:HistoryRestore] 업무영역 확정 불가 (id=${id}) — 현재 영역 유지, 사용자 주의 필요`);
+        }
+        // Step 1: 업무영역 전환 (가장 먼저)
+        await switchAreaForHistory(_bacFinal);
+        // Step 2: 도메인(PS/HL) 전환 (업무영역 전환 후)
         await switchDomainForHistory(hintDomain || item.domain_code);
+        // Step 3: 쿼리 상태 복원 (schema 가 준비된 상태에서)
         applyHistoryToBuilder(item);
     } catch(e) {
         alert('이력 불러오기 오류: ' + e.message);
@@ -4662,7 +4859,13 @@ async function restoreSharedHistory(id) {
             alert('공유 이력을 불러올 수 없습니다: ' + item.error); return;
         }
         loadedHistoryId = null; // 공유 이력 → 재실행 시 새 이력 생성
-        // 공유 이력도 도메인 전환 + 잠금
+        // [2026-10-02] 공유 이력도 업무영역 복원 (일반 이력과 동일 순서):
+        //   1) 업무영역 전환 (loadColumns 완료 대기) → 2) 도메인 전환 → 3) 쿼리 상태 복원
+        const _bacFinal = item.business_area_code || _inferBusinessAreaFromHistory(item);
+        if (!_bacFinal) {
+            console.warn(`[VQB:SharedRestore] 업무영역 확정 불가 (shared id=${id}) — 현재 영역 유지`);
+        }
+        await switchAreaForHistory(_bacFinal);
         await switchDomainForHistory(item.domain_code);
         applyHistoryToBuilder(item);
         // 읽음 처리 후 뱃지 업데이트
