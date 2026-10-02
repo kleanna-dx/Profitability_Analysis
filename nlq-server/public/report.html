@@ -386,40 +386,7 @@
 <body>
 
 <!-- ========== SIDEBAR ========== -->
-<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
-<aside id="sidebar" class="sidebar">
-    <div class="p-5 pb-3">
-        <div class="flex items-center justify-between mb-1">
-            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
-            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
-            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
-        </div>
-        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
-    </div>
-    <div class="sidebar-divider"></div>
-
-    <!-- Menu Items (RBAC 동적 렌더링) -->
-    <nav id="sidebarMenu" class="py-2">
-        <!-- /api/me에서 menus 로드 후 동적 렌더링 -->
-    </nav>
-
-    <div class="sidebar-divider"></div>
-
-    <!-- System Info -->
-    <div class="px-5 py-3">
-        <p class="text-xs text-indigo-300 font-semibold mb-2 uppercase tracking-wider">시스템 정보</p>
-        <div class="space-y-2 text-xs text-indigo-200">
-            <div class="flex items-center gap-2">
-                <span id="sideDbDot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>
-                <span id="sideDbLabel">DB 연결 확인중</span>
-            </div>
-            <div class="flex items-center gap-2">
-                <i class="fas fa-database text-indigo-400" style="width:7px;text-align:center;font-size:10px;"></i>
-                <span id="sideDataLabel">데이터: -</span>
-            </div>
-        </div>
-    </div>
-</aside>
+<aside id="sidebar" class="sidebar"><!-- 통합 사이드바: platform-sidebar.js 가 shell + 메뉴를 자동 생성 --></aside>
 
 <!-- ========== MAIN ========== -->
 <div class="main-wrapper">

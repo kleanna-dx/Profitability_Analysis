@@ -1082,45 +1082,7 @@
 <body>
 
 <!-- ========== SIDEBAR ========== -->
-<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
-<aside id="sidebar" class="sidebar">
-    <div class="p-5 pb-3">
-        <div class="flex items-center justify-between mb-1">
-            <!-- [2026-09-21] 통합 플랫폼 로고: 클릭 시 HOME(/)으로 이동 -->
-            <a href="/" class="platform-brand-link" title="통합 플랫폼 HOME"><h2 class="text-lg font-bold platform-brand-title">통합 플랫폼</h2></a>
-            <button onclick="closeSidebar()" class="sidebar-close-x text-indigo-300 hover:text-white text-lg"><i class="fas fa-times"></i></button>
-        </div>
-        <p class="text-xs text-indigo-300 opacity-80">ChatGPT API 기반 분석 시스템</p>
-    </div>
-    <div class="sidebar-divider"></div>
-    <nav id="sidebarMenu" class="py-2">
-        <!-- RBAC 동적 렌더링 -->
-    </nav>
-    <!-- [2026-09-23 사용자 요청] 사이드바 "시스템 정보 / DB 연결됨" 영역 삭제.
-         DB 연결 상태는 자연어질의와 동일하게 상단 우측 .status-pill 로 이동. -->
-    <div class="sidebar-divider"></div>
-
-    <!-- [2026-06-16] 사용자 요청: 사이드바 전체 스크롤 제거 + 쿼리 이력 영역만 내부 스크롤.
-         .sidebar-history-section 클래스로 flex:1 컨테이너 지정 → 자식 .history-list 만 스크롤. -->
-    <!-- 최근 이력 / 즐겨찾기 / 보관함 -->
-    <div class="sidebar-history-section">
-        <div class="history-header">
-            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>쿼리 이력</p>
-            <span id="historyClearBtn" class="history-clear-btn" onclick="clearAllBuilderHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
-        </div>
-        <button class="new-builder-btn" onclick="newQueryBuilder()" title="현재 쿼리빌더를 초기화하고 새로 시작합니다">
-            <i class="fas fa-plus"></i> 새 쿼리빌더
-        </button>
-        <div class="history-tabs">
-            <div class="history-tab active" data-tab="recent" onclick="switchHistoryTab('recent')"><i class="fas fa-clock" style="margin-right:3px;"></i>최근</div>
-            <div class="history-tab" data-tab="bookmarked" onclick="switchHistoryTab('bookmarked')"><i class="fas fa-star" style="margin-right:3px;"></i>즐겨찾기</div>
-            <div class="history-tab" data-tab="shared" onclick="switchHistoryTab('shared')"><i class="fas fa-inbox" style="margin-right:3px;"></i>보관함<span id="sharedBadge" class="tab-badge" style="display:none;">0</span></div>
-        </div>
-        <div id="historyList" class="history-list">
-            <div class="history-empty"><i class="fas fa-inbox"></i><br>아직 실행 이력이 없습니다</div>
-        </div>
-    </div>
-</aside>
+<aside id="sidebar" class="sidebar"><!-- 통합 사이드바: platform-sidebar.js 가 shell + 메뉴를 자동 생성 --></aside>
 
 <!-- 공유 모달 -->
 <div id="shareModal" class="share-modal-overlay" onclick="if(event.target===this)closeShareModal()">
