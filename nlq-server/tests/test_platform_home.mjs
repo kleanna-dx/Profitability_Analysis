@@ -269,6 +269,9 @@ assertMatch(server, /INSERT INTO menus[\s\S]*?'interface', '인터페이스 관�
 // E. 각 페이지가 platform-sidebar.js 로드 + '통합 플랫폼' 로고 링크
 // ============================================================
 const PAGES = ['index.html', 'builder.html', 'learning.html', 'permission.html', 'batch.html', 'interface.html', 'report.html', 'upload.html'];
+// [2026-10-02] /nlq (index.html) 와 /builder.html 은 "메뉴 아래 전용 하단 영역
+//   (질의 이력 / 쿼리 이력)" 때문에 <aside> 안이 비어있지 않다. 나머지 페이지만 빈 shell.
+const PAGES_WITH_BOTTOM_PANEL = new Set(['index.html', 'builder.html']);
 for (const p of PAGES) {
     const fp = path.resolve(publicDir, p);
     if (!fs.existsSync(fp)) { failures.push(`E-${p}: 파일 없음`); FAIL++; continue; }
@@ -277,8 +280,19 @@ for (const p of PAGES) {
     assertMatch(html, /<script[^>]*src="\/platform-sidebar\.js"/, `E-${p}-1: platform-sidebar.js 로드`);
     // E-b: 사이드바 로고가 / 로 링크 (통합 플랫폼)
     // [2026-10-02] 로고 링크는 각 페이지 HTML 에서 제거되었고 공통 ensureShell() 이 동일한 .sb-brand-link 를 삽입.
-    //   각 페이지 HTML 에서는 <aside id="sidebar" ...> 가 빈 shell 로 통일되어 있는지만 확인.
-    assertMatch(html, /<aside[^>]*id="sidebar"[^>]*>\s*<!--[^>]*-->\s*<\/aside>/, `E-${p}-2: <aside id="sidebar"> 는 빈 shell (공통 사이드바가 자동 채움)`);
+    //   - 하단 panel 이 없는 페이지: <aside> 는 빈 shell (주석만).
+    //   - /nlq, /builder.html: <aside> 안에 하단 전용 영역이 있으므로 "레거시 brand (p-5, platform-brand-link) 가 없는지" 만 검증.
+    if (PAGES_WITH_BOTTOM_PANEL.has(p)) {
+        // 레거시 brand/nav/sb-brand/sb-divider wrapper 가 markup 에 직접 들어있으면 FAIL
+        //   (brand/divider/nav 는 모두 공통 ensureShell() 이 자동 생성해야 함).
+        const asideM = html.match(/<aside[^>]*id="sidebar"[^>]*>([\s\S]*?)<\/aside>/);
+        assert(!!asideM, `E-${p}-2a: <aside id="sidebar"> 존재`);
+        const inner = asideM ? asideM[1] : '';
+        assert(!/class="brand"|class="p-5"|platform-brand-link|class="sb-brand"|<nav\b[^>]*id="sidebarMenu"/.test(inner),
+            `E-${p}-2b: <aside> 안에 레거시 brand/nav markup 없음 (ensureShell 이 자동 생성)`);
+    } else {
+        assertMatch(html, /<aside[^>]*id="sidebar"[^>]*>\s*<!--[^>]*-->\s*<\/aside>/, `E-${p}-2: <aside id="sidebar"> 는 빈 shell (공통 사이드바가 자동 채움)`);
+    }
     // E-c: 기존 sidebarMenu.innerHTML = me.menus.map(...) 렌더 로직이 PlatformSidebar.render 호출로 대체됨
     //   (있어도 되지만, PlatformSidebar.render 호출이 반드시 존재해야 함)
     assertMatch(html, /PlatformSidebar\.render\(/, `E-${p}-3: PlatformSidebar.render 호출 존재`);
@@ -719,24 +733,42 @@ assertMatch(_sidebarSrcN, /width\s*:\s*var\(--sb-width\)/,
     'N-12: 사이드바 width 가 CSS 변수 --sb-width 참조');
 
 // N-13~N-15: 모든 페이지의 <aside id="sidebar"> 는 빈 shell 통일
+// [2026-10-02 REL. HISTORY-RESTORE] 예외: /nlq (index.html), /builder.html 은
+//   "메뉴 아래 전용 하단 영역 (질의 이력 / 쿼리 이력)" 때문에 <aside> 안이 비어있지 않다.
+//   → 이 두 페이지는 "레거시 brand/nav markup 이 없는지" 만 검증.
+//   → 나머지 8 페이지는 여전히 빈 shell 통일.
 const PAGES_N = ['index.html','builder.html','learning.html','batch.html','interface.html',
                  'report.html','upload.html','permission.html','platform.html','simulation-test.html'];
+const PAGES_N_WITH_BOTTOM_PANEL = new Set(['index.html', 'builder.html']);
 let shellMismatch = [];
 for (const p of PAGES_N) {
     const fp = path.resolve(publicDir, p);
     if (!fs.existsSync(fp)) continue;
     const html = fs.readFileSync(fp, 'utf8');
-    // <aside id="sidebar" class="sidebar"><!-- ... --></aside> 패턴
     const m = html.match(/<aside[^>]*id="sidebar"[^>]*>([\s\S]*?)<\/aside>/);
     if (!m) { shellMismatch.push(`${p}: no <aside>`); continue; }
     const inner = m[1].trim();
-    // 빈 shell: 주석만 허용 (아무 DOM 없음)
-    if (!/^<!--[\s\S]*-->$/.test(inner)) {
-        shellMismatch.push(`${p}: non-empty inner → "${inner.substring(0,60)}"`);
+    if (PAGES_N_WITH_BOTTOM_PANEL.has(p)) {
+        // 하단 전용 영역 있는 페이지: 레거시 brand/nav 가 없고 history 관련 요소가 있는지 확인
+        if (/class="brand"|class="p-5"|platform-brand-link|class="sb-brand"|<nav\b[^>]*id="sidebarMenu"/.test(inner)) {
+            shellMismatch.push(`${p}: 레거시 brand/nav markup 발견`);
+        }
+        // 추가로: 해당 페이지의 history 영역이 실제로 존재해야 함
+        if (p === 'index.html' && !/startNewChat\(/.test(inner)) {
+            shellMismatch.push(`${p}: 새 채팅 버튼 없음`);
+        }
+        if (p === 'builder.html' && !/newQueryBuilder\(/.test(inner)) {
+            shellMismatch.push(`${p}: 새 쿼리빌더 버튼 없음`);
+        }
+    } else {
+        // 빈 shell: 주석만 허용 (아무 DOM 없음)
+        if (!/^<!--[\s\S]*-->$/.test(inner)) {
+            shellMismatch.push(`${p}: non-empty inner → "${inner.substring(0,60)}"`);
+        }
     }
 }
 assert(shellMismatch.length === 0,
-    `N-13: 10개 페이지 모두 <aside id="sidebar"> 가 빈 shell (${shellMismatch.join(', ') || 'all OK'})`);
+    `N-13: 10개 페이지 <aside id="sidebar"> shell 상태 OK (nlq/builder 는 하단 영역 허용, 나머지는 빈 shell) — ${shellMismatch.join(', ') || 'all OK'}`);
 
 // N-14~N-15: 각 페이지 overlay 도 공통 (ensureShell 이 자동 생성 → HTML 에 중복 X)
 let overlayLeak = [];
@@ -751,7 +783,9 @@ for (const p of PAGES_N) {
 assert(overlayLeak.length === 0,
     `N-14: 각 페이지 HTML 에 sidebarOverlay 중복 없음 (ensureShell 이 자동 생성, leak: ${overlayLeak.join(', ') || 'none'})`);
 
-// N-15: 레거시 .platform-brand-link / .p-5 / .sidebar-divider wrapper 는 <aside> 안에서 사라짐
+// N-15: 레거시 .platform-brand-link / .p-5 wrapper 는 <aside> 안에서 사라짐
+//   [2026-10-02] .sidebar-divider 는 /nlq, /builder.html 의 하단 영역 구분선으로 재사용되므로
+//     이 테스트에서 제외. 다른 레거시 wrapper 만 검증.
 let legacyLeak = [];
 for (const p of PAGES_N) {
     const fp = path.resolve(publicDir, p);
@@ -760,12 +794,12 @@ for (const p of PAGES_N) {
     const m = html.match(/<aside[^>]*id="sidebar"[^>]*>([\s\S]*?)<\/aside>/);
     if (!m) continue;
     const inner = m[1];
-    if (/platform-brand-link|class="brand"|<div class="sidebar-divider"/.test(inner)) {
+    if (/platform-brand-link|class="brand"|class="p-5"/.test(inner)) {
         legacyLeak.push(p);
     }
 }
 assert(legacyLeak.length === 0,
-    `N-15: 각 페이지 <aside> 내부에 레거시 brand/divider 흔적 없음 (leak: ${legacyLeak.join(', ') || 'none'})`);
+    `N-15: 각 페이지 <aside> 내부에 레거시 brand wrapper 흔적 없음 (leak: ${legacyLeak.join(', ') || 'none'})`);
 
 // N-16~N-18: bootstrap 자동 렌더 로직
 if (PS && PS.bootstrap) {
@@ -782,6 +816,92 @@ assertMatch(_sidebarSrcN, /body\.has-platform-sidebar\s*\{\s*padding-left\s*:\s*
 // N-20: ensureShell 이 body 에 has-platform-sidebar class 자동 추가
 assertMatch(_sidebarSrcN, /document\.body\.classList\.add\(\s*['"]has-platform-sidebar['"]\s*\)/,
     'N-20: ensureShell 이 body 에 has-platform-sidebar class 추가');
+
+// ============================================================
+// O. [2026-10-02] 자연어 질의 / 비주얼 쿼리 빌더 하단 영역 복구 검증
+//    PR #512 로 모든 <aside> 가 빈 shell 이 되면서 두 페이지의 전용 하단 영역이
+//    사라졌던 문제를 복구. 이 섹션은 영구 regression 방지용.
+//    원칙:
+//      1) 상단 공통 영역 (brand / divider / nav) 은 ensureShell() 이 자동 생성 →
+//         두 페이지의 <aside> 안에는 이 markup 이 "있으면 안 된다".
+//      2) 하단 전용 영역의 핵심 element 와 inline function 참조는 존재해야 한다.
+//      3) 다른 페이지들의 <aside> 안에는 history markup 이 없어야 한다 (다른 route 로 노출 금지).
+// ============================================================
+const indexHtmlForO = fs.readFileSync(path.resolve(publicDir, 'index.html'), 'utf8');
+const builderHtmlForO = fs.readFileSync(path.resolve(publicDir, 'builder.html'), 'utf8');
+
+// O-1~O-7: /nlq (index.html) 하단 영역 복구 — "+ 새 채팅" + "질의 이력" + 탭 + 리스트
+const indexAsideM = indexHtmlForO.match(/<aside[^>]*id="sidebar"[^>]*>([\s\S]*?)<\/aside>/);
+const indexAsideInner = indexAsideM ? indexAsideM[1] : '';
+assert(indexAsideInner.length > 0, 'O-1: index.html <aside> 존재');
+assertMatch(indexAsideInner, /<div class="sidebar-divider"><\/div>/,
+    'O-2: index.html <aside> 안에 하단 영역 시작 구분선 (.sidebar-divider) 존재');
+assertMatch(indexAsideInner, /onclick="startNewChat\(\)/,
+    'O-3: index.html 하단에 "+ 새 채팅" 버튼 (startNewChat 호출) 존재');
+assertMatch(indexAsideInner, />질의 이력</,
+    'O-4: index.html 하단에 "질의 이력" 라벨 존재');
+assertMatch(indexAsideInner, /onclick="clearAllHistory\(\)"/,
+    'O-5: index.html 하단에 "전체 삭제" 버튼 (clearAllHistory 호출) 존재');
+assertMatch(indexAsideInner, /data-tab="recent"[\s\S]*data-tab="bookmarked"[\s\S]*data-tab="favorite"/,
+    'O-6: index.html 하단 탭 3개 [최근][즐겨찾기][자주질문] 존재');
+assertMatch(indexAsideInner, /id="historyList"/,
+    'O-7: index.html 하단에 #historyList 컨테이너 존재');
+assertMatch(indexAsideInner, /보관주기:\s*31일/,
+    'O-7a: index.html 하단에 "보관주기: 31일" 안내 존재');
+
+// O-8~O-13: /builder.html 하단 영역 복구 — "쿼리 이력" + "새 쿼리빌더" + 탭 + 리스트
+const builderAsideM = builderHtmlForO.match(/<aside[^>]*id="sidebar"[^>]*>([\s\S]*?)<\/aside>/);
+const builderAsideInner = builderAsideM ? builderAsideM[1] : '';
+assert(builderAsideInner.length > 0, 'O-8: builder.html <aside> 존재');
+assertMatch(builderAsideInner, /<div class="sidebar-divider"><\/div>/,
+    'O-9: builder.html <aside> 안에 하단 영역 시작 구분선 (.sidebar-divider) 존재');
+assertMatch(builderAsideInner, /class="sidebar-history-section"/,
+    'O-10: builder.html 하단에 .sidebar-history-section wrapper (flex:1 min-height:0 스크롤 컨테이너) 존재');
+assertMatch(builderAsideInner, />쿼리 이력</,
+    'O-11: builder.html 하단에 "쿼리 이력" 라벨 존재');
+assertMatch(builderAsideInner, /onclick="clearAllBuilderHistory\(\)"/,
+    'O-12: builder.html 하단에 "전체 삭제" 버튼 (clearAllBuilderHistory 호출) 존재');
+assertMatch(builderAsideInner, /onclick="newQueryBuilder\(\)"/,
+    'O-13: builder.html 하단에 "+ 새 쿼리빌더" 버튼 (newQueryBuilder 호출) 존재');
+assertMatch(builderAsideInner, /data-tab="recent"[\s\S]*data-tab="bookmarked"[\s\S]*data-tab="shared"/,
+    'O-14: builder.html 하단 탭 3개 [최근][즐겨찾기][보관함] 존재');
+assertMatch(builderAsideInner, /id="historyList"/,
+    'O-15: builder.html 하단에 #historyList 컨테이너 존재');
+
+// O-16~O-21: 다른 메뉴 페이지는 history markup 이 노출되면 안 됨
+const OTHER_PAGES = ['learning.html', 'batch.html', 'interface.html', 'report.html', 'upload.html',
+                     'permission.html', 'platform.html', 'simulation-test.html'];
+for (const p of OTHER_PAGES) {
+    const fp = path.resolve(publicDir, p);
+    if (!fs.existsSync(fp)) continue;
+    const html = fs.readFileSync(fp, 'utf8');
+    const asideM = html.match(/<aside[^>]*id="sidebar"[^>]*>([\s\S]*?)<\/aside>/);
+    if (!asideM) continue;
+    const inner = asideM[1];
+    // history-related 요소가 aside 안에 있으면 FAIL (다른 route 노출 금지)
+    assert(!/startNewChat|newQueryBuilder|clearAllHistory|clearAllBuilderHistory|historyList|history-tabs|sidebar-history-section/.test(inner),
+        `O-16-${p}: ${p} <aside> 안에 history markup 없음 (해당 페이지는 하단 영역 노출 금지)`);
+}
+
+// O-22: platform-sidebar.js 가 .sidebar-divider 를 더이상 wipe 하지 않음
+assert(!/legacyDividers\s*=\s*aside\.querySelectorAll\(['"]\.sidebar-divider/.test(_sidebarSrcN),
+    'O-22: ensureShell 이 .sidebar-divider 를 삭제하지 않음 (하단 영역 구분선 보존)');
+
+// O-23: ensureShell 이 nav 를 divider 바로 뒤에 insert (하단 영역보다 앞에 와야 함)
+assertMatch(_sidebarSrcN, /divider\.insertAdjacentElement\(['"]afterend['"],\s*nav\)/,
+    'O-23: ensureShell 이 nav 를 divider 뒤에 insert (markup 이력 영역보다 앞에 위치)');
+
+// O-24: aside#sidebar:has(> .sidebar-history-section, > .sidebar-divider) nav flex:0 0 auto
+assertMatch(_sidebarSrcN, /aside#sidebar:has\([^)]*\.sidebar-history-section[^)]*\)\s*nav#sidebarMenu\s*\{\s*flex\s*:\s*0\s+0\s+auto/,
+    'O-24: 하단 영역 있는 페이지의 nav 는 flex:0 0 auto (history 가 flex:1 로 남은 공간 차지)');
+
+// O-25: sidebar-history-section 이 flex:1 min-height:0 overflow 로 내부 스크롤 보장
+assertMatch(_sidebarSrcN, /aside#sidebar\s*>\s*\.sidebar-history-section\s*\{[^}]*flex\s*:\s*1\s+1\s+auto[^}]*min-height\s*:\s*0/,
+    'O-25: aside > .sidebar-history-section 가 flex:1 1 auto + min-height:0 (내부 스크롤)');
+
+// O-26: history-list 가 overflow-y:auto 로 내부 스크롤
+assertMatch(_sidebarSrcN, /aside#sidebar\s*>\s*\.sidebar-history-section\s*>\s*\.history-list\s*\{[^}]*overflow-y\s*:\s*auto/,
+    'O-26: history-list 내부 스크롤 (overflow-y:auto)');
 
 // ============================================================
 // 리포트

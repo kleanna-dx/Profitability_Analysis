@@ -139,11 +139,49 @@ aside#sidebar .sb-divider{
 }
 
 /* ===== menu 영역 ===== */
+/* [2026-10-02 수정] history 영역(/nlq, /builder.html)이 nav 이후에 올 수 있으므로
+ *   nav 는 flex:1 로 모든 공간을 차지하지 않고 '내용 크기 만큼' 차지한다.
+ *   - history 영역이 없는 페이지 (대부분): nav 만 flex:1 로 늘어나야 하므로 아래 스타일 유지
+ *   - history 영역이 있는 페이지 (/nlq, /builder.html): nav 는 flex-shrink:0 (내용 크기),
+ *     history 영역이 flex:1 로 나머지 공간을 차지하면서 내부 스크롤
+ *   → :has() 셀렉터를 사용하여 history 영역 유무로 분기.
+ *   → 레거시 fallback: :has() 미지원 브라우저에서도 nav 단독일 때 flex:1 유지됨.
+ */
 aside#sidebar nav#sidebarMenu{
     flex:1;overflow-y:auto;overflow-x:hidden;
     padding:var(--sb-menu-pt) 0 var(--sb-menu-pb);
     margin:0;
 }
+/* history 영역이 존재할 때: nav 는 내용 크기, history 가 남은 공간 차지 */
+aside#sidebar:has(> .sidebar-history-section, > .sidebar-divider) nav#sidebarMenu{
+    flex:0 0 auto;overflow:visible;
+}
+
+/* ===== 페이지별 하단 history 영역 (nav 이후, 조건부) =====
+ *   /nlq (자연어 질의): "+ 새 채팅" + "질의 이력" + 탭 + 리스트
+ *   /builder.html (비주얼 쿼리 빌더): .sidebar-history-section wrapper 로 감쌈
+ *   → 두 페이지는 각자 inline CSS 로 .history-list / .history-header / .history-tabs 등을
+ *     이미 가지고 있으므로, 여기서는 "aside 안에서의 레이아웃 정렬"만 담당.
+ */
+aside#sidebar > .sidebar-divider{
+    height:1px;background:var(--sb-border);margin:4px var(--sb-brand-px);flex-shrink:0;
+}
+/* /builder.html: .sidebar-history-section 이 flex:1 로 남은 공간 차지, 내부 .history-list 스크롤 */
+aside#sidebar > .sidebar-history-section{
+    flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden;
+}
+aside#sidebar > .sidebar-history-section > .history-header,
+aside#sidebar > .sidebar-history-section > .new-builder-btn,
+aside#sidebar > .sidebar-history-section > .history-tabs{flex-shrink:0;}
+aside#sidebar > .sidebar-history-section > .history-list{flex:1 1 auto;min-height:0;overflow-y:auto;}
+
+/* /nlq (index.html): .sidebar-history-section 래퍼가 없고 aside 직속 자식 (div > history-header, tabs, list)
+ *   구조이므로, nav 다음에 오는 요소들을 그룹으로 묶지 못함.
+ *   → aside 자체가 flex column 이고 overflow:auto 이므로 nav 이후 요소들은 자연 흐름.
+ *   → 다만 history-list 가 내부 스크롤이 되도록 .history-list 의 max-height 기존 CSS 유지.
+ *   → /nlq 는 inline CSS 에 .history-list{max-height:calc(100vh - 420px);overflow-y:auto;} 이미 있음.
+ */
+
 
 /* ===== 대분류 카드 (홈 / 수익성분석 / 경영시뮬레이션 / 시스템관리 공통) ===== */
 #sidebarMenu .category-item{
@@ -268,8 +306,14 @@ aside#sidebar .sidebar-menu-item{color:var(--sb-sub-text);text-decoration:none;}
             // 기존 .brand / .p-5 등 레거시 wrapper 제거 (중복 방지)
             const legacyBrands = aside.querySelectorAll('.brand, .p-5, .pb-3');
             legacyBrands.forEach(el => el.remove());
-            const legacyDividers = aside.querySelectorAll('.sidebar-divider');
-            legacyDividers.forEach(el => el.remove());
+            // [2026-10-02 BUGFIX] .sidebar-divider 전역 삭제는 제거.
+            //   이유: /nlq, /builder.html 는 "메뉴 아래 전용 하단 영역 (질의 이력 / 쿼리 이력)"
+            //         시작 지점에 <div class="sidebar-divider"></div> 를 두는데,
+            //         구 로직은 이 divider 까지 지워버려 하단 영역의 시각적 구분이 사라짐.
+            //   현재 모든 페이지의 레거시 .brand / .p-5 wrapper 는 이미 제거되었고
+            //   (PR #512 참조), 신규 .sb-divider 는 brand 바로 뒤에 별도로 생성되므로
+            //   .sidebar-divider 를 그대로 둬도 레거시 wrapper 와 겹치지 않는다.
+            //   → .sidebar-divider 는 각 페이지 하단 영역 전용 divider 로만 사용.
             brand = document.createElement('div');
             brand.className = 'sb-brand';
             brand.innerHTML = `
@@ -292,13 +336,23 @@ aside#sidebar .sidebar-menu-item{color:var(--sb-sub-text);text-decoration:none;}
             brand.insertAdjacentElement('afterend', divider);
         }
         // nav
+        //   [2026-10-02] nav 는 반드시 'sb-divider 바로 뒤' 위치에 삽입한다.
+        //   이유: /nlq, /builder.html 처럼 aside 안에 이미 하단 전용 영역
+        //         (<div class="sidebar-divider"> + history panel) 이 markup 으로
+        //         들어있는 경우, nav 를 aside.appendChild() 하면 history 영역 뒤로
+        //         밀려서 "메뉴가 이력 아래에 표시" 되는 역순이 되어버린다.
+        //   → 신규 nav 생성 시: divider 바로 뒤에 insertAdjacentElement('afterend')
+        //   → 기존 nav 가 다른 위치에 있을 때도: divider 뒤로 재배치.
         let nav = document.getElementById('sidebarMenu');
         if (!nav) {
             nav = document.createElement('nav');
             nav.id = 'sidebarMenu';
-            aside.appendChild(nav);
+            divider.insertAdjacentElement('afterend', nav);
         } else if (nav.parentElement !== aside) {
-            aside.appendChild(nav);
+            divider.insertAdjacentElement('afterend', nav);
+        } else if (nav.previousElementSibling !== divider) {
+            // aside 자식이지만 divider 바로 뒤가 아니면 재배치
+            divider.insertAdjacentElement('afterend', nav);
         }
         return { aside, brand, divider, nav };
     }
