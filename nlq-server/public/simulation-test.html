@@ -491,14 +491,33 @@ function toggleDrill(){
     }else{el.style.display='none';nd.style.boxShadow='';}
 }
 
-// ── Data Readiness ──
-const RD=[{c:'MATERIAL',n:'원부재료비',s:'READY',cnt:12847,d:'SAP BW 원부재료비 실적',who:'구매팀'},{c:'POWER',n:'전력비',s:'PARTIAL',cnt:0,d:'한전 전력비 계산',who:'전기팀'},{c:'LOGISTICS',n:'물류비',s:'PARTIAL',cnt:0,d:'해상 물류비 + 국내 운임',who:'물류팀'},{c:'INVENTORY',n:'기초재고',s:'EMPTY',cnt:0,d:'월별 자재 기초재고 수량/단가',who:'구매팀'},{c:'OPTIME',n:'가동시간',s:'READY',cnt:15,d:'월별 호기별 가동일수',who:'생산관리'},{c:'SPEED',n:'생산 선속',s:'PARTIAL',cnt:0,d:'호기별/지종별 초지기 선속',who:'생산기술'}];
-function renderReady(){
-    const ok=RD.filter(r=>r.s==='READY').length,total=RD.length,pct=Math.round(ok/total*100);
+// ── Data Readiness (실제 API 호출) ──
+const WHO_MAP={MATERIAL:'구매팀',POWER:'전기팀',LOGISTICS:'물류팀',OPTIME:'생산관리'};
+async function renderReady(){
+    const ym=document.getElementById('selYm')?.value||'202605';
+    const div=document.getElementById('selDiv')?.value||'PS';
+    let modules=[];
+    try{
+        const r=await fetch(API+'/data-readiness?ym='+ym+'&division='+div);
+        const j=await r.json();
+        modules=j.data?.modules||[];
+    }catch(e){
+        console.warn('[DataReadiness] API 호출 실패, 빈 상태 표시:', e.message);
+        modules=[
+            {moduleCode:'MATERIAL',moduleName:'원부재료비',status:'EMPTY',recordCount:0,description:'SAP BW 원부재료비 실적'},
+            {moduleCode:'POWER',moduleName:'전력비',status:'EMPTY',recordCount:0,description:'한전 전력비 계산 결과'},
+            {moduleCode:'LOGISTICS',moduleName:'물류비',status:'EMPTY',recordCount:0,description:'해상 물류비 + 국내 운임'},
+            {moduleCode:'OPTIME',moduleName:'가동시간',status:'EMPTY',recordCount:0,description:'월별 호기별 가동일수'}
+        ];
+    }
+    const ok=modules.filter(r=>r.status==='READY').length,total=modules.length||1,pct=Math.round(ok/total*100);
     document.getElementById('readyPct').textContent=pct+'%';document.getElementById('readyBar').style.width=pct+'%';
-    document.getElementById('readyCards').innerHTML=RD.map(m=>{
-        const bc=m.s==='READY'?'b-ok':m.s==='PARTIAL'?'b-pt':'b-no';const ic=m.s==='READY'?'fa-check-circle text-green-500':m.s==='PARTIAL'?'fa-exclamation-triangle text-yellow-500':'fa-times-circle text-red-500';const sl=m.s==='READY'?'완료':m.s==='PARTIAL'?'부분':'미등록';
-        return '<div class="sc" style="padding:16px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="display:flex;align-items:center;gap:6px;"><i class="fas '+ic+'" style="font-size:14px;"></i><span style="font-size:13px;font-weight:700;color:#1e293b;">'+m.n+'</span></div><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;" class="'+bc+'">'+sl+'</span></div><div style="font-size:11px;color:#64748b;margin-bottom:6px;">'+m.d+'</div><div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:10px;color:#94a3b8;"><i class="fas fa-database mr-1"></i>'+(m.cnt>0?fmtI(m.cnt)+'건':'-')+'</span><span style="font-size:10px;color:#818cf8;font-weight:600;"><i class="fas fa-user mr-1"></i>'+m.who+'</span></div></div>';
+    document.getElementById('readyCards').innerHTML=modules.map(m=>{
+        const bc=m.status==='READY'?'b-ok':m.status==='PARTIAL'?'b-pt':'b-no';
+        const ic=m.status==='READY'?'fa-check-circle text-green-500':m.status==='PARTIAL'?'fa-exclamation-triangle text-yellow-500':'fa-times-circle text-red-500';
+        const sl=m.status==='READY'?'완료':m.status==='PARTIAL'?'부분':'미등록';
+        const who=WHO_MAP[m.moduleCode]||'';
+        return '<div class="sc" style="padding:16px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="display:flex;align-items:center;gap:6px;"><i class="fas '+ic+'" style="font-size:14px;"></i><span style="font-size:13px;font-weight:700;color:#1e293b;">'+m.moduleName+'</span></div><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;" class="'+bc+'">'+sl+'</span></div><div style="font-size:11px;color:#64748b;margin-bottom:6px;">'+m.description+'</div><div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:10px;color:#94a3b8;"><i class="fas fa-database mr-1"></i>'+(m.recordCount>0?fmtI(m.recordCount)+'건':'-')+'</span>'+(who?'<span style="font-size:10px;color:#818cf8;font-weight:600;"><i class="fas fa-user mr-1"></i>'+who+'</span>':'')+'</div></div>';
     }).join('');
 }
 

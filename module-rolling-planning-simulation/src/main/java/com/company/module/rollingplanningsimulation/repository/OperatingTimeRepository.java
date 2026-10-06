@@ -16,4 +16,6 @@ public interface OperatingTimeRepository extends JpaRepository<OperatingTime, Lo
 
     List<OperatingTime> findByDivisionAndYmAndDeletedYnOrderByMachineCode(
             String division, String ym, String deletedYn);
+
+    long countByDivisionAndYmAndDeletedYn(String division, String ym, String deletedYn);
 }
