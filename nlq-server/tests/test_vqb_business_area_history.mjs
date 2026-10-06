@@ -58,9 +58,13 @@ assertMatch(serverSrc,
 assertMatch(serverSrc,
     /business_area_code\s+varchar\(32\)[^`]*COMMENT\s+'업무영역/,
     'A-2: business_area_code 컬럼 COMMENT 에 "업무영역" 포함');
-assertMatch(serverSrc,
-    /ALTER TABLE builder_query_history ADD INDEX idx_business_area/,
-    'A-3: business_area_code INDEX 추가');
+// [2026-10-02 수정] A-3 (idx_business_area INDEX 추가) assertion 제거.
+//   이유: nl_query_history (051.sql, PR #393) 와 동일 패턴 유지하기 위해 인덱스 추가 안 함.
+//         현재 모든 조회 쿼리가 WHERE user_id=? [AND is_bookmarked=1] 로만 접근하고
+//         business_area_code 를 WHERE 에 사용하는 쿼리가 없어서 dead index 였음.
+//   대신 "인덱스가 없음" 을 검증 — 과거 코드로 인덱스 재추가되는 regression 방지.
+assert(!/ALTER TABLE builder_query_history ADD INDEX idx_business_area/.test(serverSrc),
+    'A-3: business_area_code 전용 인덱스 추가 금지 (nl_query_history 와 패턴 통일)');
 assertMatch(serverSrc,
     /SELECT COLUMN_NAME FROM INFORMATION_SCHEMA\.COLUMNS[\s\S]{0,300}'business_area_code'/,
     'A-4: 마이그레이션 idempotent 체크 (SELECT 후 조건부 ALTER)');
