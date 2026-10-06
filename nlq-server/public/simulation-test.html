@@ -7,6 +7,7 @@
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
@@ -201,9 +202,15 @@
     <div id="s1-ref" style="display:none;">
         <div class="ref-tabs" id="refTabs"></div>
         <div class="sc" style="overflow:hidden;">
-            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
                 <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;" id="refTitle"><i class="fas fa-cog text-indigo-500 mr-1"></i>호기 마스터</h3>
-                <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="openRefModal()"><i class="fas fa-plus mr-1"></i>등록</button>
+                <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                    <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="downloadRefTemplate()"><i class="fas fa-file-download mr-1"></i>양식 다운로드</button>
+                    <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="document.getElementById('refFileInput').click()"><i class="fas fa-file-upload mr-1"></i>엑셀 업로드</button>
+                    <input type="file" id="refFileInput" accept=".xlsx,.xls,.csv" style="display:none;" onchange="uploadRefExcel(this)">
+                    <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="downloadRefData()"><i class="fas fa-download mr-1"></i>데이터 다운로드</button>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="openRefModal()"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
             </div>
             <div style="overflow-x:auto;max-height:450px;" id="refWrap"></div>
         </div>
@@ -540,6 +547,81 @@ function renderRefTabs(){document.getElementById('refTabs').innerHTML=REFS.map((
 function switchRef(i){cRef=i;renderRefTabs();document.getElementById('refTitle').innerHTML='<i class="fas '+REFS[i].i+' text-indigo-500 mr-1"></i>'+REFS[i].l;loadRef();}
 async function loadRef(){const d=REFS[cRef];try{const r=await fetch(API+'/'+d.k+'?division='+(document.getElementById('selDiv')?.value||'PS'));const j=await r.json();refData=j.data?.content||j.data||[];}catch(_){refData=[];}renderRef();}
 function renderRef(){const d=REFS[cRef];let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}else{refData.forEach(row=>{h+='<tr>'+d.cols.map(c=>{let v=row[c];if(v===true)v='<span style="color:#16a34a;font-weight:700;">Y</span>';else if(v===false)v='N';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+row[Object.keys(row)[0]]+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}h+='</tbody></table>';document.getElementById('refWrap').innerHTML=h;}
+// ── 엑셀 양식 다운로드 (빈 헤더만) ──
+function downloadRefTemplate(){
+    const d=REFS[cRef];
+    const ws=XLSX.utils.aoa_to_sheet([d.h]);
+    // 컬럼 너비 자동 조정
+    ws['!cols']=d.h.map(h=>({wch:Math.max(h.length*2+4,14)}));
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,d.l);
+    XLSX.writeFile(wb,d.l+'_양식.xlsx');
+}
+
+// ── 현재 데이터 엑셀 다운로드 ──
+function downloadRefData(){
+    const d=REFS[cRef];
+    if(!refData.length){alert('다운로드할 데이터가 없습니다.');return;}
+    const rows=[d.h];
+    refData.forEach(row=>{
+        rows.push(d.cols.map(c=>{
+            let v=row[c];
+            if(v===true)return 'Y';
+            if(v===false)return 'N';
+            if(v==null)return '';
+            return v;
+        }));
+    });
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols']=d.h.map(h=>({wch:Math.max(h.length*2+4,14)}));
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,d.l);
+    const ym=document.getElementById('selYm')?.value||'';
+    XLSX.writeFile(wb,d.l+'_'+ym+'.xlsx');
+}
+
+// ── 엑셀 업로드 (일괄 등록) ──
+async function uploadRefExcel(input){
+    const file=input.files[0];
+    if(!file)return;
+    const d=REFS[cRef];
+    try{
+        const ab=await file.arrayBuffer();
+        const wb=XLSX.read(ab,{type:'array'});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const jsonRows=XLSX.utils.sheet_to_json(ws,{defval:''});
+        if(!jsonRows.length){alert('엑셀에 데이터가 없습니다.');input.value='';return;}
+        // 헤더 매핑: 한글 헤더 → API 필드명
+        const headerMap={};
+        d.h.forEach((h,i)=>{headerMap[h]=d.cols[i];});
+        let ok=0,fail=0;
+        for(const row of jsonRows){
+            const body={};
+            Object.keys(row).forEach(k=>{
+                const field=headerMap[k];
+                if(field){
+                    let v=row[k];
+                    if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','volumePerMonth','containerFeeKrw','extraFeeKrw','rate'].includes(field))v=parseFloat(v)||0;
+                    else if(['year','month','displayOrder','sortOrder'].includes(field))v=parseInt(v)||0;
+                    else if(field==='isActive')v=(v==='Y'||v===true||v==='true'||v===1);
+                    body[field]=v;
+                }
+            });
+            body.division=document.getElementById('selDiv')?.value||'PS';
+            try{
+                const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+                if(r.ok)ok++;else fail++;
+            }catch(_){fail++;}
+        }
+        alert(d.l+' 업로드 완료\\n성공: '+ok+'건, 실패: '+fail+'건');
+        input.value='';
+        loadRef();
+    }catch(e){
+        alert('엑셀 파일 읽기 실패: '+e.message);
+        input.value='';
+    }
+}
+
 function openRefModal(){const d=REFS[cRef];let h='<h3><i class="fas '+d.i+' text-indigo-500"></i> '+d.l+' 등록</h3>';d.cols.forEach((c,i)=>{h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveRef()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
 async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate'].includes(c))v=parseFloat(v)||0;else if(['year','month'].includes(c))v=parseInt(v)||0;body[c]=v;}});body.division=document.getElementById('selDiv')?.value||'PS';try{await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(_){}closeModal();loadRef();}
 async function delRef(id){if(!confirm('삭제하시겠습니까?'))return;try{await fetch(API+'/'+REFS[cRef].k+'/'+id,{method:'DELETE'});}catch(_){}loadRef();}
