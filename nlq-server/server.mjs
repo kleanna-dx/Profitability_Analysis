@@ -18524,9 +18524,17 @@ app.post('/api/builder/query', async (req, res) => {
     // 히스토리 자동 저장 (비동기, 실패해도 응답에 영향 없음)
     const histUserId = req.session?.user?.id || null;
     const activeDomain = await getActiveDomain(req);
-    const savedId = saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, sql, clean.length, 0, 'SUCCESS', null, history_id || null, activeDomain)
+    // [2026-10-02] 쿼리 실행 당시의 업무영역을 함께 저장 → 이력 복원 시 올바른 schema 로 전환.
+    //   areaKey: 'profitability' | 'manufacturing-cost' → DB 저장용 코드로 변환
+    //     'profitability'       → 'PROFITABILITY'
+    //     'manufacturing-cost'  → 'MANUFACTURING_COST'
+    //   nl_query_history.business_area_code 와 동일한 코드 체계 사용.
+    const _bacForSave = (areaKey === 'manufacturing-cost') ? 'MANUFACTURING_COST'
+                      : (areaKey === 'profitability')     ? 'PROFITABILITY'
+                      : null;
+    const savedId = saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, sql, clean.length, 0, 'SUCCESS', null, history_id || null, activeDomain, _bacForSave)
       .then(id => {
-        log.stage('history_save_done', { history_id: id || null });
+        log.stage('history_save_done', { history_id: id || null, business_area: _bacForSave });
         return id;
       })
       .catch(e => {
@@ -18765,10 +18773,13 @@ app.post('/api/builder/query', async (req, res) => {
     log.error('unexpected_error', err, {
       client_aborted: clientAborted,
     });
-    // 실패 이력도 저장
+    // 실패 이력도 저장 — [2026-10-02] business_area_code 도 함께 저장
     const histUserId = req.session?.user?.id || null;
     const activeDomain = await getActiveDomain(req);
-    saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, null, 0, 0, 'FAILED', err.message, null, activeDomain)
+    const _bacForFail = (areaKey === 'manufacturing-cost') ? 'MANUFACTURING_COST'
+                      : (areaKey === 'profitability')     ? 'PROFITABILITY'
+                      : null;
+    saveBuilderHistory(histUserId, fields, conditions, group_by, order_by, order_dir, limitStr, prompt, null, 0, 0, 'FAILED', err.message, null, activeDomain, _bacForFail)
       .catch(e => console.error('[Builder History] 실패이력 저장 실패:', e.message));
     res.status(500).json({ error: `DB 오류: ${err.message}`, sql: '', requestId: log.requestId });
   }
@@ -19101,7 +19112,10 @@ function verifyPromptReflected(intent, classify, aliases) {
 // ============================================================
 // 빌더 히스토리 저장 헬퍼 함수
 // ============================================================
-async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, orderDir, limitVal, prompt, sql, rowCount, execTime, status, errorMsg, existingHistoryId, domainCode) {
+// [2026-10-02] businessAreaCode 파라미터 추가 (하위호환 — 기본 null).
+//   값: 'PROFITABILITY' | 'MANUFACTURING_COST' | null
+//   목적: 쿼리 저장 당시 업무영역을 함께 보존 → 이력 복원 시 올바른 schema 로 전환.
+async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, orderDir, limitVal, prompt, sql, rowCount, execTime, status, errorMsg, existingHistoryId, domainCode, businessAreaCode) {
   // 제목 자동 생성: 필드 alias 기반 (alias에 이미 집계함수가 포함되어 있으므로 그대로 사용)
   const fieldLabels = (fields || []).map(f => f.alias || f.column);
   let title = fieldLabels.slice(0, 3).join(', ');
@@ -19120,7 +19134,7 @@ async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, 
     );
     if (existing.length > 0) {
       await pool.query(
-        `UPDATE builder_query_history SET title=?, fields_json=?, conditions_json=?, group_by_json=?, order_by=?, order_dir=?, limit_val=?, prompt=?, generated_sql=?, row_count=?, execution_time_ms=?, status=?, error_message=?, domain_code=?, created_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`,
+        `UPDATE builder_query_history SET title=?, fields_json=?, conditions_json=?, group_by_json=?, order_by=?, order_dir=?, limit_val=?, prompt=?, generated_sql=?, row_count=?, execution_time_ms=?, status=?, error_message=?, domain_code=?, business_area_code=?, created_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`,
         [
           title.substring(0, 200),
           JSON.stringify(fields || []),
@@ -19136,19 +19150,20 @@ async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, 
           status,
           errorMsg || null,
           domainCode || null,
+          businessAreaCode || null,
           existingHistoryId,
           userId,
         ]
       );
-      console.log(`[Builder History] 기존 이력 업데이트 완료: id=${existingHistoryId}`);
+      console.log(`[Builder History] 기존 이력 업데이트 완료: id=${existingHistoryId} (area=${businessAreaCode || 'null'})`);
       return existingHistoryId;
     }
   }
 
   // 새 이력 INSERT
   const [insertResult] = await pool.query(
-    `INSERT INTO builder_query_history (user_id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, domain_code)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO builder_query_history (user_id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, domain_code, business_area_code)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId || null,
       title.substring(0, 200),
@@ -19165,6 +19180,7 @@ async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, 
       status,
       errorMsg || null,
       domainCode || null,
+      businessAreaCode || null,
     ]
   );
   const newId = insertResult.insertId;
@@ -19253,8 +19269,9 @@ app.get('/api/builder/history', async (req, res) => {
     let rows;
     if (tab === 'bookmarked') {
       // 즐겨찾기 탭: 본인의 북마크된 이력만
+      // [2026-10-02] business_area_code 포함 → 사이드바 [수익]/[제조] 배지 + 복원 시 영역 전환용
       [rows] = await pool.query(
-        `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, is_bookmarked, domain_code, created_at
+        `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, is_bookmarked, domain_code, business_area_code, created_at
          FROM builder_query_history WHERE user_id = ? AND is_bookmarked = 1 ORDER BY created_at DESC LIMIT ?`,
         [userId, limit]
       );
@@ -19271,8 +19288,9 @@ app.get('/api/builder/history', async (req, res) => {
       );
     } else {
       // 최근이력 탭: 본인의 이력만 (user_id 기반 엄격 필터)
+      // [2026-10-02] business_area_code 포함 → 사이드바 [수익]/[제조] 배지 + 복원 시 영역 전환용
       [rows] = await pool.query(
-        `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, is_bookmarked, domain_code, created_at
+        `SELECT id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, row_count, execution_time_ms, status, error_message, is_bookmarked, domain_code, business_area_code, created_at
          FROM builder_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
         [userId, limit]
       );
@@ -19378,17 +19396,19 @@ app.post('/api/builder/history/:id/share', async (req, res) => {
     const src = rows[0];
 
     // 각 대상 사용자에게 공유 레코드 생성 (스냅샷 복사)
+    //   [2026-10-02] domain_code + business_area_code 도 함께 복사 → 수신자가 올바른 schema 로 복원
     let sharedCount = 0;
     for (const toUserId of to_user_ids) {
       if (toUserId === fromUserId) continue; // 자기 자신 제외
       await pool.query(
-        `INSERT INTO shared_queries (history_id, from_user_id, to_user_id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, memo)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO shared_queries (history_id, from_user_id, to_user_id, title, fields_json, conditions_json, group_by_json, order_by, order_dir, limit_val, prompt, generated_sql, memo, domain_code, business_area_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           src.id, fromUserId, toUserId, src.title,
           src.fields_json, src.conditions_json, src.group_by_json,
           src.order_by, src.order_dir, src.limit_val,
           src.prompt, src.generated_sql, memo || null,
+          src.domain_code || null, src.business_area_code || null,
         ]
       );
       sharedCount++;
@@ -22266,6 +22286,23 @@ async function ensureBookmarkShareTables() {
       console.log('[Migration] builder_query_history에 domain_code 컬럼 추가 완료');
     }
 
+    // 2-2) [2026-10-02] builder_query_history에 business_area_code 컬럼 추가 (없으면) — 업무영역(수익/제조) 저장용
+    //   값: 'PROFITABILITY' | 'MANUFACTURING_COST' | NULL (레거시 이력)
+    //   목적: 쿼리 저장 당시의 업무영역을 보존하여, 이력 클릭 시 올바른 schema/metadata 로 복원할 수 있도록 한다.
+    //   nl_query_history.business_area_code (PR #393) 와 완전히 동일한 패턴 — 컬럼 추가만, 인덱스 없음.
+    //     - 이유: 현재 모든 조회 쿼리가 WHERE user_id=? [AND is_bookmarked=1] 로만 접근하고
+    //            business_area_code 를 WHERE/JOIN 에 쓰는 쿼리가 없음 → 추가 인덱스 불필요
+    //            (쓰기 성능 저하만 발생). nl_query_history 와 패턴 통일.
+    //   레거시 이력(NULL) 은 fields_json / generated_sql 기반으로 영역 추론 fallback 로직 사용 (클라이언트).
+    const [bldAreaCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'builder_query_history' AND COLUMN_NAME = 'business_area_code'`
+    );
+    if (bldAreaCols.length === 0) {
+      await pool.query(`ALTER TABLE builder_query_history ADD COLUMN business_area_code varchar(32) DEFAULT NULL COMMENT '업무영역 코드 (PROFITABILITY/MANUFACTURING_COST/NULL)' AFTER domain_code`);
+      console.log('[Migration] builder_query_history에 business_area_code 컬럼 추가 완료');
+    }
+
     // 3) nl_query_history에 user_id 컬럼 추가 (없으면)
     const [nlCols] = await pool.query(
       `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -22336,6 +22373,26 @@ async function ensureBookmarkShareTables() {
         INDEX idx_history_id  (history_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='쿼리 공유 테이블'
     `);
+
+    // [2026-10-02] shared_queries 에 domain_code / business_area_code 컬럼 추가 (없으면)
+    //   공유된 이력도 원본과 동일하게 도메인/업무영역 정보를 보존 → 복원 시 schema 전환.
+    const [sqDomainCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shared_queries' AND COLUMN_NAME = 'domain_code'`
+    );
+    if (sqDomainCols.length === 0) {
+      await pool.query(`ALTER TABLE shared_queries ADD COLUMN domain_code varchar(20) DEFAULT NULL COMMENT '분석 영역 도메인 코드' AFTER memo`);
+      console.log('[Migration] shared_queries에 domain_code 컬럼 추가 완료');
+    }
+    const [sqAreaCols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shared_queries' AND COLUMN_NAME = 'business_area_code'`
+    );
+    if (sqAreaCols.length === 0) {
+      await pool.query(`ALTER TABLE shared_queries ADD COLUMN business_area_code varchar(32) DEFAULT NULL COMMENT '업무영역 코드 (PROFITABILITY/MANUFACTURING_COST/NULL)' AFTER domain_code`);
+      console.log('[Migration] shared_queries에 business_area_code 컬럼 추가 완료');
+    }
+
     console.log('[Migration] 북마크/공유 테이블 준비 완료');
 
     // ============================================================
