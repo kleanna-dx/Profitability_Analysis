@@ -25,9 +25,11 @@ repositories {
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-    implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+
+    // SecurityConfig/JWT 구현 금지 — core 권한 체계 참조만 허용
+    compileOnly 'org.springframework.boot:spring-boot-starter-security'
 
     // MariaDB
     runtimeOnly 'org.mariadb.jdbc:mariadb-java-client'
@@ -35,28 +37,13 @@ dependencies {
     // Lombok
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
-
-    // SAP JCo 3.1 (libs/ 디렉토리에 sapjco3.jar 배치)
-    // implementation으로 설정하여 bootJar에 포함 (런타임 ClassNotFoundException 방지)
-    implementation fileTree(dir: 'libs', include: ['*.jar'])
 }
 
-// [경영시뮬레이션] module-rolling-planning-simulation 소스를 module-profit.jar 에 함께 포함
-//  - 운영 WAS 는 module-profit.jar 하나만 실행하므로(deploy.sh), 별도 jar 가 아닌 소스 포함 방식으로 통합
-//  - 공통 ApiResponse(com.company.core.*) 를 module-profit 과 공유
-sourceSets {
-    main {
-        java {
-            srcDir '../module-rolling-planning-simulation/src/main/java'
-        }
-    }
+// 서브모듈 — plain jar만 생성 (독립실행 불가)
+jar {
+    enabled = true
 }
 
 bootJar {
-    enabled = true
-    archiveFileName = 'module-profit.jar'
-}
-
-jar {
     enabled = false
 }

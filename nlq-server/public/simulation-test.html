@@ -3,100 +3,558 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>테스트 메뉴 - 경영시뮬레이션</title>
+    <title>경영시뮬레이션 - Rolling Planning Simulation</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
         body{margin:0;background:#f1f5f9;display:flex;height:100vh;overflow:hidden;}
-        @media (min-width:901px){ body{padding-left:280px;} }
-
-        /* Sidebar (batch.html 과 동일 구조) */
+        @media (min-width:901px){body{padding-left:280px;}}
         .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:90;display:none;}
         .sidebar-overlay.active{display:block;}
         .sidebar{position:fixed;top:0;left:0;width:280px;height:100vh;background:linear-gradient(180deg,#1e1b4b,#312e81);color:#fff;z-index:100;transition:left .3s;overflow-y:auto;font-size:14px;}
         .sidebar.open{left:0;}
-        @media (max-width:900px){
-            .sidebar{left:-300px;}
-            .sidebar.open{left:0;}
-        }
-        @media (min-width:901px){
-            .sidebar-overlay{display:none !important;}
-            .sidebar-close-x{display:none;}
-        }
-        .sidebar-divider{height:1px;background:rgba(255,255,255,.1);margin:0 16px;}
-
-        /* Main */
+        @media(max-width:900px){.sidebar{left:-300px;}.sidebar.open{left:0;}}
+        @media(min-width:901px){.sidebar-overlay{display:none!important;}.sidebar-close-x{display:none;}}
         .main-wrapper{display:flex;flex-direction:column;flex:1;overflow:hidden;}
-        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
-        .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
-        .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
-        @media (min-width:901px){ .hamburger-btn{display:none;} }
-        .content-area{flex:1;overflow-y:auto;padding:24px;background:#fff;}
+        .top-bar{background:#fff;border-bottom:1px solid #e5e7eb;padding:10px 20px;display:flex;align-items:center;gap:10px;flex-shrink:0;}
+        .hamburger-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;color:#475569;font-size:15px;}
+        @media(min-width:901px){.hamburger-btn{display:none;}}
+        .content-area{flex:1;overflow-y:auto;padding:0;background:#f1f5f9;}
+
+        /* Step Flow Bar */
+        .step-flow{background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:6px;flex-shrink:0;overflow-x:auto;}
+        .step-item{display:flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;cursor:pointer;transition:all .2s;font-size:12px;font-weight:600;color:#94a3b8;white-space:nowrap;border:1px solid transparent;}
+        .step-item:hover{background:#f0f4ff;color:#4f46e5;}
+        .step-item.active{background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;border-color:#4338ca;box-shadow:0 2px 8px rgba(79,70,229,.25);}
+        .step-item.done{background:#dcfce7;color:#166534;border-color:#bbf7d0;}
+        .step-num{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;background:#e2e8f0;color:#64748b;flex-shrink:0;}
+        .step-item.active .step-num{background:rgba(255,255,255,.25);color:#fff;}
+        .step-item.done .step-num{background:#16a34a;color:#fff;}
+        .step-arrow{color:#cbd5e1;font-size:10px;flex-shrink:0;}
+
+        /* Sub-tabs */
+        .sub-tabs{display:flex;background:#fafbfc;border-bottom:1px solid #f1f5f9;padding:0 20px;flex-shrink:0;}
+        .sub-tab{padding:9px 16px;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:#94a3b8;transition:all .15s;white-space:nowrap;}
+        .sub-tab:hover{color:#4f46e5;}
+        .sub-tab.active{color:#4338ca;border-bottom-color:#4338ca;}
+
+        /* Cards & Tables */
+        .sc{background:#fff;border-radius:10px;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(0,0,0,.03);}
+        .st{width:100%;border-collapse:collapse;font-size:12px;}
+        .st th{background:#f8fafc;color:#475569;font-weight:600;padding:8px 12px;text-align:left;border-bottom:2px solid #e2e8f0;white-space:nowrap;position:sticky;top:0;z-index:2;}
+        .st td{padding:8px 12px;border-bottom:1px solid #f1f5f9;}
+        .st tbody tr:hover td{background:#f0f4ff;}
+        .r{text-align:right;font-variant-numeric:tabular-nums;}
+        .mn{font-family:'Consolas','SF Mono',monospace;}
+
+        /* Slider */
+        .sim-slider{-webkit-appearance:none;width:100%;height:7px;border-radius:4px;background:#e2e8f0;outline:none;}
+        .sim-slider::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#4f46e5;cursor:pointer;box-shadow:0 2px 6px rgba(79,70,229,.35);}
+
+        /* KPI Node */
+        .kn{border-radius:10px;padding:6px 10px;min-width:200px;text-align:center;transition:all .2s;cursor:default;}
+        .kn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.1);}
+        .kn .lb{font-size:10px;font-weight:700;opacity:.7;margin-bottom:2px;}
+        .kn .vl{font-size:15px;font-weight:800;}
+        .kn .sb{font-size:10px;margin-top:1px;opacity:.6;}
+        .n-bl{background:linear-gradient(135deg,#dbeafe,#eff6ff);border:2px solid #93c5fd;color:#1e40af;}
+        .n-am{background:linear-gradient(135deg,#fef3c7,#fffbeb);border:2px solid #fcd34d;color:#92400e;}
+        .n-gn{background:linear-gradient(135deg,#dcfce7,#f0fdf4);border:2px solid #86efac;color:#166534;}
+        .n-in{background:linear-gradient(135deg,#e0e7ff,#eef2ff);border:2px solid #a5b4fc;color:#3730a3;}
+        .n-rd{background:linear-gradient(135deg,#fef2f2,#fff1f2);border:2px solid #fca5a5;color:#991b1b;}
+        .ard{width:2px;height:24px;background:#cbd5e1;margin:0 auto;position:relative;}
+        .ard::after{content:'';position:absolute;bottom:-4px;left:-4px;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #cbd5e1;}
+
+        /* Badge */
+        .b-ok{background:#dcfce7;color:#166534;border:1px solid #bbf7d0;}
+        .b-pt{background:#fef3c7;color:#92400e;border:1px solid #fde68a;}
+        .b-no{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;}
+
+        /* Buttons */
+        .btn-p{padding:7px 16px;border-radius:8px;font-size:12px;font-weight:700;border:none;cursor:pointer;background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;transition:all .15s;}
+        .btn-p:hover{box-shadow:0 4px 12px rgba(79,70,229,.3);}
+        .btn-g{padding:7px 16px;border-radius:8px;font-size:12px;font-weight:600;border:1px solid #d1d5db;cursor:pointer;background:#fff;color:#475569;}
+
+        /* Ref sub-tabs */
+        .ref-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px;}
+        .ref-tab{padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;border-radius:8px;border:1px solid #e2e8f0;color:#64748b;background:#fff;transition:all .15s;}
+        .ref-tab:hover{border-color:#a5b4fc;color:#4f46e5;}
+        .ref-tab.active{background:#4338ca;color:#fff;border-color:#4338ca;}
+
+        /* Modal */
+        .modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px);}
+        .modal-box{background:#fff;border-radius:14px;padding:24px;width:520px;max-width:90vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2);}
+        .modal-box h3{font-size:15px;font-weight:800;color:#1e293b;margin:0 0 14px;display:flex;align-items:center;gap:8px;}
+        .modal-box label{display:block;font-size:11px;font-weight:600;color:#475569;margin:8px 0 3px;}
+        .modal-box input,.modal-box select{width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;font-family:inherit;outline:none;}
+        .modal-box input:focus,.modal-box select:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
+
+        /* Select bar */
+        .sel-g{display:flex;align-items:center;gap:4px;background:#f8fafc;padding:3px 10px;border-radius:8px;border:1px solid #e5e7eb;}
+        .sel-g label{font-size:10px;color:#64748b;font-weight:600;white-space:nowrap;}
+        .sel-g select{font-size:11px;font-weight:700;color:#1e293b;background:transparent;border:none;outline:none;cursor:pointer;}
+
+        /* Upload area */
+        .upload-zone{border:2px dashed #c7d2fe;border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;transition:all .2s;background:#fafbff;}
+        .upload-zone:hover{border-color:#818cf8;background:#eef2ff;}
+        .upload-zone.drag{border-color:#4f46e5;background:#e0e7ff;}
+
+        .fade-in{animation:fadeIn .3s ease-out;}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
     </style>
-    <!-- 통합 플랫폼 사이드바 공통 렌더러 -->
     <script src="/platform-sidebar.js" defer></script>
 </head>
 <body>
-
-<!-- SIDEBAR -->
-<aside id="sidebar" class="sidebar"><!-- 통합 사이드바: platform-sidebar.js 가 shell + 메뉴를 자동 생성 --></aside>
-
-<!-- MAIN -->
+<aside id="sidebar" class="sidebar"></aside>
 <div class="main-wrapper">
+    <!-- Top Bar -->
     <div class="top-bar">
-        <button class="hamburger-btn" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
-        <h1 class="text-sm font-bold text-gray-800">
-            <i class="fas fa-vial text-indigo-500 mr-1"></i>테스트 메뉴
-        </h1>
-        <span class="text-xs text-gray-400 ml-2">경영시뮬레이션 · 준비중</span>
-        <div class="ml-auto flex items-center gap-2">
-            <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
-            <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
+        <button class="hamburger-btn" onclick="openSidebar()"><i class="fas fa-bars"></i></button>
+        <h1 style="font-size:14px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-calculator text-indigo-500 mr-1"></i>경영시뮬레이션</h1>
+        <span style="font-size:11px;color:#94a3b8;">Rolling Planning Simulation</span>
+        <div style="display:flex;gap:6px;margin-left:12px;">
+            <div class="sel-g"><label>기준월</label><select id="selYm"><option value="202607">2026.07</option><option value="202606">2026.06</option><option value="202605" selected>2026.05</option></select></div>
+            <div class="sel-g"><label>사업부</label><select id="selDiv"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
+            <div class="sel-g"><label>호기</label><select id="selMc"><option value="ALL" selected>전체</option><option value="M01">1호기</option><option value="M02">2호기</option><option value="M03">3호기</option></select></div>
+        </div>
+        <div style="flex:1;"></div>
+        <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
+        <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:11px;color:#6b7280;cursor:pointer;font-family:inherit;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';"><i class="fas fa-sign-out-alt"></i>로그아웃</button>
+    </div>
+
+    <!-- STEP Flow -->
+    <div class="step-flow" id="stepFlow">
+        <div class="step-item active" onclick="goStep(1)"><div class="step-num">1</div>데이터 준비</div>
+        <div class="step-arrow"><i class="fas fa-chevron-right"></i></div>
+        <div class="step-item" onclick="goStep(2)"><div class="step-num">2</div>생산 기준 설정</div>
+        <div class="step-arrow"><i class="fas fa-chevron-right"></i></div>
+        <div class="step-item" onclick="goStep(3)"><div class="step-num">3</div>생산 최적화</div>
+        <div class="step-arrow"><i class="fas fa-chevron-right"></i></div>
+        <div class="step-item" onclick="goStep(4)"><div class="step-num">4</div>원가 분석 & 의사결정</div>
+        <div class="step-arrow"><i class="fas fa-chevron-right"></i></div>
+        <div class="step-item" onclick="goStep(5)"><div class="step-num">5</div>결과 확인</div>
+    </div>
+
+    <!-- Content -->
+    <div class="content-area">
+
+<!-- ================================================================ -->
+<!-- STEP 1: 데이터 준비                                               -->
+<!-- ================================================================ -->
+<div id="step-1" class="fade-in" style="padding:20px;">
+    <!-- Sub Tabs -->
+    <div class="sub-tabs" style="margin:-20px -20px 16px;padding:0 20px;">
+        <div class="sub-tab active" onclick="subTab(1,'ready')">데이터 준비 현황</div>
+        <div class="sub-tab" onclick="subTab(1,'upload')">엑셀 업로드</div>
+        <div class="sub-tab" onclick="subTab(1,'raw')">업로드 데이터 조회</div>
+        <div class="sub-tab" onclick="subTab(1,'ref')">기준정보 관리</div>
+    </div>
+
+    <!-- 1-1 데이터 준비 현황 -->
+    <div id="s1-ready">
+        <div style="margin-bottom:16px;">
+            <div class="sc" style="padding:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-clipboard-check text-green-500 mr-2"></i>전체 데이터 준비율</h3>
+                    <span style="font-size:24px;font-weight:800;color:#4f46e5;" id="readyPct">33%</span>
+                </div>
+                <div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;">
+                    <div id="readyBar" style="height:100%;width:33%;background:linear-gradient(90deg,#4f46e5,#6366f1);border-radius:4px;transition:width .5s;"></div>
+                </div>
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;" id="readyCards"></div>
+    </div>
+
+    <!-- 1-2 엑셀 업로드 -->
+    <div id="s1-upload" style="display:none;">
+        <div class="sc" style="padding:20px;">
+            <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 16px;"><i class="fas fa-upload text-indigo-500 mr-2"></i>SAP 엑셀 데이터 업로드</h3>
+            <div class="upload-zone" id="uploadZone" ondrop="handleDrop(event)" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" onclick="document.getElementById('fileInput').click()">
+                <i class="fas fa-cloud-upload-alt" style="font-size:36px;color:#a5b4fc;margin-bottom:12px;display:block;"></i>
+                <p style="font-size:14px;font-weight:600;color:#475569;margin:0 0 4px;">파일을 드래그하거나 클릭하여 업로드</p>
+                <p style="font-size:11px;color:#94a3b8;margin:0;">.xlsx, .xls, .csv 파일 지원 | SAP 형식 자동 감지</p>
+            </div>
+            <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none;" onchange="handleFile(this)">
+            <div style="margin-top:16px;padding:14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;">
+                <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:6px;"><i class="fas fa-info-circle mr-1"></i>SAP BW 자동 감지</div>
+                <div style="font-size:11px;color:#166534;line-height:1.7;">SAP에서 추출한 원재료 DB 파일(ZOHPP100/101)을 그대로 업로드하면 43개 컬럼 자동 인식<br>필수: 달력연도/월, 생산호기, 자재, 실제 배부수량, 실제단가, 출고금액</div>
+            </div>
         </div>
     </div>
 
-    <div class="content-area">
-        <!-- [2026-09-23] 사용자 요청: 경영시뮬레이션 하위 [테스트 메뉴] 는 그냥 흰 페이지 하나 -->
-        <!-- 추후 실제 컨텐츠가 채워질 자리 -->
+    <!-- 1-3 업로드 데이터 조회 -->
+    <div id="s1-raw" style="display:none;">
+        <div class="sc" style="overflow:hidden;">
+            <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-table text-indigo-500 mr-1"></i>업로드 데이터 조회 (원본 전체 컬럼)</h3>
+                <span style="font-size:10px;color:#94a3b8;" id="rawCount">0건</span>
+            </div>
+            <div style="overflow-x:auto;max-height:400px;"><table class="st"><thead><tr><th>#</th><th>달력연도/월</th><th>생산호기</th><th>자재코드</th><th>자재명</th><th>자재그룹</th><th class="r">실제배부수량</th><th class="r">실제단가</th><th class="r">출고금액</th><th class="r">생산수량</th></tr></thead><tbody id="rawTbody"><tr><td colspan="10" style="text-align:center;padding:30px;color:#94a3b8;">엑셀을 업로드하면 데이터가 표시됩니다.</td></tr></tbody></table></div>
+        </div>
+    </div>
+
+    <!-- 1-4 기준정보 관리 -->
+    <div id="s1-ref" style="display:none;">
+        <div class="ref-tabs" id="refTabs"></div>
+        <div class="sc" style="overflow:hidden;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;" id="refTitle"><i class="fas fa-cog text-indigo-500 mr-1"></i>호기 마스터</h3>
+                <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="openRefModal()"><i class="fas fa-plus mr-1"></i>등록</button>
+            </div>
+            <div style="overflow-x:auto;max-height:450px;" id="refWrap"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- STEP 2: 생산 기준 설정                                            -->
+<!-- ================================================================ -->
+<div id="step-2" style="display:none;padding:20px;" class="fade-in">
+    <div class="sub-tabs" style="margin:-20px -20px 16px;padding:0 20px;">
+        <div class="sub-tab active" onclick="subTab(2,'optime')">가동시간 관리</div>
+        <div class="sub-tab" onclick="subTab(2,'speed')">제지 생산 선속</div>
+    </div>
+
+    <!-- 2-1 가동시간 -->
+    <div id="s2-optime">
+        <div class="sc" style="overflow:hidden;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-clock text-cyan-500 mr-1"></i>월별 호기별 가동시간</h3>
+                <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="openOptModal()"><i class="fas fa-plus mr-1"></i>등록</button>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>연월</th><th>호기</th><th class="r">총일수</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th></tr></thead><tbody id="optTb"></tbody></table></div>
+        </div>
+    </div>
+
+    <!-- 2-2 생산 선속 -->
+    <div id="s2-speed" style="display:none;">
+        <div class="sc" style="overflow:hidden;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-tachometer-alt text-blue-500 mr-1"></i>호기별/지종별 초지기 선속</h3>
+                <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="openSpeedModal()"><i class="fas fa-plus mr-1"></i>등록</button>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th>지종</th><th class="r">평량(g/m²)</th><th class="r">지폭(mm)</th><th class="r">선속(m/min)</th><th class="r">이론생산(톤/일)</th><th>비고</th></tr></thead><tbody id="speedTb"><tr><td colspan="7" style="text-align:center;padding:30px;color:#94a3b8;">호기를 선택하면 데이터가 표시됩니다.</td></tr></tbody></table></div>
+            <div style="padding:12px 16px;background:#f8fafc;font-size:11px;color:#64748b;">
+                <b>이론 생산량(톤/일)</b> = 평량(g/m²) × 0.001 × 0.001 × 지폭(mm) × 0.001 × 선속(m/min) × 1440
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- STEP 3: 생산 최적화 (CAPA 분석)                                    -->
+<!-- ================================================================ -->
+<div id="step-3" style="display:none;padding:20px;" class="fade-in">
+    <div class="sc" style="padding:20px;margin-bottom:16px;">
+        <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 12px;"><i class="fas fa-chart-pie text-purple-500 mr-2"></i>생산 CAPA 분석</h3>
+        <p style="font-size:12px;color:#64748b;margin:0 0 16px;">지종/평량별 예상 생산량과 이론 생산 CAPA를 비교하여 과부족을 분석합니다.</p>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px;">
+            <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #4f46e5;">
+                <div style="font-size:10px;color:#94a3b8;font-weight:600;">총 예상 양품량</div>
+                <div style="font-size:20px;font-weight:800;color:#4f46e5;margin:4px 0;" id="capaTotalGood">8,368</div>
+                <div style="font-size:10px;color:#94a3b8;">톤</div>
+            </div>
+            <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #f59e0b;">
+                <div style="font-size:10px;color:#94a3b8;font-weight:600;">총 필요일수 / 가동일수</div>
+                <div style="font-size:20px;font-weight:800;color:#d97706;margin:4px 0;" id="capaDays">25.3 / 28일</div>
+                <div style="font-size:10px;color:#94a3b8;">잔여 2.7일</div>
+            </div>
+            <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #16a34a;">
+                <div style="font-size:10px;color:#94a3b8;font-weight:600;">잔여 CAPA</div>
+                <div style="font-size:20px;font-weight:800;color:#16a34a;margin:4px 0;" id="capaRemain">+892</div>
+                <div style="font-size:10px;color:#94a3b8;">톤 (추가 생산 가능)</div>
+            </div>
+        </div>
+    </div>
+    <div class="sc" style="overflow:hidden;">
+        <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
+            <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-list text-indigo-500 mr-1"></i>지종별 생산 계획 vs CAPA</h3>
+        </div>
+        <div style="overflow-x:auto;"><table class="st"><thead><tr><th>지종</th><th class="r">평량(g/m²)</th><th class="r">이론생산(톤/일)</th><th class="r">폐품률(%)</th><th class="r">예상 양품(톤)</th><th class="r">필요일수</th><th class="r">상태</th></tr></thead><tbody id="capaTb"></tbody></table></div>
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- STEP 4: 원가 분석 & 의사결정                                       -->
+<!-- ================================================================ -->
+<div id="step-4" style="display:none;padding:20px;" class="fade-in">
+    <div class="sub-tabs" style="margin:-20px -20px 16px;padding:0 20px;">
+        <div class="sub-tab active" onclick="subTab(4,'plsim')">P/L 시뮬레이터</div>
+        <div class="sub-tab" onclick="subTab(4,'causal')">비용 인과관계</div>
+        <div class="sub-tab" onclick="subTab(4,'prodsim')">지종별 손익 시뮬</div>
+    </div>
+
+    <!-- 4-1 P/L 시뮬레이터 -->
+    <div id="s4-plsim">
+        <div class="sc" style="padding:16px;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-sliders-h text-indigo-500 mr-2"></i>생산량 조정</h3>
+                <button onclick="resetSlider()" style="font-size:10px;color:#94a3b8;cursor:pointer;background:none;border:none;"><i class="fas fa-redo mr-1"></i>초기화</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:16px;">
+                <div style="flex:1;">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                        <span style="font-size:11px;color:#64748b;">당월 실적: <b>8,368 톤</b></span>
+                        <span style="font-size:11px;color:#4f46e5;font-weight:700;" id="slLbl">시뮬: 8,368 톤</span>
+                    </div>
+                    <input type="range" min="5000" max="15000" value="8368" step="100" class="sim-slider" id="prodSl" oninput="calcPL()">
+                </div>
+                <div style="text-align:center;padding:10px 16px;background:#eef2ff;border-radius:10px;border:1px solid #c7d2fe;min-width:90px;">
+                    <div style="font-size:9px;color:#6366f1;font-weight:700;">변동</div>
+                    <div style="font-size:20px;font-weight:800;color:#4f46e5;" id="prodD">0%</div>
+                </div>
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px;" id="plCards"></div>
+        <div class="sc" style="margin-bottom:14px;overflow:hidden;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;">
+                <h3 style="font-size:12px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-table text-indigo-500 mr-1"></i>P/L 상세</h3>
+                <span style="font-size:10px;color:#94a3b8;">단위: 천원/톤</span>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>항목</th><th>비용성격</th><th class="r">당월</th><th class="r">전월</th><th class="r">시뮬</th><th class="r">시뮬총비용(백만)</th><th class="r">증감</th><th>데이터</th></tr></thead><tbody id="plTb"></tbody></table></div>
+        </div>
+        <div class="sc" style="padding:14px;"><div style="height:220px;position:relative;"><canvas id="costChart"></canvas></div></div>
+    </div>
+
+    <!-- 4-2 비용 인과관계 -->
+    <div id="s4-causal" style="display:none;">
+        <div class="sc" style="padding:20px;min-height:560px;">
+            <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 6px;"><i class="fas fa-project-diagram text-purple-500 mr-2"></i>KPI 인과관계 네트워크 맵</h3>
+            <p style="font-size:11px;color:#94a3b8;margin:0 0 16px;">생산량 변동 → 비용 항목별 영향 경로</p>
+            <div style="min-height:480px;display:flex;flex-direction:column;align-items:center;gap:0;">
+                <div class="kn n-bl" style="cursor:default;"><div class="lb">INPUT · 트리거</div><div class="vl" id="csProd">8,368</div><div class="sb">생산량 (톤/월)</div></div>
+                <div class="ard"></div>
+                <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:24px;">
+                    <div style="text-align:center;"><div class="kn n-bl"><div class="lb">매출</div><div class="vl">-</div><div class="sb">매출액</div></div><div style="font-size:9px;color:#94a3b8;margin-top:3px;">수동 입력</div></div>
+                    <div style="text-align:center;"><div class="kn n-am" id="csMat" style="cursor:pointer;" onclick="toggleDrill()"><div class="lb">변동비</div><div class="vl" id="csMatV">327.3</div><div class="sb">원재료비 (천원/톤)</div><div style="font-size:8px;color:#b45309;margin-top:1px;"><i class="fas fa-hand-pointer mr-1"></i>클릭: 드릴다운</div></div><div style="font-size:9px;color:#16a34a;margin-top:3px;"><i class="fas fa-database mr-1"></i>DB</div>
+                        <div id="drillBox" style="display:none;margin-top:6px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px;text-align:left;min-width:220px;">
+                            <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:4px;"><i class="fas fa-sitemap mr-1"></i>지종별 드릴다운</div>
+                            <table style="width:100%;font-size:10px;border-collapse:collapse;"><thead><tr style="border-bottom:1px solid #fcd34d;"><th style="text-align:left;padding:2px 3px;color:#78350f;">지종</th><th style="text-align:right;padding:2px 3px;color:#78350f;">원단위</th><th style="text-align:right;padding:2px 3px;color:#78350f;">비중</th></tr></thead><tbody id="drillTb"></tbody></table>
+                        </div>
+                    </div>
+                    <div style="text-align:center;"><div class="kn n-am" style="opacity:.65;"><div class="lb">준변동비</div><div class="vl">-</div><div class="sb">전력비</div></div><div style="font-size:9px;color:#f59e0b;margin-top:3px;">준비중</div></div>
+                    <div style="text-align:center;"><div class="kn n-am" style="opacity:.65;"><div class="lb">준변동비</div><div class="vl">-</div><div class="sb">물류비</div></div><div style="font-size:9px;color:#f59e0b;margin-top:3px;">준비중</div></div>
+                </div>
+                <div class="ard"></div>
+                <div style="display:flex;gap:16px;justify-content:center;margin-bottom:24px;">
+                    <div class="kn n-gn"><div class="lb">고정비</div><div class="vl">-</div><div class="sb">인건비</div></div>
+                    <div class="kn n-gn"><div class="lb">고정비</div><div class="vl">-</div><div class="sb">감가상각</div></div>
+                    <div class="kn n-gn"><div class="lb">고정비</div><div class="vl">-</div><div class="sb">판관비</div></div>
+                </div>
+                <div class="ard"></div>
+                <div style="display:flex;gap:20px;justify-content:center;">
+                    <div class="kn n-rd" style="min-width:220px;"><div class="lb">COST</div><div class="vl" id="csCost">327.3</div><div class="sb">총원가 (천원/톤)</div></div>
+                    <div class="kn n-in" style="min-width:220px;"><div class="lb">OUTPUT</div><div class="vl" id="csProf">-327.3</div><div class="sb">영업이익 (천원/톤)</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 4-3 지종별 손익 시뮬 -->
+    <div id="s4-prodsim" style="display:none;">
+        <div class="sc" style="padding:16px;margin-bottom:14px;">
+            <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-balance-scale text-amber-500 mr-2"></i>지종별 생산량 손익 시뮬레이션</h3>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #64748b;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">기준 총재료비</div><div style="font-size:18px;font-weight:800;color:#475569;" id="psBase">2,739</div><div style="font-size:10px;color:#94a3b8;">백만원 (당월 실적)</div></div>
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #4f46e5;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">시뮬 총재료비</div><div style="font-size:18px;font-weight:800;color:#4f46e5;" id="psSim">2,739</div><div style="font-size:10px;color:#94a3b8;">백만원 (차월 예상)</div></div>
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #16a34a;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">당월 대비 손익</div><div style="font-size:18px;font-weight:800;color:#16a34a;" id="psDiff">0</div><div style="font-size:10px;color:#94a3b8;">억원 (절감+ / 증가-)</div></div>
+            </div>
+        </div>
+        <div class="sc" style="overflow:hidden;">
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>지종</th><th class="r">당월 생산량(톤)</th><th class="r">당월 원단위</th><th class="r">차월 생산량(톤)</th><th class="r">차월 원단위</th><th class="r">손익(억원)</th></tr></thead><tbody id="psTb"></tbody></table></div>
+        </div>
+        <div class="sc" style="padding:14px;margin-top:14px;"><div style="height:220px;position:relative;"><canvas id="matChart"></canvas></div></div>
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- STEP 5: 결과 확인                                                 -->
+<!-- ================================================================ -->
+<div id="step-5" style="display:none;padding:20px;" class="fade-in">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px;">
+        <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #4f46e5;">
+            <div style="font-size:11px;color:#94a3b8;font-weight:600;">영업이익 (예상)</div>
+            <div style="font-size:24px;font-weight:800;color:#4f46e5;margin:6px 0;">24.3억</div>
+            <div style="font-size:11px;color:#16a34a;font-weight:600;"><i class="fas fa-arrow-up mr-1"></i>+7.4억 개선</div>
+        </div>
+        <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #f59e0b;">
+            <div style="font-size:11px;color:#94a3b8;font-weight:600;">총원가</div>
+            <div style="font-size:24px;font-weight:800;color:#d97706;margin:6px 0;">191.5억</div>
+            <div style="font-size:11px;color:#16a34a;font-weight:600;"><i class="fas fa-arrow-down mr-1"></i>-6.7억 절감</div>
+        </div>
+        <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #16a34a;">
+            <div style="font-size:11px;color:#94a3b8;font-weight:600;">마진율</div>
+            <div style="font-size:24px;font-weight:800;color:#16a34a;margin:6px 0;">14.2%</div>
+            <div style="font-size:11px;color:#16a34a;font-weight:600;"><i class="fas fa-arrow-up mr-1"></i>+3.3%p</div>
+        </div>
+        <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #8b5cf6;">
+            <div style="font-size:11px;color:#94a3b8;font-weight:600;">생산량</div>
+            <div style="font-size:24px;font-weight:800;color:#7c3aed;margin:6px 0;">8,368톤</div>
+            <div style="font-size:11px;color:#94a3b8;">당월 실적 기준</div>
+        </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="sc" style="padding:16px;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-chart-line text-indigo-500 mr-1"></i>월별 손익 추이</h3><div style="height:220px;position:relative;"><canvas id="trendChart"></canvas></div></div>
+        <div class="sc" style="padding:16px;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-chart-bar text-amber-500 mr-1"></i>원가 구성비</h3><div style="height:220px;position:relative;"><canvas id="compChart"></canvas></div></div>
+    </div>
+    <div class="sc" style="padding:16px;margin-top:14px;">
+        <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-exchange-alt text-purple-500 mr-1"></i>What-If 변수 민감도</h3>
+        <div style="font-size:12px;color:#64748b;line-height:2;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">고지 단가</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:70%;background:linear-gradient(90deg,#ef4444,#f87171);border-radius:4px;"></div></div><span style="font-weight:700;color:#dc2626;">±4.2억</span></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">펄프 단가</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:52%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:4px;"></div></div><span style="font-weight:700;color:#d97706;">±3.1억</span></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">생산량</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:47%;background:linear-gradient(90deg,#4f46e5,#818cf8);border-radius:4px;"></div></div><span style="font-weight:700;color:#4f46e5;">±2.8억</span></div>
+            <div style="display:flex;align-items:center;gap:10px;"><span style="width:100px;font-weight:600;">가동률</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:20%;background:linear-gradient(90deg,#16a34a,#4ade80);border-radius:4px;"></div></div><span style="font-weight:700;color:#16a34a;">±1.2억</span></div>
+        </div>
+    </div>
+</div>
+
+    </div><!-- /content-area -->
+
+    <!-- Modal -->
+    <div id="modalBg" class="modal-bg" style="display:none;" onclick="if(event.target===this)closeModal()">
+        <div class="modal-box" id="modalBox"></div>
     </div>
 </div>
 
 <script>
-function openSidebar() {
-    document.getElementById('sidebar').classList.add('open');
-    document.getElementById('sidebarOverlay').classList.add('active');
-}
-function closeSidebar() {
-    document.getElementById('sidebar').classList.remove('open');
-    document.getElementById('sidebarOverlay').classList.remove('active');
-}
-async function doLogout(){
-    try { await fetch('/api/logout', { method:'POST' }); } catch(_) {}
-    window.location.href = '/login';
+const API='/rolling-planning-simulation-api';
+const BP=8368;
+let costChart=null,matChart=null,trendChart=null,compChart=null;
+function fmt(n){return n.toLocaleString('ko-KR',{maximumFractionDigits:1});}
+function fmtI(n){return Math.round(n).toLocaleString('ko-KR');}
+
+// ── Step Navigation ──
+let curStep=1;
+function goStep(n){
+    curStep=n;
+    for(let i=1;i<=5;i++){
+        const el=document.getElementById('step-'+i);
+        if(el)el.style.display=i===n?'':'none';
+    }
+    document.querySelectorAll('.step-item').forEach((s,i)=>{
+        s.className='step-item'+(i+1===n?' active':i+1<n?' done':'');
+    });
 }
 
-// /api/me 로드 → 로그인 여부, 사용자명, 사이드바 메뉴 렌더
+// ── Sub-tab Navigation ──
+const SUB_MAP={1:['ready','upload','raw','ref'],2:['optime','speed'],4:['plsim','causal','prodsim']};
+function subTab(step,key){
+    const subs=SUB_MAP[step]||[];
+    subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
+    const parent=document.getElementById('step-'+step);
+    if(parent){parent.querySelectorAll('.sub-tab').forEach((t,i)=>{t.classList.toggle('active',subs[i]===key);});}
+}
+
+// ── P/L Simulator ──
+const PL=[
+    {l:'매출액',k:'rev',b:'-',r:0,p:0,db:false,n:'수동'},
+    {l:'원재료비',k:'mat',b:'변동비',r:327.3,p:315.8,db:true,n:'DB'},
+    {l:'전력비',k:'eng',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'물류비',k:'log',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'인건비',k:'lab',b:'고정비',r:0,p:0,db:false,n:'수동'},
+    {l:'감가상각',k:'dep',b:'고정비',r:0,p:0,db:false,n:'수동'},
+    {l:'판관비',k:'sga',b:'고정비',r:0,p:0,db:false,n:'수동'},
+];
+function calcPL(){
+    const sp=parseInt(document.getElementById('prodSl').value),ratio=sp/BP,dp=((ratio-1)*100).toFixed(1);
+    document.getElementById('slLbl').textContent='시뮬: '+fmtI(sp)+' 톤';
+    const dE=document.getElementById('prodD');dE.textContent=(dp>=0?'+':'')+dp+'%';dE.style.color=dp>0?'#4f46e5':dp<0?'#dc2626':'#475569';
+    try{document.getElementById('csProd').textContent=fmtI(sp);}catch(_){}
+    let tc=0,cardsH='',tbH='';const srs=[];
+    PL.forEach(it=>{
+        let sr=it.r;if(it.b==='고정비'&&it.r>0)sr=it.r*BP/sp;srs.push(sr);if(it.k!=='rev')tc+=sr;
+        const st=sr*sp/1000,d=sr-it.r,dc=d>0?'color:#dc2626':d<0?'color:#16a34a':'color:#94a3b8';
+        const bc=it.b==='변동비'?'background:#fef3c7;color:#92400e':it.b==='준변동비'?'background:#fefce8;color:#a16207':it.b==='고정비'?'background:#dcfce7;color:#166534':'background:#f1f5f9;color:#64748b';
+        const db=it.db?'<span style="font-size:9px;color:#16a34a;"><i class="fas fa-check-circle mr-1"></i>DB</span>':'<span style="font-size:9px;color:#94a3b8;">'+it.n+'</span>';
+        tbH+='<tr><td style="font-weight:600;">'+it.l+'</td><td><span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;'+bc+'">'+it.b+'</span></td><td class="r mn" style="font-weight:600;">'+fmt(it.r)+'</td><td class="r mn" style="color:#94a3b8;">'+fmt(it.p)+'</td><td class="r mn" style="font-weight:700;color:#4f46e5;">'+fmt(sr)+'</td><td class="r mn">'+(it.r>0?fmt(st):'-')+'</td><td class="r" style="font-weight:600;'+dc+'">'+fmt(Math.abs(d))+'</td><td>'+db+'</td></tr>';
+    });
+    const pf=0-tc;
+    [{l:'매출액',v:0,c:'#475569',bd:''},{l:'원재료비',v:srs[1],c:'#d97706',bd:'border-left:3px solid #f59e0b;'},{l:'전력비',v:0,c:'#475569',bd:''},{l:'물류비',v:0,c:'#475569',bd:''},{l:'영업이익',v:pf,c:'#4f46e5',bd:'border-left:3px solid #4f46e5;'}].forEach(c=>{
+        cardsH+='<div class="sc" style="padding:12px;text-align:center;'+c.bd+'"><div style="font-size:9px;color:#94a3b8;font-weight:600;">'+c.l+'</div><div style="font-size:16px;font-weight:800;color:'+c.c+';margin:3px 0;">'+fmt(c.v)+'</div><div style="font-size:9px;color:#94a3b8;">천원/톤</div></div>';
+    });
+    document.getElementById('plCards').innerHTML=cardsH;document.getElementById('plTb').innerHTML=tbH;
+    try{document.getElementById('csProf').textContent=fmt(pf);document.getElementById('csCost').textContent=fmt(tc);document.getElementById('csMatV').textContent=fmt(srs[1]);}catch(_){}
+    if(costChart){costChart.data.datasets[0].data=PL.filter(i=>i.k!=='rev').map(i=>i.r);costChart.data.datasets[1].data=srs.filter((_,i)=>PL[i].k!=='rev');costChart.update();}
+}
+function resetSlider(){document.getElementById('prodSl').value=BP;calcPL();}
+
+// ── Drilldown toggle ──
+const DRILL=[{p:'SC고평량',u:287,pct:54.7},{p:'SC저평량',u:320.9,pct:20.8},{p:'ACB',u:367.2,pct:10.2},{p:'IV',u:349,pct:5.1},{p:'CB',u:331.4,pct:4.9},{p:'KB',u:295.9,pct:4.3}];
+function toggleDrill(){
+    const el=document.getElementById('drillBox'),nd=document.getElementById('csMat');
+    if(el.style.display==='none'){el.style.display='';nd.style.boxShadow='0 0 0 3px rgba(245,158,11,.3)';
+        document.getElementById('drillTb').innerHTML=DRILL.map(d=>'<tr style="border-bottom:1px solid #fef3c7;"><td style="padding:2px 3px;font-weight:600;color:#78350f;">'+d.p+'</td><td class="r mn" style="padding:2px 3px;color:#92400e;">'+fmt(d.u)+'</td><td class="r" style="padding:2px 3px;color:#a16207;">'+fmt(d.pct)+'%</td></tr>').join('');
+    }else{el.style.display='none';nd.style.boxShadow='';}
+}
+
+// ── Data Readiness ──
+const RD=[{c:'MATERIAL',n:'원부재료비',s:'READY',cnt:12847,d:'SAP BW 원부재료비 실적',who:'구매팀'},{c:'POWER',n:'전력비',s:'PARTIAL',cnt:0,d:'한전 전력비 계산',who:'전기팀'},{c:'LOGISTICS',n:'물류비',s:'PARTIAL',cnt:0,d:'해상 물류비 + 국내 운임',who:'물류팀'},{c:'INVENTORY',n:'기초재고',s:'EMPTY',cnt:0,d:'월별 자재 기초재고 수량/단가',who:'구매팀'},{c:'OPTIME',n:'가동시간',s:'READY',cnt:15,d:'월별 호기별 가동일수',who:'생산관리'},{c:'SPEED',n:'생산 선속',s:'PARTIAL',cnt:0,d:'호기별/지종별 초지기 선속',who:'생산기술'}];
+function renderReady(){
+    const ok=RD.filter(r=>r.s==='READY').length,total=RD.length,pct=Math.round(ok/total*100);
+    document.getElementById('readyPct').textContent=pct+'%';document.getElementById('readyBar').style.width=pct+'%';
+    document.getElementById('readyCards').innerHTML=RD.map(m=>{
+        const bc=m.s==='READY'?'b-ok':m.s==='PARTIAL'?'b-pt':'b-no';const ic=m.s==='READY'?'fa-check-circle text-green-500':m.s==='PARTIAL'?'fa-exclamation-triangle text-yellow-500':'fa-times-circle text-red-500';const sl=m.s==='READY'?'완료':m.s==='PARTIAL'?'부분':'미등록';
+        return '<div class="sc" style="padding:16px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="display:flex;align-items:center;gap:6px;"><i class="fas '+ic+'" style="font-size:14px;"></i><span style="font-size:13px;font-weight:700;color:#1e293b;">'+m.n+'</span></div><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;" class="'+bc+'">'+sl+'</span></div><div style="font-size:11px;color:#64748b;margin-bottom:6px;">'+m.d+'</div><div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:10px;color:#94a3b8;"><i class="fas fa-database mr-1"></i>'+(m.cnt>0?fmtI(m.cnt)+'건':'-')+'</span><span style="font-size:10px;color:#818cf8;font-weight:600;"><i class="fas fa-user mr-1"></i>'+m.who+'</span></div></div>';
+    }).join('');
+}
+
+// ── Operating Time (mock) ──
+const OD=[{ym:'202605',mc:'M01',td:31,ps:3,nd:24.5,wd:.8,sd:.5,td2:.3,rd:1.2,cd:.5,ad:.2},{ym:'202605',mc:'M02',td:31,ps:4,nd:23,wd:.6,sd:.4,td2:.5,rd:1.5,cd:.8,ad:.2},{ym:'202605',mc:'M03',td:31,ps:2,nd:25.2,wd:.5,sd:.3,td2:.4,rd:1.8,cd:.6,ad:.2}];
+function renderOpt(){document.getElementById('optTb').innerHTML=OD.map(o=>'<tr><td style="font-weight:600;">'+o.ym.slice(0,4)+'/'+o.ym.slice(4)+'</td><td style="font-weight:600;color:#4f46e5;">'+o.mc+'</td><td class="r mn">'+o.td+'</td><td class="r mn" style="color:#ef4444;">'+o.ps+'</td><td class="r mn" style="color:#16a34a;font-weight:600;">'+o.nd+'</td><td class="r mn">'+o.wd+'</td><td class="r mn">'+o.sd+'</td><td class="r mn">'+o.td2+'</td><td class="r mn" style="color:#f59e0b;">'+o.rd+'</td><td class="r mn">'+o.cd+'</td><td class="r mn" style="color:#ef4444;">'+o.ad+'</td></tr>').join('');}
+
+// ── CAPA (mock) ──
+const CAPA=[{p:'SC고평량',bw:300,th:12.5,wp:8.44,good:2150,days:7.3,ok:true},{p:'SC저평량',bw:200,th:15.2,wp:8.44,good:3280,days:9.1,ok:true},{p:'ACB',bw:250,th:13.8,wp:8.44,good:1680,days:5.2,ok:true},{p:'KB',bw:180,th:16.0,wp:8.44,good:720,days:1.9,ok:true},{p:'IV',bw:220,th:14.5,wp:8.44,good:380,days:1.1,ok:true},{p:'백판지 기타',bw:350,th:11.0,wp:8.44,good:158,days:0.7,ok:true}];
+function renderCapa(){document.getElementById('capaTb').innerHTML=CAPA.map(c=>'<tr><td style="font-weight:600;">'+c.p+'</td><td class="r mn">'+c.bw+'</td><td class="r mn">'+fmt(c.th)+'</td><td class="r mn">'+fmt(c.wp)+'</td><td class="r mn" style="font-weight:600;">'+fmtI(c.good)+'</td><td class="r mn">'+fmt(c.days)+'</td><td class="r"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;'+(c.ok?'background:#dcfce7;color:#166534;':'background:#fee2e2;color:#991b1b;')+'">'+(c.ok?'충족':'초과')+'</span></td></tr>').join('');}
+
+// ── Product Sim (mock) ──
+const MAT=[{p:'SC저평량',ton:3280,cost:985,unit:300.3,pTon:3100,pUnit:296.8,pct:36},{p:'SC고평량',ton:2150,cost:730,unit:339.5,pTon:2000,pUnit:335,pct:26.7},{p:'ACB',ton:1680,cost:580,unit:345.2,pTon:1500,pUnit:333.3,pct:21.2},{p:'KB',ton:720,cost:250,unit:347.2,pTon:680,pUnit:338.2,pct:9.1},{p:'IV',ton:380,cost:130,unit:342.1,pTon:340,pUnit:338.2,pct:4.7},{p:'백판지기타',ton:158,cost:64,unit:403.8,pTon:140,pUnit:392.9,pct:2.3}];
+function renderProdSim(){document.getElementById('psTb').innerHTML=MAT.map(m=>{const d=((m.unit-m.unit)*m.ton/100000).toFixed(1);return '<tr><td style="font-weight:600;">'+m.p+'</td><td class="r mn">'+fmtI(m.ton)+'</td><td class="r mn">'+fmt(m.unit)+'</td><td class="r mn"><input type="number" value="'+m.ton+'" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;text-align:right;font-family:inherit;"></td><td class="r mn"><input type="number" value="'+fmt(m.unit)+'" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;text-align:right;font-family:inherit;"></td><td class="r mn" style="font-weight:600;color:#16a34a;">'+d+'</td></tr>';}).join('');}
+
+// ── Ref Management ──
+const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성']},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure'],h:['자재코드','자재명','구분','단위']},{k:'machine-capacities',l:'호기별 생산능력',i:'fa-tachometer-alt',cols:['machineCode','hourlyCapacity','basisWeightRef','validFrom'],h:['호기','능력(톤/h)','기준평량','유효시작']},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']}];
+let cRef=0,refData=[];
+function renderRefTabs(){document.getElementById('refTabs').innerHTML=REFS.map((d,i)=>'<div class="ref-tab'+(i===cRef?' active':'')+'" onclick="switchRef('+i+')"><i class="fas '+d.i+' mr-1"></i>'+d.l+'</div>').join('');}
+function switchRef(i){cRef=i;renderRefTabs();document.getElementById('refTitle').innerHTML='<i class="fas '+REFS[i].i+' text-indigo-500 mr-1"></i>'+REFS[i].l;loadRef();}
+async function loadRef(){const d=REFS[cRef];try{const r=await fetch(API+'/'+d.k+'?division='+(document.getElementById('selDiv')?.value||'PS'));const j=await r.json();refData=j.data?.content||j.data||[];}catch(_){refData=[];}renderRef();}
+function renderRef(){const d=REFS[cRef];let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}else{refData.forEach(row=>{h+='<tr>'+d.cols.map(c=>{let v=row[c];if(v===true)v='<span style="color:#16a34a;font-weight:700;">Y</span>';else if(v===false)v='N';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+row[Object.keys(row)[0]]+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}h+='</tbody></table>';document.getElementById('refWrap').innerHTML=h;}
+function openRefModal(){const d=REFS[cRef];let h='<h3><i class="fas '+d.i+' text-indigo-500"></i> '+d.l+' 등록</h3>';d.cols.forEach((c,i)=>{h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveRef()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
+async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate'].includes(c))v=parseFloat(v)||0;else if(['year','month'].includes(c))v=parseInt(v)||0;body[c]=v;}});body.division=document.getElementById('selDiv')?.value||'PS';try{await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(_){}closeModal();loadRef();}
+async function delRef(id){if(!confirm('삭제하시겠습니까?'))return;try{await fetch(API+'/'+REFS[cRef].k+'/'+id,{method:'DELETE'});}catch(_){}loadRef();}
+function openOptModal(){let h='<h3><i class="fas fa-clock text-cyan-500"></i> 가동시간 등록</h3>';[['division','사업부'],['machineCode','호기코드'],['ym','연월(YYYYMM)'],['totalDays','총일수'],['plannedShutdownDays','계획운휴'],['operationNormalDays','정상가동'],['operationWasteDays','폐품'],['operationStartupDays','초출'],['operationTrimmingDays','절지'],['downtimeRepairDays','정비'],['downtimeCleaningDays','세척'],['downtimeAccidentDays','사고']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveOpt()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
+async function saveOpt(){const body={};document.querySelectorAll('.modal-box input').forEach(el=>{let v=el.value;if(!['division','machineCode','ym'].includes(el.name))v=parseFloat(v)||0;body[el.name]=v;});try{await fetch(API+'/operating-time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(_){}closeModal();}
+function openSpeedModal(){let h='<h3><i class="fas fa-tachometer-alt text-blue-500"></i> 생산 선속 등록</h3>';[['machineCode','호기코드'],['product','지종'],['basisWeight','평량(g/m²)'],['trimWidth','지폭(mm)'],['speed','선속(m/min)'],['note','비고']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="closeModal()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
+function closeModal(){document.getElementById('modalBg').style.display='none';}
+function handleDrop(e){e.preventDefault();document.getElementById('uploadZone').classList.remove('drag');}
+function handleFile(input){}
+
+// ── Charts ──
+function initCharts(){
+    costChart=new Chart(document.getElementById('costChart').getContext('2d'),{type:'bar',data:{labels:PL.filter(i=>i.k!=='rev').map(i=>i.l),datasets:[{label:'당월',data:PL.filter(i=>i.k!=='rev').map(i=>i.r),backgroundColor:'rgba(79,70,229,.5)',borderRadius:4,maxBarThickness:32},{label:'시뮬',data:PL.filter(i=>i.k!=='rev').map(i=>i.r),backgroundColor:'rgba(245,158,11,.5)',borderRadius:4,maxBarThickness:32}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:10,family:'Noto Sans KR'}}}},scales:{y:{beginAtZero:true,title:{display:true,text:'천원/톤',font:{size:10}}}}}});
+    matChart=new Chart(document.getElementById('matChart').getContext('2d'),{type:'doughnut',data:{labels:MAT.map(m=>m.p),datasets:[{data:MAT.map(m=>m.pct),backgroundColor:['#4f46e5','#7c3aed','#f59e0b','#10b981','#ef4444','#8b5cf6'],borderWidth:2,borderColor:'#fff'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{font:{size:10,family:'Noto Sans KR'}}}}}});
+    trendChart=new Chart(document.getElementById('trendChart').getContext('2d'),{type:'line',data:{labels:['1월','2월','3월','4월','5월','6월'],datasets:[{label:'영업이익(억)',data:[18,20,22,19,24,28],borderColor:'#4f46e5',backgroundColor:'rgba(79,70,229,.1)',fill:true,tension:.3,borderWidth:2},{label:'총원가(억)',data:[195,192,198,200,191,188],borderColor:'#f59e0b',borderWidth:2,tension:.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:10}}}},scales:{y:{beginAtZero:false}}}});
+    compChart=new Chart(document.getElementById('compChart').getContext('2d'),{type:'bar',data:{labels:['원재료비','전력비','물류비','인건비','감가상각','판관비'],datasets:[{label:'구성비(%)',data:[45,18,12,10,8,7],backgroundColor:['#f59e0b','#ef4444','#3b82f6','#10b981','#8b5cf6','#64748b'],borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,max:50}}}});
+}
+
+// ── Init ──
+function initAll(){calcPL();renderReady();renderRefTabs();loadRef();renderOpt();renderCapa();renderProdSim();initCharts();}
+
+function openSidebar(){document.getElementById('sidebar').classList.add('open');}
+function closeSidebar(){document.getElementById('sidebar').classList.remove('open');}
+async function doLogout(){try{await fetch('/api/logout',{method:'POST'});}catch(_){}window.location.href='/login';}
+
 (async function init(){
-    try {
-        const r = await fetch('/api/me');
-        const me = await r.json();
-        if (!me.loggedIn) { window.location.href = '/login'; return; }
-        // 사용자 정보 표시
-        const uid = document.getElementById('userInfoDisplay');
-        if (uid && me.name) {
-            uid.innerHTML = `<strong style="font-size:13px;color:#1e293b;">${me.name}님</strong><br><span style="font-size:11px;color:#6b7280;font-weight:700;">(${me.user})</span>`;
-            uid.style.display = '';
-        }
-        // RBAC: simulation-test 메뉴 권한 체크
-        const hasAccess = me.menus && me.menus.some(m => m.menu_code === 'simulation-test');
-        if (!hasAccess && me.role !== 'admin') { window.location.href = '/?denied=1'; return; }
-        // 통합 플랫폼 사이드바 렌더
-        if (window.PlatformSidebar) {
-            window.PlatformSidebar.render(me.menus || [], { activeUrl: '/simulation-test.html' });
-        }
-    } catch(e) { window.location.href = '/login'; }
+    try{
+        const r=await fetch('/api/me');const me=await r.json();
+        if(!me.loggedIn){window.location.href='/login';return;}
+        const uid=document.getElementById('userInfoDisplay');
+        if(uid&&me.name){uid.innerHTML='<strong style="font-size:12px;color:#1e293b;">'+me.name+'님</strong><br><span style="font-size:10px;color:#6b7280;font-weight:700;">('+me.user+')</span>';uid.style.display='';}
+        if(window.PlatformSidebar)window.PlatformSidebar.render(me.menus||[],{activeUrl:'/simulation-test.html'});
+        initAll();
+    }catch(e){console.warn('[init]',e.message);initAll();}
 })();
 </script>
 </body>

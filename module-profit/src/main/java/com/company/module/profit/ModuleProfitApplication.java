@@ -9,9 +9,18 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  * Module-Profit 독립 실행 메인 클래스
  * SAP RFC 동기화 + 배치 관리 API 서버
  */
-@SpringBootApplication(scanBasePackages = "com.company.module.profit")
-@EntityScan("com.company.module.profit.entity")
-@EnableJpaRepositories("com.company.module.profit.repository")
+@SpringBootApplication(scanBasePackages = {
+        "com.company.module.profit",
+        "com.company.module.rollingplanningsimulation"   // [경영시뮬레이션]
+})
+@EntityScan({
+        "com.company.module.profit.entity",
+        "com.company.module.rollingplanningsimulation.entity"
+})
+@EnableJpaRepositories({
+        "com.company.module.profit.repository",
+        "com.company.module.rollingplanningsimulation.repository"
+})
 public class ModuleProfitApplication {
 
     public static void main(String[] args) {
