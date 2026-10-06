@@ -22289,7 +22289,10 @@ async function ensureBookmarkShareTables() {
     // 2-2) [2026-10-02] builder_query_history에 business_area_code 컬럼 추가 (없으면) — 업무영역(수익/제조) 저장용
     //   값: 'PROFITABILITY' | 'MANUFACTURING_COST' | NULL (레거시 이력)
     //   목적: 쿼리 저장 당시의 업무영역을 보존하여, 이력 클릭 시 올바른 schema/metadata 로 복원할 수 있도록 한다.
-    //   nl_query_history.business_area_code 와 동일한 코드 체계 사용 (자연어 질의 history 와 통일).
+    //   nl_query_history.business_area_code (PR #393) 와 완전히 동일한 패턴 — 컬럼 추가만, 인덱스 없음.
+    //     - 이유: 현재 모든 조회 쿼리가 WHERE user_id=? [AND is_bookmarked=1] 로만 접근하고
+    //            business_area_code 를 WHERE/JOIN 에 쓰는 쿼리가 없음 → 추가 인덱스 불필요
+    //            (쓰기 성능 저하만 발생). nl_query_history 와 패턴 통일.
     //   레거시 이력(NULL) 은 fields_json / generated_sql 기반으로 영역 추론 fallback 로직 사용 (클라이언트).
     const [bldAreaCols] = await pool.query(
       `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -22297,7 +22300,6 @@ async function ensureBookmarkShareTables() {
     );
     if (bldAreaCols.length === 0) {
       await pool.query(`ALTER TABLE builder_query_history ADD COLUMN business_area_code varchar(32) DEFAULT NULL COMMENT '업무영역 코드 (PROFITABILITY/MANUFACTURING_COST/NULL)' AFTER domain_code`);
-      await pool.query(`ALTER TABLE builder_query_history ADD INDEX idx_business_area (user_id, business_area_code)`);
       console.log('[Migration] builder_query_history에 business_area_code 컬럼 추가 완료');
     }
 
