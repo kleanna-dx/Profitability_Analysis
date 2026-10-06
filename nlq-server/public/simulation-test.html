@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>테스트 메뉴 - 경영시뮬레이션</title>
+    <title>경영시뮬레이션 - P/L Simulator</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
         *{box-sizing:border-box;font-family:'Noto Sans KR','Segoe UI',sans-serif;}
@@ -33,7 +34,77 @@
         .hamburger-btn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer;transition:all .15s;color:#475569;font-size:16px;}
         .hamburger-btn:hover{background:#f1f5f9;color:#4f46e5;}
         @media (min-width:901px){ .hamburger-btn{display:none;} }
-        .content-area{flex:1;overflow-y:auto;padding:24px;background:#fff;}
+        .content-area{flex:1;overflow-y:auto;padding:0;background:#f1f5f9;}
+
+        /* Tabs */
+        .sim-tabs{display:flex;background:#fff;border-bottom:1px solid #e5e7eb;padding:0 20px;flex-shrink:0;overflow-x:auto;}
+        .sim-tab{padding:11px 18px;font-size:13px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:#64748b;transition:all .15s;white-space:nowrap;display:flex;align-items:center;gap:6px;}
+        .sim-tab:hover{color:#4f46e5;}
+        .sim-tab.active{color:#4338ca;border-bottom-color:#4338ca;}
+        .sim-tab i{font-size:12px;}
+
+        /* Cards */
+        .sim-card{background:#fff;border-radius:10px;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(0,0,0,.03);}
+
+        /* Tables */
+        .sim-tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
+        .sim-tbl th{background:#f8fafc;color:#475569;font-weight:600;padding:9px 12px;text-align:left;border-bottom:2px solid #e2e8f0;white-space:nowrap;position:sticky;top:0;z-index:2;}
+        .sim-tbl td{padding:9px 12px;border-bottom:1px solid #f1f5f9;}
+        .sim-tbl tbody tr:hover td{background:#f0f4ff;}
+        .sim-tbl .r{text-align:right;font-variant-numeric:tabular-nums;}
+        .sim-tbl .mono{font-family:'Consolas','SF Mono',monospace;}
+
+        /* Slider */
+        .sim-slider{-webkit-appearance:none;width:100%;height:7px;border-radius:4px;background:#e2e8f0;outline:none;}
+        .sim-slider::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#4f46e5;cursor:pointer;box-shadow:0 2px 6px rgba(79,70,229,.35);}
+
+        /* Badge */
+        .b-ready{background:#dcfce7;color:#166534;border:1px solid #bbf7d0;}
+        .b-partial{background:#fef3c7;color:#92400e;border:1px solid #fde68a;}
+        .b-empty{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;}
+
+        /* KPI Node */
+        .kpi-nd{border-radius:10px;padding:12px 16px;min-width:120px;text-align:center;transition:transform .2s;cursor:default;}
+        .kpi-nd:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.1);}
+        .kpi-lb{font-size:10px;font-weight:700;opacity:.7;margin-bottom:3px;}
+        .kpi-vl{font-size:18px;font-weight:800;}
+        .kpi-sb{font-size:10px;margin-top:2px;opacity:.6;}
+        .nd-blue{background:linear-gradient(135deg,#dbeafe,#eff6ff);border:2px solid #93c5fd;color:#1e40af;}
+        .nd-amber{background:linear-gradient(135deg,#fef3c7,#fffbeb);border:2px solid #fcd34d;color:#92400e;}
+        .nd-green{background:linear-gradient(135deg,#dcfce7,#f0fdf4);border:2px solid #86efac;color:#166534;}
+        .nd-indigo{background:linear-gradient(135deg,#e0e7ff,#eef2ff);border:2px solid #a5b4fc;color:#3730a3;}
+        .arrow-d{width:2px;height:24px;background:#cbd5e1;margin:0 auto;position:relative;}
+        .arrow-d::after{content:'';position:absolute;bottom:-4px;left:-4px;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #cbd5e1;}
+        .arrow-r{width:32px;height:2px;background:#cbd5e1;position:relative;align-self:center;}
+        .arrow-r::after{content:'';position:absolute;right:-4px;top:-4px;border-top:5px solid transparent;border-bottom:5px solid transparent;border-left:6px solid #cbd5e1;}
+
+        /* Sub-tab (기준정보) */
+        .ref-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;}
+        .ref-tab{padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;border-radius:8px;border:1px solid #e2e8f0;color:#64748b;background:#fff;transition:all .15s;}
+        .ref-tab:hover{border-color:#a5b4fc;color:#4f46e5;}
+        .ref-tab.active{background:#4338ca;color:#fff;border-color:#4338ca;}
+
+        /* Modal */
+        .sim-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px);}
+        .sim-modal{background:#fff;border-radius:14px;padding:24px;width:520px;max-width:90vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2);}
+        .sim-modal h3{font-size:16px;font-weight:800;color:#1e293b;margin:0 0 16px;display:flex;align-items:center;gap:8px;}
+        .sim-modal label{display:block;font-size:12px;font-weight:600;color:#475569;margin:10px 0 4px;}
+        .sim-modal input,.sim-modal select,.sim-modal textarea{width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;font-family:inherit;outline:none;transition:border-color .15s;}
+        .sim-modal input:focus,.sim-modal select:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(79,70,229,.08);}
+        .sim-modal .modal-btns{display:flex;gap:8px;margin-top:20px;justify-content:flex-end;}
+        .btn-primary{padding:8px 20px;border-radius:8px;font-size:13px;font-weight:700;border:none;cursor:pointer;background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;transition:all .15s;}
+        .btn-primary:hover{box-shadow:0 4px 12px rgba(79,70,229,.3);}
+        .btn-ghost{padding:8px 20px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid #d1d5db;cursor:pointer;background:#fff;color:#475569;transition:all .15s;}
+        .btn-ghost:hover{background:#f8fafc;border-color:#94a3b8;}
+
+        /* Select bar */
+        .sel-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+        .sel-grp{display:flex;align-items:center;gap:4px;background:#f8fafc;padding:4px 10px;border-radius:8px;border:1px solid #e5e7eb;}
+        .sel-grp label{font-size:11px;color:#64748b;font-weight:600;white-space:nowrap;}
+        .sel-grp select{font-size:12px;font-weight:700;color:#1e293b;background:transparent;border:none;outline:none;cursor:pointer;padding:2px 4px;}
+
+        .fade-in{animation:fadeIn .3s ease-out;}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
     </style>
     <!-- 통합 플랫폼 사이드바 공통 렌더러 -->
     <script src="/platform-sidebar.js" defer></script>
@@ -48,19 +119,141 @@
     <div class="top-bar">
         <button class="hamburger-btn" onclick="openSidebar()" title="메뉴"><i class="fas fa-bars"></i></button>
         <h1 class="text-sm font-bold text-gray-800">
-            <i class="fas fa-vial text-indigo-500 mr-1"></i>테스트 메뉴
+            <i class="fas fa-calculator text-indigo-500 mr-1"></i>경영시뮬레이션
         </h1>
-        <span class="text-xs text-gray-400 ml-2">경영시뮬레이션 · 준비중</span>
+        <span class="text-xs text-gray-400 ml-2">Rolling Planning Simulation</span>
+        <!-- 조회조건 -->
+        <div class="sel-bar ml-4">
+            <div class="sel-grp"><label>기준월</label><select id="selYm"><option value="202607">2026.07</option><option value="202606">2026.06</option><option value="202605" selected>2026.05</option><option value="202604">2026.04</option></select></div>
+            <div class="sel-grp"><label>사업부</label><select id="selDiv"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
+            <div class="sel-grp"><label>호기</label><select id="selMc"><option value="ALL" selected>전체</option><option value="M01">1호기</option><option value="M02">2호기</option><option value="M03">3호기</option></select></div>
+        </div>
         <div class="ml-auto flex items-center gap-2">
             <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
             <button onclick="doLogout()" title="로그아웃" style="display:flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit;transition:all .15s;" onmouseover="this.style.background='#fef2f2';this.style.color='#dc2626';this.style.borderColor='#fecaca';" onmouseout="this.style.background='#fff';this.style.color='#6b7280';this.style.borderColor='#e5e7eb';"><i class="fas fa-sign-out-alt"></i><span>로그아웃</span></button>
         </div>
     </div>
 
-    <div class="content-area">
-        <!-- [2026-09-23] 사용자 요청: 경영시뮬레이션 하위 [테스트 메뉴] 는 그냥 흰 페이지 하나 -->
-        <!-- 추후 실제 컨텐츠가 채워질 자리 -->
+    <!-- TABS -->
+    <div class="sim-tabs">
+        <div class="sim-tab active" onclick="switchTab('pl')"><i class="fas fa-sliders-h"></i>P/L 시뮬레이터</div>
+        <div class="sim-tab" onclick="switchTab('causal')"><i class="fas fa-project-diagram"></i>KPI 인과관계</div>
+        <div class="sim-tab" onclick="switchTab('material')"><i class="fas fa-boxes-stacked"></i>지종별 원재료비</div>
+        <div class="sim-tab" onclick="switchTab('ref')"><i class="fas fa-cog"></i>기준정보 관리</div>
+        <div class="sim-tab" onclick="switchTab('optime')"><i class="fas fa-clock"></i>가동시간</div>
+        <div class="sim-tab" onclick="switchTab('readiness')"><i class="fas fa-clipboard-check"></i>데이터 준비 현황</div>
     </div>
+
+    <div class="content-area" style="padding:20px;">
+
+<!-- ===================== TAB: P/L 시뮬레이터 ===================== -->
+<div id="tab-pl" class="fade-in">
+    <div class="sim-card" style="padding:20px;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-industry text-indigo-500 mr-2"></i>생산량 조정</h3>
+            <button onclick="resetSlider()" style="font-size:11px;color:#94a3b8;cursor:pointer;background:none;border:none;"><i class="fas fa-redo mr-1"></i>초기화</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:20px;">
+            <div style="flex:1;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                    <span style="font-size:12px;color:#64748b;">당월 실적: <b>8,368 톤</b></span>
+                    <span style="font-size:12px;color:#4f46e5;font-weight:700;" id="sliderLbl">시뮬: 8,368 톤</span>
+                </div>
+                <input type="range" min="5000" max="15000" value="8368" step="100" class="sim-slider" id="prodSlider" oninput="calcPL()">
+                <div style="display:flex;justify-content:space-between;"><span style="font-size:10px;color:#94a3b8;">5,000</span><span style="font-size:10px;color:#94a3b8;">15,000</span></div>
+            </div>
+            <div style="text-align:center;padding:12px 20px;background:#eef2ff;border-radius:10px;border:1px solid #c7d2fe;min-width:110px;">
+                <div style="font-size:10px;color:#6366f1;font-weight:700;">변동</div>
+                <div style="font-size:22px;font-weight:800;color:#4f46e5;" id="prodDelta">0%</div>
+            </div>
+        </div>
+    </div>
+    <!-- P/L Summary -->
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px;" id="plCards"></div>
+    <!-- P/L Table -->
+    <div class="sim-card" style="margin-bottom:16px;overflow:hidden;">
+        <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+            <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-table text-indigo-500 mr-1"></i>P/L 상세</h3>
+            <span style="font-size:10px;color:#94a3b8;">단위: 천원/톤</span>
+        </div>
+        <div style="overflow-x:auto;"><table class="sim-tbl"><thead><tr><th>항목</th><th>비용성격</th><th class="r">당월 원단위</th><th class="r">전월</th><th class="r">시뮬 원단위</th><th class="r">시뮬 총비용(백만)</th><th class="r">증감</th><th>데이터</th></tr></thead><tbody id="plTbody"></tbody></table></div>
+    </div>
+    <!-- Chart -->
+    <div class="sim-card" style="padding:16px;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 12px;"><i class="fas fa-chart-bar text-indigo-500 mr-1"></i>비용 구조 비교</h3><div style="height:260px;position:relative;"><canvas id="costChart"></canvas></div></div>
+</div>
+
+<!-- ===================== TAB: KPI 인과관계 ===================== -->
+<div id="tab-causal" style="display:none;" class="fade-in">
+    <div class="sim-card" style="padding:24px;">
+        <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 20px;"><i class="fas fa-project-diagram text-purple-500 mr-2"></i>KPI 인과관계 네트워크 맵</h3>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+            <div class="kpi-nd nd-blue"><div class="kpi-lb">INPUT</div><div class="kpi-vl" id="causalProd">8,368</div><div class="kpi-sb">생산량 (톤/월)</div></div>
+            <div class="arrow-d"></div>
+            <div style="display:flex;gap:8px;align-items:start;flex-wrap:wrap;justify-content:center;">
+                <div style="text-align:center;"><div class="kpi-nd nd-amber"><div class="kpi-lb">변동비</div><div class="kpi-vl">327.3</div><div class="kpi-sb">원재료비</div></div><div style="font-size:10px;color:#16a34a;font-weight:600;margin-top:4px;"><i class="fas fa-database mr-1"></i>DB</div></div>
+                <div class="arrow-r" style="margin-top:28px;"></div>
+                <div style="text-align:center;"><div class="kpi-nd nd-amber"><div class="kpi-lb">준변동비</div><div class="kpi-vl">-</div><div class="kpi-sb">전력비</div></div><div style="font-size:10px;color:#f59e0b;font-weight:600;margin-top:4px;"><i class="fas fa-exclamation-circle mr-1"></i>준비중</div></div>
+                <div class="arrow-r" style="margin-top:28px;"></div>
+                <div style="text-align:center;"><div class="kpi-nd nd-amber"><div class="kpi-lb">준변동비</div><div class="kpi-vl">-</div><div class="kpi-sb">물류비</div></div><div style="font-size:10px;color:#f59e0b;font-weight:600;margin-top:4px;"><i class="fas fa-exclamation-circle mr-1"></i>준비중</div></div>
+                <div class="arrow-r" style="margin-top:28px;"></div>
+                <div style="text-align:center;"><div class="kpi-nd nd-green"><div class="kpi-lb">고정비</div><div class="kpi-vl">-</div><div class="kpi-sb">인건비</div></div></div>
+                <div class="arrow-r" style="margin-top:28px;"></div>
+                <div style="text-align:center;"><div class="kpi-nd nd-green"><div class="kpi-lb">고정비</div><div class="kpi-vl">-</div><div class="kpi-sb">감가상각</div></div></div>
+            </div>
+            <div class="arrow-d"></div>
+            <div class="kpi-nd nd-indigo"><div class="kpi-lb">OUTPUT</div><div class="kpi-vl" id="causalProfit">-327.3</div><div class="kpi-sb">영업이익 (천원/톤)</div></div>
+        </div>
+        <div style="margin-top:20px;padding:12px;background:#f8fafc;border-radius:8px;font-size:11px;color:#64748b;">
+            <b><i class="fas fa-info-circle text-indigo-400 mr-1"></i>범례:</b>
+            <span style="margin-left:12px;"><span style="display:inline-block;width:10px;height:10px;background:#fde68a;border:1px solid #fcd34d;border-radius:3px;vertical-align:middle;margin-right:3px;"></span>변동비=생산량 비례</span>
+            <span style="margin-left:12px;"><span style="display:inline-block;width:10px;height:10px;background:#dcfce7;border:1px solid #86efac;border-radius:3px;vertical-align:middle;margin-right:3px;"></span>고정비=톤당 역비례</span>
+        </div>
+    </div>
+</div>
+
+<!-- ===================== TAB: 지종별 원재료비 ===================== -->
+<div id="tab-material" style="display:none;" class="fade-in">
+    <div class="sim-card" style="overflow:hidden;margin-bottom:16px;">
+        <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-boxes-stacked text-amber-500 mr-1"></i>지종별 원재료비 드릴다운</h3></div>
+        <div style="overflow-x:auto;"><table class="sim-tbl"><thead><tr><th>지종</th><th class="r">생산량(톤)</th><th class="r">원재료비(원)</th><th class="r">원단위(천원/톤)</th><th class="r">전월 생산량</th><th class="r">전월 원단위</th><th class="r">증감</th><th class="r">비중(%)</th></tr></thead><tbody id="matTbody"></tbody></table></div>
+    </div>
+    <div class="sim-card" style="padding:16px;"><div style="height:260px;position:relative;"><canvas id="matChart"></canvas></div></div>
+</div>
+
+<!-- ===================== TAB: 기준정보 관리 ===================== -->
+<div id="tab-ref" style="display:none;" class="fade-in">
+    <div class="ref-tabs" id="refTabs"></div>
+    <div class="sim-card" style="overflow:hidden;">
+        <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+            <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;" id="refTitle"><i class="fas fa-cog text-indigo-500 mr-1"></i>호기 마스터</h3>
+            <button class="btn-primary" style="font-size:12px;padding:6px 14px;" onclick="openRefModal()"><i class="fas fa-plus mr-1"></i>등록</button>
+        </div>
+        <div style="overflow-x:auto;max-height:500px;" id="refTableWrap"></div>
+    </div>
+</div>
+
+<!-- ===================== TAB: 가동시간 ===================== -->
+<div id="tab-optime" style="display:none;" class="fade-in">
+    <div class="sim-card" style="overflow:hidden;">
+        <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+            <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-clock text-cyan-500 mr-1"></i>월별 호기별 가동시간</h3>
+            <button class="btn-primary" style="font-size:12px;padding:6px 14px;" onclick="openOptimeModal()"><i class="fas fa-plus mr-1"></i>등록</button>
+        </div>
+        <div style="overflow-x:auto;"><table class="sim-tbl"><thead><tr><th>연월</th><th>호기</th><th class="r">총일수</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th><th>등록일</th></tr></thead><tbody id="optTbody"></tbody></table></div>
+    </div>
+</div>
+
+<!-- ===================== TAB: 데이터 준비 현황 ===================== -->
+<div id="tab-readiness" style="display:none;" class="fade-in">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;" id="readCards"></div>
+</div>
+
+<!-- MODAL CONTAINER -->
+<div id="modalBg" class="sim-modal-bg" style="display:none;" onclick="if(event.target===this)closeModal()">
+    <div class="sim-modal" id="modalContent"></div>
+</div>
+
+    </div><!-- /content-area -->
 </div>
 
 <script>
@@ -75,6 +268,293 @@ function closeSidebar() {
 async function doLogout(){
     try { await fetch('/api/logout', { method:'POST' }); } catch(_) {}
     window.location.href = '/login';
+}
+
+// ============================================================
+// API BASE
+// ============================================================
+const API = '/rolling-planning-simulation-api';
+const BASE_PROD = 8368;
+let costChart = null, matChart = null;
+
+// ============================================================
+// Tab switching
+// ============================================================
+function switchTab(id) {
+    document.querySelectorAll('.sim-tab').forEach((t,i) => {
+        const tabs = ['pl','causal','material','ref','optime','readiness'];
+        t.classList.toggle('active', tabs[i] === id);
+    });
+    ['pl','causal','material','ref','optime','readiness'].forEach(k => {
+        const el = document.getElementById('tab-' + k);
+        if (el) el.style.display = k === id ? '' : 'none';
+    });
+}
+
+// ============================================================
+// Formatters
+// ============================================================
+function fmt(n) { return n.toLocaleString('ko-KR', {maximumFractionDigits:1}); }
+function fmtI(n) { return Math.round(n).toLocaleString('ko-KR'); }
+
+// ============================================================
+// P/L Simulator
+// ============================================================
+const PL = [
+    {label:'매출액',key:'revenue',beh:'-',rate:0,prev:0,db:false,note:'수동 입력'},
+    {label:'원재료비',key:'material',beh:'변동비',rate:327.3,prev:315.8,db:true,note:'DB 자동'},
+    {label:'전력비',key:'energy',beh:'준변동비',rate:0,prev:0,db:false,note:'준비중'},
+    {label:'물류비',key:'logistics',beh:'준변동비',rate:0,prev:0,db:false,note:'준비중'},
+    {label:'인건비',key:'labor',beh:'고정비',rate:0,prev:0,db:false,note:'수동 입력'},
+    {label:'감가상각',key:'depr',beh:'고정비',rate:0,prev:0,db:false,note:'수동 입력'},
+    {label:'판관비',key:'sga',beh:'고정비',rate:0,prev:0,db:false,note:'수동 입력'},
+];
+
+function calcPL() {
+    const sp = parseInt(document.getElementById('prodSlider').value);
+    const ratio = sp / BASE_PROD;
+    const dp = ((ratio - 1) * 100).toFixed(1);
+    document.getElementById('sliderLbl').textContent = '시뮬: ' + fmtI(sp) + ' 톤';
+    const dEl = document.getElementById('prodDelta');
+    dEl.textContent = (dp >= 0 ? '+' : '') + dp + '%';
+    dEl.style.color = dp > 0 ? '#4f46e5' : dp < 0 ? '#dc2626' : '#475569';
+    try { document.getElementById('causalProd').textContent = fmtI(sp); } catch(_){}
+
+    const cards = document.getElementById('plCards');
+    const tbody = document.getElementById('plTbody');
+    let cardsH = '', tbH = '', totalCost = 0;
+    const simRates = [];
+
+    PL.forEach(item => {
+        let sr = item.rate;
+        if (item.beh === '고정비' && item.rate > 0) sr = item.rate * BASE_PROD / sp;
+        simRates.push(sr);
+        if (item.key !== 'revenue') totalCost += sr;
+        const simTotal = sr * sp / 1000;
+        const diff = sr - item.rate;
+        const dc = diff > 0 ? 'color:#dc2626' : diff < 0 ? 'color:#16a34a' : 'color:#94a3b8';
+        const di = diff > 0 ? 'fa-arrow-up' : diff < 0 ? 'fa-arrow-down' : 'fa-minus';
+        const dbB = item.db ? '<span style="font-size:10px;color:#16a34a;"><i class="fas fa-check-circle mr-1"></i>DB</span>' : '<span style="font-size:10px;color:#94a3b8;"><i class="fas fa-keyboard mr-1"></i>' + item.note + '</span>';
+        const behC = item.beh === '변동비' ? 'background:#fef3c7;color:#92400e' : item.beh === '준변동비' ? 'background:#fefce8;color:#a16207' : item.beh === '고정비' ? 'background:#dcfce7;color:#166534' : 'background:#f1f5f9;color:#64748b';
+        tbH += '<tr><td style="font-weight:600;">' + item.label + '</td><td><span style="font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;' + behC + '">' + item.beh + '</span></td><td class="r mono" style="font-weight:600;">' + fmt(item.rate) + '</td><td class="r mono" style="color:#94a3b8;">' + fmt(item.prev) + '</td><td class="r mono" style="font-weight:700;color:#4f46e5;">' + fmt(sr) + '</td><td class="r mono">' + (item.rate > 0 ? fmt(simTotal) : '-') + '</td><td class="r" style="font-weight:600;' + dc + '"><i class="fas ' + di + '" style="font-size:9px;margin-right:3px;"></i>' + fmt(Math.abs(diff)) + '</td><td>' + dbB + '</td></tr>';
+    });
+
+    const profit = 0 - totalCost;
+    const cardItems = [
+        {lbl:'매출액',val:0,unit:'천원/톤',tag:'수동 입력',tc:'#475569',bc:''},
+        {lbl:'원재료비',val:simRates[1],unit:'천원/톤',tag:'DB 자동',tc:'#d97706',bc:'border-left:4px solid #f59e0b;'},
+        {lbl:'전력비',val:0,unit:'천원/톤',tag:'준비중',tc:'#475569',bc:''},
+        {lbl:'물류비',val:0,unit:'천원/톤',tag:'준비중',tc:'#475569',bc:''},
+        {lbl:'영업이익',val:profit,unit:'천원/톤',tag:'자동 산출',tc:'#4f46e5',bc:'border-left:4px solid #4f46e5;'},
+    ];
+    cardsH = cardItems.map(c => '<div class="sim-card" style="padding:14px;text-align:center;' + c.bc + '"><div style="font-size:10px;color:#94a3b8;font-weight:600;">' + c.lbl + '</div><div style="font-size:18px;font-weight:800;color:' + c.tc + ';margin:4px 0;">' + fmt(c.val) + '</div><div style="font-size:10px;color:#94a3b8;">' + c.unit + '</div><div style="font-size:10px;color:#94a3b8;margin-top:4px;">' + c.tag + '</div></div>').join('');
+    cards.innerHTML = cardsH;
+    tbody.innerHTML = tbH;
+    try { document.getElementById('causalProfit').textContent = fmt(profit); } catch(_){}
+
+    if (costChart) {
+        costChart.data.datasets[0].data = PL.filter(i => i.key !== 'revenue').map(i => i.rate);
+        costChart.data.datasets[1].data = simRates.filter((_, idx) => PL[idx].key !== 'revenue');
+        costChart.update();
+    }
+}
+function resetSlider() { document.getElementById('prodSlider').value = BASE_PROD; calcPL(); }
+
+// ============================================================
+// Material by Product (mock)
+// ============================================================
+const MAT_DATA = [
+    {p:'SC저평량',ton:3280,cost:985000000,unit:300.3,pTon:3100,pUnit:296.8,pct:36.0},
+    {p:'SC고평량',ton:2150,cost:730000000,unit:339.5,pTon:2000,pUnit:335.0,pct:26.7},
+    {p:'ACB',ton:1680,cost:580000000,unit:345.2,pTon:1500,pUnit:333.3,pct:21.2},
+    {p:'KB',ton:720,cost:250000000,unit:347.2,pTon:680,pUnit:338.2,pct:9.1},
+    {p:'IV',ton:380,cost:130000000,unit:342.1,pTon:340,pUnit:338.2,pct:4.7},
+    {p:'백판지 기타',ton:158,cost:63802450,unit:403.8,pTon:140,pUnit:392.9,pct:2.3},
+];
+function renderMat() {
+    document.getElementById('matTbody').innerHTML = MAT_DATA.map(m => {
+        const d = m.unit - m.pUnit; const c = d > 0 ? 'color:#dc2626' : 'color:#16a34a';
+        return '<tr><td style="font-weight:600;">' + m.p + '</td><td class="r mono">' + fmtI(m.ton) + '</td><td class="r mono">' + fmtI(m.cost) + '</td><td class="r mono" style="font-weight:700;">' + fmt(m.unit) + '</td><td class="r mono" style="color:#94a3b8;">' + fmtI(m.pTon) + '</td><td class="r mono" style="color:#94a3b8;">' + fmt(m.pUnit) + '</td><td class="r" style="font-weight:600;' + c + '">' + (d > 0 ? '+' : '') + fmt(d) + '</td><td class="r mono">' + fmt(m.pct) + '%</td></tr>';
+    }).join('');
+}
+
+// ============================================================
+// 기준정보 관리
+// ============================================================
+const REF_DEFS = [
+    {key:'units',label:'호기 마스터',icon:'fa-industry',cols:['unitCode','unitName','division','description','isActive'],headers:['호기코드','호기명','사업부','설명','활성'],idKey:'unitId'},
+    {key:'materials',label:'원부자재 마스터',icon:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','isActive'],headers:['자재코드','자재명','구분','단위','활성'],idKey:'materialId'},
+    {key:'machine-capacities',label:'호기별 생산능력',icon:'fa-tachometer-alt',cols:['machineCode','hourlyCapacity','basisWeightRef','validFrom','validTo'],headers:['호기코드','시간당능력(톤/h)','기준평량','유효시작','유효종료'],idKey:'capacityId'},
+    {key:'pw-lines',label:'전력비 호기',icon:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun','kwhPerHourStby'],headers:['호기코드','호기명','라인그룹','가동kWh/h','운휴kWh/h'],idKey:'pwLineId'},
+    {key:'pw-tariffs',label:'한전 요금 단가',icon:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],headers:['연도','시즌','시간대','기본요금(원/kW)','전력량(원/kWh)'],idKey:'tariffId'},
+    {key:'logi-rates',label:'해상 운임 단가',icon:'fa-ship',cols:['yearQuarter','region','port','containerUnit','rateUsd'],headers:['분기','지역','항구','컨테이너','운임(USD)'],idKey:'rateId'},
+    {key:'exchange-rates',label:'월별 환율',icon:'fa-exchange-alt',cols:['year','month','currency','rate','memo'],headers:['연도','월','통화','환율(원)','메모'],idKey:'exchangeId'},
+    {key:'logi-cost-local',label:'국내 출발항 운임',icon:'fa-truck',cols:['yearQuarter','portOrigin','containerSize','containerFeeKrw','extraFeeKrw'],headers:['분기','출발항','컨테이너','컨테이너비(원)','부대비용(원)'],idKey:'localCostId'},
+];
+let curRef = 0;
+let refData = [];
+
+function renderRefTabs() {
+    document.getElementById('refTabs').innerHTML = REF_DEFS.map((d,i) => '<div class="ref-tab' + (i === curRef ? ' active' : '') + '" onclick="switchRef(' + i + ')"><i class="fas ' + d.icon + ' mr-1"></i>' + d.label + '</div>').join('');
+}
+function switchRef(idx) {
+    curRef = idx;
+    renderRefTabs();
+    document.getElementById('refTitle').innerHTML = '<i class="fas ' + REF_DEFS[idx].icon + ' text-indigo-500 mr-1"></i>' + REF_DEFS[idx].label;
+    loadRefData();
+}
+async function loadRefData() {
+    const def = REF_DEFS[curRef];
+    try {
+        const r = await fetch(API + '/' + def.key + '?division=' + (document.getElementById('selDiv')?.value || 'PS'));
+        const j = await r.json();
+        refData = j.data?.content || j.data || [];
+    } catch(_) { refData = []; }
+    renderRefTable();
+}
+function renderRefTable() {
+    const def = REF_DEFS[curRef];
+    let h = '<table class="sim-tbl"><thead><tr>' + def.headers.map(h => '<th>' + h + '</th>').join('') + '<th style="width:80px;">관리</th></tr></thead><tbody>';
+    if (refData.length === 0) {
+        h += '<tr><td colspan="' + (def.headers.length + 1) + '" style="text-align:center;padding:40px;color:#94a3b8;">데이터가 없습니다. [등록] 버튼을 눌러 추가하세요.</td></tr>';
+    } else {
+        refData.forEach(row => {
+            h += '<tr>' + def.cols.map(c => {
+                let v = row[c];
+                if (v === true) v = '<span style="color:#16a34a;font-weight:700;">Y</span>';
+                else if (v === false) v = '<span style="color:#dc2626;">N</span>';
+                else if (v == null) v = '-';
+                return '<td class="mono">' + v + '</td>';
+            }).join('');
+            h += '<td><button onclick="deleteRef(' + row[def.idKey] + ')" style="font-size:11px;color:#ef4444;cursor:pointer;background:none;border:none;" title="삭제"><i class="fas fa-trash"></i></button></td></tr>';
+        });
+    }
+    h += '</tbody></table>';
+    document.getElementById('refTableWrap').innerHTML = h;
+}
+function openRefModal() {
+    const def = REF_DEFS[curRef];
+    let h = '<h3><i class="fas ' + def.icon + ' text-indigo-500"></i> ' + def.label + ' 등록</h3>';
+    def.cols.forEach((c,i) => {
+        if (c === 'isActive') {
+            h += '<label>' + def.headers[i] + '</label><select name="' + c + '"><option value="true">Y</option><option value="false">N</option></select>';
+        } else {
+            h += '<label>' + def.headers[i] + '</label><input name="' + c + '" placeholder="' + def.headers[i] + '">';
+        }
+    });
+    h += '<div class="modal-btns"><button class="btn-ghost" onclick="closeModal()">취소</button><button class="btn-primary" onclick="saveRef()">저장</button></div>';
+    document.getElementById('modalContent').innerHTML = h;
+    document.getElementById('modalBg').style.display = 'flex';
+}
+async function saveRef() {
+    const def = REF_DEFS[curRef];
+    const body = {};
+    def.cols.forEach(c => {
+        const el = document.querySelector('.sim-modal [name="' + c + '"]');
+        if (!el) return;
+        let v = el.value;
+        if (c === 'isActive') v = v === 'true';
+        else if (['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','volumePerMonth','containerFeeKrw','extraFeeKrw','rate'].includes(c)) v = parseFloat(v) || 0;
+        else if (['year','month','displayOrder','sortOrder'].includes(c)) v = parseInt(v) || 0;
+        body[c] = v;
+    });
+    body.division = document.getElementById('selDiv')?.value || 'PS';
+    try {
+        await fetch(API + '/' + def.key, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    } catch(_) {}
+    closeModal();
+    loadRefData();
+}
+async function deleteRef(id) {
+    if (!confirm('삭제하시겠습니까?')) return;
+    const def = REF_DEFS[curRef];
+    try { await fetch(API + '/' + def.key + '/' + id, {method:'DELETE'}); } catch(_) {}
+    loadRefData();
+}
+
+// ============================================================
+// 가동시간 (mock)
+// ============================================================
+const OPT_DATA = [
+    {ym:'202605',mc:'M01',td:31,ps:3,nd:24.5,wd:.8,sd:.5,td2:.3,rd:1.2,cd:.5,ad:.2,dt:'2026-06-02'},
+    {ym:'202605',mc:'M02',td:31,ps:4,nd:23.0,wd:.6,sd:.4,td2:.5,rd:1.5,cd:.8,ad:.2,dt:'2026-06-02'},
+    {ym:'202605',mc:'M03',td:31,ps:2,nd:25.2,wd:.5,sd:.3,td2:.4,rd:1.8,cd:.6,ad:.2,dt:'2026-06-02'},
+    {ym:'202604',mc:'M01',td:30,ps:2,nd:24.8,wd:.7,sd:.3,td2:.2,rd:1.0,cd:.8,ad:.2,dt:'2026-05-03'},
+    {ym:'202604',mc:'M02',td:30,ps:3,nd:23.5,wd:.5,sd:.5,td2:.3,rd:1.2,cd:.8,ad:.2,dt:'2026-05-03'},
+];
+function renderOpt() {
+    document.getElementById('optTbody').innerHTML = OPT_DATA.map(o => '<tr><td style="font-weight:600;">' + o.ym.slice(0,4) + '/' + o.ym.slice(4) + '</td><td style="font-weight:600;color:#4f46e5;">' + o.mc + '</td><td class="r mono">' + o.td + '</td><td class="r mono" style="color:#ef4444;">' + o.ps + '</td><td class="r mono" style="color:#16a34a;font-weight:600;">' + o.nd + '</td><td class="r mono">' + o.wd + '</td><td class="r mono">' + o.sd + '</td><td class="r mono">' + o.td2 + '</td><td class="r mono" style="color:#f59e0b;">' + o.rd + '</td><td class="r mono">' + o.cd + '</td><td class="r mono" style="color:#ef4444;">' + o.ad + '</td><td style="font-size:11px;color:#94a3b8;">' + o.dt + '</td></tr>').join('');
+}
+function openOptimeModal() {
+    let h = '<h3><i class="fas fa-clock text-cyan-500"></i> 가동시간 등록</h3>';
+    [['division','사업부'],['machineCode','호기코드'],['ym','연월(YYYYMM)'],['totalDays','총일수'],['plannedShutdownDays','계획운휴'],['operationNormalDays','정상가동'],['operationWasteDays','폐품'],['operationUnplannedDays','비계획'],['operationStartupDays','초출'],['operationTrimmingDays','절지'],['downtimeRepairDays','정비'],['downtimeCleaningDays','세척'],['downtimeAccidentDays','사고']].forEach(([n,l]) => {
+        h += '<label>' + l + '</label><input name="' + n + '" placeholder="' + l + '">';
+    });
+    h += '<div class="modal-btns"><button class="btn-ghost" onclick="closeModal()">취소</button><button class="btn-primary" onclick="saveOptime()">저장</button></div>';
+    document.getElementById('modalContent').innerHTML = h;
+    document.getElementById('modalBg').style.display = 'flex';
+}
+async function saveOptime() {
+    const body = {};
+    document.querySelectorAll('.sim-modal input').forEach(el => {
+        let v = el.value;
+        if (['totalDays','plannedShutdownDays','operationNormalDays','operationWasteDays','operationUnplannedDays','operationStartupDays','operationTrimmingDays','downtimeRepairDays','downtimeCleaningDays','downtimeAccidentDays'].includes(el.name)) v = parseFloat(v) || 0;
+        body[el.name] = v;
+    });
+    try { await fetch(API + '/operating-time', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); } catch(_) {}
+    closeModal();
+}
+
+// ============================================================
+// 데이터 준비 현황 (mock)
+// ============================================================
+const READY = [
+    {code:'MATERIAL',name:'원부재료비',st:'READY',cnt:12847,desc:'SAP BW 원부재료비 실적'},
+    {code:'POWER',name:'전력비',st:'PARTIAL',cnt:0,desc:'한전 전력비 계산 결과'},
+    {code:'LOGISTICS',name:'물류비',st:'PARTIAL',cnt:0,desc:'해상 물류비 + 국내 운임'},
+];
+function renderReady() {
+    document.getElementById('readCards').innerHTML = READY.map(m => {
+        const bc = m.st === 'READY' ? 'b-ready' : m.st === 'PARTIAL' ? 'b-partial' : 'b-empty';
+        const ic = m.st === 'READY' ? 'fa-check-circle text-green-500' : m.st === 'PARTIAL' ? 'fa-exclamation-triangle text-yellow-500' : 'fa-times-circle text-red-500';
+        const sl = m.st === 'READY' ? '준비 완료' : m.st === 'PARTIAL' ? '부분 준비' : '데이터 없음';
+        return '<div class="sim-card" style="padding:20px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div style="display:flex;align-items:center;gap:8px;"><i class="fas ' + ic + '" style="font-size:16px;"></i><span style="font-size:14px;font-weight:700;color:#1e293b;">' + m.name + '</span></div><span style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:10px;" class="' + bc + '">' + sl + '</span></div><div style="font-size:12px;color:#64748b;margin-bottom:8px;">' + m.desc + '</div><div style="font-size:11px;color:#94a3b8;"><i class="fas fa-database mr-1"></i>' + (m.cnt > 0 ? fmtI(m.cnt) + '건' : '-') + '</div><div style="font-size:10px;color:#cbd5e1;margin-top:4px;text-transform:uppercase;letter-spacing:.5px;">' + m.code + '</div></div>';
+    }).join('');
+}
+
+// ============================================================
+// Modal
+// ============================================================
+function closeModal() { document.getElementById('modalBg').style.display = 'none'; }
+
+// ============================================================
+// Charts
+// ============================================================
+function initCharts() {
+    const labels = PL.filter(i => i.key !== 'revenue').map(i => i.label);
+    costChart = new Chart(document.getElementById('costChart').getContext('2d'), {
+        type:'bar', data:{labels, datasets:[
+            {label:'당월',data:PL.filter(i=>i.key!=='revenue').map(i=>i.rate),backgroundColor:'rgba(79,70,229,.55)',borderRadius:5,maxBarThickness:36},
+            {label:'시뮬',data:PL.filter(i=>i.key!=='revenue').map(i=>i.rate),backgroundColor:'rgba(245,158,11,.55)',borderRadius:5,maxBarThickness:36},
+        ]}, options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:11,family:'Noto Sans KR'}}}},scales:{y:{beginAtZero:true,title:{display:true,text:'천원/톤',font:{size:11}}}}}
+    });
+    matChart = new Chart(document.getElementById('matChart').getContext('2d'), {
+        type:'doughnut', data:{labels:MAT_DATA.map(m=>m.p),datasets:[{data:MAT_DATA.map(m=>m.pct),backgroundColor:['#4f46e5','#7c3aed','#f59e0b','#10b981','#ef4444','#8b5cf6'],borderWidth:2,borderColor:'#fff'}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{font:{size:11,family:'Noto Sans KR'},padding:10}}}}
+    });
+}
+
+// ============================================================
+// Init (after /api/me)
+// ============================================================
+function initSimulation() {
+    calcPL();
+    renderMat();
+    renderRefTabs();
+    loadRefData();
+    renderOpt();
+    renderReady();
+    initCharts();
 }
 
 // /api/me 로드 → 로그인 여부, 사용자명, 사이드바 메뉴 렌더
@@ -96,7 +576,13 @@ async function doLogout(){
         if (window.PlatformSidebar) {
             window.PlatformSidebar.render(me.menus || [], { activeUrl: '/simulation-test.html' });
         }
-    } catch(e) { window.location.href = '/login'; }
+        // 시뮬레이션 UI 초기화
+        initSimulation();
+    } catch(e) {
+        // 로그인 실패 시에도 UI는 표시 (개발 편의)
+        console.warn('[init] /api/me 실패:', e.message);
+        initSimulation();
+    }
 })();
 </script>
 </body>
