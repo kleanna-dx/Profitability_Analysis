@@ -2,7 +2,9 @@ package com.company.module.rollingplanningsimulation.service;
 
 import com.company.module.rollingplanningsimulation.dto.response.CostUnitRateResponse;
 import com.company.module.rollingplanningsimulation.dto.response.DataReadinessResponse;
+import com.company.module.rollingplanningsimulation.repository.LogiRateRepository;
 import com.company.module.rollingplanningsimulation.repository.OperatingTimeRepository;
+import com.company.module.rollingplanningsimulation.repository.PwResultRepository;
 import com.company.module.rollingplanningsimulation.repository.RawRecordRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -26,6 +28,8 @@ public class SimulationService {
 
     private final RawRecordRepository rawRecordRepository;
     private final OperatingTimeRepository operatingTimeRepository;
+    private final PwResultRepository pwResultRepository;
+    private final LogiRateRepository logiRateRepository;
 
     /**
      * 비용 원단위 조회 (P/L 시뮬레이터 초기화용)
@@ -163,8 +167,11 @@ public class SimulationService {
      * 데이터 준비 현황 대시보드
      */
     public DataReadinessResponse getDataReadiness(String ym, String division) {
+        // 실제 DB에서 각 모듈별 건수 조회
         long rawCount = rawRecordRepository.countByCalendarYm(ym);
-        // TODO: 전력비, 물류비, 가동시간 모듈별 건수 체크
+        long pwCount = pwResultRepository.countByYmAndDivision(ym, division);
+        long logiCount = logiRateRepository.findByDeletedYnOrderByYearQuarterDescSortOrderAsc("N").size();
+        long optimeCount = operatingTimeRepository.countByDivisionAndYmAndDeletedYn(division, ym, "N");
 
         List<DataReadinessResponse.ModuleStatus> modules = new ArrayList<>();
         modules.add(DataReadinessResponse.ModuleStatus.builder()
@@ -177,16 +184,23 @@ public class SimulationService {
         modules.add(DataReadinessResponse.ModuleStatus.builder()
                 .moduleCode("POWER")
                 .moduleName("전력비")
-                .status("PARTIAL")
-                .recordCount(0)
+                .status(pwCount > 0 ? "READY" : "EMPTY")
+                .recordCount(pwCount)
                 .description("한전 전력비 계산 결과")
                 .build());
         modules.add(DataReadinessResponse.ModuleStatus.builder()
                 .moduleCode("LOGISTICS")
                 .moduleName("물류비")
-                .status("PARTIAL")
-                .recordCount(0)
+                .status(logiCount > 0 ? "READY" : "EMPTY")
+                .recordCount(logiCount)
                 .description("해상 물류비 + 국내 운임")
+                .build());
+        modules.add(DataReadinessResponse.ModuleStatus.builder()
+                .moduleCode("OPTIME")
+                .moduleName("가동시간")
+                .status(optimeCount > 0 ? "READY" : "EMPTY")
+                .recordCount(optimeCount)
+                .description("월별 호기별 가동일수")
                 .build());
 
         return DataReadinessResponse.builder()
