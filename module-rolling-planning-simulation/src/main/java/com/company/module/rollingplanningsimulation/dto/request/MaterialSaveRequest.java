@@ -10,6 +10,10 @@ public class MaterialSaveRequest {
     @NotBlank(message = "자재명은 필수입니다") private String materialName;
     private String category;
     private String unitOfMeasure;
+    private String materialGroup;
+    private String materialGroupName;
+    private String materialGroupLarge;
+    private String materialGroupLargeName;
     private String description;
     private Boolean isActive;
 }
