@@ -152,8 +152,6 @@
         <div class="sub-tab" onclick="subTab(1,'upload')">엑셀 업로드</div>
         <div class="sub-tab" onclick="subTab(1,'raw')">업로드 데이터 조회</div>
         <div class="sub-tab" onclick="subTab(1,'ref')">기준정보 관리</div>
-        <div class="sub-tab" onclick="subTab(1,'speed')">제지 생산 선속</div>
-        <div class="sub-tab" onclick="subTab(1,'optime')">가동시간 관리</div>
     </div>
 
     <!-- 1-1 데이터 준비 현황 -->
@@ -232,7 +230,7 @@
         <div class="sc" style="overflow:hidden;">
             <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
                 <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;" id="refTitle"><i class="fas fa-cog text-indigo-500 mr-1"></i>호기 마스터</h3>
-                <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                <div id="refBtns" style="display:flex;gap:5px;flex-wrap:wrap;">
                     <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="downloadRefTemplate()"><i class="fas fa-file-download mr-1"></i>양식 다운로드</button>
                     <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="document.getElementById('refFileInput').click()"><i class="fas fa-file-upload mr-1"></i>엑셀 업로드</button>
                     <input type="file" id="refFileInput" accept=".xlsx,.xls,.csv" style="display:none;" onchange="uploadRefExcel(this)">
@@ -244,30 +242,6 @@
         </div>
     </div>
 
-    <!-- 1-5 제지 생산 선속 -->
-    <div id="s1-speed" style="display:none;">
-        <div class="sc" style="overflow:hidden;">
-            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
-                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-tachometer-alt text-blue-500 mr-1"></i>호기별/지종별 초지기 선속</h3>
-                <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="openSpeedModal()"><i class="fas fa-plus mr-1"></i>등록</button>
-            </div>
-            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th>지종</th><th class="r">평량(g/m²)</th><th class="r">지폭(mm)</th><th class="r">선속(m/min)</th><th class="r">이론생산(톤/일)</th><th>비고</th></tr></thead><tbody id="speedTb"><tr><td colspan="7" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr></tbody></table></div>
-            <div style="padding:12px 16px;background:#f8fafc;font-size:11px;color:#64748b;">
-                <b>이론 생산량(톤/일)</b> = 평량(g/m²) × 0.001 × 0.001 × 지폭(mm) × 0.001 × 선속(m/min) × 1440
-            </div>
-        </div>
-    </div>
-
-    <!-- 1-6 가동시간 관리 -->
-    <div id="s1-optime" style="display:none;">
-        <div class="sc" style="overflow:hidden;">
-            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
-                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-clock text-cyan-500 mr-1"></i>월별 호기별 가동시간</h3>
-                <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="openOptModal()"><i class="fas fa-plus mr-1"></i>등록</button>
-            </div>
-            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>연월</th><th>호기</th><th class="r">총일수</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th></tr></thead><tbody id="optTb"></tbody></table></div>
-        </div>
-    </div>
 </div>
 
 <!-- ================================================================ -->
@@ -491,7 +465,7 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','upload','raw','ref','speed','optime'],2:[],4:['plsim','causal','prodsim']};
+const SUB_MAP={1:['ready','upload','raw','ref'],2:[],4:['plsim','causal','prodsim']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
@@ -600,7 +574,9 @@ const REF_READY_ITEMS=[
     {k:'pw-tariffs',l:'한전 요금',desc:'한전 요금 단가 (기본/전력량)'},
     {k:'logi-rates',l:'해상 운임',desc:'분기별 해상 운임 단가'},
     {k:'exchange-rates',l:'월별 환율',desc:'월별 통화 환율 정보'},
-    {k:'logi-cost-local',l:'국내 운임',desc:'국내 출발항 운임 비용'}
+    {k:'logi-cost-local',l:'국내 운임',desc:'국내 출발항 운임 비용'},
+    {k:'_speed',l:'제지 생산 선속',desc:'호기별/지종별 초지기 선속',noApi:true},
+    {k:'_optime',l:'가동시간',desc:'월별 호기별 가동일수',noApi:true}
 ];
 async function renderReady(){
     const ym=document.getElementById('selYm')?.value||'202605';
@@ -611,41 +587,42 @@ async function renderReady(){
     try{
         const r=await fetch(API+'/data-readiness?ym='+ym+'&division='+div);
         const j=await r.json();
-        costModules=(j.data?.modules||[]).map(m=>({...m,category:'원가데이터'}));
+        costModules=(j.data?.modules||[]).map(m=>({...m,category:'원가데이터 (기준월 적용)'}));
     }catch(e){
         console.warn('[DataReadiness] API 호출 실패:', e.message);
         costModules=[
-            {moduleCode:'MATERIAL',moduleName:'원부재료비',status:'EMPTY',recordCount:0,description:'SAP BW 원부재료비 실적',category:'원가데이터'},
-            {moduleCode:'POWER',moduleName:'전력비',status:'EMPTY',recordCount:0,description:'한전 전력비 계산 결과',category:'원가데이터'},
-            {moduleCode:'LOGISTICS',moduleName:'물류비',status:'EMPTY',recordCount:0,description:'해상 물류비 + 국내 운임',category:'원가데이터'}
+            {moduleCode:'MATERIAL',moduleName:'원부재료비',status:'EMPTY',recordCount:0,description:'SAP BW 원부재료비 실적',category:'원가데이터 (기준월 적용)'},
+            {moduleCode:'POWER',moduleName:'전력비',status:'EMPTY',recordCount:0,description:'한전 전력비 계산 결과',category:'원가데이터 (기준월 적용)'},
+            {moduleCode:'LOGISTICS',moduleName:'물류비',status:'EMPTY',recordCount:0,description:'해상 물류비 + 국내 운임',category:'원가데이터 (기준월 적용)'}
         ];
     }
-    // OPTIME은 생산기준으로 분류
-    const optimeItem=costModules.find(m=>m.moduleCode==='OPTIME');
+    // OPTIME은 기준정보 내 _optime으로 관리하므로 원가데이터에서 제외
     costModules=costModules.filter(m=>m.moduleCode!=='OPTIME');
-    const prodModules=[];
-    if(optimeItem){optimeItem.category='생산기준';prodModules.push(optimeItem);}
-    else{prodModules.push({moduleCode:'OPTIME',moduleName:'가동시간',status:'EMPTY',recordCount:0,description:'월별 호기별 가동일수',category:'생산기준'});}
 
-    // 2) 기준정보 8개 건수 확인
+    // 2) 기준정보 건수 확인 (API 호출 + 비API 항목)
     let refModules=[];
     const refPromises=REF_READY_ITEMS.map(async ri=>{
         let cnt=0;
-        try{const r=await fetch(API+'/'+ri.k+'?division='+div);const j=await r.json();const arr=Array.isArray(j.data)?j.data:j.data?.content||[];cnt=arr.length;}catch(_){}
-        return {moduleCode:'REF_'+ri.k,moduleName:ri.l,status:cnt>0?'READY':'EMPTY',recordCount:cnt,description:ri.desc,category:'기준정보'};
+        if(ri.noApi){
+            // 가동시간은 OD 배열, 생산선속은 아직 미구현
+            if(ri.k==='_optime')cnt=OD.length;
+        }else{
+            try{const r=await fetch(API+'/'+ri.k+'?division='+div);const j=await r.json();const arr=Array.isArray(j.data)?j.data:j.data?.content||[];cnt=arr.length;}catch(_){}
+        }
+        return {moduleCode:'REF_'+ri.k,moduleName:ri.l,status:cnt>0?'READY':'EMPTY',recordCount:cnt,description:ri.desc,category:'기준정보 (연 고정)'};
     });
     refModules=await Promise.all(refPromises);
 
-    // 3) 전체 결합
-    const allModules=[...costModules,...refModules,...prodModules];
+    // 3) 전체 결합: 원가데이터(기준월) + 기준정보(연 fix)
+    const allModules=[...costModules,...refModules];
     const ok=allModules.filter(r=>r.status==='READY').length,total=allModules.length||1,pct=Math.round(ok/total*100);
     document.getElementById('readyPct').textContent=pct+'%';
     document.getElementById('readyBar').style.width=pct+'%';
     document.getElementById('readyBar').style.background=pct>=80?'linear-gradient(90deg,#16a34a,#4ade80)':pct>=50?'linear-gradient(90deg,#f59e0b,#fbbf24)':'linear-gradient(90deg,#4f46e5,#6366f1)';
 
     // 4) 카테고리별 그룹핑 렌더링
-    const cats=['원가데이터','기준정보','생산기준'];
-    const catIcons={'원가데이터':'fa-coins text-amber-500','기준정보':'fa-cog text-indigo-500','생산기준':'fa-industry text-cyan-500'};
+    const cats=['원가데이터 (기준월 적용)','기준정보 (연 고정)'];
+    const catIcons={'원가데이터 (기준월 적용)':'fa-coins text-amber-500','기준정보 (연 고정)':'fa-cog text-indigo-500'};
     let html='';
     cats.forEach(cat=>{
         const items=allModules.filter(m=>m.category===cat);
@@ -746,13 +723,28 @@ function recalcProdSim(){
 }
 
 // ── Ref Management ──
-const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성']},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명']},{k:'machine-capacities',l:'호기별 생산능력',i:'fa-tachometer-alt',cols:['machineCode','hourlyCapacity','basisWeightRef','validFrom'],h:['호기','능력(톤/h)','기준평량','유효시작']},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']}];
+const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성']},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명']},{k:'machine-capacities',l:'호기별 생산능력',i:'fa-tachometer-alt',cols:['machineCode','hourlyCapacity','basisWeightRef','validFrom'],h:['호기','능력(톤/h)','기준평량','유효시작']},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'_speed',l:'제지 생산 선속',i:'fa-tachometer-alt',custom:true},{k:'_optime',l:'가동시간 관리',i:'fa-clock',custom:true}];
 let cRef=0,refData=[];
 function renderRefTabs(){document.getElementById('refTabs').innerHTML=REFS.map((d,i)=>'<div class="ref-tab'+(i===cRef?' active':'')+'" onclick="switchRef('+i+')"><i class="fas '+d.i+' mr-1"></i>'+d.l+'</div>').join('');}
-function switchRef(i){cRef=i;renderRefTabs();document.getElementById('refTitle').innerHTML='<i class="fas '+REFS[i].i+' text-indigo-500 mr-1"></i>'+REFS[i].l;loadRef();}
+function switchRef(i){cRef=i;renderRefTabs();document.getElementById('refTitle').innerHTML='<i class="fas '+REFS[i].i+' text-indigo-500 mr-1"></i>'+REFS[i].l;
+    const btns=document.getElementById('refBtns');
+    if(REFS[i].custom){btns.style.display='none';renderCustomRef(REFS[i].k);}
+    else{btns.style.display='';loadRef();}
+}
 async function loadRef(){const d=REFS[cRef];try{const url=API+'/'+d.k+'?division='+(document.getElementById('selDiv')?.value||'PS');const r=await fetch(url);const j=await r.json();console.log('[loadRef] '+d.l+' response:',JSON.stringify(j).substring(0,500));// ApiResponse<Page> or ApiResponse<List>
     if(j.data){if(Array.isArray(j.data))refData=j.data;else if(j.data.content&&Array.isArray(j.data.content))refData=j.data.content;else refData=[j.data];}else if(Array.isArray(j))refData=j;else refData=[];}catch(e){console.warn('[loadRef] 실패:',e.message);refData=[];}renderRef();}
 function renderRef(){const d=REFS[cRef];let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}else{refData.forEach(row=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr>'+d.cols.map(c=>{let v=row[c];if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}h+='</tbody></table>';document.getElementById('refWrap').innerHTML=h;}
+// ── 커스텀 기준정보 렌더링 (제지 생산 선속 / 가동시간) ──
+function renderCustomRef(key){
+    const wrap=document.getElementById('refWrap');
+    if(key==='_speed'){
+        wrap.innerHTML='<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12px;color:#64748b;"><b>이론 생산량(톤/일)</b> = 평량×0.001² × 지폭×0.001 × 선속 × 1440</span><button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="openSpeedModal()"><i class="fas fa-plus mr-1"></i>등록</button></div><table class="st"><thead><tr><th>호기</th><th>지종</th><th class="r">평량(g/m²)</th><th class="r">지폭(mm)</th><th class="r">선속(m/min)</th><th class="r">이론생산(톤/일)</th><th>비고</th></tr></thead><tbody id="speedTb"><tr><td colspan="7" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr></tbody></table>';
+    }else if(key==='_optime'){
+        wrap.innerHTML='<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12px;color:#64748b;">월별 호기별 가동일수 관리</span><button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="openOptModal()"><i class="fas fa-plus mr-1"></i>등록</button></div><table class="st"><thead><tr><th>연월</th><th>호기</th><th class="r">총일수</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th></tr></thead><tbody id="optTb"></tbody></table>';
+        renderOpt();
+    }
+}
+
 // ── 엑셀 양식 다운로드 (빈 헤더만) ──
 function downloadRefTemplate(){
     const d=REFS[cRef];
