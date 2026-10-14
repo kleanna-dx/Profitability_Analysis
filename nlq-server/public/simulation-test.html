@@ -152,6 +152,7 @@
         <div class="sub-tab" onclick="subTab(1,'upload')">엑셀 업로드</div>
         <div class="sub-tab" onclick="subTab(1,'raw')">업로드 데이터 조회</div>
         <div class="sub-tab" onclick="subTab(1,'ref')">기준정보 관리</div>
+        <div class="sub-tab" onclick="subTab(1,'speed')">제지 생산 선속</div>
     </div>
 
     <!-- 1-1 데이터 준비 현황 -->
@@ -173,28 +174,54 @@
     <!-- 1-2 엑셀 업로드 -->
     <div id="s1-upload" style="display:none;">
         <div class="sc" style="padding:20px;">
-            <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 16px;"><i class="fas fa-upload text-indigo-500 mr-2"></i>SAP 엑셀 데이터 업로드</h3>
-            <div class="upload-zone" id="uploadZone" ondrop="handleDrop(event)" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" onclick="document.getElementById('fileInput').click()">
-                <i class="fas fa-cloud-upload-alt" style="font-size:36px;color:#a5b4fc;margin-bottom:12px;display:block;"></i>
-                <p style="font-size:14px;font-weight:600;color:#475569;margin:0 0 4px;">파일을 드래그하거나 클릭하여 업로드</p>
-                <p style="font-size:11px;color:#94a3b8;margin:0;">.xlsx, .xls, .csv 파일 지원 | SAP 형식 자동 감지</p>
+            <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 16px;"><i class="fas fa-upload text-indigo-500 mr-2"></i>SAP BW 엑셀 데이터 업로드</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px;">
+                <div class="upload-zone" ondrop="handleBwDrop(event,'100')" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" onclick="document.getElementById('bwFile100').click()">
+                    <i class="fas fa-cubes" style="font-size:28px;color:#f59e0b;margin-bottom:8px;display:block;"></i>
+                    <p style="font-size:13px;font-weight:700;color:#475569;margin:0 0 4px;">ZOHPP100 (원재료)</p>
+                    <p style="font-size:10px;color:#94a3b8;margin:0;">고지·펄프 등 원재료 실적</p>
+                    <div id="bw100Status" style="margin-top:8px;font-size:11px;color:#94a3b8;"></div>
+                </div>
+                <div class="upload-zone" ondrop="handleBwDrop(event,'101')" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" onclick="document.getElementById('bwFile101').click()">
+                    <i class="fas fa-flask" style="font-size:28px;color:#8b5cf6;margin-bottom:8px;display:block;"></i>
+                    <p style="font-size:13px;font-weight:700;color:#475569;margin:0 0 4px;">ZOHPP101 (부재료)</p>
+                    <p style="font-size:10px;color:#94a3b8;margin:0;">약품 등 부재료 실적</p>
+                    <div id="bw101Status" style="margin-top:8px;font-size:11px;color:#94a3b8;"></div>
+                </div>
             </div>
-            <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none;" onchange="handleFile(this)">
-            <div style="margin-top:16px;padding:14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;">
-                <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:6px;"><i class="fas fa-info-circle mr-1"></i>SAP BW 자동 감지</div>
-                <div style="font-size:11px;color:#166534;line-height:1.7;">SAP에서 추출한 원재료 DB 파일(ZOHPP100/101)을 그대로 업로드하면 43개 컬럼 자동 인식<br>필수: 달력연도/월, 생산호기, 자재, 실제 배부수량, 실제단가, 출고금액</div>
+            <input type="file" id="bwFile100" accept=".xlsx,.xls" style="display:none;" onchange="parseBwFile(this,'100')">
+            <input type="file" id="bwFile101" accept=".xlsx,.xls" style="display:none;" onchange="parseBwFile(this,'101')">
+            <!-- 업로드 요약 -->
+            <div id="bwSummary" style="display:none;" class="sc" style="margin-top:14px;">
+                <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-chart-bar text-green-500 mr-1"></i>업로드 데이터 요약</h3>
+                    <span style="font-size:10px;color:#94a3b8;" id="bwTotalCount"></span>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:12px 16px;" id="bwSummaryCards"></div>
+            </div>
+            <div style="margin-top:14px;padding:14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;">
+                <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:6px;"><i class="fas fa-info-circle mr-1"></i>업로드 안내</div>
+                <div style="font-size:11px;color:#166534;line-height:1.7;">• SAP BW에서 추출한 ZOHPP100(원재료)/ZOHPP101(부재료) 파일을 각각 업로드<br>• 43개 컬럼 자동 인식 (달력연도/월, 생산호기, 자재, 실적 수량/단가/금액)<br>• 현재 클라이언트 파싱 → 향후 매월 RFC 연동 예정<br>• 업로드 후 '업로드 데이터 조회' 탭에서 상세 확인 가능</div>
             </div>
         </div>
     </div>
 
     <!-- 1-3 업로드 데이터 조회 -->
     <div id="s1-raw" style="display:none;">
+        <div style="display:flex;gap:8px;margin-bottom:10px;">
+            <div class="sel-g"><label>구분</label><select id="rawTypeFilter" onchange="renderRawTable()"><option value="ALL">전체</option><option value="100">원재료</option><option value="101">부재료</option></select></div>
+            <div class="sel-g"><label>연월</label><select id="rawYmFilter" onchange="renderRawTable()"><option value="ALL">전체</option></select></div>
+            <div class="sel-g"><label>호기</label><select id="rawMcFilter" onchange="renderRawTable()"><option value="ALL">전체</option></select></div>
+            <div class="sel-g"><label>지종</label><select id="rawProdFilter" onchange="renderRawTable()"><option value="ALL">전체</option></select></div>
+            <div style="flex:1;"></div>
+            <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="downloadRawData()"><i class="fas fa-download mr-1"></i>엑셀 다운로드</button>
+        </div>
         <div class="sc" style="overflow:hidden;">
-            <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
-                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-table text-indigo-500 mr-1"></i>업로드 데이터 조회 (원본 전체 컬럼)</h3>
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-table text-indigo-500 mr-1"></i>업로드 데이터 조회</h3>
                 <span style="font-size:10px;color:#94a3b8;" id="rawCount">0건</span>
             </div>
-            <div style="overflow-x:auto;max-height:400px;"><table class="st"><thead><tr><th>#</th><th>달력연도/월</th><th>생산호기</th><th>자재코드</th><th>자재명</th><th>자재그룹</th><th class="r">실제배부수량</th><th class="r">실제단가</th><th class="r">출고금액</th><th class="r">생산수량</th></tr></thead><tbody id="rawTbody"><tr><td colspan="10" style="text-align:center;padding:30px;color:#94a3b8;">엑셀을 업로드하면 데이터가 표시됩니다.</td></tr></tbody></table></div>
+            <div style="overflow-x:auto;max-height:500px;"><table class="st"><thead><tr><th style="min-width:40px;">#</th><th>구분</th><th>연월</th><th>호기</th><th>지종</th><th>자재코드</th><th>자재명</th><th>자재그룹</th><th class="r">실제 원단위</th><th class="r">실제배부수량</th><th class="r">실제단가</th><th class="r">실제재료비</th><th class="r">출고금액</th><th class="r">생산수량</th></tr></thead><tbody id="rawTbody"><tr><td colspan="14" style="text-align:center;padding:40px;color:#94a3b8;"><i class="fas fa-cloud-upload-alt" style="font-size:24px;display:block;margin-bottom:8px;"></i>엑셀 업로드 탭에서 ZOHPP100/101 파일을 업로드하세요</td></tr></tbody></table></div>
         </div>
     </div>
 
@@ -215,6 +242,20 @@
             <div style="overflow-x:auto;max-height:450px;" id="refWrap"></div>
         </div>
     </div>
+
+    <!-- 1-5 제지 생산 선속 -->
+    <div id="s1-speed" style="display:none;">
+        <div class="sc" style="overflow:hidden;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-tachometer-alt text-blue-500 mr-1"></i>호기별/지종별 초지기 선속</h3>
+                <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="openSpeedModal()"><i class="fas fa-plus mr-1"></i>등록</button>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th>지종</th><th class="r">평량(g/m²)</th><th class="r">지폭(mm)</th><th class="r">선속(m/min)</th><th class="r">이론생산(톤/일)</th><th>비고</th></tr></thead><tbody id="speedTb"><tr><td colspan="7" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr></tbody></table></div>
+            <div style="padding:12px 16px;background:#f8fafc;font-size:11px;color:#64748b;">
+                <b>이론 생산량(톤/일)</b> = 평량(g/m²) × 0.001 × 0.001 × 지폭(mm) × 0.001 × 선속(m/min) × 1440
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- ================================================================ -->
@@ -223,7 +264,6 @@
 <div id="step-2" style="display:none;padding:20px;" class="fade-in">
     <div class="sub-tabs" style="margin:-20px -20px 16px;padding:0 20px;">
         <div class="sub-tab active" onclick="subTab(2,'optime')">가동시간 관리</div>
-        <div class="sub-tab" onclick="subTab(2,'speed')">제지 생산 선속</div>
     </div>
 
     <!-- 2-1 가동시간 -->
@@ -237,19 +277,6 @@
         </div>
     </div>
 
-    <!-- 2-2 생산 선속 -->
-    <div id="s2-speed" style="display:none;">
-        <div class="sc" style="overflow:hidden;">
-            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
-                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-tachometer-alt text-blue-500 mr-1"></i>호기별/지종별 초지기 선속</h3>
-                <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="openSpeedModal()"><i class="fas fa-plus mr-1"></i>등록</button>
-            </div>
-            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th>지종</th><th class="r">평량(g/m²)</th><th class="r">지폭(mm)</th><th class="r">선속(m/min)</th><th class="r">이론생산(톤/일)</th><th>비고</th></tr></thead><tbody id="speedTb"><tr><td colspan="7" style="text-align:center;padding:30px;color:#94a3b8;">호기를 선택하면 데이터가 표시됩니다.</td></tr></tbody></table></div>
-            <div style="padding:12px 16px;background:#f8fafc;font-size:11px;color:#64748b;">
-                <b>이론 생산량(톤/일)</b> = 평량(g/m²) × 0.001 × 0.001 × 지폭(mm) × 0.001 × 선속(m/min) × 1440
-            </div>
-        </div>
-    </div>
 </div>
 
 <!-- ================================================================ -->
@@ -461,7 +488,7 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','upload','raw','ref'],2:['optime','speed'],4:['plsim','causal','prodsim']};
+const SUB_MAP={1:['ready','upload','raw','ref','speed'],2:['optime'],4:['plsim','causal','prodsim']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
@@ -675,8 +702,9 @@ const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','un
 let cRef=0,refData=[];
 function renderRefTabs(){document.getElementById('refTabs').innerHTML=REFS.map((d,i)=>'<div class="ref-tab'+(i===cRef?' active':'')+'" onclick="switchRef('+i+')"><i class="fas '+d.i+' mr-1"></i>'+d.l+'</div>').join('');}
 function switchRef(i){cRef=i;renderRefTabs();document.getElementById('refTitle').innerHTML='<i class="fas '+REFS[i].i+' text-indigo-500 mr-1"></i>'+REFS[i].l;loadRef();}
-async function loadRef(){const d=REFS[cRef];try{const r=await fetch(API+'/'+d.k+'?division='+(document.getElementById('selDiv')?.value||'PS'));const j=await r.json();refData=j.data?.content||j.data||[];}catch(_){refData=[];}renderRef();}
-function renderRef(){const d=REFS[cRef];let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}else{refData.forEach(row=>{h+='<tr>'+d.cols.map(c=>{let v=row[c];if(v===true)v='<span style="color:#16a34a;font-weight:700;">Y</span>';else if(v===false)v='N';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+row[Object.keys(row)[0]]+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}h+='</tbody></table>';document.getElementById('refWrap').innerHTML=h;}
+async function loadRef(){const d=REFS[cRef];try{const url=API+'/'+d.k+'?division='+(document.getElementById('selDiv')?.value||'PS');const r=await fetch(url);const j=await r.json();console.log('[loadRef] '+d.l+' response:',JSON.stringify(j).substring(0,500));// ApiResponse<Page> or ApiResponse<List>
+    if(j.data){if(Array.isArray(j.data))refData=j.data;else if(j.data.content&&Array.isArray(j.data.content))refData=j.data.content;else refData=[j.data];}else if(Array.isArray(j))refData=j;else refData=[];}catch(e){console.warn('[loadRef] 실패:',e.message);refData=[];}renderRef();}
+function renderRef(){const d=REFS[cRef];let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}else{refData.forEach(row=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr>'+d.cols.map(c=>{let v=row[c];if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}h+='</tbody></table>';document.getElementById('refWrap').innerHTML=h;}
 // ── 엑셀 양식 다운로드 (빈 헤더만) ──
 function downloadRefTemplate(){
     const d=REFS[cRef];
@@ -752,15 +780,139 @@ async function uploadRefExcel(input){
     }
 }
 
-function openRefModal(){const d=REFS[cRef];let h='<h3><i class="fas '+d.i+' text-indigo-500"></i> '+d.l+' 등록</h3>';d.cols.forEach((c,i)=>{h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveRef()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
-async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate'].includes(c))v=parseFloat(v)||0;else if(['year','month'].includes(c))v=parseInt(v)||0;body[c]=v;}});body.division=document.getElementById('selDiv')?.value||'PS';try{await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(_){}closeModal();loadRef();}
+function openRefModal(){
+    const d=REFS[cRef];
+    let h='<h3><i class="fas '+d.i+' text-indigo-500"></i> '+d.l+' 등록</h3>';
+    d.cols.forEach((c,i)=>{
+        if(c==='division'){
+            h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;"><option value="PS">PS</option><option value="HL">HL</option></select>';
+        }else if(c==='isActive'){
+            h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;"><option value="true">활성</option><option value="false">비활성</option></select>';
+        }else{
+            h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';
+        }
+    });
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveRef()">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;
+    document.getElementById('modalBg').style.display='flex';
+}
+async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate'].includes(c))v=parseFloat(v)||0;else if(['year','month'].includes(c))v=parseInt(v)||0;else if(c==='isActive')v=(v==='true');body[c]=v;}});if(!body.division)body.division=document.getElementById('selDiv')?.value||'PS';try{const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const err=await r.text();console.warn('[saveRef] 실패:',err);alert('저장 실패: '+err);return;}}catch(e){alert('저장 실패: '+e.message);}closeModal();loadRef();}
 async function delRef(id){if(!confirm('삭제하시겠습니까?'))return;try{await fetch(API+'/'+REFS[cRef].k+'/'+id,{method:'DELETE'});}catch(_){}loadRef();}
 function openOptModal(){let h='<h3><i class="fas fa-clock text-cyan-500"></i> 가동시간 등록</h3>';[['division','사업부'],['machineCode','호기코드'],['ym','연월(YYYYMM)'],['totalDays','총일수'],['plannedShutdownDays','계획운휴'],['operationNormalDays','정상가동'],['operationWasteDays','폐품'],['operationStartupDays','초출'],['operationTrimmingDays','절지'],['downtimeRepairDays','정비'],['downtimeCleaningDays','세척'],['downtimeAccidentDays','사고']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveOpt()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
 async function saveOpt(){const body={};document.querySelectorAll('.modal-box input').forEach(el=>{let v=el.value;if(!['division','machineCode','ym'].includes(el.name))v=parseFloat(v)||0;body[el.name]=v;});try{await fetch(API+'/operating-time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(_){}closeModal();}
 function openSpeedModal(){let h='<h3><i class="fas fa-tachometer-alt text-blue-500"></i> 생산 선속 등록</h3>';[['machineCode','호기코드'],['product','지종'],['basisWeight','평량(g/m²)'],['trimWidth','지폭(mm)'],['speed','선속(m/min)'],['note','비고']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="closeModal()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
 function closeModal(){document.getElementById('modalBg').style.display='none';}
-function handleDrop(e){e.preventDefault();document.getElementById('uploadZone').classList.remove('drag');}
-function handleFile(input){}
+// ── SAP BW 엑셀 파싱 (ZOHPP100/101) ──
+let BW_DATA=[];   // 파싱된 전체 데이터
+let BW_FILTERS={yms:new Set(),mcs:new Set(),prods:new Set()};
+
+function handleBwDrop(e,type){e.preventDefault();e.target.closest('.upload-zone').classList.remove('drag');const f=e.dataTransfer.files[0];if(f)parseBwFileObj(f,type);}
+async function parseBwFile(input,type){const f=input.files[0];if(f){await parseBwFileObj(f,type);input.value='';}}
+async function parseBwFileObj(file,type){
+    const statusEl=document.getElementById('bw'+type+'Status');
+    statusEl.innerHTML='<i class="fas fa-spinner fa-spin mr-1"></i>파싱 중...';
+    try{
+        const ab=await file.arrayBuffer();
+        const wb=XLSX.read(ab,{type:'array'});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+        if(rows.length<2){statusEl.innerHTML='<span style="color:#dc2626;">데이터 없음</span>';return;}
+        const hdr=rows[0].map(h=>String(h).trim());
+        // 컬럼 인덱스 매핑
+        const ci=(name)=>hdr.findIndex(h=>h.includes(name));
+        const iYm=ci('달력연도/월'), iProc=ci('공정명'), iMc=ci('생산호기'), iMcN=ci('생산호기명'),
+              iProd2=ci('계층구조레벨 2명'), iMat=ci('자재'), iMatN=ci('자재명'),
+              iMatGrp=ci('자재 그룹명'), iMatGrpL=ci('자재그룹(대분류)명'),
+              iRU=ci('실제 원단위(KG/Ton)'), iRQ=ci('실제 배부수량'), iRP=ci('실제단가'),
+              iRC=ci('실제 재료비'), iOQ=ci('출고수량'), iOA=ci('출고금액'),
+              iProdQ=ci('생산수량'), iTotP=ci('총생산량');
+        // 기존 같은 type 데이터 제거 후 추가
+        BW_DATA=BW_DATA.filter(d=>d._type!==type);
+        let count=0;
+        for(let r=1;r<rows.length;r++){
+            const row=rows[r];
+            if(!row[iYm])continue;
+            BW_DATA.push({
+                _type:type,
+                _typeLabel:type==='100'?'원재료':'부재료',
+                ym:String(row[iYm]),
+                machine:row[iMc]||'',
+                machineName:row[iMcN]||'',
+                product:row[iProd2]||'',
+                matCode:String(row[iMat]||''),
+                matName:row[iMatN]||'',
+                matGroup:row[iMatGrp]||'',
+                matGroupL:row[iMatGrpL]||'',
+                realUnit:parseFloat(row[iRU])||0,
+                realQty:parseFloat(row[iRQ])||0,
+                realPrice:parseFloat(row[iRP])||0,
+                realCost:parseFloat(row[iRC])||0,
+                outQty:parseFloat(row[iOQ])||0,
+                outAmt:parseFloat(row[iOA])||0,
+                prodQty:parseFloat(row[iProdQ])||0,
+                totalProd:parseFloat(row[iTotP])||0
+            });
+            count++;
+        }
+        statusEl.innerHTML='<span style="color:#16a34a;font-weight:600;"><i class="fas fa-check-circle mr-1"></i>'+fmtI(count)+'건 완료</span>';
+        buildBwFilters();
+        renderBwSummary();
+        renderRawTable();
+    }catch(err){
+        statusEl.innerHTML='<span style="color:#dc2626;"><i class="fas fa-exclamation-circle mr-1"></i>'+err.message+'</span>';
+    }
+}
+function buildBwFilters(){
+    BW_FILTERS={yms:new Set(),mcs:new Set(),prods:new Set()};
+    BW_DATA.forEach(d=>{BW_FILTERS.yms.add(d.ym);BW_FILTERS.mcs.add(d.machine);BW_FILTERS.prods.add(d.product);});
+    // 필터 셀렉트 갱신
+    const ymSel=document.getElementById('rawYmFilter'),mcSel=document.getElementById('rawMcFilter'),pSel=document.getElementById('rawProdFilter');
+    ymSel.innerHTML='<option value="ALL">전체</option>'+[...BW_FILTERS.yms].sort().map(y=>'<option value="'+y+'">'+String(y).slice(0,4)+'.'+String(y).slice(4)+'</option>').join('');
+    mcSel.innerHTML='<option value="ALL">전체</option>'+[...BW_FILTERS.mcs].sort().map(m=>'<option value="'+m+'">'+m+'</option>').join('');
+    pSel.innerHTML='<option value="ALL">전체</option>'+[...BW_FILTERS.prods].sort().map(p=>'<option value="'+p+'">'+p+'</option>').join('');
+}
+function renderBwSummary(){
+    const el=document.getElementById('bwSummary');
+    if(!BW_DATA.length){el.style.display='none';return;}
+    el.style.display='';
+    const raw100=BW_DATA.filter(d=>d._type==='100'),raw101=BW_DATA.filter(d=>d._type==='101');
+    const totalOut=BW_DATA.reduce((s,d)=>s+d.outAmt,0);
+    document.getElementById('bwTotalCount').textContent='총 '+fmtI(BW_DATA.length)+'건';
+    document.getElementById('bwSummaryCards').innerHTML=[
+        {l:'원재료(ZOHPP100)',v:fmtI(raw100.length)+'건',c:'#f59e0b',i:'fa-cubes'},
+        {l:'부재료(ZOHPP101)',v:fmtI(raw101.length)+'건',c:'#8b5cf6',i:'fa-flask'},
+        {l:'연월 범위',v:[...BW_FILTERS.yms].sort().map(y=>String(y).slice(0,4)+'.'+String(y).slice(4)).join(' ~ '),c:'#4f46e5',i:'fa-calendar'},
+        {l:'총 출고금액',v:fmtI(Math.round(totalOut/1000000))+'백만원',c:'#16a34a',i:'fa-won-sign'}
+    ].map(c=>'<div class="sc" style="padding:10px;text-align:center;border-left:3px solid '+c.c+';"><div style="font-size:10px;color:#94a3b8;font-weight:600;"><i class="fas '+c.i+' mr-1"></i>'+c.l+'</div><div style="font-size:14px;font-weight:800;color:'+c.c+';margin:3px 0;">'+c.v+'</div></div>').join('');
+}
+function renderRawTable(){
+    let data=[...BW_DATA];
+    const tf=document.getElementById('rawTypeFilter').value;
+    const yf=document.getElementById('rawYmFilter').value;
+    const mf=document.getElementById('rawMcFilter').value;
+    const pf=document.getElementById('rawProdFilter').value;
+    if(tf!=='ALL')data=data.filter(d=>d._type===tf);
+    if(yf!=='ALL')data=data.filter(d=>d.ym===yf);
+    if(mf!=='ALL')data=data.filter(d=>d.machine===mf);
+    if(pf!=='ALL')data=data.filter(d=>d.product===pf);
+    document.getElementById('rawCount').textContent=fmtI(data.length)+'건'+(data.length!==BW_DATA.length?' / 총 '+fmtI(BW_DATA.length)+'건':'');
+    const MAX=500;
+    const show=data.slice(0,MAX);
+    if(!show.length){document.getElementById('rawTbody').innerHTML='<tr><td colspan="14" style="text-align:center;padding:30px;color:#94a3b8;">조건에 맞는 데이터가 없습니다.</td></tr>';return;}
+    document.getElementById('rawTbody').innerHTML=show.map((d,i)=>{
+        const tc=d._type==='100'?'color:#d97706':'color:#7c3aed';
+        return '<tr><td>'+( i+1)+'</td><td style="font-weight:600;'+tc+'">'+d._typeLabel+'</td><td>'+d.ym+'</td><td style="font-weight:600;color:#4f46e5;">'+d.machine+'</td><td>'+d.product+'</td><td class="mn" style="font-size:10px;">'+d.matCode+'</td><td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+d.matName+'">'+d.matName+'</td><td style="font-size:10px;">'+d.matGroup+'</td><td class="r mn">'+fmt(d.realUnit)+'</td><td class="r mn">'+fmt(d.realQty)+'</td><td class="r mn">'+fmtI(d.realPrice)+'</td><td class="r mn">'+fmtI(d.realCost)+'</td><td class="r mn" style="font-weight:600;">'+fmtI(d.outAmt)+'</td><td class="r mn">'+fmt(d.prodQty)+'</td></tr>';
+    }).join('')+(data.length>MAX?'<tr><td colspan="14" style="text-align:center;padding:10px;color:#94a3b8;font-size:11px;">... 외 '+fmtI(data.length-MAX)+'건 (최대 '+MAX+'건 표시)</td></tr>':'');
+}
+function downloadRawData(){
+    if(!BW_DATA.length){alert('업로드된 데이터가 없습니다.');return;}
+    const headers=['구분','연월','호기','지종','자재코드','자재명','자재그룹','자재그룹(대분류)','실제 원단위','실제배부수량','실제단가','실제재료비','출고수량','출고금액','생산수량'];
+    const rows=[headers,...BW_DATA.map(d=>[d._typeLabel,d.ym,d.machine,d.product,d.matCode,d.matName,d.matGroup,d.matGroupL,d.realUnit,d.realQty,d.realPrice,d.realCost,d.outQty,d.outAmt,d.prodQty])];
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols']=headers.map(h=>({wch:Math.max(h.length*2+2,12)}));
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'원부재료');
+    XLSX.writeFile(wb,'SAP_BW_데이터_'+getYm()+'.xlsx');
+}
 
 // ── Charts ──
 function initCharts(){
