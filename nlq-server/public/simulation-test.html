@@ -117,9 +117,9 @@
         <h1 style="font-size:14px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-calculator text-indigo-500 mr-1"></i>경영시뮬레이션</h1>
         <span style="font-size:11px;color:#94a3b8;">Rolling Planning Simulation</span>
         <div style="display:flex;gap:6px;margin-left:12px;">
-            <div class="sel-g"><label>기준월</label><select id="selYm"><option value="202607">2026.07</option><option value="202606">2026.06</option><option value="202605" selected>2026.05</option></select></div>
-            <div class="sel-g"><label>사업부</label><select id="selDiv"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
-            <div class="sel-g"><label>호기</label><select id="selMc"><option value="ALL" selected>전체</option><option value="M01">1호기</option><option value="M02">2호기</option><option value="M03">3호기</option></select></div>
+            <div class="sel-g"><label>기준월</label><select id="selYm" onchange="onFilterChange()"><option value="202607">2026.07</option><option value="202606">2026.06</option><option value="202605" selected>2026.05</option></select></div>
+            <div class="sel-g"><label>사업부</label><select id="selDiv" onchange="onFilterChange()"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
+            <div class="sel-g"><label>호기</label><select id="selMc" onchange="onFilterChange()"><option value="ALL" selected>전체</option><option value="M01">1호기</option><option value="M02">2호기</option><option value="M03">3호기</option></select></div>
         </div>
         <div style="flex:1;"></div>
         <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
@@ -429,10 +429,23 @@
 
 <script>
 const API='/rolling-planning-simulation-api';
-const BP=8368;
+let BP=8368; // 기준 생산량 (API에서 갱신)
 let costChart=null,matChart=null,trendChart=null,compChart=null;
 function fmt(n){return n.toLocaleString('ko-KR',{maximumFractionDigits:1});}
 function fmtI(n){return Math.round(n).toLocaleString('ko-KR');}
+function getYm(){return document.getElementById('selYm')?.value||'202605';}
+function getDiv(){return document.getElementById('selDiv')?.value||'PS';}
+function getMc(){return document.getElementById('selMc')?.value||'ALL';}
+
+// ── 필터 변경 시 전체 데이터 재로드 ──
+async function onFilterChange(){
+    await loadCostUnitRates();
+    await renderReady();
+    await loadOptimeFromAPI();
+    loadRef();
+    renderCapa();
+    updateStep5();
+}
 
 // ── Step Navigation ──
 let curStep=1;
@@ -457,15 +470,60 @@ function subTab(step,key){
 }
 
 // ── P/L Simulator ──
-const PL=[
+let PL=[
     {l:'매출액',k:'rev',b:'-',r:0,p:0,db:false,n:'수동'},
-    {l:'원재료비',k:'mat',b:'변동비',r:327.3,p:315.8,db:true,n:'DB'},
+    {l:'원재료비',k:'mat',b:'변동비',r:0,p:0,db:false,n:'준비중'},
     {l:'전력비',k:'eng',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
     {l:'물류비',k:'log',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
     {l:'인건비',k:'lab',b:'고정비',r:0,p:0,db:false,n:'수동'},
     {l:'감가상각',k:'dep',b:'고정비',r:0,p:0,db:false,n:'수동'},
     {l:'판관비',k:'sga',b:'고정비',r:0,p:0,db:false,n:'수동'},
 ];
+let MAT_API=[];
+
+// ── API에서 비용 원단위 로드 → PL/KPI/지종별 전부 갱신 ──
+async function loadCostUnitRates(){
+    try{
+        const r=await fetch(API+'/cost-unit-rates?ym='+getYm()+'&machine='+getMc()+'&division='+getDiv());
+        const j=await r.json();
+        const d=j.data;
+        if(!d)return;
+        // 기준 생산량 갱신
+        BP=d.baseProdTon||8368;
+        document.getElementById('prodSl').value=BP;
+        // P/L 원단위 갱신
+        PL[1].r=parseFloat(d.rates?.materialPerTon)||0;
+        PL[1].p=parseFloat(d.prevRates?.materialPerTon)||0;
+        PL[1].db=d.fromDB?.material||false;
+        PL[1].n=PL[1].db?'DB':'준비중';
+        PL[2].r=parseFloat(d.rates?.energyPerTon)||0;
+        PL[2].p=parseFloat(d.prevRates?.energyPerTon)||0;
+        PL[2].db=d.fromDB?.energy||false;
+        PL[2].n=PL[2].db?'DB':'준비중';
+        PL[3].r=parseFloat(d.rates?.logisticsPerTon)||0;
+        PL[3].p=parseFloat(d.prevRates?.logisticsPerTon)||0;
+        PL[3].db=d.fromDB?.logistics||false;
+        PL[3].n=PL[3].db?'DB':'준비중';
+        // 지종별 원재료비 갱신
+        if(d.materialByProduct&&d.materialByProduct.length){
+            MAT_API=d.materialByProduct.map(m=>({
+                p:m.product,ton:m.productionTon,cost:m.materialCost,
+                unit:parseFloat(m.unitCost1000)||0,
+                pTon:m.prevProductionTon,pUnit:parseFloat(m.prevUnitCost1000)||0,
+                pct:parseFloat(m.sharePct)||0
+            }));
+        }
+        // 슬라이더 라벨 갱신
+        document.querySelector('#prodSl').max=Math.max(BP*2,15000);
+    }catch(e){
+        console.warn('[CostUnitRates] API 호출 실패:',e.message);
+    }
+    calcPL();
+    renderProdSim();
+    updateDrillData();
+    updateMatChart();
+    updateStep5();
+}
 function calcPL(){
     const sp=parseInt(document.getElementById('prodSl').value),ratio=sp/BP,dp=((ratio-1)*100).toFixed(1);
     document.getElementById('slLbl').textContent='시뮬: '+fmtI(sp)+' 톤';
@@ -489,11 +547,15 @@ function calcPL(){
 }
 function resetSlider(){document.getElementById('prodSl').value=BP;calcPL();}
 
-// ── Drilldown toggle ──
-const DRILL=[{p:'SC고평량',u:287,pct:54.7},{p:'SC저평량',u:320.9,pct:20.8},{p:'ACB',u:367.2,pct:10.2},{p:'IV',u:349,pct:5.1},{p:'CB',u:331.4,pct:4.9},{p:'KB',u:295.9,pct:4.3}];
+// ── Drilldown toggle (API 데이터 사용) ──
+let DRILL=[];
+function updateDrillData(){
+    DRILL=MAT_API.length?MAT_API.map(m=>({p:m.p,u:m.unit,pct:m.pct})):[];
+}
 function toggleDrill(){
     const el=document.getElementById('drillBox'),nd=document.getElementById('csMat');
     if(el.style.display==='none'){el.style.display='';nd.style.boxShadow='0 0 0 3px rgba(245,158,11,.3)';
+        if(!DRILL.length){document.getElementById('drillTb').innerHTML='<tr><td colspan="3" style="padding:6px;color:#94a3b8;text-align:center;">데이터 없음</td></tr>';return;}
         document.getElementById('drillTb').innerHTML=DRILL.map(d=>'<tr style="border-bottom:1px solid #fef3c7;"><td style="padding:2px 3px;font-weight:600;color:#78350f;">'+d.p+'</td><td class="r mn" style="padding:2px 3px;color:#92400e;">'+fmt(d.u)+'</td><td class="r" style="padding:2px 3px;color:#a16207;">'+fmt(d.pct)+'%</td></tr>').join('');
     }else{el.style.display='none';nd.style.boxShadow='';}
 }
@@ -528,17 +590,85 @@ async function renderReady(){
     }).join('');
 }
 
-// ── Operating Time (mock) ──
-const OD=[{ym:'202605',mc:'M01',td:31,ps:3,nd:24.5,wd:.8,sd:.5,td2:.3,rd:1.2,cd:.5,ad:.2},{ym:'202605',mc:'M02',td:31,ps:4,nd:23,wd:.6,sd:.4,td2:.5,rd:1.5,cd:.8,ad:.2},{ym:'202605',mc:'M03',td:31,ps:2,nd:25.2,wd:.5,sd:.3,td2:.4,rd:1.8,cd:.6,ad:.2}];
-function renderOpt(){document.getElementById('optTb').innerHTML=OD.map(o=>'<tr><td style="font-weight:600;">'+o.ym.slice(0,4)+'/'+o.ym.slice(4)+'</td><td style="font-weight:600;color:#4f46e5;">'+o.mc+'</td><td class="r mn">'+o.td+'</td><td class="r mn" style="color:#ef4444;">'+o.ps+'</td><td class="r mn" style="color:#16a34a;font-weight:600;">'+o.nd+'</td><td class="r mn">'+o.wd+'</td><td class="r mn">'+o.sd+'</td><td class="r mn">'+o.td2+'</td><td class="r mn" style="color:#f59e0b;">'+o.rd+'</td><td class="r mn">'+o.cd+'</td><td class="r mn" style="color:#ef4444;">'+o.ad+'</td></tr>').join('');}
+// ── Operating Time (API 호출) ──
+let OD=[];
+async function loadOptimeFromAPI(){
+    try{
+        const r=await fetch(API+'/operating-time/by-ym?division='+getDiv()+'&ym='+getYm());
+        const j=await r.json();
+        const list=j.data||[];
+        OD=list.map(o=>({ym:o.ym,mc:o.machineCode,td:o.totalDays,ps:o.plannedShutdownDays,nd:o.operationNormalDays,wd:o.operationWasteDays,sd:o.operationStartupDays,td2:o.operationTrimmingDays,rd:o.downtimeRepairDays,cd:o.downtimeCleaningDays,ad:o.downtimeAccidentDays}));
+    }catch(e){
+        console.warn('[Optime] API 호출 실패:',e.message);
+        OD=[];
+    }
+    renderOpt();
+}
+function renderOpt(){
+    if(!OD.length){document.getElementById('optTb').innerHTML='<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">해당 월/사업부의 가동시간 데이터가 없습니다.</td></tr>';return;}
+    document.getElementById('optTb').innerHTML=OD.map(o=>'<tr><td style="font-weight:600;">'+o.ym.slice(0,4)+'/'+o.ym.slice(4)+'</td><td style="font-weight:600;color:#4f46e5;">'+o.mc+'</td><td class="r mn">'+o.td+'</td><td class="r mn" style="color:#ef4444;">'+o.ps+'</td><td class="r mn" style="color:#16a34a;font-weight:600;">'+o.nd+'</td><td class="r mn">'+o.wd+'</td><td class="r mn">'+o.sd+'</td><td class="r mn">'+o.td2+'</td><td class="r mn" style="color:#f59e0b;">'+o.rd+'</td><td class="r mn">'+o.cd+'</td><td class="r mn" style="color:#ef4444;">'+o.ad+'</td></tr>').join('');
+}
 
-// ── CAPA (mock) ──
-const CAPA=[{p:'SC고평량',bw:300,th:12.5,wp:8.44,good:2150,days:7.3,ok:true},{p:'SC저평량',bw:200,th:15.2,wp:8.44,good:3280,days:9.1,ok:true},{p:'ACB',bw:250,th:13.8,wp:8.44,good:1680,days:5.2,ok:true},{p:'KB',bw:180,th:16.0,wp:8.44,good:720,days:1.9,ok:true},{p:'IV',bw:220,th:14.5,wp:8.44,good:380,days:1.1,ok:true},{p:'백판지 기타',bw:350,th:11.0,wp:8.44,good:158,days:0.7,ok:true}];
-function renderCapa(){document.getElementById('capaTb').innerHTML=CAPA.map(c=>'<tr><td style="font-weight:600;">'+c.p+'</td><td class="r mn">'+c.bw+'</td><td class="r mn">'+fmt(c.th)+'</td><td class="r mn">'+fmt(c.wp)+'</td><td class="r mn" style="font-weight:600;">'+fmtI(c.good)+'</td><td class="r mn">'+fmt(c.days)+'</td><td class="r"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;'+(c.ok?'background:#dcfce7;color:#166534;':'background:#fee2e2;color:#991b1b;')+'">'+(c.ok?'충족':'초과')+'</span></td></tr>').join('');}
+// ── CAPA (API 연동: MAT_API + 가동시간 기반) ──
+function renderCapa(){
+    const src=MAT_API.length?MAT_API:[];
+    // 가동일수: OD에서 정상가동일수 합산
+    const availDays=OD.length?OD.reduce((s,o)=>s+parseFloat(o.nd||0),0):28;
+    if(!src.length){document.getElementById('capaTb').innerHTML='<tr><td colspan="7" style="text-align:center;padding:30px;color:#94a3b8;">기준월/사업부의 CAPA 데이터가 없습니다.<br>STEP 1에서 데이터를 준비해주세요.</td></tr>';document.getElementById('capaTotalGood').textContent='-';document.getElementById('capaDays').textContent='-';document.getElementById('capaRemain').textContent='-';return;}
+    // 지종별 CAPA 계산
+    const capaRows=src.map(m=>{
+        const ton=m.ton||0;
+        const thPerDay=availDays>0?(ton/availDays):0; // 일당 실적 기준 환산
+        const needDays=thPerDay>0?(ton/thPerDay):0;
+        return {p:m.p,bw:'-',th:fmt(thPerDay),wp:8.44,good:ton,days:needDays,ok:needDays<=availDays};
+    });
+    const totalGood=capaRows.reduce((s,c)=>s+c.good,0);
+    const totalNeedDays=capaRows.reduce((s,c)=>s+c.days,0);
+    const remain=totalGood>0?Math.round((availDays-totalNeedDays)*totalGood/availDays):0;
+    document.getElementById('capaTotalGood').textContent=fmtI(totalGood);
+    document.getElementById('capaDays').textContent=fmt(totalNeedDays)+' / '+availDays+'일';
+    document.getElementById('capaRemain').textContent=(remain>=0?'+':'')+fmtI(remain);
+    document.getElementById('capaRemain').style.color=remain>=0?'#16a34a':'#dc2626';
+    document.getElementById('capaTb').innerHTML=capaRows.map(c=>'<tr><td style="font-weight:600;">'+c.p+'</td><td class="r mn">'+c.bw+'</td><td class="r mn">'+c.th+'</td><td class="r mn">'+fmt(c.wp)+'</td><td class="r mn" style="font-weight:600;">'+fmtI(c.good)+'</td><td class="r mn">'+fmt(c.days)+'</td><td class="r"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;'+(c.ok?'background:#dcfce7;color:#166534;':'background:#fee2e2;color:#991b1b;')+'">'+(c.ok?'충족':'초과')+'</span></td></tr>').join('');
+}
 
-// ── Product Sim (mock) ──
-const MAT=[{p:'SC저평량',ton:3280,cost:985,unit:300.3,pTon:3100,pUnit:296.8,pct:36},{p:'SC고평량',ton:2150,cost:730,unit:339.5,pTon:2000,pUnit:335,pct:26.7},{p:'ACB',ton:1680,cost:580,unit:345.2,pTon:1500,pUnit:333.3,pct:21.2},{p:'KB',ton:720,cost:250,unit:347.2,pTon:680,pUnit:338.2,pct:9.1},{p:'IV',ton:380,cost:130,unit:342.1,pTon:340,pUnit:338.2,pct:4.7},{p:'백판지기타',ton:158,cost:64,unit:403.8,pTon:140,pUnit:392.9,pct:2.3}];
-function renderProdSim(){document.getElementById('psTb').innerHTML=MAT.map(m=>{const d=((m.unit-m.unit)*m.ton/100000).toFixed(1);return '<tr><td style="font-weight:600;">'+m.p+'</td><td class="r mn">'+fmtI(m.ton)+'</td><td class="r mn">'+fmt(m.unit)+'</td><td class="r mn"><input type="number" value="'+m.ton+'" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;text-align:right;font-family:inherit;"></td><td class="r mn"><input type="number" value="'+fmt(m.unit)+'" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;text-align:right;font-family:inherit;"></td><td class="r mn" style="font-weight:600;color:#16a34a;">'+d+'</td></tr>';}).join('');}
+// ── Product Sim (API 데이터 기반) ──
+function renderProdSim(){
+    const src=MAT_API.length?MAT_API:[];
+    if(!src.length){document.getElementById('psTb').innerHTML='<tr><td colspan="6" style="text-align:center;padding:30px;color:#94a3b8;">기준월/사업부의 지종별 데이터가 없습니다.</td></tr>';document.getElementById('psBase').textContent='-';document.getElementById('psSim').textContent='-';document.getElementById('psDiff').textContent='-';return;}
+    const baseTotal=src.reduce((s,m)=>s+(m.unit*m.ton/1000),0);
+    document.getElementById('psBase').textContent=fmtI(Math.round(baseTotal));
+    document.getElementById('psSim').textContent=fmtI(Math.round(baseTotal));
+    document.getElementById('psDiff').textContent='0';
+    document.getElementById('psTb').innerHTML=src.map((m,idx)=>{
+        const d=((m.unit-(m.pUnit||m.unit))*(m.ton||0)/100000).toFixed(1);
+        const dc=parseFloat(d)>=0?'color:#16a34a':'color:#dc2626';
+        return '<tr><td style="font-weight:600;">'+m.p+'</td><td class="r mn">'+fmtI(m.ton||0)+'</td><td class="r mn">'+fmt(m.unit||0)+'</td><td class="r mn"><input type="number" value="'+(m.ton||0)+'" data-idx="'+idx+'" data-field="ton" onchange="recalcProdSim()" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;text-align:right;font-family:inherit;"></td><td class="r mn"><input type="number" value="'+fmt(m.unit||0)+'" data-idx="'+idx+'" data-field="unit" onchange="recalcProdSim()" step="0.1" style="width:80px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;text-align:right;font-family:inherit;"></td><td class="r mn" style="font-weight:600;'+dc+'">'+d+'</td></tr>';
+    }).join('');
+}
+function recalcProdSim(){
+    const src=MAT_API.length?MAT_API:[];
+    const baseTotal=src.reduce((s,m)=>s+(m.unit*m.ton/1000),0);
+    let simTotal=0;
+    document.querySelectorAll('#psTb input').forEach(inp=>{
+        const idx=parseInt(inp.dataset.idx),field=inp.dataset.field;
+        if(field==='ton'){simTotal+=parseFloat(inp.value||0)*(src[idx]?.unit||0)/1000;}
+    });
+    // 원단위도 변경했을 수 있으므로 다시 계산
+    simTotal=0;
+    const rows=document.querySelectorAll('#psTb tr');
+    rows.forEach((tr,i)=>{
+        const inps=tr.querySelectorAll('input');
+        if(inps.length>=2){
+            const t=parseFloat(inps[0].value)||0,u=parseFloat(inps[1].value)||0;
+            simTotal+=u*t/1000;
+        }
+    });
+    document.getElementById('psSim').textContent=fmtI(Math.round(simTotal));
+    const diff=((baseTotal-simTotal)/100).toFixed(1);
+    document.getElementById('psDiff').textContent=(parseFloat(diff)>=0?'+':'')+diff;
+    document.getElementById('psDiff').style.color=parseFloat(diff)>=0?'#16a34a':'#dc2626';
+}
 
 // ── Ref Management ──
 const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성']},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure'],h:['자재코드','자재명','구분','단위']},{k:'machine-capacities',l:'호기별 생산능력',i:'fa-tachometer-alt',cols:['machineCode','hourlyCapacity','basisWeightRef','validFrom'],h:['호기','능력(톤/h)','기준평량','유효시작']},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']}];
@@ -635,13 +765,61 @@ function handleFile(input){}
 // ── Charts ──
 function initCharts(){
     costChart=new Chart(document.getElementById('costChart').getContext('2d'),{type:'bar',data:{labels:PL.filter(i=>i.k!=='rev').map(i=>i.l),datasets:[{label:'당월',data:PL.filter(i=>i.k!=='rev').map(i=>i.r),backgroundColor:'rgba(79,70,229,.5)',borderRadius:4,maxBarThickness:32},{label:'시뮬',data:PL.filter(i=>i.k!=='rev').map(i=>i.r),backgroundColor:'rgba(245,158,11,.5)',borderRadius:4,maxBarThickness:32}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:10,family:'Noto Sans KR'}}}},scales:{y:{beginAtZero:true,title:{display:true,text:'천원/톤',font:{size:10}}}}}});
-    matChart=new Chart(document.getElementById('matChart').getContext('2d'),{type:'doughnut',data:{labels:MAT.map(m=>m.p),datasets:[{data:MAT.map(m=>m.pct),backgroundColor:['#4f46e5','#7c3aed','#f59e0b','#10b981','#ef4444','#8b5cf6'],borderWidth:2,borderColor:'#fff'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{font:{size:10,family:'Noto Sans KR'}}}}}});
+    const matSrc=MAT_API.length?MAT_API:[];
+    matChart=new Chart(document.getElementById('matChart').getContext('2d'),{type:'doughnut',data:{labels:matSrc.map(m=>m.p),datasets:[{data:matSrc.map(m=>m.pct),backgroundColor:['#4f46e5','#7c3aed','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#ec4899'],borderWidth:2,borderColor:'#fff'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{font:{size:10,family:'Noto Sans KR'}}}}}});
     trendChart=new Chart(document.getElementById('trendChart').getContext('2d'),{type:'line',data:{labels:['1월','2월','3월','4월','5월','6월'],datasets:[{label:'영업이익(억)',data:[18,20,22,19,24,28],borderColor:'#4f46e5',backgroundColor:'rgba(79,70,229,.1)',fill:true,tension:.3,borderWidth:2},{label:'총원가(억)',data:[195,192,198,200,191,188],borderColor:'#f59e0b',borderWidth:2,tension:.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:10}}}},scales:{y:{beginAtZero:false}}}});
     compChart=new Chart(document.getElementById('compChart').getContext('2d'),{type:'bar',data:{labels:['원재료비','전력비','물류비','인건비','감가상각','판관비'],datasets:[{label:'구성비(%)',data:[45,18,12,10,8,7],backgroundColor:['#f59e0b','#ef4444','#3b82f6','#10b981','#8b5cf6','#64748b'],borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,max:50}}}});
 }
 
+// ── matChart / STEP5 동적 갱신 ──
+function updateMatChart(){
+    if(!matChart)return;
+    const src=MAT_API.length?MAT_API:[];
+    matChart.data.labels=src.map(m=>m.p);
+    matChart.data.datasets[0].data=src.map(m=>m.pct);
+    matChart.update();
+}
+function updateStep5(){
+    const src=MAT_API.length?MAT_API:[];
+    const matRate=PL[1]?.r||0;
+    const sp=parseInt(document.getElementById('prodSl')?.value||BP);
+    // 총원가(억) = 원재료비 원단위 × 생산량 / 100000
+    const totalCostEok=(matRate*sp/100000).toFixed(1);
+    // 영업이익 = 매출 - 총원가 (매출 미입력시 근사)
+    const profitEok=(0-parseFloat(totalCostEok)).toFixed(1);
+    const totalTon=src.reduce((s,m)=>s+(m.ton||0),0);
+    // STEP5 카드 동적 갱신
+    const s5=document.getElementById('step-5');
+    if(!s5)return;
+    const cards=s5.querySelectorAll('.sc[style*="border-top"]');
+    if(cards.length>=4){
+        // 영업이익
+        cards[0].querySelector('div:nth-child(2)').textContent=(matRate>0?profitEok:'–')+'억';
+        cards[0].querySelector('div:nth-child(3)').innerHTML=matRate>0?'<i class="fas fa-database mr-1"></i>DB 기반 계산':'<span style="color:#94a3b8">데이터 준비 후 계산</span>';
+        // 총원가
+        cards[1].querySelector('div:nth-child(2)').textContent=(matRate>0?totalCostEok:'–')+'억';
+        // 마진율
+        cards[2].querySelector('div:nth-child(2)').textContent='–%';
+        cards[2].querySelector('div:nth-child(3)').innerHTML='<span style="color:#94a3b8">매출 입력 후 계산</span>';
+        // 생산량
+        cards[3].querySelector('div:nth-child(2)').textContent=fmtI(totalTon||sp)+'톤';
+        cards[3].querySelector('div:nth-child(3)').textContent=getYm().slice(0,4)+'.'+getYm().slice(4)+' '+getDiv();
+    }
+}
+
 // ── Init ──
-function initAll(){calcPL();renderReady();renderRefTabs();loadRef();renderOpt();renderCapa();renderProdSim();initCharts();}
+async function initAll(){
+    renderRefTabs();
+    initCharts();
+    // API 기반 데이터 로드 (필터 연결)
+    await loadCostUnitRates(); // → calcPL(), renderProdSim(), updateDrillData() 내부 호출
+    await renderReady();
+    await loadOptimeFromAPI(); // → renderOpt() 내부 호출
+    loadRef();
+    renderCapa();
+    updateMatChart();
+    updateStep5();
+}
 
 function openSidebar(){document.getElementById('sidebar').classList.add('open');}
 function closeSidebar(){document.getElementById('sidebar').classList.remove('open');}
