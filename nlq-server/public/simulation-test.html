@@ -153,6 +153,7 @@
         <div class="sub-tab" onclick="subTab(1,'raw')">업로드 데이터 조회</div>
         <div class="sub-tab" onclick="subTab(1,'ref')">기준정보 관리</div>
         <div class="sub-tab" onclick="subTab(1,'speed')">제지 생산 선속</div>
+        <div class="sub-tab" onclick="subTab(1,'optime')">가동시간 관리</div>
     </div>
 
     <!-- 1-1 데이터 준비 현황 -->
@@ -168,7 +169,7 @@
                 </div>
             </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;" id="readyCards"></div>
+        <div id="readyCards"></div>
     </div>
 
     <!-- 1-2 엑셀 업로드 -->
@@ -256,18 +257,9 @@
             </div>
         </div>
     </div>
-</div>
 
-<!-- ================================================================ -->
-<!-- STEP 2: 생산 기준 설정                                            -->
-<!-- ================================================================ -->
-<div id="step-2" style="display:none;padding:20px;" class="fade-in">
-    <div class="sub-tabs" style="margin:-20px -20px 16px;padding:0 20px;">
-        <div class="sub-tab active" onclick="subTab(2,'optime')">가동시간 관리</div>
-    </div>
-
-    <!-- 2-1 가동시간 -->
-    <div id="s2-optime">
+    <!-- 1-6 가동시간 관리 -->
+    <div id="s1-optime" style="display:none;">
         <div class="sc" style="overflow:hidden;">
             <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
                 <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-clock text-cyan-500 mr-1"></i>월별 호기별 가동시간</h3>
@@ -276,7 +268,18 @@
             <div style="overflow-x:auto;"><table class="st"><thead><tr><th>연월</th><th>호기</th><th class="r">총일수</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th></tr></thead><tbody id="optTb"></tbody></table></div>
         </div>
     </div>
+</div>
 
+<!-- ================================================================ -->
+<!-- STEP 2: 생산 기준 설정                                            -->
+<!-- ================================================================ -->
+<div id="step-2" style="display:none;padding:20px;" class="fade-in">
+    <div class="sc" style="padding:30px;text-align:center;">
+        <i class="fas fa-cogs" style="font-size:36px;color:#c7d2fe;margin-bottom:12px;"></i>
+        <h3 style="font-size:16px;font-weight:700;color:#475569;margin:0 0 8px;">생산 기준 설정</h3>
+        <p style="font-size:12px;color:#94a3b8;margin:0;line-height:1.8;">STEP 1의 데이터 준비가 완료되면 자동으로 생산 기준이 설정됩니다.<br>가동시간과 제지 생산 선속은 STEP 1 &gt; 데이터 준비에서 관리할 수 있습니다.</p>
+        <button class="btn-p" style="margin-top:14px;" onclick="goStep(1)"><i class="fas fa-arrow-left mr-1"></i>STEP 1로 이동</button>
+    </div>
 </div>
 
 <!-- ================================================================ -->
@@ -488,7 +491,7 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','upload','raw','ref','speed'],2:['optime'],4:['plsim','causal','prodsim']};
+const SUB_MAP={1:['ready','upload','raw','ref','speed','optime'],2:[],4:['plsim','causal','prodsim']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
@@ -589,32 +592,77 @@ function toggleDrill(){
 
 // ── Data Readiness (실제 API 호출) ──
 const WHO_MAP={MATERIAL:'구매팀',POWER:'전기팀',LOGISTICS:'물류팀',OPTIME:'생산관리'};
+const REF_READY_ITEMS=[
+    {k:'units',l:'호기 마스터',desc:'생산호기 마스터 정보'},
+    {k:'materials',l:'원부자재 마스터',desc:'원부자재 코드/자재그룹'},
+    {k:'machine-capacities',l:'호기별 생산능력',desc:'호기별 시간당 생산능력'},
+    {k:'pw-lines',l:'전력비 호기',desc:'전력비 계산용 호기 마스터'},
+    {k:'pw-tariffs',l:'한전 요금',desc:'한전 요금 단가 (기본/전력량)'},
+    {k:'logi-rates',l:'해상 운임',desc:'분기별 해상 운임 단가'},
+    {k:'exchange-rates',l:'월별 환율',desc:'월별 통화 환율 정보'},
+    {k:'logi-cost-local',l:'국내 운임',desc:'국내 출발항 운임 비용'}
+];
 async function renderReady(){
     const ym=document.getElementById('selYm')?.value||'202605';
     const div=document.getElementById('selDiv')?.value||'PS';
-    let modules=[];
+
+    // 1) 원가 모듈 (API 기반)
+    let costModules=[];
     try{
         const r=await fetch(API+'/data-readiness?ym='+ym+'&division='+div);
         const j=await r.json();
-        modules=j.data?.modules||[];
+        costModules=(j.data?.modules||[]).map(m=>({...m,category:'원가데이터'}));
     }catch(e){
-        console.warn('[DataReadiness] API 호출 실패, 빈 상태 표시:', e.message);
-        modules=[
-            {moduleCode:'MATERIAL',moduleName:'원부재료비',status:'EMPTY',recordCount:0,description:'SAP BW 원부재료비 실적'},
-            {moduleCode:'POWER',moduleName:'전력비',status:'EMPTY',recordCount:0,description:'한전 전력비 계산 결과'},
-            {moduleCode:'LOGISTICS',moduleName:'물류비',status:'EMPTY',recordCount:0,description:'해상 물류비 + 국내 운임'},
-            {moduleCode:'OPTIME',moduleName:'가동시간',status:'EMPTY',recordCount:0,description:'월별 호기별 가동일수'}
+        console.warn('[DataReadiness] API 호출 실패:', e.message);
+        costModules=[
+            {moduleCode:'MATERIAL',moduleName:'원부재료비',status:'EMPTY',recordCount:0,description:'SAP BW 원부재료비 실적',category:'원가데이터'},
+            {moduleCode:'POWER',moduleName:'전력비',status:'EMPTY',recordCount:0,description:'한전 전력비 계산 결과',category:'원가데이터'},
+            {moduleCode:'LOGISTICS',moduleName:'물류비',status:'EMPTY',recordCount:0,description:'해상 물류비 + 국내 운임',category:'원가데이터'}
         ];
     }
-    const ok=modules.filter(r=>r.status==='READY').length,total=modules.length||1,pct=Math.round(ok/total*100);
-    document.getElementById('readyPct').textContent=pct+'%';document.getElementById('readyBar').style.width=pct+'%';
-    document.getElementById('readyCards').innerHTML=modules.map(m=>{
-        const bc=m.status==='READY'?'b-ok':m.status==='PARTIAL'?'b-pt':'b-no';
-        const ic=m.status==='READY'?'fa-check-circle text-green-500':m.status==='PARTIAL'?'fa-exclamation-triangle text-yellow-500':'fa-times-circle text-red-500';
-        const sl=m.status==='READY'?'완료':m.status==='PARTIAL'?'부분':'미등록';
-        const who=WHO_MAP[m.moduleCode]||'';
-        return '<div class="sc" style="padding:16px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="display:flex;align-items:center;gap:6px;"><i class="fas '+ic+'" style="font-size:14px;"></i><span style="font-size:13px;font-weight:700;color:#1e293b;">'+m.moduleName+'</span></div><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;" class="'+bc+'">'+sl+'</span></div><div style="font-size:11px;color:#64748b;margin-bottom:6px;">'+m.description+'</div><div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:10px;color:#94a3b8;"><i class="fas fa-database mr-1"></i>'+(m.recordCount>0?fmtI(m.recordCount)+'건':'-')+'</span>'+(who?'<span style="font-size:10px;color:#818cf8;font-weight:600;"><i class="fas fa-user mr-1"></i>'+who+'</span>':'')+'</div></div>';
-    }).join('');
+    // OPTIME은 생산기준으로 분류
+    const optimeItem=costModules.find(m=>m.moduleCode==='OPTIME');
+    costModules=costModules.filter(m=>m.moduleCode!=='OPTIME');
+    const prodModules=[];
+    if(optimeItem){optimeItem.category='생산기준';prodModules.push(optimeItem);}
+    else{prodModules.push({moduleCode:'OPTIME',moduleName:'가동시간',status:'EMPTY',recordCount:0,description:'월별 호기별 가동일수',category:'생산기준'});}
+
+    // 2) 기준정보 8개 건수 확인
+    let refModules=[];
+    const refPromises=REF_READY_ITEMS.map(async ri=>{
+        let cnt=0;
+        try{const r=await fetch(API+'/'+ri.k+'?division='+div);const j=await r.json();const arr=Array.isArray(j.data)?j.data:j.data?.content||[];cnt=arr.length;}catch(_){}
+        return {moduleCode:'REF_'+ri.k,moduleName:ri.l,status:cnt>0?'READY':'EMPTY',recordCount:cnt,description:ri.desc,category:'기준정보'};
+    });
+    refModules=await Promise.all(refPromises);
+
+    // 3) 전체 결합
+    const allModules=[...costModules,...refModules,...prodModules];
+    const ok=allModules.filter(r=>r.status==='READY').length,total=allModules.length||1,pct=Math.round(ok/total*100);
+    document.getElementById('readyPct').textContent=pct+'%';
+    document.getElementById('readyBar').style.width=pct+'%';
+    document.getElementById('readyBar').style.background=pct>=80?'linear-gradient(90deg,#16a34a,#4ade80)':pct>=50?'linear-gradient(90deg,#f59e0b,#fbbf24)':'linear-gradient(90deg,#4f46e5,#6366f1)';
+
+    // 4) 카테고리별 그룹핑 렌더링
+    const cats=['원가데이터','기준정보','생산기준'];
+    const catIcons={'원가데이터':'fa-coins text-amber-500','기준정보':'fa-cog text-indigo-500','생산기준':'fa-industry text-cyan-500'};
+    let html='';
+    cats.forEach(cat=>{
+        const items=allModules.filter(m=>m.category===cat);
+        if(!items.length)return;
+        const catOk=items.filter(i=>i.status==='READY').length;
+        html+='<div style="margin-bottom:14px;"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><i class="fas '+(catIcons[cat]||'fa-folder')+'" style="font-size:12px;"></i><span style="font-size:12px;font-weight:700;color:#475569;">'+cat+'</span><span style="font-size:10px;padding:2px 6px;border-radius:8px;font-weight:600;'+(catOk===items.length?'background:#dcfce7;color:#166534;':'background:#fef3c7;color:#92400e;')+'">'+catOk+'/'+items.length+'</span></div>';
+        html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;">';
+        items.forEach(m=>{
+            const bc=m.status==='READY'?'b-ok':m.status==='PARTIAL'?'b-pt':'b-no';
+            const ic=m.status==='READY'?'fa-check-circle text-green-500':m.status==='PARTIAL'?'fa-exclamation-triangle text-yellow-500':'fa-times-circle text-red-400';
+            const sl=m.status==='READY'?'완료':m.status==='PARTIAL'?'부분':'미등록';
+            const who=WHO_MAP[m.moduleCode]||'';
+            html+='<div class="sc" style="padding:10px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><div style="display:flex;align-items:center;gap:4px;"><i class="fas '+ic+'" style="font-size:11px;"></i><span style="font-size:11px;font-weight:700;color:#1e293b;">'+m.moduleName+'</span></div><span style="font-size:9px;font-weight:600;padding:1px 6px;border-radius:8px;" class="'+bc+'">'+sl+'</span></div><div style="font-size:10px;color:#64748b;margin-bottom:3px;">'+m.description+'</div><div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:9px;color:#94a3b8;"><i class="fas fa-database mr-1"></i>'+(m.recordCount>0?fmtI(m.recordCount)+'건':'-')+'</span>'+(who?'<span style="font-size:9px;color:#818cf8;font-weight:600;"><i class="fas fa-user mr-1"></i>'+who+'</span>':'')+'</div></div>';
+        });
+        html+='</div></div>';
+    });
+    document.getElementById('readyCards').innerHTML=html;
 }
 
 // ── Operating Time (API 호출) ──
