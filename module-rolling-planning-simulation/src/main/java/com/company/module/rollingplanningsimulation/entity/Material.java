@@ -10,7 +10,8 @@ import java.time.LocalDateTime;
 
 /**
  * 원부자재 마스터 엔티티
- * - 자재코드, 자재명, 구분(RAW/SUB), 단위(kg/L/EA)
+ * - SAP BW ZOHPP100/101 기준 필드 매핑
+ * - 자재코드, 자재명, 구분(RAW/SUB), 단위, 자재그룹, 대분류
  */
 @Entity
 @Table(name = "rpsim_material")
@@ -34,6 +35,18 @@ public class Material {
 
     @Column(name = "UNIT_OF_MEASURE", nullable = false, length = 20)
     private String unitOfMeasure;
+
+    @Column(name = "MATERIAL_GROUP", length = 20)
+    private String materialGroup;
+
+    @Column(name = "MATERIAL_GROUP_NAME", length = 200)
+    private String materialGroupName;
+
+    @Column(name = "MATERIAL_GROUP_LARGE", length = 20)
+    private String materialGroupLarge;
+
+    @Column(name = "MATERIAL_GROUP_LARGE_NAME", length = 200)
+    private String materialGroupLargeName;
 
     @Column(name = "DESCRIPTION", length = 500)
     private String description;
@@ -78,11 +91,17 @@ public class Material {
 
     @Builder
     public Material(String materialCode, String materialName, String category,
-                    String unitOfMeasure, String description, Boolean isActive, Long createdBy) {
+                    String unitOfMeasure, String materialGroup, String materialGroupName,
+                    String materialGroupLarge, String materialGroupLargeName,
+                    String description, Boolean isActive, Long createdBy) {
         this.materialCode = materialCode;
         this.materialName = materialName;
         this.category = category != null ? category : "RAW";
         this.unitOfMeasure = unitOfMeasure != null ? unitOfMeasure : "kg";
+        this.materialGroup = materialGroup;
+        this.materialGroupName = materialGroupName;
+        this.materialGroupLarge = materialGroupLarge;
+        this.materialGroupLargeName = materialGroupLargeName;
         this.description = description;
         this.isActive = isActive != null ? isActive : true;
         this.createdBy = createdBy;
@@ -90,10 +109,16 @@ public class Material {
     }
 
     public void update(String materialName, String category, String unitOfMeasure,
+                       String materialGroup, String materialGroupName,
+                       String materialGroupLarge, String materialGroupLargeName,
                        String description, Boolean isActive, Long updatedBy) {
         this.materialName = materialName;
         this.category = category;
         this.unitOfMeasure = unitOfMeasure;
+        this.materialGroup = materialGroup;
+        this.materialGroupName = materialGroupName;
+        this.materialGroupLarge = materialGroupLarge;
+        this.materialGroupLargeName = materialGroupLargeName;
         this.description = description;
         this.isActive = isActive;
         this.updatedBy = updatedBy;

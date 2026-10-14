@@ -23,6 +23,8 @@ public class MaterialService {
         Material entity = Material.builder()
                 .materialCode(request.getMaterialCode()).materialName(request.getMaterialName())
                 .category(request.getCategory()).unitOfMeasure(request.getUnitOfMeasure())
+                .materialGroup(request.getMaterialGroup()).materialGroupName(request.getMaterialGroupName())
+                .materialGroupLarge(request.getMaterialGroupLarge()).materialGroupLargeName(request.getMaterialGroupLargeName())
                 .description(request.getDescription()).isActive(request.getIsActive())
                 .createdBy(currentUserId).build();
         return MaterialResponse.from(materialRepository.save(entity));
@@ -31,7 +33,10 @@ public class MaterialService {
     @Transactional
     public MaterialResponse update(Long id, MaterialSaveRequest request, Long currentUserId) {
         Material entity = materialRepository.findById(id).orElseThrow(() -> new IllegalArgumentException("자재를 찾을 수 없습니다: " + id));
-        entity.update(request.getMaterialName(), request.getCategory(), request.getUnitOfMeasure(), request.getDescription(), request.getIsActive(), currentUserId);
+        entity.update(request.getMaterialName(), request.getCategory(), request.getUnitOfMeasure(),
+                request.getMaterialGroup(), request.getMaterialGroupName(),
+                request.getMaterialGroupLarge(), request.getMaterialGroupLargeName(),
+                request.getDescription(), request.getIsActive(), currentUserId);
         return MaterialResponse.from(entity);
     }
 

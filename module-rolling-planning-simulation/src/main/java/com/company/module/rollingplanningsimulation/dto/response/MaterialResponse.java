@@ -12,14 +12,28 @@ public class MaterialResponse {
     private String materialName;
     private String category;
     private String unitOfMeasure;
+    private String materialGroup;
+    private String materialGroupName;
+    private String materialGroupLarge;
+    private String materialGroupLargeName;
     private String description;
     private Boolean isActive;
     private LocalDateTime createdAt;
 
     public static MaterialResponse from(Material e) {
-        return MaterialResponse.builder().materialId(e.getMaterialId()).materialCode(e.getMaterialCode())
-                .materialName(e.getMaterialName()).category(e.getCategory())
-                .unitOfMeasure(e.getUnitOfMeasure()).description(e.getDescription())
-                .isActive(e.getIsActive()).createdAt(e.getCreatedAt()).build();
+        return MaterialResponse.builder()
+                .materialId(e.getMaterialId())
+                .materialCode(e.getMaterialCode())
+                .materialName(e.getMaterialName())
+                .category(e.getCategory())
+                .unitOfMeasure(e.getUnitOfMeasure())
+                .materialGroup(e.getMaterialGroup())
+                .materialGroupName(e.getMaterialGroupName())
+                .materialGroupLarge(e.getMaterialGroupLarge())
+                .materialGroupLargeName(e.getMaterialGroupLargeName())
+                .description(e.getDescription())
+                .isActive(e.getIsActive())
+                .createdAt(e.getCreatedAt())
+                .build();
     }
 }
