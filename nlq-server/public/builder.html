@@ -1098,7 +1098,16 @@
     <!-- 최근 이력 / 즐겨찾기 / 보관함 -->
     <div class="sidebar-history-section">
         <div class="history-header">
-            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>쿼리 이력</p>
+            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider">
+                <i class="fas fa-history mr-1"></i>쿼리 이력<!--
+                [2026-10-16] 쿼리 이력 건수 안내 뱃지 — "(현재/50)" 형식.
+                  - 자연어 질의 쪽은 보관주기(31일) 안내를 쓰지만, VQB 는 시간 기준이 없고 50건 캡만 있어서
+                    "현재 저장된 개수 / 최대 50건" 을 괄호로 간단 표시하여 공간을 최소화.
+                  - 숫자는 loadBuilderHistory() 가 recent 탭 응답 길이로 캡처해 채움 (initial '-/50').
+                  - 50건 초과 저장 시 서버가 가장 오래된 비(非)즐겨찾기부터 자동 삭제하므로
+                    recent 탭 길이가 곧 전체 저장 건수와 일치 (즐겨찾기 포함).
+            --><span id="builderHistoryCount" style="font-size:10px;font-weight:500;color:#a5b4fc;margin-left:4px;letter-spacing:0;text-transform:none;">(-/50)</span>
+            </p>
             <span id="historyClearBtn" class="history-clear-btn" onclick="clearAllBuilderHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
         </div>
         <button class="new-builder-btn" onclick="newQueryBuilder()" title="현재 쿼리빌더를 초기화하고 새로 시작합니다">
@@ -4535,8 +4544,36 @@ async function loadBuilderHistory() {
         renderBuilderHistory(data);
         // 안읽은 공유 개수 뱃지 업데이트
         loadUnreadSharedCount();
+        // [2026-10-16] 사이드바 "쿼리 이력 (현재/50)" 건수 뱃지 업데이트.
+        //   - recent 탭 응답은 사용자의 전체 저장 건수와 동일 (서버가 50건 캡으로 유지하므로 limit=50 과 캡 상한이 일치).
+        //   - bookmarked/shared 탭에서는 recent 데이터가 아니라 캡시된 전체 건수를 유지하기 위해 별도 조회.
+        updateBuilderHistoryCount();
     } catch(e) {
         console.error('빌더 이력 로드 실패:', e);
+    }
+}
+
+// [2026-10-16] 사이드바 "쿼리 이력 (현재/50)" 건수 뱃지 전용 로더.
+//   - recent 탭 응답으로 count 를 확보 (어느 탭에 있어도 recent 를 한 번 더 조회)
+//   - 서버가 50건 캡으로 유지하므로 응답 길이 = 전체 저장 건수.
+//   - 최대 상한(50)은 하드코딩: 서버 saveBuilderHistory() 안 LIMIT 50 과 1:1 매칭 (PR #TBD).
+//   - 실패 시 '-/50' 그대로 두고 조용히 무시 (사이드바 핵심 기능 아니라 UX 블로킹 금지).
+async function updateBuilderHistoryCount() {
+    try {
+        const el = document.getElementById('builderHistoryCount');
+        if (!el) return;
+        // currentHistoryTab 이 recent 가 아니면 recent 를 한 번 더 조회
+        if (currentHistoryTab === 'recent' && Array.isArray(builderHistoryCache)) {
+            el.textContent = `(${builderHistoryCache.length}/50)`;
+            return;
+        }
+        const r = await fetch('/api/builder/history?limit=50&tab=recent');
+        const d = await r.json();
+        if (Array.isArray(d)) {
+            el.textContent = `(${d.length}/50)`;
+        }
+    } catch(_) {
+        // 조용히 무시 — 뱃지 미표시가 핵심 기능을 막지 않도록
     }
 }
 
