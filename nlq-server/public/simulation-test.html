@@ -623,6 +623,11 @@ async function loadCostUnitRates(){
 }
 function calcPL(){
     const sp=parseInt(document.getElementById('prodSl').value),ratio=sp/BP,dp=((ratio-1)*100).toFixed(1);
+    // ── 생산량 변동 시 에너지비 자동 재계산 (기준정보 로드 완료 시) ──
+    if(STEAM_UNIT_RATES.length&&STEAM_PRICE_INTERVALS.length){
+        const engPerTon=calcEnergyPerTon(sp);
+        if(engPerTon>0){PL[3].r=engPerTon;PL[3].db=true;PL[3].n='자동';}
+    }
     document.getElementById('slLbl').textContent='시뮬: '+fmtI(sp)+' 톤';
     const dE=document.getElementById('prodD');dE.textContent=(dp>=0?'+':'')+dp+'%';dE.style.color=dp>0?'#4f46e5':dp<0?'#dc2626':'#475569';
     try{document.getElementById('csProd').textContent=fmtI(sp);}catch(_){}
@@ -1016,6 +1021,61 @@ function fillFromCapa(){
     });
     document.getElementById('energyTotalProd').textContent='합계: '+fmtI(totalP)+' 톤';
     calcEnergyCost();
+}
+
+// ── 경량 에너지비 톤당 단가 계산 (P/L 슬라이더 연동용, DOM 조작 없음) ──
+function calcEnergyPerTon(totalProdTon){
+    if(!totalProdTon||totalProdTon<=0)return 0;
+    // 호기별 생산량 비례 배분 (CAPA 비율 또는 균등)
+    const units=STEAM_UNIT_RATES.map(r=>r.machineCode);
+    const prodByMc={};
+    if(units.length===1){prodByMc[units[0]]=totalProdTon;}
+    else{
+        // 기존 에너지비 입력값이 있으면 비율 유지, 없으면 균등
+        let totalInput=0;const inputMap={};
+        units.forEach(mc=>{const inp=document.getElementById('engProd_'+mc);const v=inp?parseFloat(inp.value)||0:0;inputMap[mc]=v;totalInput+=v;});
+        if(totalInput>0){units.forEach(mc=>{prodByMc[mc]=totalProdTon*(inputMap[mc]/totalInput);});}
+        else{units.forEach(mc=>{prodByMc[mc]=totalProdTon/units.length;});}
+    }
+    // 스팀 필요량
+    let totalSteam=0;
+    STEAM_UNIT_RATES.forEach(r=>{
+        const prod=prodByMc[r.machineCode]||0;
+        totalSteam+=prod*(parseFloat(r.steamPerTon)||0)+(parseFloat(r.etcUsageTon)||0);
+    });
+    // 보일러 우선순위 분배 → 비용
+    const month=parseInt(getYm().substring(4,6));
+    const sorted=BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));
+    let sRem=totalSteam,boilerCost=0;
+    // 구간단가 함수
+    const ivs=STEAM_PRICE_INTERVALS.slice().sort((a,b)=>(a.intervalSeq||0)-(b.intervalSeq||0));
+    function ivCost(ton){let rem=ton,c=0;ivs.forEach(iv=>{if(rem<=0)return;const mn=parseFloat(iv.minUsageTon)||0;const mx=iv.maxUsageTon?parseFloat(iv.maxUsageTon):Infinity;const cap=mx===Infinity?rem:(mx-mn);const ap=Math.min(rem,cap);c+=ap*(parseFloat(iv.pricePerTon)||0);rem-=ap;});return c;}
+    sorted.forEach(b=>{
+        if(sRem<=0)return;
+        const plan=BOILER_PLANS_LIST.find(p=>p.boilerCode===b.boilerCode&&p.month===month);
+        const planH=plan?parseFloat(plan.operationHours)||0:672;
+        const maint=BOILER_MAINTENANCES.find(m=>m.boilerCode===b.boilerCode);
+        const maintH=maint?(parseFloat(maint.maintHours)||0)*(parseFloat(maint.capacityReduction)||100)/100:0;
+        const actH=Math.max(0,planH-maintH);
+        const maxS=(parseFloat(b.steamPerHour)||0)*actH;
+        const alloc=Math.min(sRem,maxS);sRem-=alloc;
+        if(b.boilerType==='COGEN'){boilerCost+=ivCost(alloc);}
+        else if(b.boilerType==='LNG'){
+            const fr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='FUEL_RATE');
+            const sr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='STEAM_RATE');
+            const fp=fr?parseFloat(fr.rateValue)||0:0;const se=sr?parseFloat(sr.rateValue)||0:0;
+            boilerCost+=se>0?alloc/se*fp:alloc*fp;
+        } else {
+            const sr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='STEAM_RATE');
+            boilerCost+=alloc*(sr?parseFloat(sr.rateValue)||0:0);
+        }
+    });
+    // LNG 버너
+    const lngPrice=BOILER_COST_RATES.filter(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG')).map(r=>parseFloat(r.rateValue)||0)[0]||0;
+    let lngCost=0;
+    BURNER_LNG_RATES.forEach(r=>{const prod=prodByMc[r.machineCode]||0;lngCost+=prod*(parseFloat(r.lngPerTon)||0)*lngPrice;});
+    const total=boilerCost+lngCost;
+    return total/totalProdTon/1000; // 천원/톤
 }
 
 function calcEnergyCost(){
