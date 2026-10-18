@@ -465,6 +465,21 @@
             </div>
             <div style="overflow-x:auto;"><table class="st"><thead><tr><th>보일러</th><th class="r">정비유형</th><th class="r">정비시간(hr)</th><th class="r">용량감소(%)</th><th class="r">스팀감소(톤)</th><th>비고</th></tr></thead><tbody id="engMaintTb"></tbody></table></div>
         </div>
+
+        <!-- 일별 스팀 배분 계획표 -->
+        <div class="sc" style="overflow:hidden;margin-top:14px;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-calendar-alt text-indigo-500 mr-1"></i>일별 스팀 배분 계획표</h3>
+                <span style="font-size:10px;color:#94a3b8;">보일러 우선순위 기반 일별 자동 배분 · 정비/운휴일 반영</span>
+            </div>
+            <div style="overflow-x:auto;max-height:600px;overflow-y:auto;" id="engDailyWrap">
+                <table class="st" style="font-size:11px;">
+                    <thead id="engDailyHead"></thead>
+                    <tbody id="engDailyTb"></tbody>
+                    <tfoot id="engDailyFoot"></tfoot>
+                </table>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -1307,13 +1322,139 @@ function calcEnergyCost(){
         ).join('');
     }
 
-    // 12) P/L 시뮬레이터에 에너지비 톤당단가 연동
+    // 12) 일별 스팀 배분 계획표
+    renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd);
+
+    // 13) P/L 시뮬레이터에 에너지비 톤당단가 연동
     if(totalProd>0&&totalEnergy>0){
         PL[3].r=perTon; // 천원/톤
         PL[3].db=true;
         PL[3].n='시뮬';
         calcPL();
     }
+}
+
+// ── 일별 스팀 배분 계획표 ──
+function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
+    const headEl=document.getElementById('engDailyHead');
+    const tbEl=document.getElementById('engDailyTb');
+    const footEl=document.getElementById('engDailyFoot');
+    if(!headEl||!tbEl)return;
+
+    const ym=getYm();
+    const year=parseInt(ym.substring(0,4));
+    const month=parseInt(ym.substring(4,6));
+    const daysInMonth=new Date(year,month,0).getDate();
+
+    // 활성 보일러 (우선순위 순)
+    const boilers=boilerAllocRows.filter(r=>r.maxSupply>0||r.allocated>0);
+    if(!boilers.length){
+        headEl.innerHTML='';tbEl.innerHTML='<tr><td colspan="3" style="text-align:center;padding:30px;color:#94a3b8;">보일러 데이터가 없습니다.</td></tr>';footEl.innerHTML='';return;
+    }
+
+    // 일별 스팀 필요량 (월 합계 ÷ 가동일수 — 운휴일 감안)
+    // 간단히: 월간 총 스팀 ÷ 월일수 = 일 평균 스팀필요량
+    const dailySteamBase=totalSteamReq/daysInMonth;
+
+    // 보일러별 정비일 맵 (시작~종료 범위)
+    const maintDayMap={};
+    BOILER_MAINTENANCES.forEach(m=>{
+        const sd=m.startDate?new Date(m.startDate).getDate():null;
+        const ed=m.endDate?new Date(m.endDate).getDate():null;
+        if(sd&&ed){
+            maintDayMap[m.boilerCode]={start:sd,end:ed,cap:parseFloat(m.capacityReduction)||100};
+        } else if(parseFloat(m.maintHours)>0){
+            // 시작/종료일 없이 시간만 있으면 → 월초부터 시간÷24일만큼 정비
+            const days=Math.ceil(parseFloat(m.maintHours)/24);
+            maintDayMap[m.boilerCode]={start:1,end:days,cap:parseFloat(m.capacityReduction)||100};
+        }
+    });
+
+    // 보일러별 일일 최대 공급량 (스팀/hr × 24hr)
+    const boilerDailyCap={};
+    boilers.forEach(b=>{boilerDailyCap[b.code]=(b.steamPerHr||0)*24;});
+
+    // 일별 계산
+    const dayRows=[];
+    const boilerTotals={};boilers.forEach(b=>{boilerTotals[b.code]=0;});
+    let grandTotal=0;
+
+    for(let d=1;d<=daysInMonth;d++){
+        const dow=new Date(year,month-1,d).getDay(); // 0=일
+        const dayLabel=d+'일';
+        const dowLabel=['일','월','화','수','목','금','토'][dow];
+        const isHoliday=dow===0; // 일요일 = 운휴 (간소화)
+
+        let dailySteam=isHoliday?dailySteamBase*0.4:dailySteamBase; // 일요일은 40%
+        let remaining=dailySteam;
+        const alloc={};
+        const hours={};
+
+        // 우선순위 순 분배
+        boilers.forEach(b=>{
+            const maint=maintDayMap[b.code];
+            const isMainting=maint&&d>=maint.start&&d<=maint.end;
+            const capRate=isMainting?(100-maint.cap)/100:1;
+            const dailyCap=boilerDailyCap[b.code]*capRate;
+            const a=Math.min(remaining,dailyCap);
+            alloc[b.code]=Math.round(a);
+            hours[b.code]=b.steamPerHr>0?a/b.steamPerHr:0;
+            remaining=Math.max(0,remaining-a);
+            boilerTotals[b.code]+=a;
+        });
+        grandTotal+=dailySteam;
+        dayRows.push({d,dayLabel,dowLabel,isHoliday,dailySteam,alloc,hours,remaining});
+    }
+
+    // 헤더 생성
+    let hdrH='<tr><th style="position:sticky;left:0;background:#f8fafc;z-index:2;">일</th><th style="position:sticky;left:30px;background:#f8fafc;z-index:2;">요일</th>';
+    boilers.forEach(b=>{
+        hdrH+='<th class="r" colspan="2" style="border-bottom:none;background:#eef2ff;color:#4f46e5;">'+b.name+'</th>';
+    });
+    hdrH+='<th class="r" style="background:#fef3c7;color:#92400e;">스팀총계</th><th class="r" style="background:#fee2e2;color:#991b1b;">부족</th></tr>';
+    // 서브 헤더
+    hdrH+='<tr><th style="position:sticky;left:0;background:#f8fafc;z-index:2;"></th><th style="position:sticky;left:30px;background:#f8fafc;z-index:2;"></th>';
+    boilers.forEach(()=>{hdrH+='<th class="r" style="font-size:9px;color:#64748b;">T/D</th><th class="r" style="font-size:9px;color:#64748b;">H/D</th>';});
+    hdrH+='<th class="r" style="font-size:9px;color:#64748b;">T/D</th><th class="r" style="font-size:9px;color:#64748b;">T/D</th></tr>';
+    headEl.innerHTML=hdrH;
+
+    // 본문
+    tbEl.innerHTML=dayRows.map(r=>{
+        const bgStyle=r.isHoliday?'background:#fef2f2;':'';
+        const dowColor=r.isHoliday?'color:#ef4444;font-weight:700;':'color:#64748b;';
+        let row='<tr style="'+bgStyle+'">';
+        row+='<td style="font-weight:600;position:sticky;left:0;background:'+(r.isHoliday?'#fef2f2':'#fff')+';z-index:1;">'+r.d+'</td>';
+        row+='<td style="'+dowColor+'position:sticky;left:30px;background:'+(r.isHoliday?'#fef2f2':'#fff')+';z-index:1;">'+r.dowLabel+'</td>';
+        boilers.forEach(b=>{
+            const a=r.alloc[b.code]||0;
+            const h=r.hours[b.code]||0;
+            const maint=maintDayMap[b.code];
+            const isMainting=maint&&r.d>=maint.start&&r.d<=maint.end;
+            const cellStyle=isMainting?'color:#ef4444;':'';
+            row+='<td class="r mn" style="'+cellStyle+'">'+(a>0?fmtI(a):(isMainting?'<span style="font-size:9px;">정비</span>':'-'))+'</td>';
+            row+='<td class="r mn" style="color:#94a3b8;font-size:10px;">'+(h>0?fmt(h):'-')+'</td>';
+        });
+        const dayTotal=boilers.reduce((s,b)=>s+(r.alloc[b.code]||0),0);
+        row+='<td class="r mn" style="font-weight:700;">'+fmtI(dayTotal)+'</td>';
+        row+='<td class="r mn" style="color:'+(r.remaining>0?'#ef4444':'#94a3b8')+';">'+(r.remaining>0?fmtI(Math.round(r.remaining)):'-')+'</td>';
+        row+='</tr>';
+        return row;
+    }).join('');
+
+    // 합계/평균 푸터
+    const totalRow='<tr style="background:#f0f4ff;font-weight:700;"><td style="position:sticky;left:0;background:#f0f4ff;z-index:1;">누계</td><td style="position:sticky;left:30px;background:#f0f4ff;z-index:1;"></td>';
+    const avgRow='<tr style="background:#f8fafc;"><td style="position:sticky;left:0;background:#f8fafc;z-index:1;font-weight:600;">평균</td><td style="position:sticky;left:30px;background:#f8fafc;z-index:1;"></td>';
+    let tH='',aH='';
+    boilers.forEach(b=>{
+        const t=boilerTotals[b.code];
+        const totalHrs=b.steamPerHr>0?t/b.steamPerHr:0;
+        tH+='<td class="r" style="color:#4f46e5;">'+fmtI(Math.round(t))+'</td><td class="r" style="color:#94a3b8;">'+fmtI(Math.round(totalHrs))+'</td>';
+        aH+='<td class="r">'+fmtI(Math.round(t/daysInMonth))+'</td><td class="r" style="color:#94a3b8;">'+fmt(totalHrs/daysInMonth)+'</td>';
+    });
+    const gt=Object.values(boilerTotals).reduce((s,v)=>s+v,0);
+    const shortage=dayRows.reduce((s,r)=>s+r.remaining,0);
+    footEl.innerHTML=totalRow+tH+'<td class="r" style="color:#d97706;">'+fmtI(Math.round(gt))+'</td><td class="r" style="color:#ef4444;">'+(shortage>0?fmtI(Math.round(shortage)):'-')+'</td></tr>'+
+        avgRow+aH+'<td class="r">'+fmtI(Math.round(gt/daysInMonth))+'</td><td class="r">-</td></tr>';
 }
 
 // ── Product Sim (API 데이터 기반) ──
