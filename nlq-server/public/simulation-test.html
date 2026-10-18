@@ -439,6 +439,15 @@
             <div style="overflow-x:auto;"><table class="st"><thead><tr><th>구간</th><th class="r">구간범위(톤)</th><th class="r">단가(원/톤)</th><th class="r">적용량(톤)</th><th class="r">금액(백만원)</th></tr></thead><tbody id="engSteamIntervalTb"></tbody></table></div>
         </div>
 
+        <!-- 보일러별 스팀 분배 (우선순위 기반) -->
+        <div class="sc" style="overflow:hidden;margin-bottom:14px;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-fire text-orange-500 mr-1"></i>보일러별 스팀 공급 분배</h3>
+                <span style="font-size:10px;color:#94a3b8;">우선순위: ① 폐합성소각로 → ② 복합보일러 → ③ 유동상 → ④ LNG</span>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>우선순위</th><th>보일러</th><th>유형</th><th class="r">스팀/hr(톤)</th><th class="r">월 가동시간(hr)</th><th class="r">정비차감(hr)</th><th class="r">실가동(hr)</th><th class="r">최대공급(톤)</th><th class="r">배분량(톤)</th><th class="r">구매비용(백만원)</th><th class="r">상태</th></tr></thead><tbody id="engBoilerAllocTb"></tbody></table></div>
+        </div>
+
         <!-- LNG 계산 상세 -->
         <div class="sc" style="overflow:hidden;margin-bottom:14px;">
             <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
@@ -916,7 +925,7 @@ function renderCapa(){
 }
 
 // ── 에너지비 시뮬레이션 (STEP4 탭) ──
-let STEAM_UNIT_RATES=[], STEAM_PRICE_INTERVALS=[], BURNER_LNG_RATES=[], BOILER_COST_RATES=[], BOILER_MAINTENANCES=[], BOILER_MASTERS_LIST=[];
+let STEAM_UNIT_RATES=[], STEAM_PRICE_INTERVALS=[], BURNER_LNG_RATES=[], BOILER_COST_RATES=[], BOILER_MAINTENANCES=[], BOILER_MASTERS_LIST=[], BOILER_PLANS_LIST=[];
 
 async function loadEnergyRefData(){
     const yr=getYm().substring(0,4);const div=getDiv();
@@ -926,6 +935,7 @@ async function loadEnergyRefData(){
     try{const r=await fetch(API+'/boiler-cost-rates?year='+yr+'&division='+div);const j=await r.json();BOILER_COST_RATES=j.data||j.content||[];if(!Array.isArray(BOILER_COST_RATES))BOILER_COST_RATES=BOILER_COST_RATES.content||[];}catch(_){BOILER_COST_RATES=[];}
     try{const ym=getYm();const month=parseInt(ym.substring(4,6));const r=await fetch(API+'/boiler-maintenances?year='+yr+'&division='+div);const j=await r.json();const all=j.data||j.content||[];BOILER_MAINTENANCES=Array.isArray(all)?all.filter(m=>m.month===month||!m.month):[];}catch(_){BOILER_MAINTENANCES=[];}
     try{const r=await fetch(API+'/boiler-masters?division='+div);const j=await r.json();BOILER_MASTERS_LIST=j.data||j.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=BOILER_MASTERS_LIST.content||[];}catch(_){BOILER_MASTERS_LIST=[];}
+    try{const r=await fetch(API+'/boiler-plans?year='+yr+'&division='+div);const j=await r.json();BOILER_PLANS_LIST=j.data||j.content||[];if(!Array.isArray(BOILER_PLANS_LIST))BOILER_PLANS_LIST=BOILER_PLANS_LIST.content||[];}catch(_){BOILER_PLANS_LIST=[];}
     // ── 샘플 데이터 폴백 (API 연결 불가 시 시뮬레이션 데모용) ──
     if(!STEAM_UNIT_RATES.length) STEAM_UNIT_RATES=[
         {machineCode:'PM2',steamPerTon:2.3,etcUsageTon:150,year:parseInt(yr),division:div},
@@ -948,6 +958,15 @@ async function loadEnergyRefData(){
         {boilerCode:'BLR-FLUID',boilerName:'유동상보일러',boilerType:'INCIN_FLUID',steamPerHour:30,priority:3,isActive:true,division:div},
         {boilerCode:'BLR-LNG',boilerName:'LNG보일러',boilerType:'LNG',steamPerHour:50,priority:4,isActive:true,division:div}
     ];
+    if(!BOILER_PLANS_LIST.length){
+        const month=parseInt(getYm().substring(4,6));
+        BOILER_PLANS_LIST=[
+            {boilerCode:'BLR-INCIN',year:parseInt(yr),month,totalDays:30,shutdownDays:2,operationDays:28,operationHours:672},
+            {boilerCode:'BLR-COGEN',year:parseInt(yr),month,totalDays:30,shutdownDays:2,operationDays:28,operationHours:672},
+            {boilerCode:'BLR-FLUID',year:parseInt(yr),month,totalDays:30,shutdownDays:4,operationDays:26,operationHours:624},
+            {boilerCode:'BLR-LNG',year:parseInt(yr),month,totalDays:30,shutdownDays:0,operationDays:30,operationHours:720}
+        ];
+    }
     if(!BOILER_MAINTENANCES.length){
         const month=parseInt(getYm().substring(4,6));
         // 10월이면 대정비 샘플 표시
@@ -1035,6 +1054,44 @@ function calcEnergyCost(){
         intervalRows.push({name:iv.intervalName||'구간'+(iv.intervalSeq||''),range:fmtI(Math.round(min))+'~'+(max===Infinity?'∞':fmtI(Math.round(max))),price,qty:applied,cost});
     });
 
+    // 3-2) 보일러 우선순위 기반 스팀 분배
+    const month=parseInt(getYm().substring(4,6));
+    const boilersSorted=BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));
+    let boilerAllocRows=[];
+    let steamRemaining=totalSteamReq;
+    const typeLabel={'COGEN':'복합보일러','LNG':'LNG보일러','INCIN_SYNTH':'폐합성소각로','INCIN_FLUID':'유동상보일러','EXTERNAL':'외부보일러'};
+    boilersSorted.forEach(b=>{
+        const plan=BOILER_PLANS_LIST.find(p=>p.boilerCode===b.boilerCode&&p.month===month);
+        const planHours=plan?parseFloat(plan.operationHours)||0:672; // 기본 28일×24h
+        // 정비 차감
+        const maint=BOILER_MAINTENANCES.find(m=>m.boilerCode===b.boilerCode);
+        const maintHrs=maint?parseFloat(maint.maintHours)||0:0;
+        const capReduce=maint?parseFloat(maint.capacityReduction)||100:100;
+        const maintDeductHrs=maintHrs*(capReduce/100);
+        const actualHours=Math.max(0,planHours-maintDeductHrs);
+        const steamPerHr=parseFloat(b.steamPerHour)||0;
+        const maxSupply=steamPerHr*actualHours;
+        const allocated=Math.min(steamRemaining,maxSupply);
+        steamRemaining=Math.max(0,steamRemaining-allocated);
+        // 보일러별 비용 계산 (구간단가는 복합보일러, 나머지는 boiler_cost_rate)
+        let boilerCost=0;
+        if(b.boilerType==='COGEN'){
+            // 복합보일러: 구간단가와 동일 (스팀 구매비에 이미 포함)
+            boilerCost=0; // 구간단가에서 계산됨
+        } else {
+            const costRate=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&(r.rateType==='STEAM_RATE'||r.rateType==='FUEL_RATE'));
+            const rate=costRate?parseFloat(costRate.rateValue)||0:0;
+            boilerCost=allocated*rate;
+        }
+        const status=steamRemaining>0&&allocated>=maxSupply?'풀가동':'여유';
+        boilerAllocRows.push({
+            priority:b.priority||99,code:b.boilerCode,name:b.boilerName||b.boilerCode,
+            type:typeLabel[b.boilerType]||b.boilerType,steamPerHr,planHours,maintDeductHrs,actualHours,
+            maxSupply,allocated,boilerCost,status
+        });
+    });
+    const steamShortage=steamRemaining; // 모든 보일러 배분 후 부족분
+
     // 4) LNG 구매비 계산: Σ(호기별 생산톤 × LNG원단위) × LNG단가
     const lngPrice=BOILER_COST_RATES.filter(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG')).map(r=>parseFloat(r.rateValue)||0)[0]||0;
     let lngRows=[];let totalLngCost=0;
@@ -1091,6 +1148,32 @@ function calcEnergyCost(){
         '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.cost/1000000))+'</td></tr>'
     ).join('')+
     '<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td></td><td></td><td class="r">'+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#d97706;">'+fmtI(Math.round(totalSteamCost/1000000))+'</td></tr>';
+
+    // 9-2) 보일러 분배 테이블
+    document.getElementById('engBoilerAllocTb').innerHTML=boilerAllocRows.map(r=>{
+        const statusColor=r.allocated>=r.maxSupply&&r.maxSupply>0?'background:#fee2e2;color:#991b1b;':'background:#dcfce7;color:#166534;';
+        const statusText=r.allocated>=r.maxSupply&&r.maxSupply>0?'풀가동':'여유';
+        return '<tr>'+
+            '<td style="text-align:center;font-weight:800;color:#4f46e5;font-size:16px;">'+r.priority+'</td>'+
+            '<td style="font-weight:600;">'+r.name+'</td>'+
+            '<td><span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#f1f5f9;color:#475569;">'+r.type+'</span></td>'+
+            '<td class="r mn">'+fmt(r.steamPerHr)+'</td>'+
+            '<td class="r mn">'+fmtI(Math.round(r.planHours))+'</td>'+
+            '<td class="r mn" style="'+(r.maintDeductHrs>0?'color:#ef4444;font-weight:600;':'color:#94a3b8;')+'">'+
+                (r.maintDeductHrs>0?'-'+fmtI(Math.round(r.maintDeductHrs)):'-')+'</td>'+
+            '<td class="r mn" style="font-weight:600;">'+fmtI(Math.round(r.actualHours))+'</td>'+
+            '<td class="r mn">'+fmtI(Math.round(r.maxSupply))+'</td>'+
+            '<td class="r mn" style="font-weight:700;color:'+(r.allocated>0?'#1e293b':'#94a3b8')+';">'+fmtI(Math.round(r.allocated))+'</td>'+
+            '<td class="r mn">'+(r.boilerCost>0?fmtI(Math.round(r.boilerCost/1000000)):'-')+'</td>'+
+            '<td class="r"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;'+statusColor+'">'+statusText+'</span></td>'+
+            '</tr>';
+    }).join('')+
+    '<tr style="background:#f8fafc;font-weight:700;">'+
+        '<td colspan="7">합계</td>'+
+        '<td class="r">'+fmtI(Math.round(boilerAllocRows.reduce((s,r)=>s+r.maxSupply,0)))+'</td>'+
+        '<td class="r" style="color:#ef4444;">'+fmtI(Math.round(boilerAllocRows.reduce((s,r)=>s+r.allocated,0)))+'</td>'+
+        '<td class="r"></td><td></td></tr>'+
+    (steamShortage>0?'<tr style="background:#fee2e2;"><td colspan="7" style="color:#991b1b;font-weight:700;">⚠ 스팀 부족!</td><td></td><td class="r" style="color:#991b1b;font-weight:800;">-'+fmtI(Math.round(steamShortage))+'</td><td colspan="2" style="color:#991b1b;font-size:11px;">모든 보일러 용량 초과</td></tr>':'');
 
     // 10) LNG 상세 테이블
     document.getElementById('engLngTb').innerHTML=lngRows.map(r=>
