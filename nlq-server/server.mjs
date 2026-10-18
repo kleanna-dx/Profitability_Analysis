@@ -14685,16 +14685,39 @@ setInterval(() => {
 // - 시간 기준: 보관기간(NLQ_HISTORY_RETENTION_DAYS, 기본 31일) 초과 행은 자동 DELETE
 // - 건수 기준: 사용자별 최신 200건만 유지
 // - 실행 시점: (1) 신규 이력 INSERT 시점 (2) 서버 시작 시 (3) 24시간 주기 스케줄
+// - [2026-10-16] 즐겨찾기(⭐) 보호: 세션 내 어느 row라도 is_bookmarked=1 이면
+//     해당 세션 전체(= 같은 session_id의 모든 row)를 보관 정책에서 제외.
+//     사이드바 즐겨찾기 탭이 "세션 단위"로 그룹핑하여 표시하므로(라인 14834 참고)
+//     세션 내 일부 row만 삭제되면 재조회 시 맥락이 깨짐 → 세션 단위로 보호해야 함.
+//     session_id IS NULL (레거시 row) 인 경우에만 개별 row 단위로 is_bookmarked 체크.
 const NLQ_HISTORY_RETENTION_DAYS = 31;
+
+// 즐겨찾기 보호 WHERE 조건 (NLQ용)
+//   - 삭제 대상에서 "북마크된 세션에 속한 모든 행" 과 "북마크된 레거시 단일 행" 제외
+//   - DELETE 쿼리의 WHERE 절에 AND 로 이어 붙여 사용
+const NLQ_BOOKMARK_PROTECT_SQL = `
+  AND NOT (
+    (session_id IS NOT NULL AND session_id IN (
+       SELECT session_id FROM (
+         SELECT DISTINCT session_id FROM nl_query_history
+          WHERE is_bookmarked = 1 AND session_id IS NOT NULL
+       ) AS bm_sessions
+    ))
+    OR
+    (session_id IS NULL AND is_bookmarked = 1)
+  )
+`;
 
 async function purgeExpiredNlqHistory() {
   try {
     const [r] = await pool.query(
-      `DELETE FROM nl_query_history WHERE created_at < (NOW() - INTERVAL ? DAY)`,
+      `DELETE FROM nl_query_history
+        WHERE created_at < (NOW() - INTERVAL ? DAY)
+          ${NLQ_BOOKMARK_PROTECT_SQL}`,
       [NLQ_HISTORY_RETENTION_DAYS]
     );
     if (r.affectedRows > 0) {
-      console.log(`[HistoryRetention] ${NLQ_HISTORY_RETENTION_DAYS}일 경과 이력 ${r.affectedRows}건 자동 삭제`);
+      console.log(`[HistoryRetention] ${NLQ_HISTORY_RETENTION_DAYS}일 경과 이력 ${r.affectedRows}건 자동 삭제 (즐겨찾기 제외)`);
     }
     return r.affectedRows;
   } catch (e) {
@@ -14800,17 +14823,28 @@ async function saveHistory(userId, queryText, sql, explanation, chartType, chart
 
   // 시간 기준 보관 정책: NLQ_HISTORY_RETENTION_DAYS(기본 31일) 경과 행 자동 삭제
   // (저장 시점에 한 번 더 실행해서 즉시성 보장 — 사용자가 새 질의를 하면 바로 정리됨)
+  // [2026-10-16] 즐겨찾기(⭐) 세션 보호 적용 — NLQ_BOOKMARK_PROTECT_SQL 참고
   pool.query(
-    `DELETE FROM nl_query_history WHERE created_at < (NOW() - INTERVAL ? DAY)`,
+    `DELETE FROM nl_query_history
+      WHERE created_at < (NOW() - INTERVAL ? DAY)
+        ${NLQ_BOOKMARK_PROTECT_SQL}`,
     [NLQ_HISTORY_RETENTION_DAYS]
   ).catch(e => console.error('[HistoryRetention] INSERT-time purge 실패 (무시):', e.message));
 
   // 사용자별 최대 200건 유지
+  // [2026-10-16] 즐겨찾기(⭐) 세션 보호 적용 — 북마크된 세션의 모든 row 는 200건 캡 대상에서 제외.
+  //   즉, 사용자가 즐겨찾기 50건 + 일반 이력 200건이면 총 250건 유지. 즐겨찾기 자체 한도는 두지 않음
+  //   (사이드바에서 명시적 삭제 가능 + 즐겨찾기는 사용자 의도로 저장된 자산이므로 자동 삭제 지양).
   if (userId) {
     await pool.query(
-      `DELETE FROM nl_query_history WHERE user_id = ? AND id NOT IN (
-         SELECT id FROM (SELECT id FROM nl_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 200) AS tmp
-       )`,
+      `DELETE FROM nl_query_history
+        WHERE user_id = ?
+          AND id NOT IN (
+            SELECT id FROM (
+              SELECT id FROM nl_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 200
+            ) AS tmp
+          )
+          ${NLQ_BOOKMARK_PROTECT_SQL}`,
       [userId, userId]
     );
   }
@@ -19187,18 +19221,32 @@ async function saveBuilderHistory(userId, fields, conditions, groupBy, orderBy, 
   console.log(`[Builder History] 새 이력 저장: id=${newId}`);
 
   // 사용자별 최대 50개 유지: 초과분 삭제
+  // [2026-10-16] 즐겨찾기(⭐, is_bookmarked=1) 보호 — 50건 캡 대상에서 제외.
+  //   사용자가 "⭐즐겨찾기" 탭에 명시적으로 저장한 쿼리는 50건 제한과 무관하게 보존.
+  //   예: 50건 모두 북마크면 자동 삭제 0건. 북마크 30 + 일반 100 이면 일반 중 오래된 80건만 삭제.
+  //   (영구 보존이 부담되면 사용자가 사이드바에서 명시적으로 삭제 가능.)
   if (userId) {
     await pool.query(
-      `DELETE FROM builder_query_history WHERE user_id = ? AND id NOT IN (
-         SELECT id FROM (SELECT id FROM builder_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50) AS tmp
-       )`,
+      `DELETE FROM builder_query_history
+        WHERE user_id = ?
+          AND is_bookmarked = 0
+          AND id NOT IN (
+            SELECT id FROM (
+              SELECT id FROM builder_query_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50
+            ) AS tmp
+          )`,
       [userId, userId]
     );
   } else {
     await pool.query(
-      `DELETE FROM builder_query_history WHERE user_id IS NULL AND id NOT IN (
-         SELECT id FROM (SELECT id FROM builder_query_history WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 50) AS tmp
-       )`
+      `DELETE FROM builder_query_history
+        WHERE user_id IS NULL
+          AND is_bookmarked = 0
+          AND id NOT IN (
+            SELECT id FROM (
+              SELECT id FROM builder_query_history WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 50
+            ) AS tmp
+          )`
     );
   }
   return newId;
