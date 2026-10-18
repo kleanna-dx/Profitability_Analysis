@@ -5,7 +5,9 @@ import com.company.module.rollingplanningsimulation.repository.SteamAllocRatioRe
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 @RestController @RequestMapping("/rolling-planning-simulation-api/steam-alloc-ratios") @RequiredArgsConstructor
 public class SteamAllocRatioController {
@@ -13,6 +15,12 @@ public class SteamAllocRatioController {
     @GetMapping public ResponseEntity<ApiResponse<List<SteamAllocRatio>>> list(@RequestParam Integer year, @RequestParam(defaultValue="PS") String division) {
         return ResponseEntity.ok(ApiResponse.success(repo.findByYearAndDivision(year, division)));
     }
-    @PostMapping public ResponseEntity<ApiResponse<SteamAllocRatio>> save(@RequestBody SteamAllocRatio e) { return ResponseEntity.ok(ApiResponse.success(repo.save(e))); }
+    @PostMapping public ResponseEntity<ApiResponse<SteamAllocRatio>> save(@RequestBody Map<String,Object> body) {
+        SteamAllocRatio e = SteamAllocRatio.builder().year(Integer.parseInt(body.get("year").toString()))
+            .machineCode((String)body.get("machineCode")).division((String)body.getOrDefault("division","PS"))
+            .allocRatio(body.get("allocRatio")!=null?new BigDecimal(body.get("allocRatio").toString()):BigDecimal.ZERO)
+            .memo((String)body.get("memo")).build();
+        return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
+    }
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }
 }
