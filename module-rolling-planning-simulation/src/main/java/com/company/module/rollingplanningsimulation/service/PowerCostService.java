@@ -305,22 +305,23 @@ public class PowerCostService {
     }
 
     private BigDecimal getRunHoursFromOptime(String ym, String division, String machineCode) {
-        // OperatingTime에서 가동시간 계산: 정상가동일수 × 24
+        // OperatingTime에서 가동시간 계산: 정상가동(분) ÷ 60 = 시간(h)
         return operatingTimeRepository.findAll().stream()
                 .filter(o -> ym.equals(o.getYm()) && machineCode.equals(o.getMachineCode())
                         && "N".equals(o.getDeletedYn()))
                 .findFirst()
-                .map(o -> o.getOperationNormalDays().multiply(BigDecimal.valueOf(24)))
+                .map(o -> o.getOperationNormalDays().divide(BigDecimal.valueOf(60), 2, java.math.RoundingMode.HALF_UP))
                 .orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal getStbyHoursFromOptime(String ym, String division, String machineCode) {
-        // 운휴시간 = (총일수 - 정상가동일수) × 24
+        // 운휴시간(h) = (총계 - 정상가동)(분) ÷ 60
         return operatingTimeRepository.findAll().stream()
                 .filter(o -> ym.equals(o.getYm()) && machineCode.equals(o.getMachineCode())
                         && "N".equals(o.getDeletedYn()))
                 .findFirst()
-                .map(o -> o.getTotalDays().subtract(o.getOperationNormalDays()).multiply(BigDecimal.valueOf(24)))
+                .map(o -> o.getTotalDays().subtract(o.getOperationNormalDays())
+                        .divide(BigDecimal.valueOf(60), 2, java.math.RoundingMode.HALF_UP))
                 .orElse(BigDecimal.ZERO);
     }
 }
