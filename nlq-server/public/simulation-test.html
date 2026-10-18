@@ -261,31 +261,32 @@
 <!-- ================================================================ -->
 <div id="step-3" style="display:none;padding:20px;" class="fade-in">
     <div class="sc" style="padding:20px;margin-bottom:16px;">
-        <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 12px;"><i class="fas fa-chart-pie text-purple-500 mr-2"></i>생산 CAPA 분석</h3>
-        <p style="font-size:12px;color:#64748b;margin:0 0 16px;">지종/평량별 예상 생산량과 이론 생산 CAPA를 비교하여 과부족을 분석합니다.</p>
+        <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 8px;"><i class="fas fa-chart-pie text-purple-500 mr-2"></i>생산 CAPA 분석</h3>
+        <p style="font-size:12px;color:#64748b;margin:0 0 16px;">제지 생산 선속(이론생산성) × 가동시간 × (1-폐품률)로 호기/지종별 월 양품 CAPA를 산출하고, 생산계획과 비교합니다.</p>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px;">
             <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #4f46e5;">
-                <div style="font-size:10px;color:#94a3b8;font-weight:600;">총 예상 양품량</div>
-                <div style="font-size:20px;font-weight:800;color:#4f46e5;margin:4px 0;" id="capaTotalGood">8,368</div>
+                <div style="font-size:10px;color:#94a3b8;font-weight:600;">월 양품 CAPA (합계)</div>
+                <div style="font-size:20px;font-weight:800;color:#4f46e5;margin:4px 0;" id="capaTotalCapa">-</div>
                 <div style="font-size:10px;color:#94a3b8;">톤</div>
             </div>
             <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #f59e0b;">
-                <div style="font-size:10px;color:#94a3b8;font-weight:600;">총 필요일수 / 가동일수</div>
-                <div style="font-size:20px;font-weight:800;color:#d97706;margin:4px 0;" id="capaDays">25.3 / 28일</div>
-                <div style="font-size:10px;color:#94a3b8;">잔여 2.7일</div>
+                <div style="font-size:10px;color:#94a3b8;font-weight:600;">생산계획 (합계)</div>
+                <div style="font-size:20px;font-weight:800;color:#d97706;margin:4px 0;" id="capaTotalPlan">-</div>
+                <div style="font-size:10px;color:#94a3b8;">톤</div>
             </div>
             <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #16a34a;">
                 <div style="font-size:10px;color:#94a3b8;font-weight:600;">잔여 CAPA</div>
-                <div style="font-size:20px;font-weight:800;color:#16a34a;margin:4px 0;" id="capaRemain">+892</div>
-                <div style="font-size:10px;color:#94a3b8;">톤 (추가 생산 가능)</div>
+                <div style="font-size:20px;font-weight:800;color:#16a34a;margin:4px 0;" id="capaRemain">-</div>
+                <div style="font-size:10px;color:#94a3b8;">톤</div>
             </div>
         </div>
     </div>
     <div class="sc" style="overflow:hidden;">
-        <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
-            <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-list text-indigo-500 mr-1"></i>지종별 생산 계획 vs CAPA</h3>
+        <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+            <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-list text-indigo-500 mr-1"></i>호기/지종별 CAPA 상세</h3>
+            <span style="font-size:10px;color:#94a3b8;">CAPA = 이론생산성(TPD) × 가동일수 × (1-폐품률%)</span>
         </div>
-        <div style="overflow-x:auto;"><table class="st"><thead><tr><th>지종</th><th class="r">평량(g/m²)</th><th class="r">이론생산(톤/일)</th><th class="r">폐품률(%)</th><th class="r">예상 양품(톤)</th><th class="r">필요일수</th><th class="r">상태</th></tr></thead><tbody id="capaTb"></tbody></table></div>
+        <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th>지종</th><th class="r">평량(g/m²)</th><th class="r">선속(m/min)</th><th class="r">이론생산(TPD)</th><th class="r">가동시간</th><th class="r">폐품률(%)</th><th class="r">월 CAPA(톤)</th><th class="r">상태</th></tr></thead><tbody id="capaTb"></tbody></table></div>
     </div>
 </div>
 
@@ -448,6 +449,7 @@ async function onFilterChange(){
     await renderReady();
     await loadOptimeFromAPI();
     await loadWasteRates();
+    await loadMachineSpeeds();
     loadRef();
     renderCapa();
     updateStep5();
@@ -715,7 +717,33 @@ function renderOpt(){
     }).join('');
 }
 
-// ── CAPA (API 연동: MAT_API + 가동시간 + 폐품률 기반) ──
+// ── 제지 생산 선속 (machine-speeds) API 로드 ──
+let MACHINE_SPEEDS=[];
+async function loadMachineSpeeds(){
+    const yr=getYm().substring(0,4);const div=getDiv();
+    try{
+        const r=await fetch(API+'/machine-speeds?year='+yr+'&division='+div);
+        const j=await r.json();
+        const raw=j.data||j.content||j||[];
+        MACHINE_SPEEDS=Array.isArray(raw)?raw:raw.content||[];
+    }catch(e){
+        console.warn('[MachineSpeed] API 호출 실패:',e.message);
+        MACHINE_SPEEDS=[];
+    }
+}
+function getTheoryProd(machineCode,product){
+    // 호기+지종 정확 매칭 → 호기 기본값 → 0
+    const m=MACHINE_SPEEDS.find(s=>s.machineCode===machineCode&&s.product===product)
+        ||MACHINE_SPEEDS.find(s=>s.machineCode===machineCode&&(!s.product||s.product===''));
+    return m?parseFloat(m.theoryProdTpd)||0:0;
+}
+function getSpeedInfo(machineCode,product){
+    const m=MACHINE_SPEEDS.find(s=>s.machineCode===machineCode&&s.product===product)
+        ||MACHINE_SPEEDS.find(s=>s.machineCode===machineCode&&(!s.product||s.product===''));
+    return m?{speed:parseFloat(m.speed)||0,bw:parseFloat(m.basisWeight)||0,tpd:parseFloat(m.theoryProdTpd)||0}:{speed:0,bw:0,tpd:0};
+}
+
+// ── 폐품률 (waste-rates) API 로드 ──
 let WASTE_RATES=[];
 async function loadWasteRates(){
     const yr=getYm().substring(0,4);const div=getDiv();
@@ -728,28 +756,85 @@ function getWasteRate(machineCode,product){
         ||WASTE_RATES[0];
     return m?parseFloat(m.wasteRatePct)||0:0;
 }
+
+// ── CAPA 분석 (제지 생산 선속 이론생산성 + 가동시간 + 폐품률 기반) ──
 function renderCapa(){
-    const src=MAT_API.length?MAT_API:[];
-    const availDays=OD.length?OD.reduce((s,o)=>s+parseFloat(o.ndM||o.nd||0),0)/60/24:28;
-    if(!src.length){document.getElementById('capaTb').innerHTML='<tr><td colspan="7" style="text-align:center;padding:30px;color:#94a3b8;">기준월/사업부의 CAPA 데이터가 없습니다.<br>STEP 1에서 데이터를 준비해주세요.</td></tr>';document.getElementById('capaTotalGood').textContent='-';document.getElementById('capaDays').textContent='-';document.getElementById('capaRemain').textContent='-';return;}
-    const mc=getMc()==='ALL'?'PM3':getMc();
-    const capaRows=src.map(m=>{
-        const ton=m.ton||0;
-        const wp=getWasteRate(mc,m.p);
-        const goodRate=(100-wp)/100;
-        const thPerDay=availDays>0?(ton/availDays):0;
-        const goodTon=Math.round(ton*goodRate);
-        const needDays=thPerDay>0?(goodTon/(thPerDay*goodRate)):0;
-        return {p:m.p,bw:'-',th:fmt(thPerDay),wp:fmt(wp),good:goodTon,days:needDays,ok:needDays<=availDays};
+    // 1) 호기별 가동시간(분) 집계 — 선택 호기 또는 전체
+    const selMc=getMc();
+    const optimeByMc={};
+    OD.forEach(o=>{
+        if(selMc!=='ALL'&&o.mc!==selMc)return;
+        const min=parseFloat(o.ndM||0); // 정상가동 분
+        optimeByMc[o.mc]=(optimeByMc[o.mc]||0)+min;
     });
-    const totalGood=capaRows.reduce((s,c)=>s+c.good,0);
-    const totalNeedDays=capaRows.reduce((s,c)=>s+c.days,0);
-    const remain=totalGood>0?Math.round((availDays-totalNeedDays)*totalGood/availDays):0;
-    document.getElementById('capaTotalGood').textContent=fmtI(totalGood);
-    document.getElementById('capaDays').textContent=fmt(totalNeedDays)+' / '+availDays+'일';
-    document.getElementById('capaRemain').textContent=(remain>=0?'+':'')+fmtI(remain);
-    document.getElementById('capaRemain').style.color=remain>=0?'#16a34a':'#dc2626';
-    document.getElementById('capaTb').innerHTML=capaRows.map(c=>'<tr><td style="font-weight:600;">'+c.p+'</td><td class="r mn">'+c.bw+'</td><td class="r mn">'+c.th+'</td><td class="r mn">'+fmt(c.wp)+'</td><td class="r mn" style="font-weight:600;">'+fmtI(c.good)+'</td><td class="r mn">'+fmt(c.days)+'</td><td class="r"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;'+(c.ok?'background:#dcfce7;color:#166534;':'background:#fee2e2;color:#991b1b;')+'">'+(c.ok?'충족':'초과')+'</span></td></tr>').join('');
+
+    // 2) 제지 생산 선속 데이터에서 CAPA 행 생성
+    const speedSrc=MACHINE_SPEEDS.filter(s=>{
+        if(selMc!=='ALL'&&s.machineCode!==selMc)return false;
+        return true;
+    });
+
+    if(!speedSrc.length){
+        document.getElementById('capaTb').innerHTML='<tr><td colspan="9" style="text-align:center;padding:30px;color:#94a3b8;">제지 생산 선속 데이터가 없습니다.<br>STEP 1 기준정보관리에서 제지 생산 선속을 등록해주세요.</td></tr>';
+        document.getElementById('capaTotalCapa').textContent='-';
+        document.getElementById('capaTotalPlan').textContent='-';
+        document.getElementById('capaRemain').textContent='-';
+        return;
+    }
+
+    // 3) 각 행별 CAPA 계산
+    //    월CAPA(톤) = 이론생산성(TPD) × 가동시간(분) ÷ 1440 × (1 - 폐품률/100)
+    const capaRows=speedSrc.map(s=>{
+        const mc=s.machineCode||'';
+        const prod=s.product||'';
+        const bw=parseFloat(s.basisWeight)||0;
+        const speed=parseFloat(s.speed)||0;
+        const tpd=parseFloat(s.theoryProdTpd)||0;
+        const opMin=optimeByMc[mc]||0;
+        const opDays=opMin/1440; // 분→일 환산
+        const wp=getWasteRate(mc,prod);
+        const goodRate=(100-wp)/100;
+        const monthCapa=tpd*opDays*goodRate; // 월 양품 CAPA
+        return {mc,prod,bw,speed,tpd,opMin,opDays,wp,goodRate,monthCapa};
+    });
+
+    const totalCapa=capaRows.reduce((s,c)=>s+c.monthCapa,0);
+
+    // 4) MAT_API에서 예상 생산량(지종별) 합산 — 생산계획 대비 비교용
+    const planByProd={};
+    MAT_API.forEach(m=>{planByProd[m.p]=(planByProd[m.p]||0)+(m.ton||0);});
+    const totalPlan=MAT_API.reduce((s,m)=>s+(m.ton||0),0);
+    const remain=Math.round(totalCapa-totalPlan);
+
+    // 5) KPI 카드 갱신
+    document.getElementById('capaTotalCapa').textContent=fmtI(Math.round(totalCapa));
+    document.getElementById('capaTotalPlan').textContent=totalPlan>0?fmtI(Math.round(totalPlan)):'-';
+    const remainEl=document.getElementById('capaRemain');
+    remainEl.textContent=totalPlan>0?((remain>=0?'+':'')+fmtI(remain)):fmtI(Math.round(totalCapa));
+    remainEl.style.color=totalPlan<=0?'#4f46e5':remain>=0?'#16a34a':'#dc2626';
+
+    // 6) 테이블 렌더링
+    document.getElementById('capaTb').innerHTML=capaRows.map(c=>{
+        const planTon=planByProd[c.prod]||0;
+        const gap=c.monthCapa-planTon;
+        const hasP=planTon>0;
+        const statusHtml=!hasP
+            ?'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:#f1f5f9;color:#94a3b8;">계획없음</span>'
+            :gap>=0
+                ?'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:#dcfce7;color:#166534;">충족 (+'+fmtI(Math.round(gap))+')</span>'
+                :'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:#fee2e2;color:#991b1b;">부족 ('+fmtI(Math.round(gap))+')</span>';
+        return '<tr>'+
+            '<td style="font-weight:600;color:#4f46e5;">'+c.mc+'</td>'+
+            '<td style="font-weight:600;">'+c.prod+'</td>'+
+            '<td class="r mn">'+fmt(c.bw)+'</td>'+
+            '<td class="r mn">'+fmt(c.speed)+'</td>'+
+            '<td class="r mn" style="font-weight:700;color:#4f46e5;">'+fmt(c.tpd)+'</td>'+
+            '<td class="r mn">'+fmtI(Math.round(c.opMin))+' <span style="font-size:9px;color:#94a3b8;">('+fmt(c.opDays)+'일)</span></td>'+
+            '<td class="r mn">'+fmt(c.wp)+'</td>'+
+            '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(c.monthCapa))+'</td>'+
+            '<td class="r">'+statusHtml+'</td>'+
+            '</tr>';
+    }).join('');
 }
 
 // ── Product Sim (API 데이터 기반) ──
@@ -1125,6 +1210,7 @@ async function initAll(){
     await renderReady();
     await loadOptimeFromAPI(); // → renderOpt() 내부 호출
     await loadWasteRates();
+    await loadMachineSpeeds();
     renderCapa();
     updateMatChart();
     updateStep5();
