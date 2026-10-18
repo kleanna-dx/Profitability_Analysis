@@ -5,4 +5,5 @@ import java.util.List;
 
 public interface BoilerMasterRepository extends JpaRepository<BoilerMaster, Long> {
     List<BoilerMaster> findByDivision(String division);
+    List<BoilerMaster> findByDivisionAndIsActiveOrderByPriorityAsc(String division, Boolean isActive);
 }
