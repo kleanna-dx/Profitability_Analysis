@@ -117,7 +117,7 @@
         <h1 style="font-size:14px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-calculator text-indigo-500 mr-1"></i>경영시뮬레이션</h1>
         <span style="font-size:11px;color:#94a3b8;">Rolling Planning Simulation</span>
         <div style="display:flex;gap:6px;margin-left:12px;">
-            <div class="sel-g"><label>기준월</label><select id="selYm" onchange="onFilterChange()"><option value="202607">2026.07</option><option value="202606">2026.06</option><option value="202605" selected>2026.05</option></select></div>
+            <div class="sel-g"><label>기준월</label><select id="selYm" onchange="onFilterChange()"></select></div>
             <div class="sel-g"><label>사업부</label><select id="selDiv" onchange="onFilterChange()"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
             <div class="sel-g"><label>호기</label><select id="selMc" onchange="onFilterChange()"><option value="ALL" selected>전체</option><option value="M01">1호기</option><option value="M02">2호기</option><option value="M03">3호기</option></select></div>
         </div>
@@ -1019,8 +1019,30 @@ function updateStep5(){
     }
 }
 
+// ── 기준월 셀렉터 동적 생성 (현재월 기준 과거12개월 ~ 미래6개월) ──
+function initYmSelector(){
+    const sel=document.getElementById('selYm');
+    const now=new Date();
+    const curY=now.getFullYear(),curM=now.getMonth()+1;
+    const opts=[];
+    for(let offset=-6;offset<=12;offset++){
+        let y=curY,m=curM-offset;
+        while(m<1){m+=12;y--;}
+        while(m>12){m-=12;y++;}
+        const val=String(y)+String(m).padStart(2,'0');
+        const lbl=y+'.'+String(m).padStart(2,'0');
+        opts.push({val,lbl});
+    }
+    // 최신순 정렬
+    opts.sort((a,b)=>b.val.localeCompare(a.val));
+    // 현재월 기본 선택
+    const curVal=String(curY)+String(curM).padStart(2,'0');
+    sel.innerHTML=opts.map(o=>'<option value="'+o.val+'"'+(o.val===curVal?' selected':'')+'>'+o.lbl+'</option>').join('');
+}
+
 // ── Init ──
 async function initAll(){
+    initYmSelector();
     renderRefTabs();
     switchRef(0);
     initCharts();
