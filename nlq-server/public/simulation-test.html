@@ -1022,12 +1022,12 @@ function updateStep5(){
 // ── Init ──
 async function initAll(){
     renderRefTabs();
+    switchRef(0);
     initCharts();
     // API 기반 데이터 로드 (필터 연결)
     await loadCostUnitRates(); // → calcPL(), renderProdSim(), updateDrillData() 내부 호출
     await renderReady();
     await loadOptimeFromAPI(); // → renderOpt() 내부 호출
-    loadRef();
     renderCapa();
     updateMatChart();
     updateStep5();
