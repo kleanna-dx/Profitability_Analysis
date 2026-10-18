@@ -298,6 +298,7 @@
         <div class="sub-tab active" onclick="subTab(4,'plsim')">P/L 시뮬레이터</div>
         <div class="sub-tab" onclick="subTab(4,'causal')">비용 인과관계</div>
         <div class="sub-tab" onclick="subTab(4,'prodsim')">지종별 손익 시뮬</div>
+        <div class="sub-tab" onclick="subTab(4,'energy')">에너지비 시뮬레이션</div>
     </div>
 
     <!-- 4-1 P/L 시뮬레이터 -->
@@ -381,6 +382,80 @@
         </div>
         <div class="sc" style="padding:14px;margin-top:14px;"><div style="height:220px;position:relative;"><canvas id="matChart"></canvas></div></div>
     </div>
+
+    <!-- 4-4 에너지비 시뮬레이션 -->
+    <div id="s4-energy" style="display:none;">
+        <div class="sc" style="padding:20px;margin-bottom:16px;">
+            <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 6px;"><i class="fas fa-fire-alt text-orange-500 mr-2"></i>에너지비 시뮬레이션</h3>
+            <p style="font-size:12px;color:#64748b;margin:0 0 16px;">생산량에 따른 스팀 구매비 + LNG 구매비를 시뮬레이션합니다. 보일러 정비 시 비용 증가 영향도 확인할 수 있습니다.</p>
+
+            <!-- 생산량 입력 -->
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin-bottom:16px;">
+                <div style="font-size:12px;font-weight:700;color:#475569;margin-bottom:10px;"><i class="fas fa-sliders-h mr-1"></i>호기별 생산량 (톤/월)</div>
+                <div id="energyProdInputs" style="display:flex;flex-wrap:wrap;gap:12px;"></div>
+                <div style="margin-top:10px;display:flex;align-items:center;gap:12px;">
+                    <button onclick="calcEnergyCost()" style="padding:8px 20px;background:#f97316;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;"><i class="fas fa-calculator mr-1"></i>에너지비 계산</button>
+                    <button onclick="fillFromCapa()" style="padding:8px 16px;background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-chart-pie mr-1"></i>STEP3 CAPA 반영</button>
+                    <span style="font-size:11px;color:#94a3b8;" id="energyTotalProd"></span>
+                </div>
+            </div>
+
+            <!-- KPI 카드 -->
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+                <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #ef4444;">
+                    <div style="font-size:10px;color:#94a3b8;font-weight:600;">스팀 필요량</div>
+                    <div style="font-size:18px;font-weight:800;color:#ef4444;margin:4px 0;" id="engSteamReq">-</div>
+                    <div style="font-size:10px;color:#94a3b8;">톤/월</div>
+                </div>
+                <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #f59e0b;">
+                    <div style="font-size:10px;color:#94a3b8;font-weight:600;">스팀 구매비</div>
+                    <div style="font-size:18px;font-weight:800;color:#d97706;margin:4px 0;" id="engSteamCost">-</div>
+                    <div style="font-size:10px;color:#94a3b8;">백만원</div>
+                </div>
+                <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #3b82f6;">
+                    <div style="font-size:10px;color:#94a3b8;font-weight:600;">LNG 구매비</div>
+                    <div style="font-size:18px;font-weight:800;color:#3b82f6;margin:4px 0;" id="engLngCost">-</div>
+                    <div style="font-size:10px;color:#94a3b8;">백만원</div>
+                </div>
+                <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #8b5cf6;">
+                    <div style="font-size:10px;color:#94a3b8;font-weight:600;">총 에너지비</div>
+                    <div style="font-size:18px;font-weight:800;color:#8b5cf6;margin:4px 0;" id="engTotalCost">-</div>
+                    <div style="font-size:10px;color:#94a3b8;">백만원 (<span id="engPerTon">-</span> 천원/톤)</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 스팀 계산 상세 -->
+        <div class="sc" style="overflow:hidden;margin-bottom:14px;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-tint text-red-400 mr-1"></i>스팀 필요량 산출</h3>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th class="r">생산량(톤)</th><th class="r">원단위(톤스팀/톤)</th><th class="r">스팀필요량(톤)</th><th class="r">기타사용(톤)</th><th class="r">소계(톤)</th></tr></thead><tbody id="engSteamTb"></tbody></table></div>
+        </div>
+        <div class="sc" style="overflow:hidden;margin-bottom:14px;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-layer-group text-amber-400 mr-1"></i>스팀 구간별 단가 적용</h3>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>구간</th><th class="r">구간범위(톤)</th><th class="r">단가(원/톤)</th><th class="r">적용량(톤)</th><th class="r">금액(백만원)</th></tr></thead><tbody id="engSteamIntervalTb"></tbody></table></div>
+        </div>
+
+        <!-- LNG 계산 상세 -->
+        <div class="sc" style="overflow:hidden;margin-bottom:14px;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-burn text-blue-400 mr-1"></i>LNG 구매비 상세</h3>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th class="r">생산량(톤)</th><th class="r">원단위(㎥/톤)</th><th class="r">LNG사용량(㎥)</th><th class="r">LNG단가(원/㎥)</th><th class="r">금액(백만원)</th></tr></thead><tbody id="engLngTb"></tbody></table></div>
+        </div>
+
+        <!-- 보일러 정비 영향 -->
+        <div class="sc" style="overflow:hidden;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-wrench text-gray-400 mr-1"></i>보일러 정비 영향</h3>
+                <span style="font-size:10px;color:#94a3b8;">정비 중 보일러 → 타 보일러 구매량 증가</span>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>보일러</th><th class="r">정비유형</th><th class="r">정비시간(hr)</th><th class="r">용량감소(%)</th><th class="r">스팀감소(톤)</th><th>비고</th></tr></thead><tbody id="engMaintTb"></tbody></table></div>
+        </div>
+    </div>
 </div>
 
 <!-- ================================================================ -->
@@ -450,8 +525,10 @@ async function onFilterChange(){
     await loadOptimeFromAPI();
     await loadWasteRates();
     await loadMachineSpeeds();
+    await loadEnergyRefData();
     loadRef();
     renderCapa();
+    renderEnergyProdInputs();
     updateStep5();
 }
 
@@ -469,7 +546,7 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','upload','raw','ref'],2:[],4:['plsim','causal','prodsim']};
+const SUB_MAP={1:['ready','upload','raw','ref'],2:[],4:['plsim','causal','prodsim','energy']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
@@ -836,6 +913,179 @@ function renderCapa(){
             '<td class="r">'+statusHtml+'</td>'+
             '</tr>';
     }).join('');
+}
+
+// ── 에너지비 시뮬레이션 (STEP4 탭) ──
+let STEAM_UNIT_RATES=[], STEAM_PRICE_INTERVALS=[], BURNER_LNG_RATES=[], BOILER_COST_RATES=[], BOILER_MAINTENANCES=[], BOILER_MASTERS_LIST=[];
+
+async function loadEnergyRefData(){
+    const yr=getYm().substring(0,4);const div=getDiv();
+    try{const r=await fetch(API+'/steam-unit-rates?year='+yr+'&division='+div);const j=await r.json();STEAM_UNIT_RATES=j.data||j.content||[];if(!Array.isArray(STEAM_UNIT_RATES))STEAM_UNIT_RATES=STEAM_UNIT_RATES.content||[];}catch(_){STEAM_UNIT_RATES=[];}
+    try{const r=await fetch(API+'/steam-price-intervals?division='+div);const j=await r.json();STEAM_PRICE_INTERVALS=j.data||j.content||[];if(!Array.isArray(STEAM_PRICE_INTERVALS))STEAM_PRICE_INTERVALS=STEAM_PRICE_INTERVALS.content||[];}catch(_){STEAM_PRICE_INTERVALS=[];}
+    try{const r=await fetch(API+'/burner-lng-rates?year='+yr+'&division='+div);const j=await r.json();BURNER_LNG_RATES=j.data||j.content||[];if(!Array.isArray(BURNER_LNG_RATES))BURNER_LNG_RATES=BURNER_LNG_RATES.content||[];}catch(_){BURNER_LNG_RATES=[];}
+    try{const r=await fetch(API+'/boiler-cost-rates?year='+yr+'&division='+div);const j=await r.json();BOILER_COST_RATES=j.data||j.content||[];if(!Array.isArray(BOILER_COST_RATES))BOILER_COST_RATES=BOILER_COST_RATES.content||[];}catch(_){BOILER_COST_RATES=[];}
+    try{const ym=getYm();const month=parseInt(ym.substring(4,6));const r=await fetch(API+'/boiler-maintenances?year='+yr+'&division='+div);const j=await r.json();const all=j.data||j.content||[];BOILER_MAINTENANCES=Array.isArray(all)?all.filter(m=>m.month===month||!m.month):[];}catch(_){BOILER_MAINTENANCES=[];}
+    try{const r=await fetch(API+'/boiler-masters?division='+div);const j=await r.json();BOILER_MASTERS_LIST=j.data||j.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=BOILER_MASTERS_LIST.content||[];}catch(_){BOILER_MASTERS_LIST=[];}
+}
+
+function renderEnergyProdInputs(){
+    const container=document.getElementById('energyProdInputs');
+    if(!container)return;
+    // 호기 목록: UNIT_OPTIONS 또는 기본값
+    const units=UNIT_OPTIONS.length?UNIT_OPTIONS.map(u=>u.unitCode||u.machineCode)
+        :['PM2','PM3'];
+    container.innerHTML=units.map(mc=>'<div style="display:flex;flex-direction:column;gap:2px;">'+
+        '<label style="font-size:10px;color:#64748b;font-weight:600;">'+mc+'</label>'+
+        '<input type="number" id="engProd_'+mc+'" value="0" min="0" step="100" style="width:100px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;text-align:right;font-family:inherit;">'+
+        '</div>').join('');
+}
+
+function fillFromCapa(){
+    // STEP3 CAPA에서 호기별 생산량 합산하여 반영
+    const byMc={};
+    MACHINE_SPEEDS.forEach(s=>{
+        const mc=s.machineCode||'';
+        const tpd=parseFloat(s.theoryProdTpd)||0;
+        const opMin=(OD.find(o=>o.mc===mc)||{}).ndM||0;
+        const opDays=opMin/1440;
+        const wp=getWasteRate(mc,s.product||'');
+        const monthTon=tpd*opDays*(100-wp)/100;
+        byMc[mc]=(byMc[mc]||0)+monthTon;
+    });
+    let totalP=0;
+    Object.entries(byMc).forEach(([mc,ton])=>{
+        const inp=document.getElementById('engProd_'+mc);
+        if(inp){inp.value=Math.round(ton);totalP+=Math.round(ton);}
+    });
+    document.getElementById('energyTotalProd').textContent='합계: '+fmtI(totalP)+' 톤';
+    calcEnergyCost();
+}
+
+function calcEnergyCost(){
+    // 1) 호기별 생산량 수집
+    const prodByMc={};let totalProd=0;
+    document.querySelectorAll('[id^="engProd_"]').forEach(inp=>{
+        const mc=inp.id.replace('engProd_','');
+        const ton=parseFloat(inp.value)||0;
+        prodByMc[mc]=ton;totalProd+=ton;
+    });
+    document.getElementById('energyTotalProd').textContent='합계: '+fmtI(Math.round(totalProd))+' 톤';
+
+    // 2) 스팀 필요량 계산: Σ(호기별 생산톤 × 원단위) + 기타사용량
+    let steamRows=[];let totalSteamReq=0;
+    const steamMachines=new Set(STEAM_UNIT_RATES.map(r=>r.machineCode));
+    Object.keys(prodByMc).forEach(mc=>{if(!steamMachines.has(mc))steamMachines.add(mc);});
+    steamMachines.forEach(mc=>{
+        const rate=STEAM_UNIT_RATES.find(r=>r.machineCode===mc);
+        const prodTon=prodByMc[mc]||0;
+        const unitRate=rate?parseFloat(rate.steamPerTon)||0:0;
+        const etcTon=rate?parseFloat(rate.etcUsageTon)||0:0;
+        const steamNeed=prodTon*unitRate;
+        const subtotal=steamNeed+etcTon;
+        totalSteamReq+=subtotal;
+        if(prodTon>0||unitRate>0)steamRows.push({mc,prodTon,unitRate,steamNeed,etcTon,subtotal});
+    });
+
+    // 3) 스팀 구간단가 적용
+    let intervals=STEAM_PRICE_INTERVALS.slice().sort((a,b)=>(a.intervalSeq||0)-(b.intervalSeq||0));
+    let remainingSteam=totalSteamReq;
+    let totalSteamCost=0;
+    let intervalRows=[];
+    intervals.forEach(iv=>{
+        if(remainingSteam<=0){intervalRows.push({name:iv.intervalName||'구간'+(iv.intervalSeq||''),range:(iv.minUsageTon||0)+'~'+(iv.maxUsageTon||'∞'),price:parseFloat(iv.pricePerTon)||0,qty:0,cost:0});return;}
+        const min=parseFloat(iv.minUsageTon)||0;
+        const max=iv.maxUsageTon?parseFloat(iv.maxUsageTon):Infinity;
+        const intervalCap=max-min;
+        const applied=Math.min(remainingSteam,intervalCap===Infinity?remainingSteam:intervalCap);
+        const price=parseFloat(iv.pricePerTon)||0;
+        const cost=applied*price;
+        totalSteamCost+=cost;
+        remainingSteam-=applied;
+        intervalRows.push({name:iv.intervalName||'구간'+(iv.intervalSeq||''),range:fmtI(Math.round(min))+'~'+(max===Infinity?'∞':fmtI(Math.round(max))),price,qty:applied,cost});
+    });
+
+    // 4) LNG 구매비 계산: Σ(호기별 생산톤 × LNG원단위) × LNG단가
+    const lngPrice=BOILER_COST_RATES.filter(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG')).map(r=>parseFloat(r.rateValue)||0)[0]||0;
+    let lngRows=[];let totalLngCost=0;
+    BURNER_LNG_RATES.forEach(rate=>{
+        const mc=rate.machineCode;
+        const prodTon=prodByMc[mc]||0;
+        const unitM3=parseFloat(rate.lngPerTon)||0;
+        const lngM3=prodTon*unitM3;
+        const cost=lngM3*lngPrice;
+        totalLngCost+=cost;
+        if(prodTon>0||unitM3>0)lngRows.push({mc,prodTon,unitM3,lngM3,lngPrice,cost});
+    });
+
+    // 5) 보일러 정비 영향
+    let maintRows=[];
+    BOILER_MAINTENANCES.forEach(m=>{
+        const boiler=BOILER_MASTERS_LIST.find(b=>b.boilerCode===m.boilerCode);
+        const steamPerHour=boiler?parseFloat(boiler.steamPerHour)||0:0;
+        const maintHrs=parseFloat(m.maintHours)||0;
+        const capReduce=parseFloat(m.capacityReduction)||100;
+        const steamLost=steamPerHour*maintHrs*(capReduce/100);
+        const typeLabel={'REGULAR':'정기정비','OVERHAUL':'대정비','EMERGENCY':'긴급정비','INSPECTION':'법정검사'}[m.maintType]||m.maintType;
+        maintRows.push({code:m.boilerCode,name:boiler?boiler.boilerName:m.boilerCode,type:typeLabel,hrs:maintHrs,capReduce,steamLost,memo:m.memo||m.maintName||''});
+    });
+
+    // 6) 총 에너지비
+    const totalEnergy=totalSteamCost+totalLngCost;
+    const perTon=totalProd>0?totalEnergy/totalProd/1000:0; // 천원/톤
+
+    // 7) KPI 카드 렌더링
+    document.getElementById('engSteamReq').textContent=fmtI(Math.round(totalSteamReq));
+    document.getElementById('engSteamCost').textContent=fmtI(Math.round(totalSteamCost/1000000));
+    document.getElementById('engLngCost').textContent=fmtI(Math.round(totalLngCost/1000000));
+    document.getElementById('engTotalCost').textContent=fmtI(Math.round(totalEnergy/1000000));
+    document.getElementById('engPerTon').textContent=fmt(perTon);
+
+    // 8) 스팀 상세 테이블
+    document.getElementById('engSteamTb').innerHTML=steamRows.map(r=>
+        '<tr><td style="font-weight:600;color:#4f46e5;">'+r.mc+'</td>'+
+        '<td class="r mn">'+fmtI(Math.round(r.prodTon))+'</td>'+
+        '<td class="r mn">'+fmt(r.unitRate)+'</td>'+
+        '<td class="r mn">'+fmtI(Math.round(r.steamNeed))+'</td>'+
+        '<td class="r mn">'+fmtI(Math.round(r.etcTon))+'</td>'+
+        '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.subtotal))+'</td></tr>'
+    ).join('')+
+    '<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td class="r">'+fmtI(Math.round(totalProd))+'</td><td></td><td class="r">'+fmtI(Math.round(steamRows.reduce((s,r)=>s+r.steamNeed,0)))+'</td><td class="r">'+fmtI(Math.round(steamRows.reduce((s,r)=>s+r.etcTon,0)))+'</td><td class="r" style="color:#ef4444;">'+fmtI(Math.round(totalSteamReq))+'</td></tr>';
+
+    // 9) 스팀 구간 테이블
+    document.getElementById('engSteamIntervalTb').innerHTML=intervalRows.map(r=>
+        '<tr><td style="font-weight:600;">'+r.name+'</td>'+
+        '<td class="r mn">'+r.range+'</td>'+
+        '<td class="r mn">'+fmtI(Math.round(r.price))+'</td>'+
+        '<td class="r mn">'+fmtI(Math.round(r.qty))+'</td>'+
+        '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.cost/1000000))+'</td></tr>'
+    ).join('')+
+    '<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td></td><td></td><td class="r">'+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#d97706;">'+fmtI(Math.round(totalSteamCost/1000000))+'</td></tr>';
+
+    // 10) LNG 상세 테이블
+    document.getElementById('engLngTb').innerHTML=lngRows.map(r=>
+        '<tr><td style="font-weight:600;color:#4f46e5;">'+r.mc+'</td>'+
+        '<td class="r mn">'+fmtI(Math.round(r.prodTon))+'</td>'+
+        '<td class="r mn">'+fmt(r.unitM3)+'</td>'+
+        '<td class="r mn">'+fmtI(Math.round(r.lngM3))+'</td>'+
+        '<td class="r mn">'+fmtI(Math.round(r.lngPrice))+'</td>'+
+        '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.cost/1000000))+'</td></tr>'
+    ).join('')+
+    '<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td class="r">'+fmtI(Math.round(lngRows.reduce((s,r)=>s+r.prodTon,0)))+'</td><td></td><td class="r">'+fmtI(Math.round(lngRows.reduce((s,r)=>s+r.lngM3,0)))+'</td><td></td><td class="r" style="color:#3b82f6;">'+fmtI(Math.round(totalLngCost/1000000))+'</td></tr>';
+
+    // 11) 보일러 정비 테이블
+    if(!maintRows.length){
+        document.getElementById('engMaintTb').innerHTML='<tr><td colspan="6" style="text-align:center;padding:20px;color:#94a3b8;">해당 월 보일러 정비계획이 없습니다. <span style="color:#16a34a;font-weight:600;">✓ 정상 가동</span></td></tr>';
+    } else {
+        document.getElementById('engMaintTb').innerHTML=maintRows.map(r=>
+            '<tr><td style="font-weight:600;">'+r.name+'</td>'+
+            '<td class="r"><span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;'+
+                (r.type==='대정비'?'background:#fee2e2;color:#991b1b;':r.type==='긴급정비'?'background:#fef3c7;color:#92400e;':'background:#f1f5f9;color:#475569;')+'">'+r.type+'</span></td>'+
+            '<td class="r mn">'+fmt(r.hrs)+'</td>'+
+            '<td class="r mn">'+fmt(r.capReduce)+'</td>'+
+            '<td class="r mn" style="font-weight:700;color:#ef4444;">'+fmtI(Math.round(r.steamLost))+'</td>'+
+            '<td style="font-size:11px;color:#64748b;">'+r.memo+'</td></tr>'
+        ).join('');
+    }
 }
 
 // ── Product Sim (API 데이터 기반) ──
@@ -1212,7 +1462,9 @@ async function initAll(){
     await loadOptimeFromAPI(); // → renderOpt() 내부 호출
     await loadWasteRates();
     await loadMachineSpeeds();
+    await loadEnergyRefData();
     renderCapa();
+    renderEnergyProdInputs();
     updateMatChart();
     updateStep5();
 }
