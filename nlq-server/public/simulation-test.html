@@ -350,6 +350,7 @@
                         </div>
                     </div>
                     <div style="text-align:center;"><div class="kn n-am" style="opacity:.65;"><div class="lb">준변동비</div><div class="vl">-</div><div class="sb">전력비</div></div><div style="font-size:9px;color:#f59e0b;margin-top:3px;">준비중</div></div>
+                    <div style="text-align:center;"><div class="kn n-am" id="csEng"><div class="lb">준변동비</div><div class="vl" id="csEngV">-</div><div class="sb">에너지비 (천원/톤)</div></div><div style="font-size:9px;color:#f97316;margin-top:3px;" id="csEngStatus">시뮬 연동</div></div>
                     <div style="text-align:center;"><div class="kn n-am" style="opacity:.65;"><div class="lb">준변동비</div><div class="vl">-</div><div class="sb">물류비</div></div><div style="font-size:9px;color:#f59e0b;margin-top:3px;">준비중</div></div>
                 </div>
                 <div class="ard"></div>
@@ -567,7 +568,8 @@ function subTab(step,key){
 let PL=[
     {l:'매출액',k:'rev',b:'-',r:0,p:0,db:false,n:'수동'},
     {l:'원재료비',k:'mat',b:'변동비',r:0,p:0,db:false,n:'준비중'},
-    {l:'전력비',k:'eng',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'전력비',k:'pw',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'에너지비',k:'eng',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
     {l:'물류비',k:'log',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
     {l:'인건비',k:'lab',b:'고정비',r:0,p:0,db:false,n:'수동'},
     {l:'감가상각',k:'dep',b:'고정비',r:0,p:0,db:false,n:'수동'},
@@ -590,14 +592,15 @@ async function loadCostUnitRates(){
         PL[1].p=parseFloat(d.prevRates?.materialPerTon)||0;
         PL[1].db=d.fromDB?.material||false;
         PL[1].n=PL[1].db?'DB':'준비중';
-        PL[2].r=parseFloat(d.rates?.energyPerTon)||0;
-        PL[2].p=parseFloat(d.prevRates?.energyPerTon)||0;
-        PL[2].db=d.fromDB?.energy||false;
+        PL[2].r=parseFloat(d.rates?.powerPerTon)||0;
+        PL[2].p=parseFloat(d.prevRates?.powerPerTon)||0;
+        PL[2].db=d.fromDB?.power||false;
         PL[2].n=PL[2].db?'DB':'준비중';
-        PL[3].r=parseFloat(d.rates?.logisticsPerTon)||0;
-        PL[3].p=parseFloat(d.prevRates?.logisticsPerTon)||0;
-        PL[3].db=d.fromDB?.logistics||false;
-        PL[3].n=PL[3].db?'DB':'준비중';
+        // PL[3] 에너지비는 에너지비 시뮬레이션에서 연동 (calcEnergyCost → updateEnergyPL)
+        PL[4].r=parseFloat(d.rates?.logisticsPerTon)||0;
+        PL[4].p=parseFloat(d.prevRates?.logisticsPerTon)||0;
+        PL[4].db=d.fromDB?.logistics||false;
+        PL[4].n=PL[4].db?'DB':'준비중';
         // 지종별 원재료비 갱신
         if(d.materialByProduct&&d.materialByProduct.length){
             MAT_API=d.materialByProduct.map(m=>({
@@ -632,11 +635,11 @@ function calcPL(){
         tbH+='<tr><td style="font-weight:600;">'+it.l+'</td><td><span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;'+bc+'">'+it.b+'</span></td><td class="r mn" style="font-weight:600;">'+fmt(it.r)+'</td><td class="r mn" style="color:#94a3b8;">'+fmt(it.p)+'</td><td class="r mn" style="font-weight:700;color:#4f46e5;">'+fmt(sr)+'</td><td class="r mn">'+(it.r>0?fmt(st):'-')+'</td><td class="r" style="font-weight:600;'+dc+'">'+fmt(Math.abs(d))+'</td><td>'+db+'</td></tr>';
     });
     const pf=0-tc;
-    [{l:'매출액',v:0,c:'#475569',bd:''},{l:'원재료비',v:srs[1],c:'#d97706',bd:'border-left:3px solid #f59e0b;'},{l:'전력비',v:0,c:'#475569',bd:''},{l:'물류비',v:0,c:'#475569',bd:''},{l:'영업이익',v:pf,c:'#4f46e5',bd:'border-left:3px solid #4f46e5;'}].forEach(c=>{
+    [{l:'매출액',v:0,c:'#475569',bd:''},{l:'원재료비',v:srs[1],c:'#d97706',bd:'border-left:3px solid #f59e0b;'},{l:'전력비',v:srs[2],c:'#ef4444',bd:''},{l:'에너지비',v:srs[3],c:'#f97316',bd:'border-left:3px solid #f97316;'},{l:'물류비',v:srs[4],c:'#475569',bd:''},{l:'영업이익',v:pf,c:'#4f46e5',bd:'border-left:3px solid #4f46e5;'}].forEach(c=>{
         cardsH+='<div class="sc" style="padding:12px;text-align:center;'+c.bd+'"><div style="font-size:9px;color:#94a3b8;font-weight:600;">'+c.l+'</div><div style="font-size:16px;font-weight:800;color:'+c.c+';margin:3px 0;">'+fmt(c.v)+'</div><div style="font-size:9px;color:#94a3b8;">천원/톤</div></div>';
     });
     document.getElementById('plCards').innerHTML=cardsH;document.getElementById('plTb').innerHTML=tbH;
-    try{document.getElementById('csProf').textContent=fmt(pf);document.getElementById('csCost').textContent=fmt(tc);document.getElementById('csMatV').textContent=fmt(srs[1]);}catch(_){}
+    try{document.getElementById('csProf').textContent=fmt(pf);document.getElementById('csCost').textContent=fmt(tc);document.getElementById('csMatV').textContent=fmt(srs[1]);document.getElementById('csEngV').textContent=PL[3].r>0?fmt(srs[3]):'-';}catch(_){}
     if(costChart){costChart.data.datasets[0].data=PL.filter(i=>i.k!=='rev').map(i=>i.r);costChart.data.datasets[1].data=srs.filter((_,i)=>PL[i].k!=='rev');costChart.update();}
 }
 function resetSlider(){document.getElementById('prodSl').value=BP;calcPL();}
@@ -1242,6 +1245,14 @@ function calcEnergyCost(){
             '<td class="r mn" style="font-weight:700;color:#ef4444;">'+fmtI(Math.round(r.steamLost))+'</td>'+
             '<td style="font-size:11px;color:#64748b;">'+r.memo+'</td></tr>'
         ).join('');
+    }
+
+    // 12) P/L 시뮬레이터에 에너지비 톤당단가 연동
+    if(totalProd>0&&totalEnergy>0){
+        PL[3].r=perTon; // 천원/톤
+        PL[3].db=true;
+        PL[3].n='시뮬';
+        calcPL();
     }
 }
 
