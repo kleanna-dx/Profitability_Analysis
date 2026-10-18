@@ -63,3 +63,6 @@ target/
 *.xlsx
 *.csv
 backups/
+_preview_server.mjs
+_static_server.mjs
+preview/
