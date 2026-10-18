@@ -663,7 +663,24 @@ async function loadOptimeFromAPI(){
         const r=await fetch(API+'/operating-time/by-ym?division='+getDiv()+'&ym='+getYm());
         const j=await r.json();
         const list=j.data||[];
-        OD=list.map(o=>({ym:o.ym,mc:o.machineCode,td:o.totalDays,ps:o.plannedShutdownDays,nd:o.operationNormalDays,wd:o.operationWasteDays,sd:o.operationStartupDays,td2:o.operationTrimmingDays,rd:o.downtimeRepairDays,cd:o.downtimeCleaningDays,ad:o.downtimeAccidentDays}));
+        OD=list.map(o=>({
+            ym:o.ym,mc:o.machineCode,
+            // 분 단위
+            tdM:o.totalMin||o.totalDays||0, psM:o.plannedShutdownMin||o.plannedShutdownDays||0,
+            ndM:o.operationNormalMin||o.operationNormalDays||0, wdM:o.operationWasteMin||o.operationWasteDays||0,
+            sdM:o.operationStartupMin||o.operationStartupDays||0, tmM:o.operationTrimmingMin||o.operationTrimmingDays||0,
+            rdM:o.downtimeRepairMin||o.downtimeRepairDays||0, cdM:o.downtimeCleaningMin||o.downtimeCleaningDays||0,
+            adM:o.downtimeAccidentMin||o.downtimeAccidentDays||0,
+            // 시간 단위
+            tdH:o.totalHours||(o.totalDays/60)||0, psH:o.plannedShutdownHours||(o.plannedShutdownDays/60)||0,
+            ndH:o.operationNormalHours||(o.operationNormalDays/60)||0,
+            rdH:o.downtimeRepairHours||(o.downtimeRepairDays/60)||0,
+            cdH:o.downtimeCleaningHours||(o.downtimeCleaningDays/60)||0,
+            adH:o.downtimeAccidentHours||(o.downtimeAccidentDays/60)||0,
+            // 소계
+            opSubM:o.operationSubtotalMin||0, dtSubM:o.downtimeSubtotalMin||0,
+            opSubH:o.operationSubtotalHours||0, dtSubH:o.downtimeSubtotalHours||0
+        }));
     }catch(e){
         console.warn('[Optime] API 호출 실패:',e.message);
         OD=[];
@@ -671,8 +688,28 @@ async function loadOptimeFromAPI(){
     renderOpt();
 }
 function renderOpt(){
-    if(!OD.length){document.getElementById('optTb').innerHTML='<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">해당 월/사업부의 가동시간 데이터가 없습니다.</td></tr>';return;}
-    document.getElementById('optTb').innerHTML=OD.map(o=>'<tr><td style="font-weight:600;">'+o.ym.slice(0,4)+'/'+o.ym.slice(4)+'</td><td style="font-weight:600;color:#4f46e5;">'+o.mc+'</td><td class="r mn">'+o.td+'</td><td class="r mn" style="color:#ef4444;">'+o.ps+'</td><td class="r mn" style="color:#16a34a;font-weight:600;">'+o.nd+'</td><td class="r mn">'+o.wd+'</td><td class="r mn">'+o.sd+'</td><td class="r mn">'+o.td2+'</td><td class="r mn" style="color:#f59e0b;">'+o.rd+'</td><td class="r mn">'+o.cd+'</td><td class="r mn" style="color:#ef4444;">'+o.ad+'</td></tr>').join('');
+    const tb=document.getElementById('optTb');
+    if(!tb)return;
+    if(!OD.length){tb.innerHTML='<tr><td colspan="14" style="text-align:center;padding:30px;color:#94a3b8;">해당 월/사업부의 가동시간 데이터가 없습니다.</td></tr>';return;}
+    tb.innerHTML=OD.map(o=>{
+        const fm=v=>fmtI(Math.round(v));
+        const fh=v=>fmt(parseFloat(v)||0);
+        return '<tr>'+
+            '<td style="font-weight:600;">'+o.ym.toString().slice(0,4)+'/'+o.ym.toString().slice(4)+'</td>'+
+            '<td style="font-weight:600;color:#4f46e5;">'+o.mc+'</td>'+
+            '<td class="r mn" style="color:#ef4444;">'+fm(o.psM)+'<br><span style="font-size:9px;color:#94a3b8;">'+fh(o.psH)+'h</span></td>'+
+            '<td class="r mn" style="color:#16a34a;font-weight:600;">'+fm(o.ndM)+'<br><span style="font-size:9px;color:#94a3b8;">'+fh(o.ndH)+'h</span></td>'+
+            '<td class="r mn">'+fm(o.wdM)+'</td>'+
+            '<td class="r mn">'+fm(o.sdM)+'</td>'+
+            '<td class="r mn">'+fm(o.tmM)+'</td>'+
+            '<td class="r mn" style="font-weight:600;">'+fm(o.opSubM)+'<br><span style="font-size:9px;color:#94a3b8;">'+fh(o.opSubH)+'h</span></td>'+
+            '<td class="r mn" style="color:#f59e0b;">'+fm(o.rdM)+'</td>'+
+            '<td class="r mn">'+fm(o.cdM)+'</td>'+
+            '<td class="r mn" style="color:#ef4444;">'+fm(o.adM)+'</td>'+
+            '<td class="r mn" style="font-weight:600;">'+fm(o.dtSubM)+'<br><span style="font-size:9px;color:#94a3b8;">'+fh(o.dtSubH)+'h</span></td>'+
+            '<td class="r mn" style="font-weight:700;">'+fm(o.tdM)+'<br><span style="font-size:9px;color:#4f46e5;">'+fh(o.tdH)+'h</span></td>'+
+            '</tr>';
+    }).join('');
 }
 
 // ── CAPA (API 연동: MAT_API + 가동시간 기반) ──
@@ -760,7 +797,7 @@ function renderRef(){const d=REFS[cRef];let h='<table class="st"><thead><tr>'+d.
 function renderCustomRef(key){
     const wrap=document.getElementById('refWrap');
     if(key==='_optime'){
-        wrap.innerHTML='<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12px;color:#64748b;">월별 호기별 가동일수 관리</span><button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="openOptModal()"><i class="fas fa-plus mr-1"></i>등록</button></div><table class="st"><thead><tr><th>연월</th><th>호기</th><th class="r">총일수</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th></tr></thead><tbody id="optTb"></tbody></table>';
+        wrap.innerHTML='<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;"><span style="font-size:11px;color:#64748b;">입력: 분(min/월) | 시간(h) 자동 환산 표시</span><button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="openOptModal()"><i class="fas fa-plus mr-1"></i>등록</button></div><table class="st"><thead><tr><th>연월</th><th>호기</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">가동소계</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th><th class="r">비가동소계</th><th class="r">총계</th></tr></thead><tbody id="optTb"></tbody></table>';
         renderOpt();
     }
 }
@@ -858,7 +895,7 @@ function openRefModal(){
 }
 async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate'].includes(c))v=parseFloat(v)||0;else if(['year','month'].includes(c))v=parseInt(v)||0;else if(c==='isActive')v=(v==='true');body[c]=v;}});if(!body.division)body.division=document.getElementById('selDiv')?.value||'PS';try{const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const err=await r.text();console.warn('[saveRef] 실패:',err);alert('저장 실패: '+err);return;}}catch(e){alert('저장 실패: '+e.message);}closeModal();loadRef();}
 async function delRef(id){if(!confirm('삭제하시겠습니까?'))return;try{await fetch(API+'/'+REFS[cRef].k+'/'+id,{method:'DELETE'});}catch(_){}loadRef();}
-function openOptModal(){let h='<h3><i class="fas fa-clock text-cyan-500"></i> 가동시간 등록</h3>';[['division','사업부'],['machineCode','호기코드'],['ym','연월(YYYYMM)'],['totalDays','총일수'],['plannedShutdownDays','계획운휴'],['operationNormalDays','정상가동'],['operationWasteDays','폐품'],['operationStartupDays','초출'],['operationTrimmingDays','절지'],['downtimeRepairDays','정비'],['downtimeCleaningDays','세척'],['downtimeAccidentDays','사고']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveOpt()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
+function openOptModal(){let h='<h3><i class="fas fa-clock text-cyan-500"></i> 가동시간 등록 <span style="font-size:10px;color:#94a3b8;font-weight:400;">입력 단위: 분(min/월)</span></h3>';[['division','사업부'],['machineCode','호기코드'],['ym','연월(YYYYMM)'],['totalDays','총계(분)'],['plannedShutdownDays','계획운휴(분)'],['operationNormalDays','정상가동(분)'],['operationWasteDays','폐품(분)'],['operationStartupDays','초출(분)'],['operationTrimmingDays','절지(분)'],['downtimeRepairDays','정비(분)'],['downtimeCleaningDays','펠트세척(분)'],['downtimeAccidentDays','사고(분)']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveOpt()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
 async function saveOpt(){const body={};document.querySelectorAll('.modal-box input').forEach(el=>{let v=el.value;if(!['division','machineCode','ym'].includes(el.name))v=parseFloat(v)||0;body[el.name]=v;});try{await fetch(API+'/operating-time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(_){}closeModal();}
 function openSpeedModal(){let h='<h3><i class="fas fa-tachometer-alt text-blue-500"></i> 생산 선속 등록</h3>';[['machineCode','호기코드'],['product','지종'],['basisWeight','평량(g/m²)'],['trimWidth','지폭(mm)'],['speed','선속(m/min)'],['note','비고']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="closeModal()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
 function closeModal(){document.getElementById('modalBg').style.display='none';}
