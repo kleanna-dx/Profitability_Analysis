@@ -45,12 +45,15 @@ public class MachineSpeed {
         }
     }
 
+    /** 지폭 기본값: 3510mm (고정) */
+    private static final BigDecimal DEFAULT_TRIM_WIDTH = new BigDecimal("3510");
+
     @Builder
     public MachineSpeed(Integer year,String machineCode,String product,BigDecimal basisWeight,
                         BigDecimal trimWidth,BigDecimal speed,String division,String note){
         this.year=year;this.machineCode=machineCode;this.product=product;
         this.basisWeight=basisWeight!=null?basisWeight:BigDecimal.ZERO;
-        this.trimWidth=trimWidth!=null?trimWidth:BigDecimal.ZERO;
+        this.trimWidth=trimWidth!=null&&trimWidth.compareTo(BigDecimal.ZERO)>0?trimWidth:DEFAULT_TRIM_WIDTH;
         this.speed=speed!=null?speed:BigDecimal.ZERO;
         this.division=division!=null?division:"PS";this.note=note;
         calcTheoryProd();
