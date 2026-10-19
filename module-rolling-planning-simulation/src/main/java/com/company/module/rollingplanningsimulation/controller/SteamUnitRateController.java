@@ -49,17 +49,34 @@ public class SteamUnitRateController {
 
     @PostMapping
     public ResponseEntity<ApiResponse<SteamUnitRate>> save(@RequestBody Map<String, Object> body) {
+        // month: null, 빈문자열, 0 → null 처리
+        Integer month = null;
+        if (body.get("month") != null) {
+            String ms = body.get("month").toString().trim();
+            if (!ms.isEmpty()) {
+                int mv = Integer.parseInt(ms);
+                if (mv >= 1 && mv <= 12) month = mv;
+            }
+        }
+
         SteamUnitRate e = SteamUnitRate.builder()
             .year(Integer.parseInt(body.get("year").toString()))
-            .month(body.get("month") != null ? Integer.parseInt(body.get("month").toString()) : null)
+            .month(month)
             .machineCode((String) body.get("machineCode"))
             .division((String) body.getOrDefault("division", "PS"))
-            .steamPerTon(body.get("steamPerTon") != null ? new BigDecimal(body.get("steamPerTon").toString()) : BigDecimal.ZERO)
-            .etcUsageTon(body.get("etcUsageTon") != null ? new BigDecimal(body.get("etcUsageTon").toString()) : BigDecimal.ZERO)
-            .limitNote((String) body.get("limitNote"))
-            .memo((String) body.get("memo"))
+            .steamPerTon(parseBD(body.get("steamPerTon")))
+            .etcUsageTon(parseBD(body.get("etcUsageTon")))
+            .limitNote(body.get("limitNote") != null ? body.get("limitNote").toString() : null)
+            .memo(body.get("memo") != null ? body.get("memo").toString() : null)
             .build();
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
+    }
+
+    private BigDecimal parseBD(Object v) {
+        if (v == null) return BigDecimal.ZERO;
+        String s = v.toString().trim();
+        if (s.isEmpty()) return BigDecimal.ZERO;
+        try { return new BigDecimal(s); } catch (NumberFormatException e) { return BigDecimal.ZERO; }
     }
 
     @DeleteMapping("/{id}")
