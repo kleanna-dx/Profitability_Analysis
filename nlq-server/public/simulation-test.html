@@ -754,7 +754,7 @@ const REF_READY_ITEMS=[
     {k:'pw-machine-ratios',l:'설비배분비율',desc:'설비별 전력사용 배분 비율'},
     {k:'pw-fixed-items',l:'고정층 항목',desc:'DR환급/부하차단/복합보일러/ESS 금액'},
     {k:'boiler-masters',l:'보일러 마스터',desc:'보일러 설비 마스터 (스팀/hr)'},
-    {k:'boiler-maintenances',l:'보일러 정비계획',desc:'보일러 정비일정 (정비 중 사용불가)',yearFilter:true},
+    {k:'boiler-maintenances',l:'보일러 정비계획',desc:'보일러 정비일정 (정비 중 사용불가)',yearFilter:true,monthFilter:true},
 
     {k:'steam-unit-rates',l:'스팀사용 원단위',desc:'호기별 월별 스팀원단위 (톤/톤, 전년동월 비교)',yearFilter:true},
     {k:'steam-price-intervals',l:'스팀 구간단가',desc:'복합보일러 구간별 스팀단가'},
@@ -764,7 +764,7 @@ const REF_READY_ITEMS=[
 
     {k:'machine-speeds',l:'제지 생산 선속',desc:'호기별/지종별 초지기 선속',yearFilter:true},
     {k:'waste-rates',l:'폐품률 마스터',desc:'호기×지종별 연간 폐품률(%)',yearFilter:true},
-    {k:'daily-operations',l:'일별 가동시간',desc:'호기별 일별 가동시간/운휴 등록',yearFilter:true}
+    {k:'daily-operations',l:'일별 가동시간',desc:'호기별 일별 가동시간/운휴 등록',yearFilter:true,monthFilter:true}
 ];
 async function renderReady(){
     const ym=document.getElementById('selYm')?.value||'202605';
@@ -796,9 +796,11 @@ async function renderReady(){
         }else{
             let rUrl=API+'/'+ri.k+'?division='+div;
             if(ri.yearFilter)rUrl+='&year='+ym.substring(0,4);
+            if(ri.k==='daily-operations')rUrl+='&month='+parseInt(ym.substring(4,6));
             try{const r=await fetch(rUrl);const j=await r.json();const arr=Array.isArray(j.data)?j.data:j.data?.content||[];cnt=arr.length;}catch(_){}
         }
-        return {moduleCode:'REF_'+ri.k,moduleName:ri.l,status:cnt>0?'READY':'EMPTY',recordCount:cnt,description:ri.desc,category:'기준정보 (연 고정)'};
+        const cat=ri.monthFilter?'원가데이터 (기준월 적용)':'기준정보 (연 고정)';
+        return {moduleCode:'REF_'+ri.k,moduleName:ri.l,status:cnt>0?'READY':'EMPTY',recordCount:cnt,description:ri.desc,category:cat};
     });
     refModules=await Promise.all(refPromises);
 
