@@ -1037,14 +1037,16 @@ async function loadEnergyRefData(){
     // ── 샘플 데이터 폴백 (API 연결 불가 시 시뮬레이션 데모용) ──
     if(!STEAM_UNIT_RATES.length){
         const mo=parseInt(getYm().substring(4,6));
-        STEAM_UNIT_RATES=[
-            {machineCode:'PM2',steamPerTon:2.3,etcUsageTon:150,year:parseInt(yr),month:mo,division:div},
-            {machineCode:'PM3',steamPerTon:2.5,etcUsageTon:200,year:parseInt(yr),month:mo,division:div}
-        ];
-        if(!STEAM_UNIT_RATES_PREV.length) STEAM_UNIT_RATES_PREV=[
-            {machineCode:'PM2',steamPerTon:2.1,etcUsageTon:140,year:parseInt(yr)-1,month:mo,division:div},
-            {machineCode:'PM3',steamPerTon:2.4,etcUsageTon:190,year:parseInt(yr)-1,month:mo,division:div}
-        ];
+        // 전년동월 데이터가 있으면 → 전년값을 당해 기본값으로 복사
+        if(STEAM_UNIT_RATES_PREV.length){
+            STEAM_UNIT_RATES=STEAM_UNIT_RATES_PREV.map(r=>({
+                ...r, year:parseInt(yr), steamPerTon:r.steamPerTon
+            }));
+        } else {
+            // 전년도 없고 당해도 없으면 → 빈 배열 (호기 목록에서 생성)
+            const mcs=UNIT_OPTIONS.length?UNIT_OPTIONS.map(u=>u.unitCode||u.machineCode):['PM2','PM3'];
+            STEAM_UNIT_RATES=mcs.map(mc=>({machineCode:mc,steamPerTon:0,etcUsageTon:0,year:parseInt(yr),month:mo,division:div}));
+        }
     }
     if(!STEAM_PRICE_INTERVALS.length) STEAM_PRICE_INTERVALS=[
         {intervalSeq:1,intervalName:'기본구간',minUsageTon:0,maxUsageTon:10000,pricePerTon:18370,division:div},
@@ -1088,24 +1090,30 @@ async function loadEnergyRefData(){
 function renderEnergyProdInputs(){
     const container=document.getElementById('energyProdInputs');
     if(!container)return;
-    // 호기 목록: UNIT_OPTIONS 또는 기본값
-    const units=UNIT_OPTIONS.length?UNIT_OPTIONS.map(u=>u.unitCode||u.machineCode)
-        :['PM2','PM3'];
-    // 기본 생산량 (샘플: PM2=3,200, PM3=5,100)
+    const units=UNIT_OPTIONS.length?UNIT_OPTIONS.map(u=>u.unitCode||u.machineCode):['PM2','PM3'];
     const defaultProd={'PM2':3200,'PM3':5100};
-    const mo=parseInt(getYm().substring(4,6));
     container.innerHTML=units.map(mc=>{
         const cur=STEAM_UNIT_RATES.find(r=>r.machineCode===mc);
         const prev=STEAM_UNIT_RATES_PREV.find(r=>r.machineCode===mc);
         const curRate=cur?parseFloat(cur.steamPerTon)||0:0;
         const prevRate=prev?parseFloat(prev.steamPerTon)||0:0;
-        const diff=prevRate>0?(curRate-prevRate):0;
-        const diffColor=diff>0?'#ef4444':diff<0?'#2563eb':'#94a3b8';
-        const rateInfo=curRate>0?'<div style="font-size:9px;color:#64748b;margin-top:2px;">원단위 <b>'+curRate.toFixed(2)+'</b>'+(prevRate>0?' <span style="color:'+diffColor+';">(전년 '+prevRate.toFixed(2)+')</span>':'')+'</div>':'';
+        // 기본값 우선순위: ①당해 등록값 → ②전년동월 → ③0
+        const defaultRate=curRate>0?curRate:(prevRate>0?prevRate:0);
+        const srcLabel=curRate>0?'등록값':(prevRate>0?'전년동월':'미등록');
+        const srcColor=curRate>0?'#16a34a':(prevRate>0?'#d97706':'#94a3b8');
         return '<div style="display:flex;flex-direction:column;gap:2px;">'+
             '<label style="font-size:10px;color:#64748b;font-weight:600;">'+mc+'</label>'+
-            '<input type="number" id="engProd_'+mc+'" value="'+(defaultProd[mc]||0)+'" min="0" step="100" style="width:100px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;text-align:right;font-family:inherit;">'+
-            rateInfo+'</div>';
+            '<input type="number" id="engProd_'+mc+'" value="'+(defaultProd[mc]||0)+'" min="0" step="100" '+
+                'style="width:110px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;text-align:right;font-family:inherit;" '+
+                'oninput="calcEnergyCost()">'+
+            '<div style="display:flex;align-items:center;gap:4px;margin-top:3px;">'+
+                '<span style="font-size:9px;color:#64748b;">원단위</span>'+
+                '<input type="number" id="engRate_'+mc+'" value="'+defaultRate.toFixed(2)+'" min="0" step="0.01" '+
+                    'style="width:60px;padding:3px 6px;border:1px solid #e2e8f0;border-radius:4px;font-size:11px;text-align:right;font-weight:600;font-family:inherit;" '+
+                    'oninput="calcEnergyCost()">'+
+            '</div>'+
+            '<div style="font-size:8px;color:'+srcColor+';">'+srcLabel+(prevRate>0?' (전년 '+prevRate.toFixed(2)+')':'')+'</div>'+
+            '</div>';
     }).join('');
 }
 
@@ -1144,11 +1152,13 @@ function calcEnergyPerTon(totalProdTon){
         if(totalInput>0){units.forEach(mc=>{prodByMc[mc]=totalProdTon*(inputMap[mc]/totalInput);});}
         else{units.forEach(mc=>{prodByMc[mc]=totalProdTon/units.length;});}
     }
-    // 스팀 필요량
+    // 스팀 필요량 — DOM input 원단위 우선
     let totalSteam=0;
     STEAM_UNIT_RATES.forEach(r=>{
+        const rateInp=document.getElementById('engRate_'+r.machineCode);
+        const unitRate=rateInp?parseFloat(rateInp.value)||0:parseFloat(r.steamPerTon)||0;
         const prod=prodByMc[r.machineCode]||0;
-        totalSteam+=prod*(parseFloat(r.steamPerTon)||0)+(parseFloat(r.etcUsageTon)||0);
+        totalSteam+=prod*unitRate+(parseFloat(r.etcUsageTon)||0);
     });
     // 보일러 우선순위 분배 → 비용
     const month=parseInt(getYm().substring(4,6));
@@ -1196,14 +1206,17 @@ function calcEnergyCost(){
     document.getElementById('energyTotalProd').textContent='합계: '+fmtI(Math.round(totalProd))+' 톤';
 
     // 2) 스팀 필요량 계산: Σ(호기별 생산톤 × 원단위) + 기타사용량
+    //    원단위는 DOM input(수기편집) 우선, 없으면 STEAM_UNIT_RATES 참조
     let steamRows=[];let totalSteamReq=0;
     const steamMachines=new Set(STEAM_UNIT_RATES.map(r=>r.machineCode));
     Object.keys(prodByMc).forEach(mc=>{if(!steamMachines.has(mc))steamMachines.add(mc);});
     steamMachines.forEach(mc=>{
+        const rateInp=document.getElementById('engRate_'+mc);
         const rate=STEAM_UNIT_RATES.find(r=>r.machineCode===mc);
         const prevRate=STEAM_UNIT_RATES_PREV.find(r=>r.machineCode===mc);
         const prodTon=prodByMc[mc]||0;
-        const unitRate=rate?parseFloat(rate.steamPerTon)||0:0;
+        // DOM input 우선 → STEAM_UNIT_RATES → 전년동월 → 0
+        const unitRate=rateInp?parseFloat(rateInp.value)||0:(rate?parseFloat(rate.steamPerTon)||0:0);
         const prevUnitRate=prevRate?parseFloat(prevRate.steamPerTon)||0:0;
         const etcTon=rate?parseFloat(rate.etcUsageTon)||0:0;
         const steamNeed=prodTon*unitRate;
