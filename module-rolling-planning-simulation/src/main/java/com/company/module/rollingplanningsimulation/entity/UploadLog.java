@@ -13,7 +13,9 @@ public class UploadLog {
     @Column(name="ERROR_MESSAGE",length=500) private String errorMessage;
     @Column(name="UPLOADED_BY",length=50) private String uploadedBy;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(status==null)status="FAIL";}
     @Builder
     public UploadLog(String uploadBatchId,String refType,Integer rowIndex,String rowData,String status,String errorMessage,String uploadedBy,String division){

@@ -69,6 +69,7 @@ public class SteamUnitRateController {
             .limitNote(body.get("limitNote") != null ? body.get("limitNote").toString() : null)
             .memo(body.get("memo") != null ? body.get("memo").toString() : null)
             .build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
 

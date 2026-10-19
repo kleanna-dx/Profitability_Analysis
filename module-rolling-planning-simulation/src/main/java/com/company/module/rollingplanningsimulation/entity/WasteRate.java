@@ -16,8 +16,10 @@ public class WasteRate {
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="WASTE_RATE_PCT",nullable=false,precision=6,scale=3) private BigDecimal wasteRatePct;
     @Column(name="NOTE",length=200) private String note;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
     @Builder

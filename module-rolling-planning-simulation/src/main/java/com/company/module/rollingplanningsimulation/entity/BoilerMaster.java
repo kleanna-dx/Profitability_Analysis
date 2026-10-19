@@ -13,8 +13,10 @@ public class BoilerMaster {
     @Column(name="IS_ACTIVE") private Boolean isActive;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="DISPLAY_ORDER") private Integer displayOrder;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(isActive==null)isActive=true;}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
     @Builder public BoilerMaster(String boilerCode,String boilerName,String boilerType,BigDecimal steamPerHour,Integer priority,String capacityNote,Boolean isActive,String division,Integer displayOrder){this.boilerCode=boilerCode;this.boilerName=boilerName;this.boilerType=boilerType;this.steamPerHour=steamPerHour!=null?steamPerHour:BigDecimal.ZERO;this.priority=priority!=null?priority:99;this.capacityNote=capacityNote;this.isActive=isActive!=null?isActive:true;this.division=division!=null?division:"PS";this.displayOrder=displayOrder!=null?displayOrder:0;}

@@ -10,10 +10,12 @@ public class CogenDeduction {
     @Column(name="MONTHLY_AMOUNT",precision=18,scale=2) private BigDecimal monthlyAmount;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="MEMO",length=200) private String memo;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
-    @Builder public CogenDeduction(Integer year,String itemType,String itemName,BigDecimal monthlyAmount,String division,String memo){this.year=year;this.itemType=itemType;this.itemName=itemName;this.monthlyAmount=monthlyAmount!=null?monthlyAmount:BigDecimal.ZERO;this.division=division!=null?division:"PS";this.memo=memo;}
-    public void update(String itemName,BigDecimal monthlyAmount,String memo){this.itemName=itemName;this.monthlyAmount=monthlyAmount;this.memo=memo;}
+    @Builder public CogenDeduction(Integer year,String itemType,String itemName,BigDecimal monthlyAmount,String division,String memo){this.year=year;this.itemType=itemType;this.itemName=itemName;this.monthlyAmount=monthlyAmount!=null?monthlyAmount:BigDecimal.ZERO;this.division=division!=null?division:"PS";this.memo=memo;this.createdBy=createdBy;}
+    public void update(String itemName,BigDecimal monthlyAmount,String memo){this.itemName=itemName;this.monthlyAmount=monthlyAmount;this.memo=memo;this.createdBy=createdBy;}
 }

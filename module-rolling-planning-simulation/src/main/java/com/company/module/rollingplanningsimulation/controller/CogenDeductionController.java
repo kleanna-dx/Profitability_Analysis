@@ -20,6 +20,7 @@ public class CogenDeductionController {
             .itemType((String)body.get("itemType")).itemName((String)body.get("itemName"))
             .monthlyAmount(body.get("monthlyAmount")!=null?new BigDecimal(body.get("monthlyAmount").toString()):BigDecimal.ZERO)
             .division((String)body.getOrDefault("division","PS")).memo((String)body.get("memo")).build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }

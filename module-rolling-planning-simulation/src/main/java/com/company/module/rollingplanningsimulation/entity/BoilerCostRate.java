@@ -12,10 +12,12 @@ public class BoilerCostRate {
     @Column(name="RATE_UNIT",length=50) private String rateUnit;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="MEMO",length=200) private String memo;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
-    @Builder public BoilerCostRate(Integer year,String boilerCode,String rateType,String rateName,BigDecimal rateValue,String rateUnit,String division,String memo){this.year=year;this.boilerCode=boilerCode;this.rateType=rateType;this.rateName=rateName;this.rateValue=rateValue!=null?rateValue:BigDecimal.ZERO;this.rateUnit=rateUnit;this.division=division!=null?division:"PS";this.memo=memo;}
-    public void update(String rateName,BigDecimal rateValue,String rateUnit,String memo){this.rateName=rateName;this.rateValue=rateValue;this.rateUnit=rateUnit;this.memo=memo;}
+    @Builder public BoilerCostRate(Integer year,String boilerCode,String rateType,String rateName,BigDecimal rateValue,String rateUnit,String division,String memo){this.year=year;this.boilerCode=boilerCode;this.rateType=rateType;this.rateName=rateName;this.rateValue=rateValue!=null?rateValue:BigDecimal.ZERO;this.rateUnit=rateUnit;this.division=division!=null?division:"PS";this.memo=memo;this.createdBy=createdBy;}
+    public void update(String rateName,BigDecimal rateValue,String rateUnit,String memo){this.rateName=rateName;this.rateValue=rateValue;this.rateUnit=rateUnit;this.memo=memo;this.createdBy=createdBy;}
 }

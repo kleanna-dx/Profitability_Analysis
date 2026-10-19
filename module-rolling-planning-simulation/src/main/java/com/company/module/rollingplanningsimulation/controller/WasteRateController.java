@@ -25,6 +25,7 @@ public class WasteRateController {
             .division((String)body.getOrDefault("division","PS"))
             .wasteRatePct(body.get("wasteRatePct")!=null?new BigDecimal(body.get("wasteRatePct").toString()):BigDecimal.ZERO)
             .note((String)body.get("note")).build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @DeleteMapping("/{id}")

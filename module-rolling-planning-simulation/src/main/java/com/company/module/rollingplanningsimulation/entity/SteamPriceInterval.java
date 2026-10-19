@@ -12,7 +12,9 @@ public class SteamPriceInterval {
     @Column(name="PRICE_PER_TON",precision=12,scale=2) private BigDecimal pricePerTon;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="MEMO",length=200) private String memo;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
-    @Builder public SteamPriceInterval(String contractYear,Integer intervalSeq,String intervalName,BigDecimal minUsageTon,BigDecimal maxUsageTon,BigDecimal pricePerTon,String division,String memo){this.contractYear=contractYear;this.intervalSeq=intervalSeq;this.intervalName=intervalName;this.minUsageTon=minUsageTon;this.maxUsageTon=maxUsageTon;this.pricePerTon=pricePerTon!=null?pricePerTon:BigDecimal.ZERO;this.division=division!=null?division:"PS";this.memo=memo;}
+    @Builder public SteamPriceInterval(String contractYear,Integer intervalSeq,String intervalName,BigDecimal minUsageTon,BigDecimal maxUsageTon,BigDecimal pricePerTon,String division,String memo){this.contractYear=contractYear;this.intervalSeq=intervalSeq;this.intervalName=intervalName;this.minUsageTon=minUsageTon;this.maxUsageTon=maxUsageTon;this.pricePerTon=pricePerTon!=null?pricePerTon:BigDecimal.ZERO;this.division=division!=null?division:"PS";this.memo=memo;this.createdBy=createdBy;}
 }

@@ -25,6 +25,7 @@ public class BoilerPlanController {
             .operationDays(body.get("operationDays")!=null?new BigDecimal(body.get("operationDays").toString()):BigDecimal.ZERO)
             .operationHours(body.get("operationHours")!=null?new BigDecimal(body.get("operationHours").toString()):BigDecimal.ZERO)
             .memo((String)body.get("memo")).build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }

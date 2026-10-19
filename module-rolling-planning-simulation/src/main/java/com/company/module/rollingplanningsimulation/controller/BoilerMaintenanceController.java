@@ -37,6 +37,7 @@ public class BoilerMaintenanceController {
             .capacityReduction(parseBD(body.get("capacityReduction"), new BigDecimal("100")))
             .memo(str(body.get("memo")))
             .build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
 

@@ -16,6 +16,7 @@ public class MachineSpeedController {
     }
     @PostMapping
     public ResponseEntity<ApiResponse<MachineSpeed>> save(@RequestBody MachineSpeed e) {
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @DeleteMapping("/{id}")

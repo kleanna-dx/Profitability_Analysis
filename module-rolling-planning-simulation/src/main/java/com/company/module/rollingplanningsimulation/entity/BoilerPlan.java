@@ -13,10 +13,12 @@ public class BoilerPlan {
     @Column(name="OPERATION_DAYS",precision=6,scale=2) private BigDecimal operationDays;
     @Column(name="OPERATION_HOURS",precision=8,scale=2) private BigDecimal operationHours;
     @Column(name="MEMO",length=200) private String memo;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
-    @Builder public BoilerPlan(Integer year,Integer month,String boilerCode,String division,BigDecimal totalDays,BigDecimal shutdownDays,BigDecimal operationDays,BigDecimal operationHours,String memo){this.year=year;this.month=month;this.boilerCode=boilerCode;this.division=division!=null?division:"PS";this.totalDays=totalDays;this.shutdownDays=shutdownDays;this.operationDays=operationDays;this.operationHours=operationHours;this.memo=memo;}
-    public void update(BigDecimal totalDays,BigDecimal shutdownDays,BigDecimal operationDays,BigDecimal operationHours,String memo){this.totalDays=totalDays;this.shutdownDays=shutdownDays;this.operationDays=operationDays;this.operationHours=operationHours;this.memo=memo;}
+    @Builder public BoilerPlan(Integer year,Integer month,String boilerCode,String division,BigDecimal totalDays,BigDecimal shutdownDays,BigDecimal operationDays,BigDecimal operationHours,String memo){this.year=year;this.month=month;this.boilerCode=boilerCode;this.division=division!=null?division:"PS";this.totalDays=totalDays;this.shutdownDays=shutdownDays;this.operationDays=operationDays;this.operationHours=operationHours;this.memo=memo;this.createdBy=createdBy;}
+    public void update(BigDecimal totalDays,BigDecimal shutdownDays,BigDecimal operationDays,BigDecimal operationHours,String memo){this.totalDays=totalDays;this.shutdownDays=shutdownDays;this.operationDays=operationDays;this.operationHours=operationHours;this.memo=memo;this.createdBy=createdBy;}
 }
