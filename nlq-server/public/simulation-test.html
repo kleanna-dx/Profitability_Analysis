@@ -622,6 +622,8 @@ function goStep(n){
     document.querySelectorAll('.step-item').forEach((s,i)=>{
         s.className='step-item'+(i+1===n?' active':i+1<n?' done':'');
     });
+    // STEP4 진입 시 STEP3 확정 데이터 자동 반영
+    if(n===4){fillFromCapa();}
 }
 
 // ── Sub-tab Navigation ──
