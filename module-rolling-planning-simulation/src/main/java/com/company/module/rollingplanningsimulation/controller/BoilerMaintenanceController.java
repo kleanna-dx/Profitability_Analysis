@@ -25,20 +25,42 @@ public class BoilerMaintenanceController {
 
     @PostMapping public ResponseEntity<ApiResponse<BoilerMaintenance>> save(@RequestBody Map<String,Object> body) {
         BoilerMaintenance e = BoilerMaintenance.builder()
-            .year(body.get("year")!=null?Integer.parseInt(body.get("year").toString()):null)
-            .month(body.get("month")!=null?Integer.parseInt(body.get("month").toString()):null)
-            .boilerCode((String)body.get("boilerCode"))
-            .division((String)body.getOrDefault("division","PS"))
-            .maintType((String)body.getOrDefault("maintType","REGULAR"))
-            .maintName((String)body.get("maintName"))
-            .startDate(body.get("startDate")!=null?LocalDate.parse(body.get("startDate").toString()):null)
-            .endDate(body.get("endDate")!=null?LocalDate.parse(body.get("endDate").toString()):null)
-            .maintHours(body.get("maintHours")!=null?new BigDecimal(body.get("maintHours").toString()):BigDecimal.ZERO)
-            .capacityReduction(body.get("capacityReduction")!=null?new BigDecimal(body.get("capacityReduction").toString()):new BigDecimal("100"))
-            .memo((String)body.get("memo"))
+            .year(parseIntSafe(body.get("year")))
+            .month(parseIntSafe(body.get("month")))
+            .boilerCode(str(body.get("boilerCode")))
+            .division(str(body.getOrDefault("division","PS")))
+            .maintType(str(body.getOrDefault("maintType","REGULAR")))
+            .maintName(str(body.get("maintName")))
+            .startDate(parseDateSafe(body.get("startDate")))
+            .endDate(parseDateSafe(body.get("endDate")))
+            .maintHours(parseBD(body.get("maintHours"), BigDecimal.ZERO))
+            .capacityReduction(parseBD(body.get("capacityReduction"), new BigDecimal("100")))
+            .memo(str(body.get("memo")))
             .build();
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
+
+    private Integer parseIntSafe(Object v) {
+        if (v == null) return null;
+        String s = v.toString().trim();
+        if (s.isEmpty()) return null;
+        try { return Integer.parseInt(s); } catch (NumberFormatException e) { return null; }
+    }
+    private BigDecimal parseBD(Object v, BigDecimal def) {
+        if (v == null) return def;
+        String s = v.toString().trim();
+        if (s.isEmpty()) return def;
+        try { return new BigDecimal(s); } catch (NumberFormatException e) { return def; }
+    }
+    private LocalDate parseDateSafe(Object v) {
+        if (v == null) return null;
+        String s = v.toString().trim();
+        if (s.isEmpty()) return null;
+        // 2026.07.21 → 2026-07-21 / 2026/07/21 → 2026-07-21
+        s = s.replace('.', '-').replace('/', '-');
+        try { return LocalDate.parse(s); } catch (Exception e) { return null; }
+    }
+    private String str(Object v) { return v != null ? v.toString() : null; }
 
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
         repo.deleteById(id);
