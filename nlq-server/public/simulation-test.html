@@ -263,19 +263,13 @@
     <div class="sc" style="padding:20px;margin-bottom:16px;">
         <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 8px;"><i class="fas fa-chart-pie text-purple-500 mr-2"></i>생산 CAPA 분석</h3>
         <p style="font-size:12px;color:#64748b;margin:0 0 16px;">지종/평량별 예상 생산량과 이론 생산 CAPA를 비교하여 과부족을 분석합니다.</p>
-        <!-- 호기 셀렉터 + 폐품률 일괄적용 + 품목추가 -->
+        <!-- 호기 셀렉터 -->
         <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:16px;">
             <div style="display:flex;align-items:center;gap:6px;">
                 <span style="font-size:12px;font-weight:600;color:#475569;">호기:</span>
                 <select id="capaMcSel" onchange="CAPA_ROWS=[];renderCapa()" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;font-weight:600;"></select>
             </div>
-            <div style="display:flex;align-items:center;gap:6px;">
-                <span style="font-size:12px;font-weight:600;color:#475569;">폐품률(%):</span>
-                <input type="number" id="capaWpGlobal" value="0.86" min="0" max="100" step="0.01"
-                    style="width:70px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;text-align:right;font-weight:600;">
-                <button onclick="applyGlobalWp()" style="padding:5px 12px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;">일괄적용</button>
-            </div>
-            <button onclick="addCapaRow()" style="padding:5px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-plus mr-1"></i>품목 추가</button>
+            <span style="font-size:10px;color:#94a3b8;">※ 제지 생산 선속 마스터에 등록된 품목만 표시됩니다</span>
             <div style="flex:1;"></div>
             <button onclick="downloadCapaExcel()" style="padding:5px 12px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-download mr-1"></i>엑셀 다운</button>
         </div>
@@ -297,13 +291,13 @@
     <div class="sc" style="overflow:hidden;margin-bottom:16px;">
         <div style="overflow-x:auto;"><table class="st"><thead><tr>
             <th style="width:30px;">#</th><th>지종</th><th class="r">평량</th><th class="r">지폭(mm)</th><th class="r">이론생산(톤/일)</th>
-            <th class="r" style="color:#ef4444;font-weight:700;">폐품률(%)</th>
+            <th class="r" style="color:#ef4444;font-weight:700;font-size:10px;">폐품률(%)<br><span style="font-weight:400;color:#94a3b8;">마스터</span></th>
             <th class="r" style="background:#eef2ff;color:#4f46e5;font-weight:700;">예상 양품량(톤)</th>
             <th class="r" style="color:#94a3b8;">예상 폐품량(톤)</th>
             <th class="r">예상 총중량(톤)</th>
             <th class="r">필요일수</th>
             <th class="r" style="font-size:10px;">생산비<br>(총중량)</th>
-            <th style="width:40px;"></th>
+            
         </tr></thead><tbody id="capaTb"></tbody>
         <tfoot><tr style="background:#f8fafc;font-weight:700;">
             <td colspan="5">합계</td><td></td>
@@ -312,7 +306,6 @@
             <td class="r" id="capaSumTotal">-</td>
             <td class="r" id="capaSumDays">-</td>
             <td class="r" id="capaSumPct">-</td>
-            <td></td>
         </tr></tfoot></table></div>
     </div>
     <!-- 판정 카드 -->
@@ -969,13 +962,12 @@ function renderCapa(){
 
     // CAPA_ROWS 없으면 선속 마스터 기반으로 초기화
     if(!CAPA_ROWS.length&&speeds.length){
-        const globalWp=parseFloat(document.getElementById('capaWpGlobal')?.value)||0.86;
         CAPA_ROWS=speeds.map(s=>({
             prod:s.product||'',
             bw:parseFloat(s.basisWeight)||0,
             tw:parseFloat(s.trimWidth)||0,
             tpd:parseFloat(s.theoryProdTpd)||0,
-            wp:getWasteRate(mc,s.product||'')||globalWp,
+            wp:getWasteRate(mc,s.product||''),
             goodTon:0 // 사용자가 입력
         }));
     }
@@ -1000,26 +992,18 @@ function renderCapaTable(opDays){
         const pctOfTotal=sumTotal>0?0:0; // 아래서 재계산
         sumGood+=goodTon;sumWaste+=wasteTon;sumTotal+=totalTon;sumDays+=needDays;
 
-        // 지종/평량 셀렉트 옵션
-        const prodOpts=PRODUCT_OPTIONS.length?PRODUCT_OPTIONS.map(p=>'<option value="'+p.productCode+'"'+(p.productCode===r.prod?' selected':'')+'>'+p.productCode+'</option>').join(''):'<option value="'+r.prod+'">'+r.prod+'</option>';
-        // 평량 옵션 (해당 호기+지종의 선속 마스터에서)
-        const mc=getCapaMc();
-        const bwOpts=[...new Set(MACHINE_SPEEDS.filter(s=>s.machineCode===mc&&s.product===r.prod).map(s=>parseFloat(s.basisWeight)||0))].sort((a,b)=>a-b);
-        const bwSelect=bwOpts.length>1?'<select onchange="capaRowBwChange('+i+',this.value)" style="width:65px;padding:3px 4px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;text-align:right;">'+bwOpts.map(b=>'<option value="'+b+'"'+(b===r.bw?' selected':'')+'>'+b+'</option>').join('')+'</select>':'<span>'+r.bw+'</span>';
-
         return '<tr>'+
             '<td style="font-weight:600;color:#94a3b8;">'+(i+1)+'</td>'+
-            '<td><select onchange="capaRowProdChange('+i+',this.value)" style="width:80px;padding:3px 4px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;">'+prodOpts+'</select></td>'+
-            '<td class="r">'+bwSelect+'</td>'+
+            '<td style="font-weight:600;">'+r.prod+'</td>'+
+            '<td class="r mn">'+r.bw+'</td>'+
             '<td class="r mn">'+fmtI(r.tw||0)+'</td>'+
             '<td class="r mn" style="font-weight:600;">'+fmt(r.tpd)+'</td>'+
-            '<td class="r"><input type="number" value="'+wpPct.toFixed(2)+'" min="0" max="100" step="0.01" onchange="capaRowWpChange('+i+',this.value)" style="width:55px;padding:3px 4px;border:1px solid #fecaca;border-radius:6px;font-size:11px;text-align:right;color:#ef4444;font-weight:600;"></td>'+
+            '<td class="r mn" style="color:#ef4444;font-weight:600;">'+wpPct.toFixed(2)+'</td>'+
             '<td class="r"><input type="number" value="'+(goodTon>0?goodTon.toFixed(2):'')+'" min="0" step="0.01" onchange="capaRowGoodChange('+i+',this.value)" placeholder="" style="width:90px;padding:5px 6px;border:1px solid #c7d2fe;border-radius:6px;font-size:12px;text-align:right;font-weight:600;background:#eef2ff;"></td>'+
             '<td class="r mn" style="color:#94a3b8;">'+(wasteTon>0?fmt(wasteTon):'-')+'</td>'+
             '<td class="r mn" style="font-weight:600;">'+(totalTon>0?fmt(totalTon):'-')+'</td>'+
             '<td class="r mn">'+(needDays>0?fmt(needDays):'-')+'</td>'+
             '<td class="r mn" style="color:#16a34a;">'+(goodTon>0&&sumGood>0?'-':'')+'</td>'+
-            '<td><button onclick="removeCapaRow('+i+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td>'+
             '</tr>';
     }).join('');
 
