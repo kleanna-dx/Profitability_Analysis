@@ -1467,13 +1467,15 @@ function calcEnergyPerTon(totalProdTon){
         // boiler-cost-rates 기반 비용 계산 (boilerType 미사용)
         const fr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='FUEL_RATE');
         const sr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='STEAM_RATE');
-        if(fr&&sr){// FUEL+STEAM 둘 다 있으면 LNG방식: 배분량÷효율×연료비
+        const ir=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='INTERVAL');
+        if(ir||(STEAM_PRICE_INTERVALS.length&&!fr&&!sr)){
+            boilerCost+=ivCost(alloc);
+        } else if(fr&&sr){
             const fp=parseFloat(fr.rateValue)||0;const se=parseFloat(sr.rateValue)||0;
             boilerCost+=se>0?alloc/se*fp:alloc*fp;
-        } else if(sr){// STEAM만 있으면 스팀단가
+        } else if(sr){
             boilerCost+=alloc*(parseFloat(sr.rateValue)||0);
         }
-        // 둘 다 없으면 0원 (구간단가 대상은 별도 처리)
     });
     // LNG 버너
     const lngPrice=BOILER_COST_RATES.filter(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG')).map(r=>parseFloat(r.rateValue)||0)[0]||0;
@@ -1568,8 +1570,8 @@ function calcEnergyCost(){
         const fuelRate=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='FUEL_RATE');
         const steamRate=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='STEAM_RATE');
         const intervalRate=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='INTERVAL');
-        if(intervalRate||(!fuelRate&&!steamRate&&STEAM_PRICE_INTERVALS.length&&b.boilerName&&b.boilerName.includes('복합'))){
-            // 구간단가 적용 대상 (INTERVAL rateType 또는 보일러명에 '복합' 포함)
+        if(intervalRate||(STEAM_PRICE_INTERVALS.length&&!fuelRate&&!steamRate)){
+            // 구간단가 적용 대상: INTERVAL rateType 있거나, 개별단가(FUEL/STEAM) 없는 보일러
             boilerCost=calcIntervalCost(allocated);
             costNote='구간단가';
         } else if(fuelRate&&steamRate){
