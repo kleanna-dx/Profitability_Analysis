@@ -1442,7 +1442,7 @@ function calcEnergyPerTon(totalProdTon){
     const ym2=getYm();const yr2=parseInt(ym2.substring(0,4));const mo2=parseInt(ym2.substring(4,6));
     const dim2=new Date(yr2,mo2,0).getDate();
     const sorted=BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));
-    const dm2={};DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=dim2)dm2[d]={sd:op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1,h:parseFloat(op.operationHours)||0};});
+    const dm2={};DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=dim2){const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const hrs=isSD?0:parseFloat(op.operationHours)||0;if(!dm2[d])dm2[d]={sd:isSD,h:hrs};else{dm2[d].h=Math.max(dm2[d].h,hrs);if(!isSD)dm2[d].sd=false;}}});
     const mm2={};BOILER_MAINTENANCES.forEach(m=>{const sd=m.startDate?new Date(m.startDate).getDate():null;const ed=m.endDate?new Date(m.endDate).getDate():null;if(sd&&ed)mm2[m.boilerCode]={s:sd,e:ed,c:parseFloat(m.capacityReduction)||100};else if(parseFloat(m.maintHours)>0){const dy=Math.ceil(parseFloat(m.maintHours)/24);mm2[m.boilerCode]={s:1,e:dy,c:parseFloat(m.capacityReduction)||100};}});
     // 가동일수 → 균등 배분
     let opD2=0;for(let d=1;d<=dim2;d++){const dop=dm2[d];if(!dop||!dop.sd)opD2++;}
@@ -1526,15 +1526,15 @@ function calcEnergyCost(){
     const daysInMonth_=new Date(year_,month,0).getDate();
     const boilersSorted=BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));
 
-    // 일별 가동시간 맵 구축
+    // 일별 가동시간 맵 구축 (같은 일에 여러 호기 → 최대 가동시간)
     const dailyOpMap_={};
     DAILY_OPS.forEach(op=>{
         const d=parseInt(op.day)||0;
         if(d>=1&&d<=daysInMonth_){
-            dailyOpMap_[d]={
-                isShutdown:op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1,
-                hours:parseFloat(op.operationHours)||0
-            };
+            const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
+            const hrs=isSD?0:parseFloat(op.operationHours)||0;
+            if(!dailyOpMap_[d]){dailyOpMap_[d]={isShutdown:isSD,hours:hrs};}
+            else{dailyOpMap_[d].hours=Math.max(dailyOpMap_[d].hours,hrs);if(!isSD)dailyOpMap_[d].isShutdown=false;}
         }
     });
     // 폴백 OD
@@ -1636,9 +1636,11 @@ function calcEnergyCost(){
     const steamShortage=steamRemaining;
     const totalBoilerCost=boilerAllocRows.reduce((s,r)=>s+r.boilerCost,0);
 
-    // 3-3) 구간단가 상세 테이블용 — 구간단가 적용 보일러의 배분량 합산
+    // 3-3) 구간단가 상세 테이블용 — 보일러별 구간단가 표시
+    //  구간단가는 해당 보일러의 배분량에만 적용 (다른 보일러는 스팀단가/LNG비용)
     const intervalAllocated=boilerAllocRows.filter(r=>r.costNote==='구간단가').reduce((s,r)=>s+r.allocated,0);
     const intervalRows=calcIntervalRows(intervalAllocated);
+    const totalAllocated=boilerAllocRows.reduce((s,r)=>s+r.allocated,0); // 전체 보일러 배분 합계
     const totalSteamCost=totalBoilerCost; // 보일러 전체 비용 = 스팀 운영비 합계
 
     // 4) LNG 구매비 계산: Σ(호기별 생산톤 × LNG원단위) × LNG단가
@@ -1705,7 +1707,11 @@ function calcEnergyCost(){
         '<td class="r mn">'+fmtI(Math.round(r.qty))+'</td>'+
         '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.cost/1000000))+'</td></tr>'
     ).join('')+
-    '<tr style="background:#f8fafc;font-weight:700;"><td>합계 (구간단가)</td><td></td><td></td><td class="r">'+fmtI(Math.round(intervalAllocated))+'</td><td class="r" style="color:#d97706;">'+fmtI(Math.round(calcIntervalCost(intervalAllocated)/1000000))+'</td></tr>';
+    '<tr style="background:#f8fafc;font-weight:700;"><td>합계 (구간단가 적용분)</td><td></td><td></td><td class="r">'+fmtI(Math.round(intervalAllocated))+'</td><td class="r" style="color:#d97706;">'+fmtI(Math.round(calcIntervalCost(intervalAllocated)/1000000))+'</td></tr>';
+    // 전체 보일러 배분 합계 vs 스팀 필요량 비교 안내
+    if(totalAllocated<totalSteamReq*0.99){
+        document.getElementById('engSteamIntervalTb').innerHTML+='<tr style="background:#fee2e2;"><td colspan="3" style="color:#991b1b;font-weight:700;">⚠ 보일러 배분 합계가 스팀 필요량 미달</td><td class="r" style="color:#991b1b;font-weight:700;">'+fmtI(Math.round(totalAllocated))+' / '+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#991b1b;">차이: '+fmtI(Math.round(totalSteamReq-totalAllocated))+'</td></tr>';
+    }
 
     // 9-2) 보일러 분배 테이블
     document.getElementById('engBoilerAllocTb').innerHTML=boilerAllocRows.map(r=>{
@@ -1800,9 +1806,9 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     // 보일러별 시간당 스팀
     const boilerSteamPerHr={};
     boilers.forEach(b=>{boilerSteamPerHr[b.code]=b.steamPerHr||0;});
-    // 일별 가동시간 맵 (DAILY_OPS 기반)
+    // 일별 가동시간 맵 (DAILY_OPS 기반 — 같은 일에 여러 호기가 있으면 최대 가동시간 사용)
     const dailyOpMap={};
-    DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=daysInMonth)dailyOpMap[d]={isShutdown:op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1,hours:parseFloat(op.operationHours)||0,reason:op.shutdownReason||op.memo||''};});
+    DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=daysInMonth){const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const hrs=isSD?0:parseFloat(op.operationHours)||0;const reason=op.shutdownReason||op.memo||'';if(!dailyOpMap[d]){dailyOpMap[d]={isShutdown:isSD,hours:hrs,reason};}else{dailyOpMap[d].hours=Math.max(dailyOpMap[d].hours,hrs);if(!isSD)dailyOpMap[d].isShutdown=false;}}});
     if(!Object.keys(dailyOpMap).length){let sd=0;OD.forEach(o=>{sd+=parseFloat(o.psM||0)/1440;});sd=Math.round(sd);for(let i=0;i<sd&&i<daysInMonth;i++)dailyOpMap[daysInMonth-i]={isShutdown:true,hours:0,reason:'계획운휴'};}
 
     // ★ STEP 1: 가동일수 산출 → 일평균 스팀 필요량 (균등 배분)
