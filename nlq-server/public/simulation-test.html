@@ -1580,7 +1580,7 @@ async function uploadRefExcel(input){
                     let v=row[k];
                     if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','volumePerMonth','containerFeeKrw','extraFeeKrw','rate'].includes(field))v=parseFloat(v)||0;
                     else if(['year','month','displayOrder','sortOrder'].includes(field))v=parseInt(v)||0;
-                    else if(field==='isActive')v=(v==='Y'||v===true||v==='true'||v===1);
+                    else if(field==='isActive')v=(v==='Y'||v===true||v==='true'||v===1||v==='활성'||v==='Active');
                     body[field]=v;
                 }
             });
