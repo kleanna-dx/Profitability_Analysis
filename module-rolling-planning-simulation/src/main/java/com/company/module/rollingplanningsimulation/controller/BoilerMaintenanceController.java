@@ -16,10 +16,16 @@ public class BoilerMaintenanceController {
 
     @GetMapping public ResponseEntity<ApiResponse<List<BoilerMaintenance>>> list(
             @RequestParam(defaultValue="PS") String division,
-            @RequestParam(required=false) Integer year) {
-        List<BoilerMaintenance> list = year != null
-            ? repo.findByYearAndDivision(year, division)
-            : repo.findByDivision(division);
+            @RequestParam(required=false) Integer year,
+            @RequestParam(required=false) Integer month) {
+        List<BoilerMaintenance> list;
+        if (year != null && month != null) {
+            list = repo.findByYearAndMonthAndDivision(year, month, division);
+        } else if (year != null) {
+            list = repo.findByYearAndDivision(year, division);
+        } else {
+            list = repo.findByDivision(division);
+        }
         return ResponseEntity.ok(ApiResponse.success(list));
     }
 
