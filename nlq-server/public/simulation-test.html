@@ -267,10 +267,14 @@
         <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:16px;">
             <div style="display:flex;align-items:center;gap:6px;">
                 <span style="font-size:12px;font-weight:600;color:#475569;">호기:</span>
-                <select id="capaMcSel" onchange="CAPA_ROWS=[];renderCapa()" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;font-weight:600;"></select>
+                <select id="capaMcSel" onchange="CAPA_ROWS=[];CAPA_LOCKED=false;renderCapa();loadCapaPlan()" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;font-weight:600;"></select>
             </div>
-            <span style="font-size:10px;color:#94a3b8;">※ 제지 생산 선속 마스터에 등록된 품목만 표시됩니다</span>
+            <span id="capaLockBadge" style="display:none;font-size:10px;padding:3px 10px;border-radius:8px;background:#dcfce7;color:#166534;font-weight:700;"><i class="fas fa-lock mr-1"></i>확정됨 <span id="capaLockInfo"></span></span>
+            <span id="capaUnlockBadge" style="font-size:10px;color:#94a3b8;">※ 제지 생산 선속 마스터에 등록된 품목만 표시됩니다</span>
             <div style="flex:1;"></div>
+            <button onclick="saveCapaPlan()" id="capaSaveBtn" style="padding:5px 14px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-save mr-1"></i>저장</button>
+            <button onclick="lockCapaPlan()" id="capaLockBtn" style="padding:5px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-lock mr-1"></i>계획 확정</button>
+            <button onclick="unlockCapaPlan()" id="capaUnlockBtn" style="display:none;padding:5px 14px;background:#ef4444;color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-unlock mr-1"></i>잠금 해제</button>
             <button onclick="downloadCapaExcel()" style="padding:5px 12px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-download mr-1"></i>엑셀 다운</button>
         </div>
         <!-- KPI 카드 -->
@@ -1009,7 +1013,7 @@ function renderCapaTable(opDays){
             '<td class="r mn">'+fmtI(r.tw||0)+'</td>'+
             '<td class="r mn" style="font-weight:600;">'+fmt(r.tpd)+'</td>'+
             '<td class="r mn" style="color:#ef4444;font-weight:600;">'+wpPct.toFixed(2)+'</td>'+
-            '<td class="r"><input type="number" value="'+(goodTon>0?goodTon.toFixed(2):'')+'" min="0" step="0.01" onchange="capaRowGoodChange('+i+',this.value)" placeholder="" style="width:90px;padding:5px 6px;border:1px solid #c7d2fe;border-radius:6px;font-size:12px;text-align:right;font-weight:600;background:#eef2ff;"></td>'+
+            '<td class="r"><input type="number" value="'+(goodTon>0?goodTon.toFixed(2):'')+'" min="0" step="0.01" onchange="capaRowGoodChange('+i+',this.value)" placeholder="" '+(CAPA_LOCKED?'disabled ':'')+'style="width:90px;padding:5px 6px;border:1px solid '+(CAPA_LOCKED?'#e2e8f0':'#c7d2fe')+';border-radius:6px;font-size:12px;text-align:right;font-weight:600;background:'+(CAPA_LOCKED?'#f8fafc':'#eef2ff')+';'+(CAPA_LOCKED?'color:#94a3b8;':'')+'"></td>'+
             '<td class="r mn" style="color:#94a3b8;">'+(wasteTon>0?fmt(wasteTon):'-')+'</td>'+
             '<td class="r mn" style="font-weight:600;">'+(totalTon>0?fmt(totalTon):'-')+'</td>'+
             '<td class="r mn">'+(needDays>0?fmt(needDays):'-')+'</td>'+
@@ -1072,6 +1076,105 @@ function renderCapaTable(opDays){
 
 // ── CAPA 행 이벤트 핸들러 ──
 function capaRowGoodChange(i,val){CAPA_ROWS[i].goodTon=parseFloat(val)||0;renderCapaTable();}
+
+// ── 생산계획 저장/잠금/해제 ──
+let CAPA_LOCKED=false;
+
+async function loadCapaPlan(){
+    const mc=getCapaMc();const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    try{
+        const r=await fetch(API+'/production-plans?year='+yr+'&month='+mo+'&machineCode='+mc+'&division='+div);
+        const j=await r.json();const data=j.data||[];
+        if(data.length){
+            // DB에서 로드 → CAPA_ROWS 덮어쓰기
+            CAPA_ROWS=data.map(p=>({
+                prod:p.product||'',bw:parseFloat(p.basisWeight)||0,tw:parseFloat(p.trimWidth)||0,
+                tpd:parseFloat(p.theoryProdTpd)||0,wp:parseFloat(p.wasteRatePct)||0,goodTon:parseFloat(p.goodTon)||0
+            }));
+            // 잠금 상태 확인
+            CAPA_LOCKED=data.some(p=>p.isLocked===true||p.isLocked==='true'||p.isLocked===1);
+            if(CAPA_LOCKED){
+                const lp=data.find(p=>p.lockedBy);
+                updateLockUI(true,lp?.lockedBy||'',lp?.lockedAt||'');
+            } else {
+                updateLockUI(false);
+            }
+            // 가동일수 복원
+            const opDays=data[0]?.operationDays;
+            if(opDays){const inp=document.getElementById('capaOpDaysInput');if(inp)inp.value=parseFloat(opDays).toFixed(1);}
+            renderCapaTable();
+        }
+    }catch(_){}
+}
+
+async function saveCapaPlan(){
+    if(CAPA_LOCKED){alert('계획이 확정(잠금)되어 수정할 수 없습니다.\n잠금 해제 후 수정하세요.');return;}
+    const mc=getCapaMc();const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    const opDays=parseFloat(document.getElementById('capaOpDaysInput')?.value)||0;
+    const rows=CAPA_ROWS.map(r=>({
+        product:r.prod,basisWeight:r.bw,trimWidth:r.tw,theoryProdTpd:r.tpd,wasteRatePct:r.wp,goodTon:r.goodTon||0
+    }));
+    try{
+        const r=await fetch(API+'/production-plans/batch',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({year:yr,month:mo,machineCode:mc,division:div,operationDays:opDays,createdBy:window.CURRENT_USER||'',rows})});
+        const j=await r.json();
+        if(j.data?.error==='LOCKED'){alert(j.data.message);return;}
+        alert('생산계획 저장 완료! ('+((j.data?.saved)||0)+'건)');
+    }catch(e){alert('저장 실패: '+e.message);}
+}
+
+async function lockCapaPlan(){
+    if(!CAPA_ROWS.some(r=>r.goodTon>0)){alert('양품량을 먼저 입력하고 저장한 후 확정하세요.');return;}
+    if(!confirm('생산계획을 확정(잠금)합니다.\n확정 후에는 수정이 불가합니다.\n\n계속하시겠습니까?'))return;
+    // 먼저 저장
+    await saveCapaPlan();
+    const mc=getCapaMc();const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    try{
+        await fetch(API+'/production-plans/lock',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({year:yr,month:mo,machineCode:mc,division:div,userId:window.CURRENT_USER||''})});
+        CAPA_LOCKED=true;
+        updateLockUI(true,window.CURRENT_USER||'',new Date().toLocaleString('ko-KR'));
+        renderCapaTable();
+        alert('✅ 생산계획이 확정되었습니다.');
+    }catch(e){alert('잠금 실패: '+e.message);}
+}
+
+async function unlockCapaPlan(){
+    if(!confirm('생산계획 잠금을 해제합니다.\n수정이 가능해집니다.\n\n계속하시겠습니까?'))return;
+    const mc=getCapaMc();const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    try{
+        await fetch(API+'/production-plans/unlock',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({year:yr,month:mo,machineCode:mc,division:div})});
+        CAPA_LOCKED=false;
+        updateLockUI(false);
+        renderCapaTable();
+        alert('🔓 잠금이 해제되었습니다.');
+    }catch(e){alert('잠금 해제 실패: '+e.message);}
+}
+
+function updateLockUI(locked,userId,lockedAt){
+    const lockBadge=document.getElementById('capaLockBadge');
+    const unlockBadge=document.getElementById('capaUnlockBadge');
+    const saveBtn=document.getElementById('capaSaveBtn');
+    const lockBtn=document.getElementById('capaLockBtn');
+    const unlockBtn=document.getElementById('capaUnlockBtn');
+    const opInput=document.getElementById('capaOpDaysInput');
+    if(locked){
+        if(lockBadge){lockBadge.style.display='';document.getElementById('capaLockInfo').textContent='('+userId+' · '+(lockedAt?lockedAt.replace('T',' ').substring(0,16):'')+')';}
+        if(unlockBadge)unlockBadge.style.display='none';
+        if(saveBtn)saveBtn.style.display='none';
+        if(lockBtn)lockBtn.style.display='none';
+        if(unlockBtn)unlockBtn.style.display='';
+        if(opInput){opInput.disabled=true;opInput.style.background='#f1f5f9';opInput.style.color='#94a3b8';}
+    } else {
+        if(lockBadge)lockBadge.style.display='none';
+        if(unlockBadge)unlockBadge.style.display='';
+        if(saveBtn)saveBtn.style.display='';
+        if(lockBtn)lockBtn.style.display='';
+        if(unlockBtn)unlockBtn.style.display='none';
+        if(opInput){opInput.disabled=false;opInput.style.background='#eef2ff';opInput.style.color='#4f46e5';}
+    }
+}
 
 function downloadCapaExcel(){
     const mc=getCapaMc();
@@ -1275,16 +1378,30 @@ function renderEnergyProdInputs(){
     }).join('');
 }
 
-function fillFromCapa(){
-    // STEP3 생산계획에서 호기별 양품량 합계를 에너지비 생산량에 반영
-    const capaProd=getCapaProdByMc(); // {PM3: 21084} 같은 형태
-    // 다른 호기(CAPA 미입력)는 기존 값 유지
+async function fillFromCapa(){
+    // STEP3 확정된 생산계획에서 호기별 양품량 합계를 에너지비 생산량에 반영
+    const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    // DB에서 잠금된 계획 조회
+    let lockedPlans=[];
+    try{
+        const r=await fetch(API+'/production-plans?year='+yr+'&month='+mo+'&division='+div);
+        const j=await r.json();lockedPlans=(j.data||[]).filter(p=>p.isLocked===true||p.isLocked==='true'||p.isLocked===1);
+    }catch(_){}
+    if(!lockedPlans.length){
+        // 잠금된 계획 없으면 현재 CAPA_ROWS에서 가져오기 (경고)
+        if(!CAPA_ROWS.some(r=>r.goodTon>0)){alert('STEP3에서 생산계획을 입력하고 확정(잠금)해주세요.');return;}
+        alert('⚠️ 확정(잠금)된 계획이 없습니다.\n현재 입력 중인 값을 반영합니다.');
+    }
+    // 호기별 양품량 집계
+    const capaProd={};
+    const src=lockedPlans.length?lockedPlans:CAPA_ROWS.map(r=>({machineCode:getCapaMc(),goodTon:r.goodTon}));
+    src.forEach(p=>{const mc=p.machineCode;capaProd[mc]=(capaProd[mc]||0)+(parseFloat(p.goodTon)||0);});
     let totalP=0;
     const units=UNIT_OPTIONS.length?UNIT_OPTIONS.map(u=>u.unitCode||u.machineCode):['PM2','PM3'];
     units.forEach(mc=>{
         const inp=document.getElementById('engProd_'+mc);
         if(inp){
-            if(capaProd[mc]!==undefined&&capaProd[mc]>0){inp.value=capaProd[mc];}
+            if(capaProd[mc]!==undefined&&capaProd[mc]>0){inp.value=Math.round(capaProd[mc]);}
             totalP+=parseInt(inp.value)||0;
         }
     });
@@ -2199,6 +2316,7 @@ async function initAll(){
     await loadPowerRefData();
     initCapaMcSel();
     renderCapa();
+    loadCapaPlan();
     renderEnergyProdInputs();
     updateMatChart();
     updateStep5();
