@@ -1703,16 +1703,16 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         dayRows.push({d,dayLabel,dowLabel,isHoliday,dailySteam,alloc,hours,remaining});
     }
 
-    // 헤더 생성
-    let hdrH='<tr><th style="position:sticky;left:0;background:#f8fafc;z-index:2;">일</th><th style="position:sticky;left:30px;background:#f8fafc;z-index:2;">요일</th>';
+    // 헤더 생성 (상단+좌측 틀고정)
+    let hdrH='<tr style="position:sticky;top:0;z-index:4;"><th style="position:sticky;left:0;background:#f8fafc;z-index:5;">일</th><th style="position:sticky;left:30px;background:#f8fafc;z-index:5;">요일</th>';
     boilers.forEach(b=>{
-        hdrH+='<th class="r" colspan="2" style="border-bottom:none;background:#eef2ff;color:#4f46e5;">'+b.name+'</th>';
+        hdrH+='<th class="r" colspan="2" style="border-bottom:none;background:#eef2ff;color:#4f46e5;position:sticky;top:0;">'+b.name+'</th>';
     });
-    hdrH+='<th class="r" style="background:#fef3c7;color:#92400e;">스팀총계</th><th class="r" style="background:#fee2e2;color:#991b1b;">부족</th></tr>';
-    // 서브 헤더
-    hdrH+='<tr><th style="position:sticky;left:0;background:#f8fafc;z-index:2;"></th><th style="position:sticky;left:30px;background:#f8fafc;z-index:2;"></th>';
-    boilers.forEach(()=>{hdrH+='<th class="r" style="font-size:9px;color:#64748b;">T/D</th><th class="r" style="font-size:9px;color:#64748b;">T/H</th>';});
-    hdrH+='<th class="r" style="font-size:9px;color:#64748b;">T/D</th><th class="r" style="font-size:9px;color:#64748b;">T/D</th></tr>';
+    hdrH+='<th class="r" style="background:#fef3c7;color:#92400e;position:sticky;top:0;">스팀총계</th><th class="r" style="background:#fee2e2;color:#991b1b;position:sticky;top:0;">부족</th></tr>';
+    // 서브 헤더 (2행 — top을 1행 높이만큼)
+    hdrH+='<tr style="position:sticky;top:33px;z-index:4;"><th style="position:sticky;left:0;background:#f8fafc;z-index:5;"></th><th style="position:sticky;left:30px;background:#f8fafc;z-index:5;"></th>';
+    boilers.forEach(()=>{hdrH+='<th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th><th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/H</th>';});
+    hdrH+='<th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th><th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th></tr>';
     headEl.innerHTML=hdrH;
 
     // 본문
