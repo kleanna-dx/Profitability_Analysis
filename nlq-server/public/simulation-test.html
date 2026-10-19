@@ -950,8 +950,9 @@ function getCapaOpDays(){
     if(mcDailyOps.length){
         let totalHrs=0;
         mcDailyOps.forEach(op=>{
-            const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
-            if(!isSD) totalHrs+=parseFloat(op.operationHours)||0;
+            const isSDf=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
+            const rawH=parseFloat(op.operationHours)||0;
+            if(!isSDf&&rawH>0) totalHrs+=rawH; // 가동시간 0도 운휴 처리
         });
         return totalHrs/24; // 총 가동시간 ÷ 24 = 가동일수
     }
@@ -1083,9 +1084,10 @@ function getBoilerOpHours(){
         const byDay={};
         DAILY_OPS.forEach(op=>{
             const d=parseInt(op.day)||0;
-            const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
-            const hrs=isSD?0:parseFloat(op.operationHours)||0;
-            byDay[d]=Math.max(byDay[d]||0,hrs); // 호기 중 최대치
+            const isSDf=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
+            const rawH=parseFloat(op.operationHours)||0;
+            const hrs=(isSDf||rawH<=0)?0:rawH; // 가동시간 0도 운휴
+            byDay[d]=Math.max(byDay[d]||0,hrs);
         });
         Object.values(byDay).forEach(h=>{totalHrs+=h;});
         return totalHrs;
@@ -1442,7 +1444,7 @@ function calcEnergyPerTon(totalProdTon){
     const ym2=getYm();const yr2=parseInt(ym2.substring(0,4));const mo2=parseInt(ym2.substring(4,6));
     const dim2=new Date(yr2,mo2,0).getDate();
     const sorted=BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));
-    const dm2={};DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=dim2){const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const hrs=isSD?0:parseFloat(op.operationHours)||0;if(!dm2[d])dm2[d]={sd:isSD,h:hrs};else{dm2[d].h=Math.max(dm2[d].h,hrs);if(!isSD)dm2[d].sd=false;}}});
+    const dm2={};DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=dim2){const isSDf=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const rawH=parseFloat(op.operationHours)||0;const isSD=isSDf||rawH<=0;const hrs=isSD?0:rawH;if(!dm2[d])dm2[d]={sd:isSD,h:hrs};else{dm2[d].h=Math.max(dm2[d].h,hrs);if(!isSD)dm2[d].sd=false;}}});
     const mm2={};BOILER_MAINTENANCES.forEach(m=>{const sd=m.startDate?new Date(m.startDate).getDate():null;const ed=m.endDate?new Date(m.endDate).getDate():null;if(sd&&ed)mm2[m.boilerCode]={s:sd,e:ed,c:parseFloat(m.capacityReduction)||100};else if(parseFloat(m.maintHours)>0){const dy=Math.ceil(parseFloat(m.maintHours)/24);mm2[m.boilerCode]={s:1,e:dy,c:parseFloat(m.capacityReduction)||100};}});
     // 가동일수 → 균등 배분 + 부족분 재배분
     let opD2=0;for(let d=1;d<=dim2;d++){const dop=dm2[d];if(!dop||!dop.sd)opD2++;}
@@ -1535,8 +1537,10 @@ function calcEnergyCost(){
     DAILY_OPS.forEach(op=>{
         const d=parseInt(op.day)||0;
         if(d>=1&&d<=daysInMonth_){
-            const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
-            const hrs=isSD?0:parseFloat(op.operationHours)||0;
+            const isSDFlag=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
+            const rawHrs=parseFloat(op.operationHours)||0;
+            const isSD=isSDFlag||rawHrs<=0;
+            const hrs=isSD?0:rawHrs;
             if(!dailyOpMap_[d]){dailyOpMap_[d]={isShutdown:isSD,hours:hrs};}
             else{dailyOpMap_[d].hours=Math.max(dailyOpMap_[d].hours,hrs);if(!isSD)dailyOpMap_[d].isShutdown=false;}
         }
@@ -1828,8 +1832,10 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     DAILY_OPS.forEach(op=>{
         const d=parseInt(op.day)||0;
         if(d>=1&&d<=daysInMonth){
-            const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
-            const hrs=isSD?0:parseFloat(op.operationHours)||0;
+            const isSDFlag=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
+            const rawHrs=parseFloat(op.operationHours)||0;
+            const isSD=isSDFlag||rawHrs<=0; // 가동시간 0도 운휴 처리
+            const hrs=isSD?0:rawHrs;
             const reason=op.shutdownReason||op.memo||'';
             const mc=op.machineCode||'';
             // 일별 최대 가동시간
@@ -2082,7 +2088,7 @@ function renderRef(){const d=REFS[cRef];
     const prevYr=parseInt(getYm().substring(0,4))-1;
     let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';
     if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}
-    else{refData.forEach(row=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr>'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);v=v+(bm?' <span style="font-size:10px;color:#94a3b8;">('+bm.boilerName+')</span>':'');}else if(c==='isShutdown'){v=(v===true||v==='true'||v===1)?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}
+    else{refData.forEach(row=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr>'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);v=v+(bm?' <span style="font-size:10px;color:#94a3b8;">('+bm.boilerName+')</span>':'');}else if(c==='isShutdown'){const _opH=parseFloat(row.operationHours)||0;const _isSD=(v===true||v==='true'||v===1)||_opH<=0;v=_isSD?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}
     h+='</tbody></table>';
     // 전년도 참고 테이블
     if(hasPrev){
