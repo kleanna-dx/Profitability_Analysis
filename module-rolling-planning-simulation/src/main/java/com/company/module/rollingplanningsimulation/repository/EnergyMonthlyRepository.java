@@ -5,5 +5,6 @@ import java.util.List;
 import java.util.Optional;
 
 public interface EnergyMonthlyRepository extends JpaRepository<EnergyMonthly, Long> {
-    List<EnergyMonthly> findByYmAndDivision(String ym,String division);
+    Optional<EnergyMonthly> findByYmAndDivision(String ym, String division);
+    List<EnergyMonthly> findByDivision(String division);
 }
