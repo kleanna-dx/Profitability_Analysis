@@ -17,6 +17,7 @@ public class SteamPriceIntervalController {
     }
     @PostMapping public ResponseEntity<ApiResponse<SteamPriceInterval>> save(@RequestBody Map<String,Object> body) {
         SteamPriceInterval e = SteamPriceInterval.builder().contractYear((String)body.get("contractYear"))
+            .boilerCode((String)body.get("boilerCode"))
             .intervalSeq(body.get("intervalSeq")!=null?Integer.parseInt(body.get("intervalSeq").toString()):0)
             .intervalName((String)body.get("intervalName"))
             .minUsageTon(body.get("minUsageTon")!=null?new BigDecimal(body.get("minUsageTon").toString()):BigDecimal.ZERO)
