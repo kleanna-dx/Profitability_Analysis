@@ -1823,7 +1823,23 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     boilers.forEach(b=>{boilerSteamPerHr[b.code]=b.steamPerHr||0;});
     // 일별 가동시간 맵 (DAILY_OPS 기반 — 같은 일에 여러 호기가 있으면 최대 가동시간 사용)
     const dailyOpMap={};
-    DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=daysInMonth){const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const hrs=isSD?0:parseFloat(op.operationHours)||0;const reason=op.shutdownReason||op.memo||'';if(!dailyOpMap[d]){dailyOpMap[d]={isShutdown:isSD,hours:hrs,reason};}else{dailyOpMap[d].hours=Math.max(dailyOpMap[d].hours,hrs);if(!isSD)dailyOpMap[d].isShutdown=false;}}});
+    // 호기별 운휴 상태 맵: dailyLineStatus[day] = [{mc:'PM2',isSD:true,reason:'정비'},...] 
+    const dailyLineStatus={};
+    DAILY_OPS.forEach(op=>{
+        const d=parseInt(op.day)||0;
+        if(d>=1&&d<=daysInMonth){
+            const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
+            const hrs=isSD?0:parseFloat(op.operationHours)||0;
+            const reason=op.shutdownReason||op.memo||'';
+            const mc=op.machineCode||'';
+            // 일별 최대 가동시간
+            if(!dailyOpMap[d]){dailyOpMap[d]={isShutdown:isSD,hours:hrs,reason};}
+            else{dailyOpMap[d].hours=Math.max(dailyOpMap[d].hours,hrs);if(!isSD)dailyOpMap[d].isShutdown=false;}
+            // 호기별 상태
+            if(!dailyLineStatus[d])dailyLineStatus[d]=[];
+            dailyLineStatus[d].push({mc,isSD,hrs,reason});
+        }
+    });
     if(!Object.keys(dailyOpMap).length){let sd=0;OD.forEach(o=>{sd+=parseFloat(o.psM||0)/1440;});sd=Math.round(sd);for(let i=0;i<sd&&i<daysInMonth;i++)dailyOpMap[daysInMonth-i]={isShutdown:true,hours:0,reason:'계획운휴'};}
 
     // ★ STEP 1: 가동일수 산출 → 일평균 스팀 필요량 (균등 배분)
@@ -1923,11 +1939,11 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     boilers.forEach(b=>{
         hdrH+='<th class="r" colspan="2" style="border-bottom:none;background:#eef2ff;color:#4f46e5;position:sticky;top:0;">'+b.name+'</th>';
     });
-    hdrH+='<th class="r" style="background:#fef3c7;color:#92400e;position:sticky;top:0;">스팀총계</th><th class="r" style="background:#dcfce7;color:#166534;position:sticky;top:0;">일필요량</th><th class="r" style="background:#fee2e2;color:#991b1b;position:sticky;top:0;">부족</th></tr>';
+    hdrH+='<th class="r" style="background:#fef3c7;color:#92400e;position:sticky;top:0;">스팀총계</th><th class="r" style="background:#dcfce7;color:#166534;position:sticky;top:0;">일필요량</th><th class="r" style="background:#fee2e2;color:#991b1b;position:sticky;top:0;">부족</th><th style="background:#f1f5f9;color:#64748b;position:sticky;top:0;font-size:10px;">라인상태</th></tr>';
     // 서브 헤더 (2행)
     hdrH+='<tr style="position:sticky;top:33px;z-index:4;"><th style="position:sticky;left:0;background:#f8fafc;z-index:5;"></th><th style="position:sticky;left:30px;background:#f8fafc;z-index:5;"></th>';
     boilers.forEach(()=>{hdrH+='<th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th><th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/H</th>';});
-    hdrH+='<th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th><th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th><th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th></tr>';
+    hdrH+='<th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th><th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th><th class="r" style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">T/D</th><th style="font-size:9px;color:#64748b;background:#f8fafc;position:sticky;top:33px;">호기별</th></tr>';
     headEl.innerHTML=hdrH;
 
     // 본문
@@ -1952,6 +1968,20 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         row+='<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(dayTotal))+'</td>';
         row+='<td class="r mn" style="color:#64748b;">'+(!r.isHoliday&&r.dailySteam>0?fmtI(Math.round(r.dailySteam)):'-')+'</td>';
         row+='<td class="r mn" style="color:'+(r.remaining>0?'#ef4444':'#94a3b8')+';">'+(r.remaining>0?fmtI(Math.round(r.remaining)):'-')+'</td>';
+        // 라인상태: 호기별 운휴/가동 표시
+        const lineStatus=dailyLineStatus[r.d]||[];
+        let lineHtml='';
+        if(r.isHoliday&&!lineStatus.length){
+            lineHtml='<span style="color:#ef4444;font-size:9px;">전체운휴</span>';
+        } else if(lineStatus.length){
+            lineHtml=lineStatus.map(ls=>{
+                if(ls.isSD) return '<span style="display:inline-block;padding:0 3px;margin:0 1px;border-radius:3px;font-size:8px;font-weight:700;background:#fee2e2;color:#dc2626;" title="'+(ls.reason||'운휴')+'">'+ls.mc+'⏸</span>';
+                return '<span style="display:inline-block;padding:0 3px;margin:0 1px;border-radius:3px;font-size:8px;font-weight:600;background:#dcfce7;color:#16a34a;" title="'+ls.hrs+'h 가동">'+ls.mc+'</span>';
+            }).join('');
+        } else {
+            lineHtml='<span style="font-size:8px;color:#94a3b8;">-</span>';
+        }
+        row+='<td style="white-space:nowrap;">'+lineHtml+'</td>';
         row+='</tr>';
         return row;
     }).join('');
@@ -1971,8 +2001,10 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     });
     const gt=Object.values(boilerTotals).reduce((s,v)=>s+v,0);
     const shortage=dayRows.reduce((s,r)=>s+r.remaining,0);
-    footEl.innerHTML=totalRow+tH+'<td class="r" style="color:#d97706;">'+fmtI(Math.round(gt))+'</td><td class="r" style="color:#166534;">'+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#ef4444;">'+(shortage>0?fmtI(Math.round(shortage)):'-')+'</td></tr>'+
-        avgRow+aH+'<td class="r">'+fmtI(Math.round(gt/opDaysCount))+'</td><td class="r">'+fmtI(Math.round(totalSteamReq/opDaysCount))+'</td><td class="r">-</td></tr>';
+    // 운휴 일수 집계
+    const sdCount=dayRows.filter(r=>r.isHoliday).length;
+    footEl.innerHTML=totalRow+tH+'<td class="r" style="color:#d97706;">'+fmtI(Math.round(gt))+'</td><td class="r" style="color:#166534;">'+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#ef4444;">'+(shortage>0?fmtI(Math.round(shortage)):'-')+'</td><td style="font-size:9px;color:#64748b;">가동 '+opDaysCount+'일'+(sdCount>0?' / 운휴 '+sdCount+'일':'')+'</td></tr>'+
+        avgRow+aH+'<td class="r">'+fmtI(Math.round(gt/opDaysCount))+'</td><td class="r">'+fmtI(Math.round(totalSteamReq/opDaysCount))+'</td><td class="r">-</td><td></td></tr>';
 }
 
 // ── Product Sim (API 데이터 기반) ──
