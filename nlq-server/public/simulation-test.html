@@ -796,7 +796,7 @@ async function renderReady(){
         }else{
             let rUrl=API+'/'+ri.k+'?division='+div;
             if(ri.yearFilter)rUrl+='&year='+ym.substring(0,4);
-            if(ri.k==='daily-operations')rUrl+='&month='+parseInt(ym.substring(4,6));
+            if(ri.monthFilter)rUrl+='&month='+parseInt(ym.substring(4,6));
             try{const r=await fetch(rUrl);const j=await r.json();const arr=Array.isArray(j.data)?j.data:j.data?.content||[];cnt=arr.length;}catch(_){}
         }
         const cat=ri.monthFilter?'원가데이터 (기준월 적용)':'기준정보 (연 고정)';
