@@ -2105,9 +2105,13 @@ async function uploadRefExcel(input){
     }
 }
 
-function openRefModal(){
+async function openRefModal(){
     const d=REFS[cRef];
     const autoFields=d.auto||[];
+    // boilerCode 셀렉트를 위해 보일러 마스터 미리 로드
+    if(!BOILER_MASTERS_LIST.length&&d.cols.includes('boilerCode')){
+        try{const div=getDiv();const r=await fetch(API+'/boiler-masters?division='+div);const j=await r.json();BOILER_MASTERS_LIST=j.data||j.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=[];}catch(_){}
+    }
     let h='<h3><i class="fas '+d.i+' text-indigo-500"></i> '+d.l+' 등록</h3>';
     d.cols.forEach((c,i)=>{
         if(autoFields.includes(c))return;
@@ -2120,7 +2124,8 @@ function openRefModal(){
         }else if(c==='product'&&PRODUCT_OPTIONS.length){
             h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+PRODUCT_OPTIONS.map(p=>'<option value="'+p.productCode+'">'+p.productCode+(p.productName?' ('+p.productName+')':'')+'</option>').join('')+'</select>';
         }else if(c==='boilerCode'&&d.k!=='boiler-masters'&&BOILER_MASTERS_LIST.length){
-            h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).map(b=>'<option value="'+b.boilerCode+'">'+b.boilerCode+' ('+b.boilerName+')</option>').join('')+'</select>';
+            const emptyOpt=d.k==='steam-price-intervals'?'<option value="">(공통 - 전체 보일러)</option>':'';
+            h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+emptyOpt+BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).map(b=>'<option value="'+b.boilerCode+'">'+b.boilerCode+' ('+b.boilerName+')</option>').join('')+'</select>';
         }else if(c==='boilerCode'){
             h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';
         }else{
