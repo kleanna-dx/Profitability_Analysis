@@ -1444,12 +1444,16 @@ function calcEnergyPerTon(totalProdTon){
     const sorted=BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));
     const dm2={};DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=dim2){const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const hrs=isSD?0:parseFloat(op.operationHours)||0;if(!dm2[d])dm2[d]={sd:isSD,h:hrs};else{dm2[d].h=Math.max(dm2[d].h,hrs);if(!isSD)dm2[d].sd=false;}}});
     const mm2={};BOILER_MAINTENANCES.forEach(m=>{const sd=m.startDate?new Date(m.startDate).getDate():null;const ed=m.endDate?new Date(m.endDate).getDate():null;if(sd&&ed)mm2[m.boilerCode]={s:sd,e:ed,c:parseFloat(m.capacityReduction)||100};else if(parseFloat(m.maintHours)>0){const dy=Math.ceil(parseFloat(m.maintHours)/24);mm2[m.boilerCode]={s:1,e:dy,c:parseFloat(m.capacityReduction)||100};}});
-    // 가동일수 → 균등 배분
+    // 가동일수 → 균등 배분 + 부족분 재배분
     let opD2=0;for(let d=1;d<=dim2;d++){const dop=dm2[d];if(!dop||!dop.sd)opD2++;}
     if(opD2<=0)opD2=dim2;
     const dsBase2=totalSteam/opD2;
+    // 일별 cap
+    const dc2=[];for(let d=1;d<=dim2;d++){const dop=dm2[d];const isSD=dop?dop.sd:false;const opH=dop?dop.h:(isSD?0:24);if(isSD||opH<=0){dc2.push(0);continue;}let mx=0;sorted.forEach(b=>{const mt=mm2[b.boilerCode];const isM=mt&&d>=mt.s&&d<=mt.e;const cr=isM?(100-mt.c)/100:1;mx+=(parseFloat(b.steamPerHour)||0)*opH*cr;});dc2.push(mx);}
+    const dd2=dc2.map(c=>c>0?dsBase2:0);
+    for(let it=0;it<10;it++){let ts=0,tm=0;const sh2=[],mg2=[];for(let i=0;i<dim2;i++){if(dc2[i]<=0){sh2.push(0);mg2.push(0);continue;}const df=dd2[i]-dc2[i];if(df>0){sh2.push(df);mg2.push(0);ts+=df;}else{sh2.push(0);mg2.push(-df);tm+=(-df);}}if(ts<1)break;if(tm<1)break;const rd=Math.min(ts,tm);for(let i=0;i<dim2;i++){if(sh2[i]>0)dd2[i]-=sh2[i];if(mg2[i]>0&&tm>0)dd2[i]+=rd*(mg2[i]/tm);}}
     const bAlloc={};sorted.forEach(b=>{bAlloc[b.boilerCode]=0;});
-    for(let d=1;d<=dim2;d++){const dop=dm2[d];const isSD=dop?dop.sd:false;const opH=dop?dop.h:(isSD?0:24);if(isSD||opH<=0)continue;let rem=dsBase2;sorted.forEach(b=>{const mt=mm2[b.boilerCode];const isM=mt&&d>=mt.s&&d<=mt.e;const cr=isM?(100-mt.c)/100:1;const cap=(parseFloat(b.steamPerHour)||0)*opH*cr;const a=Math.min(rem,cap);bAlloc[b.boilerCode]+=a;rem=Math.max(0,rem-a);});}
+    for(let d=0;d<dim2;d++){if(dc2[d]<=0)continue;let rem=dd2[d];sorted.forEach(b=>{const mt=mm2[b.boilerCode];const isM=mt&&(d+1)>=mt.s&&(d+1)<=mt.e;const cr=isM?(100-mt.c)/100:1;const dop=dm2[d+1];const opH=dop?dop.h:24;const cap=(parseFloat(b.steamPerHour)||0)*opH*cr;const a=Math.min(rem,cap);bAlloc[b.boilerCode]+=a;rem=Math.max(0,rem-a);});}
     let boilerCost=0;
     sorted.forEach(b=>{const alloc=bAlloc[b.boilerCode]||0;if(alloc<=0)return;const fr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='FUEL_RATE');const sr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='STEAM_RATE');const ir=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='INTERVAL');const bIvs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===b.boilerCode||!iv.boilerCode);if(ir||(bIvs.length&&!fr&&!sr)){const sivs=bIvs.slice().sort((a,c)=>(a.intervalSeq||0)-(c.intervalSeq||0));let rem2=alloc,c2=0;sivs.forEach(iv=>{if(rem2<=0)return;const mn=parseFloat(iv.minUsageTon)||0;const mx=iv.maxUsageTon?parseFloat(iv.maxUsageTon):Infinity;const cap=mx===Infinity?rem2:(mx-mn);const ap=Math.min(rem2,cap);c2+=ap*(parseFloat(iv.pricePerTon)||0);rem2-=ap;});boilerCost+=c2;}else if(fr&&sr){const fp=parseFloat(fr.rateValue)||0;const se=parseFloat(sr.rateValue)||0;boilerCost+=se>0?alloc/se*fp:alloc*fp;}else if(sr){boilerCost+=alloc*(parseFloat(sr.rateValue)||0);}});
     // LNG 버너
@@ -1570,20 +1574,31 @@ function calcEnergyCost(){
     let steamRemainingTotal=0;
     let totalMaxSup={};boilersSorted.forEach(b=>{totalMaxSup[b.boilerCode]=0;});
 
+    // 일별 cap 산출
+    const dCaps_=[];
     for(let d=1;d<=daysInMonth_;d++){
-        const dop=dailyOpMap_[d];
-        const isSD=dop?dop.isShutdown:false;
-        const opH=dop?dop.hours:(isSD?0:24);
-        if(isSD||opH<=0)continue;
-        let rem=dailySteamBase_;
+        const dop=dailyOpMap_[d];const isSD=dop?dop.isShutdown:false;const opH=dop?dop.hours:(isSD?0:24);
+        if(isSD||opH<=0){dCaps_.push({opH:0,caps:{},maxCap:0});continue;}
+        let mx=0;const caps={};
+        boilersSorted.forEach(b=>{const mt=maintDayMap_[b.boilerCode];const isM=mt&&d>=mt.start&&d<=mt.end;const cr=isM?(100-mt.cap)/100:1;const c=(parseFloat(b.steamPerHour)||0)*opH*cr;caps[b.boilerCode]=c;mx+=c;});
+        dCaps_.push({opH,caps,maxCap:mx});
+    }
+    // 균등 배분 + 부족분 재배분
+    const dd_=new Array(daysInMonth_).fill(0);
+    for(let d=0;d<daysInMonth_;d++){if(dCaps_[d].opH>0)dd_[d]=dailySteamBase_;}
+    for(let iter=0;iter<10;iter++){
+        let tShort=0,tMarg=0;const sh_=[],mg_=[];
+        for(let d=0;d<daysInMonth_;d++){if(dCaps_[d].opH<=0){sh_.push(0);mg_.push(0);continue;}const diff=dd_[d]-dCaps_[d].maxCap;if(diff>0){sh_.push(diff);mg_.push(0);tShort+=diff;}else{sh_.push(0);mg_.push(-diff);tMarg+=(-diff);}}
+        if(tShort<1)break;if(tMarg<1)break;const redist=Math.min(tShort,tMarg);
+        for(let d=0;d<daysInMonth_;d++){if(sh_[d]>0)dd_[d]-=sh_[d];if(mg_[d]>0&&tMarg>0)dd_[d]+=redist*(mg_[d]/tMarg);}
+    }
+    // 최종 배분
+    for(let d=0;d<daysInMonth_;d++){
+        if(dCaps_[d].opH<=0)continue;
+        let rem=dd_[d];
         boilersSorted.forEach(b=>{
-            const mt=maintDayMap_[b.boilerCode];const isM=mt&&d>=mt.start&&d<=mt.end;
-            const cr=isM?(100-mt.cap)/100:1;
-            const cap=(parseFloat(b.steamPerHour)||0)*opH*cr;
-            const a=Math.min(rem,cap);
-            boilerMonthAlloc[b.boilerCode]+=a;
-            totalMaxSup[b.boilerCode]+=cap;
-            rem=Math.max(0,rem-a);
+            const cap=dCaps_[d].caps[b.boilerCode]||0;const a=Math.min(rem,cap);
+            boilerMonthAlloc[b.boilerCode]+=a;totalMaxSup[b.boilerCode]+=cap;rem=Math.max(0,rem-a);
         });
         steamRemainingTotal+=rem;
     }
@@ -1823,36 +1838,84 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     if(opDaysCount<=0) opDaysCount=daysInMonth; // 폴백: 전일 가동
     const dailySteamBase=totalSteamReq/opDaysCount; // 가동일 균등 배분
 
-    // ★ STEP 2: 일별 계산 — 우선순위 분배, 보일러 cap = steamPerHour × 해당일 가동시간
-    const dayRows=[];
-    const boilerTotals={};boilers.forEach(b=>{boilerTotals[b.code]=0;});
-    let grandTotal=0;
+    // ★ STEP 2: 일별 계산 — 1차 균등 배분 후, 부족분을 여유 있는 가동일에 재배분 (반복)
+    //   보일러 cap = steamPerHour × 해당일 가동시간 (생산라인 = 보일러)
+    //   목표: 월 배분 합계 = totalSteamReq (부족 없이 전량 배분)
+
+    // 일별 기본정보 구축
+    const dayInfo=[];
     for(let d=1;d<=daysInMonth;d++){
         const dow=new Date(year,month-1,d).getDay();
         const dowLabel=['일','월','화','수','목','금','토'][dow];
         const dop=dailyOpMap[d];
         const isHoliday=dop?dop.isShutdown:false;
-        const dayOpHours=dop?dop.hours:(isHoliday?0:24); // 생산라인 가동시간 = 보일러 가동시간
+        const dayOpHours=dop?dop.hours:(isHoliday?0:24);
+        // 일별 보일러 최대공급 합계 (cap)
+        let dayMaxCap=0;
+        const boilerCaps={};
+        boilers.forEach(b=>{
+            const mt=maintDayMap[b.code];
+            const isMainting=mt&&(d)>=mt.start&&(d)<=mt.end;
+            const capRate=isMainting?(100-mt.cap)/100:1;
+            const cap=(boilerSteamPerHr[b.code]||0)*dayOpHours*capRate;
+            boilerCaps[b.code]=cap;
+            dayMaxCap+=cap;
+        });
+        dayInfo.push({d,dowLabel,isHoliday,dayOpHours,dayMaxCap,boilerCaps});
+    }
 
-        // 운휴일 = 스팀 0, 가동일 = dailySteamBase (균등)
-        const dailySteam=isHoliday?0:dailySteamBase;
+    // 1차 균등 배분 + 부족분 재배분 (최대 10회 반복)
+    const dayDemand=new Array(daysInMonth).fill(0); // 일별 스팀 수요
+    dayInfo.forEach((di,i)=>{if(!di.isHoliday) dayDemand[i]=dailySteamBase;});
+
+    for(let iter=0;iter<10;iter++){
+        let totalShortage=0;
+        const dayShortage=new Array(daysInMonth).fill(0);
+        const dayMargin=new Array(daysInMonth).fill(0);
+        // 각 일의 부족/여유 산출
+        for(let i=0;i<daysInMonth;i++){
+            const di=dayInfo[i];
+            if(di.isHoliday){dayShortage[i]=0;dayMargin[i]=0;continue;}
+            const diff=dayDemand[i]-di.dayMaxCap;
+            if(diff>0){dayShortage[i]=diff;totalShortage+=diff;dayMargin[i]=0;}
+            else{dayShortage[i]=0;dayMargin[i]=-diff;}
+        }
+        if(totalShortage<1) break; // 부족 없으면 종료
+
+        // 부족분을 여유 있는 가동일에 여유 비례 재배분
+        const totalMargin=dayMargin.reduce((s,v)=>s+v,0);
+        if(totalMargin<1) break; // 여유가 없으면 진짜 부족 (모든 보일러 용량 초과)
+        const redistribute=Math.min(totalShortage,totalMargin);
+        for(let i=0;i<daysInMonth;i++){
+            if(dayShortage[i]>0){
+                dayDemand[i]-=dayShortage[i]; // cap까지만 배분하도록 줄임
+            }
+            if(dayMargin[i]>0&&totalMargin>0){
+                dayDemand[i]+=redistribute*(dayMargin[i]/totalMargin); // 여유 비례 추가
+            }
+        }
+    }
+
+    // 최종 일별 배분 실행
+    const dayRows=[];
+    const boilerTotals={};boilers.forEach(b=>{boilerTotals[b.code]=0;});
+    let grandTotal=0;
+    for(let i=0;i<daysInMonth;i++){
+        const di=dayInfo[i];
+        const dailySteam=di.isHoliday?0:dayDemand[i];
         let remaining=dailySteam;
         const alloc={};const hours={};
 
-        // 우선순위 순 분배 — 보일러 cap = steamPerHour × 해당일 가동시간
         boilers.forEach(b=>{
-            const mt=maintDayMap[b.code];
-            const isMainting=mt&&d>=mt.start&&d<=mt.end;
-            const capRate=isMainting?(100-mt.cap)/100:1;
-            const dailyCap=(boilerSteamPerHr[b.code]||0)*dayOpHours*capRate;
-            const a=Math.min(remaining,dailyCap);
+            const cap=di.boilerCaps[b.code]||0;
+            const a=Math.min(remaining,cap);
             alloc[b.code]=a;
-            hours[b.code]=dayOpHours>0?a/dayOpHours:0; // T/H = 배분량 ÷ 가동시간
+            hours[b.code]=di.dayOpHours>0?a/di.dayOpHours:0;
             remaining=Math.max(0,remaining-a);
             boilerTotals[b.code]+=a;
         });
         grandTotal+=dailySteam;
-        dayRows.push({d,dowLabel,isHoliday,dailySteam,alloc,hours,remaining,dayOpHours});
+        dayRows.push({d:di.d,dowLabel:di.dowLabel,isHoliday:di.isHoliday,dailySteam,alloc,hours,remaining,dayOpHours:di.dayOpHours});
     }
 
     // 헤더 생성 (상단+좌측 틀고정)
