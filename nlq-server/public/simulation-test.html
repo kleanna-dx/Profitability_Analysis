@@ -943,18 +943,15 @@ function getCapaOpDays(){
     const mc=getCapaMc();
     const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));
     const daysInMonth=new Date(yr,mo,0).getDate();
-    // DAILY_OPS 기반: 운휴가 아닌 일수 합산
+    // DAILY_OPS 기반: 등록된 데이터의 가동시간 합산 (÷24 = 일수)
     const mcDailyOps=DAILY_OPS.filter(o=>o.machineCode===mc);
     if(mcDailyOps.length){
-        let opDays=0;
-        for(let d=1;d<=daysInMonth;d++){
-            const op=mcDailyOps.find(o=>parseInt(o.day)===d);
-            if(!op||!(op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1)){
-                const hrs=op?parseFloat(op.operationHours)||24:24;
-                opDays+=hrs/24;
-            }
-        }
-        return opDays;
+        let totalHrs=0;
+        mcDailyOps.forEach(op=>{
+            const isSD=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;
+            if(!isSD) totalHrs+=parseFloat(op.operationHours)||0;
+        });
+        return totalHrs/24; // 총 가동시간 ÷ 24 = 가동일수
     }
     // 폴백: OD(월합산)
     let opMin=0;
