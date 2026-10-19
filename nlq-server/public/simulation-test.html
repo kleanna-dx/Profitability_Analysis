@@ -277,8 +277,12 @@
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:16px;">
             <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #4f46e5;">
                 <div style="font-size:10px;color:#94a3b8;font-weight:600;">가동일수</div>
-                <div style="font-size:20px;font-weight:800;color:#4f46e5;margin:4px 0;" id="capaOpDays">-</div>
-                <div style="font-size:10px;color:#94a3b8;">일</div>
+                <div style="margin:4px 0;display:flex;align-items:center;justify-content:center;gap:4px;">
+                    <input type="number" id="capaOpDaysInput" value="21" min="0" max="31" step="0.1"
+                        style="width:70px;padding:6px 8px;border:1px solid #c7d2fe;border-radius:8px;font-size:18px;font-weight:800;color:#4f46e5;text-align:center;background:#eef2ff;"
+                        oninput="renderCapaTable()">
+                </div>
+                <div style="font-size:10px;color:#94a3b8;">일 <span id="capaOpDaysSrc" style="font-size:9px;"></span></div>
             </div>
             <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #f59e0b;">
                 <div style="font-size:10px;color:#94a3b8;font-weight:600;">총 예상 양품량</div>
@@ -955,7 +959,11 @@ function getCapaOpDays(){
 function renderCapa(){
     const mc=getCapaMc();
     const opDays=getCapaOpDays();
-    document.getElementById('capaOpDays').textContent=fmt(opDays);
+    // 가동일수 input에 기본값 세팅 (일별 가동시간 또는 월 데이터 기반)
+    const opInput=document.getElementById('capaOpDaysInput');
+    if(opInput)opInput.value=opDays.toFixed(1);
+    const srcEl=document.getElementById('capaOpDaysSrc');
+    if(srcEl)srcEl.textContent=DAILY_OPS.length?'(일별 가동시간 기반)':'(기본값)';
 
     // 선속 마스터에서 해당 호기 데이터 가져오기
     const speeds=MACHINE_SPEEDS.filter(s=>s.machineCode===mc);
@@ -977,7 +985,9 @@ function renderCapa(){
 }
 
 function renderCapaTable(opDays){
-    if(!opDays)opDays=getCapaOpDays();
+    // 가동일수는 input에서 읽기 (사용자 편집 가능)
+    const opInput=document.getElementById('capaOpDaysInput');
+    opDays=opInput?parseFloat(opInput.value)||0:getCapaOpDays();
     const tb=document.getElementById('capaTb');
     if(!tb)return;
 
@@ -1061,46 +1071,7 @@ function renderCapaTable(opDays){
 }
 
 // ── CAPA 행 이벤트 핸들러 ──
-function capaRowProdChange(i,val){
-    CAPA_ROWS[i].prod=val;
-    // 해당 지종의 첫 번째 선속 데이터로 갱신
-    const mc=getCapaMc();
-    const sp=MACHINE_SPEEDS.find(s=>s.machineCode===mc&&s.product===val);
-    if(sp){CAPA_ROWS[i].bw=parseFloat(sp.basisWeight)||0;CAPA_ROWS[i].tw=parseFloat(sp.trimWidth)||0;CAPA_ROWS[i].tpd=parseFloat(sp.theoryProdTpd)||0;}
-    renderCapaTable();
-}
-function capaRowBwChange(i,val){
-    CAPA_ROWS[i].bw=parseFloat(val)||0;
-    const mc=getCapaMc();
-    const sp=MACHINE_SPEEDS.find(s=>s.machineCode===mc&&s.product===CAPA_ROWS[i].prod&&parseFloat(s.basisWeight)===CAPA_ROWS[i].bw);
-    if(sp){CAPA_ROWS[i].tw=parseFloat(sp.trimWidth)||0;CAPA_ROWS[i].tpd=parseFloat(sp.theoryProdTpd)||0;}
-    renderCapaTable();
-}
-function capaRowWpChange(i,val){CAPA_ROWS[i].wp=parseFloat(val)||0;renderCapaTable();}
 function capaRowGoodChange(i,val){CAPA_ROWS[i].goodTon=parseFloat(val)||0;renderCapaTable();}
-
-function addCapaRow(){
-    const mc=getCapaMc();
-    const globalWp=parseFloat(document.getElementById('capaWpGlobal')?.value)||0.86;
-    const firstSpeed=MACHINE_SPEEDS.find(s=>s.machineCode===mc);
-    CAPA_ROWS.push({
-        prod:firstSpeed?.product||'',
-        bw:parseFloat(firstSpeed?.basisWeight)||0,
-        tw:parseFloat(firstSpeed?.trimWidth)||0,
-        tpd:parseFloat(firstSpeed?.theoryProdTpd)||0,
-        wp:globalWp,
-        goodTon:0
-    });
-    renderCapaTable();
-}
-
-function removeCapaRow(i){CAPA_ROWS.splice(i,1);renderCapaTable();}
-
-function applyGlobalWp(){
-    const wp=parseFloat(document.getElementById('capaWpGlobal')?.value)||0;
-    CAPA_ROWS.forEach(r=>{r.wp=wp;});
-    renderCapaTable();
-}
 
 function downloadCapaExcel(){
     const mc=getCapaMc();
