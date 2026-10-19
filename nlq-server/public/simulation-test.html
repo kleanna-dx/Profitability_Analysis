@@ -1107,11 +1107,11 @@ function renderEnergyProdInputs(){
                 'oninput="calcEnergyCost()">'+
             '<div style="display:flex;align-items:center;gap:4px;margin-top:3px;">'+
                 '<span style="font-size:9px;color:#64748b;">원단위</span>'+
-                '<input type="number" id="engRate_'+mc+'" value="'+defaultRate.toFixed(2)+'" min="0" step="0.01" '+
+                '<input type="number" id="engRate_'+mc+'" value="'+defaultRate.toFixed(4)+'" min="0" step="0.0001" '+
                     'style="width:60px;padding:3px 6px;border:1px solid #e2e8f0;border-radius:4px;font-size:11px;text-align:right;font-weight:600;font-family:inherit;" '+
                     'oninput="calcEnergyCost()">'+
             '</div>'+
-            '<div style="font-size:8px;color:'+srcColor+';">'+srcLabel+(prevRate>0?' (전년 '+prevRate.toFixed(2)+')':'')+'</div>'+
+            '<div style="font-size:8px;color:'+srcColor+';">'+srcLabel+(prevRate>0?' (전년 '+prevRate.toFixed(4)+')':'')+'</div>'+
             '</div>';
     }).join('');
 }
@@ -1362,7 +1362,7 @@ function calcEnergyCost(){
         '<td class="r mn">'+fmtI(Math.round(r.prodTon))+'</td>'+
         '<td class="r mn" style="font-weight:600;">'+fmt(r.unitRate)+'</td>'+
         '<td class="r mn" style="color:#94a3b8;font-size:11px;">'+(r.prevUnitRate>0?fmt(r.prevUnitRate):'-')+'</td>'+
-        '<td class="r mn" style="font-size:10px;'+diffColor+'">'+(diffPct?diffArrow+Math.abs(diff).toFixed(2)+' ('+diffPct+'%)':'')+'</td>'+
+        '<td class="r mn" style="font-size:10px;'+diffColor+'">'+(diffPct?diffArrow+Math.abs(diff).toFixed(4)+' ('+diffPct+'%)':'')+'</td>'+
         '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.steamNeed))+'</td></tr>';
     }).join('')+
     '<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td class="r">'+fmtI(Math.round(totalProd))+'</td><td></td><td></td><td></td><td class="r" style="color:#ef4444;">'+fmtI(Math.round(totalSteamReq))+'</td></tr>';
