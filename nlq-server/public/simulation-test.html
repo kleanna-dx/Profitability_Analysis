@@ -1649,9 +1649,12 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         headEl.innerHTML='';tbEl.innerHTML='<tr><td colspan="3" style="text-align:center;padding:30px;color:#94a3b8;">보일러 데이터가 없습니다.</td></tr>';footEl.innerHTML='';return;
     }
 
-    // 일별 스팀 필요량 (월 합계 ÷ 가동일수 — 운휴일 감안)
-    // 간단히: 월간 총 스팀 ÷ 월일수 = 일 평균 스팀필요량
-    const dailySteamBase=totalSteamReq/daysInMonth;
+    // 일별 스팀 필요량 (월 합계 ÷ 가동일수)
+    // 계획운휴일 산출 (아래서 상세 계산, 여기선 가동일 기반 일평균)
+    let _shutdownD=0;OD.forEach(o=>{_shutdownD+=parseFloat(o.psM||0)/1440;});
+    _shutdownD=Math.round(_shutdownD);
+    const operatingDays=daysInMonth-_shutdownD;
+    const dailySteamBase=operatingDays>0?totalSteamReq/operatingDays:0;
 
     // 보일러별 정비일 맵 (시작~종료 범위)
     const maintDayMap={};
@@ -1671,6 +1674,15 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     const boilerDailyCap={};
     boilers.forEach(b=>{boilerDailyCap[b.code]=(b.steamPerHr||0)*24;});
 
+    // 계획운휴일 산출 (가동시간 관리 기반)
+    // OD에서 해당 월 데이터의 계획운휴(분) → 일수 환산 → 월말부터 운휴 처리
+    let shutdownDays=0;
+    OD.forEach(o=>{shutdownDays+=parseFloat(o.psM||0)/1440;});
+    shutdownDays=Math.round(shutdownDays); // 반올림 → 정수 일
+    // 운휴일 Set 생성 (월말부터 역순으로 배치)
+    const shutdownDaySet=new Set();
+    for(let i=0;i<shutdownDays&&i<daysInMonth;i++){shutdownDaySet.add(daysInMonth-i);}
+
     // 일별 계산
     const dayRows=[];
     const boilerTotals={};boilers.forEach(b=>{boilerTotals[b.code]=0;});
@@ -1680,9 +1692,9 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         const dow=new Date(year,month-1,d).getDay(); // 0=일
         const dayLabel=d+'일';
         const dowLabel=['일','월','화','수','목','금','토'][dow];
-        const isHoliday=dow===0; // 일요일 = 운휴 (간소화)
+        const isHoliday=shutdownDaySet.has(d); // 계획운휴일 기반
 
-        let dailySteam=isHoliday?dailySteamBase*0.4:dailySteamBase; // 일요일은 40%
+        let dailySteam=isHoliday?0:dailySteamBase; // 운휴일은 스팀 0
         let remaining=dailySteam;
         const alloc={};
         const hours={};
@@ -1721,7 +1733,7 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         const dowColor=r.isHoliday?'color:#ef4444;font-weight:700;':'color:#64748b;';
         let row='<tr style="'+bgStyle+'">';
         row+='<td style="font-weight:600;position:sticky;left:0;background:'+(r.isHoliday?'#fef2f2':'#fff')+';z-index:1;">'+r.d+'</td>';
-        row+='<td style="'+dowColor+'position:sticky;left:30px;background:'+(r.isHoliday?'#fef2f2':'#fff')+';z-index:1;">'+r.dowLabel+'</td>';
+        row+='<td style="'+dowColor+'position:sticky;left:30px;background:'+(r.isHoliday?'#fef2f2':'#fff')+';z-index:1;">'+r.dowLabel+(r.isHoliday?' <span style="font-size:8px;color:#ef4444;">운휴</span>':'')+'</td>';
         boilers.forEach(b=>{
             const a=r.alloc[b.code]||0;
             const h=r.hours[b.code]||0;
