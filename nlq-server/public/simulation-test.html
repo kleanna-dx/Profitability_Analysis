@@ -1967,6 +1967,10 @@ async function loadRef(){const d=REFS[cRef];const div=document.getElementById('s
     let url=API+'/'+d.k+'?division='+div;
     if(d.yearFilter)url+='&year='+yr;
     if(d.k==='daily-operations')url+='&month='+parseInt(ymVal.substring(4,6));
+    // boilerCode 컬럼이 있는 탭은 보일러 마스터 로드 (보일러명 표시용)
+    if(d.cols.includes('boilerCode')&&!BOILER_MASTERS_LIST.length){
+        try{const br=await fetch(API+'/boiler-masters?division='+div);const bj=await br.json();BOILER_MASTERS_LIST=bj.data||bj.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=[];}catch(_){}
+    }
     refDataPrev=[];
     try{const r=await fetch(url);const j=await r.json();console.log('[loadRef] '+d.l+' response:',JSON.stringify(j).substring(0,500));
     if(j.data){if(Array.isArray(j.data))refData=j.data;else if(j.data.content&&Array.isArray(j.data.content))refData=j.data.content;else refData=[j.data];}else if(Array.isArray(j))refData=j;else refData=[];}catch(e){console.warn('[loadRef] 실패:',e.message);refData=[];}
@@ -1982,7 +1986,7 @@ function renderRef(){const d=REFS[cRef];
     const prevYr=parseInt(getYm().substring(0,4))-1;
     let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';
     if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}
-    else{refData.forEach(row=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr>'+d.cols.map(c=>{let v=row[c];if(c==='isShutdown'){v=(v===true||v==='true'||v===1)?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}
+    else{refData.forEach(row=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr>'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);v=v+(bm?' <span style="font-size:10px;color:#94a3b8;">('+bm.boilerName+')</span>':'');}else if(c==='isShutdown'){v=(v===true||v==='true'||v===1)?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;"><i class="fas fa-trash"></i></button></td></tr>';});}
     h+='</tbody></table>';
     // 전년도 참고 테이블
     if(hasPrev){
