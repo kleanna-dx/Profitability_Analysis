@@ -1096,22 +1096,33 @@ function renderEnergyProdInputs(){
         const prev=STEAM_UNIT_RATES_PREV.find(r=>r.machineCode===mc);
         const curRate=cur?parseFloat(cur.steamPerTon)||0:0;
         const prevRate=prev?parseFloat(prev.steamPerTon)||0:0;
-        // 기본값 우선순위: ①당해 등록값 → ②전년동월 → ③0
         const defaultRate=curRate>0?curRate:(prevRate>0?prevRate:0);
         const srcLabel=curRate>0?'등록값':(prevRate>0?'전년동월':'미등록');
         const srcColor=curRate>0?'#16a34a':(prevRate>0?'#d97706':'#94a3b8');
+        // LNG 원단위 (해당 호기에 등록된 경우만)
+        const lngRate=BURNER_LNG_RATES.find(r=>r.machineCode===mc);
+        const lngVal=lngRate?parseFloat(lngRate.lngPerTon)||0:0;
+        const lngHtml=lngVal>0||lngRate?
+            '<div style="display:flex;align-items:center;gap:4px;margin-top:2px;">'+
+                '<span style="font-size:9px;color:#d97706;">LNG</span>'+
+                '<input type="number" id="engLng_'+mc+'" value="'+lngVal.toFixed(2)+'" min="0" step="0.01" '+
+                    'style="width:60px;padding:3px 6px;border:1px solid #fde68a;border-radius:4px;font-size:11px;text-align:right;font-weight:600;font-family:inherit;background:#fffbeb;" '+
+                    'oninput="calcEnergyCost()">'+
+                '<span style="font-size:8px;color:#94a3b8;">㎥/톤</span>'+
+            '</div>':'';
         return '<div style="display:flex;flex-direction:column;gap:2px;">'+
             '<label style="font-size:10px;color:#64748b;font-weight:600;">'+mc+'</label>'+
             '<input type="number" id="engProd_'+mc+'" value="'+(defaultProd[mc]||0)+'" min="0" step="100" '+
                 'style="width:110px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;text-align:right;font-family:inherit;" '+
                 'oninput="calcEnergyCost()">'+
             '<div style="display:flex;align-items:center;gap:4px;margin-top:3px;">'+
-                '<span style="font-size:9px;color:#64748b;">원단위</span>'+
+                '<span style="font-size:9px;color:#64748b;">스팀</span>'+
                 '<input type="number" id="engRate_'+mc+'" value="'+defaultRate.toFixed(4)+'" min="0" step="0.0001" '+
                     'style="width:60px;padding:3px 6px;border:1px solid #e2e8f0;border-radius:4px;font-size:11px;text-align:right;font-weight:600;font-family:inherit;" '+
                     'oninput="calcEnergyCost()">'+
             '</div>'+
             '<div style="font-size:8px;color:'+srcColor+';">'+srcLabel+(prevRate>0?' (전년 '+prevRate.toFixed(4)+')':'')+'</div>'+
+            lngHtml+
             '</div>';
     }).join('');
 }
@@ -1189,7 +1200,7 @@ function calcEnergyPerTon(totalProdTon){
     // LNG 버너
     const lngPrice=BOILER_COST_RATES.filter(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG')).map(r=>parseFloat(r.rateValue)||0)[0]||0;
     let lngCost=0;
-    BURNER_LNG_RATES.forEach(r=>{const prod=prodByMc[r.machineCode]||0;lngCost+=prod*(parseFloat(r.lngPerTon)||0)*lngPrice;});
+    BURNER_LNG_RATES.forEach(r=>{const prod=prodByMc[r.machineCode]||0;const lngInp=document.getElementById('engLng_'+r.machineCode);const lngUnit=lngInp?parseFloat(lngInp.value)||0:parseFloat(r.lngPerTon)||0;lngCost+=prod*lngUnit*lngPrice;});
     const total=boilerCost+lngCost;
     return total/totalProdTon/1000; // 천원/톤
 }
@@ -1322,7 +1333,8 @@ function calcEnergyCost(){
     BURNER_LNG_RATES.forEach(rate=>{
         const mc=rate.machineCode;
         const prodTon=prodByMc[mc]||0;
-        const unitM3=parseFloat(rate.lngPerTon)||0;
+        const lngInp=document.getElementById('engLng_'+mc);
+        const unitM3=lngInp?parseFloat(lngInp.value)||0:parseFloat(rate.lngPerTon)||0;
         const lngM3=prodTon*unitM3;
         const cost=lngM3*lngPrice;
         totalLngCost+=cost;
