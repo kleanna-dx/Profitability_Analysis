@@ -402,7 +402,7 @@
             </div>
 
             <!-- KPI 카드 -->
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px;">
                 <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #ef4444;">
                     <div style="font-size:10px;color:#94a3b8;font-weight:600;">스팀 필요량</div>
                     <div style="font-size:18px;font-weight:800;color:#ef4444;margin:4px 0;" id="engSteamReq">-</div>
@@ -416,6 +416,11 @@
                 <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #3b82f6;">
                     <div style="font-size:10px;color:#94a3b8;font-weight:600;">LNG 구매비</div>
                     <div style="font-size:18px;font-weight:800;color:#3b82f6;margin:4px 0;" id="engLngCost">-</div>
+                    <div style="font-size:10px;color:#94a3b8;">백만원</div>
+                </div>
+                <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #16a34a;">
+                    <div style="font-size:10px;color:#94a3b8;font-weight:600;">고정차감</div>
+                    <div style="font-size:18px;font-weight:800;color:#16a34a;margin:4px 0;" id="engDeductCost">-</div>
                     <div style="font-size:10px;color:#94a3b8;">백만원</div>
                 </div>
                 <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #8b5cf6;">
@@ -953,7 +958,7 @@ function renderCapa(){
 }
 
 // ── 에너지비 시뮬레이션 (STEP4 탭) ──
-let STEAM_UNIT_RATES=[], STEAM_UNIT_RATES_PREV=[], STEAM_PRICE_INTERVALS=[], BURNER_LNG_RATES=[], BOILER_COST_RATES=[], BOILER_MAINTENANCES=[], BOILER_MASTERS_LIST=[], BOILER_PLANS_LIST=[];
+let STEAM_UNIT_RATES=[], STEAM_UNIT_RATES_PREV=[], STEAM_PRICE_INTERVALS=[], BURNER_LNG_RATES=[], BOILER_COST_RATES=[], BOILER_MAINTENANCES=[], BOILER_MASTERS_LIST=[], BOILER_PLANS_LIST=[], COGEN_DEDUCTIONS=[];
 
 // ── 전력비 기준정보 ──
 let PW_LINES=[], PW_TARIFFS=[], PW_PEAK_DEMANDS=[], PW_FIXED_ITEMS=[];
@@ -1034,6 +1039,7 @@ async function loadEnergyRefData(){
     try{const ym=getYm();const month=parseInt(ym.substring(4,6));const r=await fetch(API+'/boiler-maintenances?year='+yr+'&division='+div);const j=await r.json();const all=j.data||j.content||[];BOILER_MAINTENANCES=Array.isArray(all)?all.filter(m=>m.month===month||!m.month):[];}catch(_){BOILER_MAINTENANCES=[];}
     try{const r=await fetch(API+'/boiler-masters?division='+div);const j=await r.json();BOILER_MASTERS_LIST=j.data||j.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=BOILER_MASTERS_LIST.content||[];}catch(_){BOILER_MASTERS_LIST=[];}
     try{const r=await fetch(API+'/boiler-plans?year='+yr+'&division='+div);const j=await r.json();BOILER_PLANS_LIST=j.data||j.content||[];if(!Array.isArray(BOILER_PLANS_LIST))BOILER_PLANS_LIST=BOILER_PLANS_LIST.content||[];}catch(_){BOILER_PLANS_LIST=[];}
+    try{const r=await fetch(API+'/cogen-deductions?year='+yr+'&division='+div);const j=await r.json();COGEN_DEDUCTIONS=j.data||j.content||[];if(!Array.isArray(COGEN_DEDUCTIONS))COGEN_DEDUCTIONS=COGEN_DEDUCTIONS.content||[];}catch(_){COGEN_DEDUCTIONS=[];}
     // ── 샘플 데이터 폴백 (API 연결 불가 시 시뮬레이션 데모용) ──
     if(!STEAM_UNIT_RATES.length){
         const mo=parseInt(getYm().substring(4,6));
@@ -1201,7 +1207,8 @@ function calcEnergyPerTon(totalProdTon){
     const lngPrice=BOILER_COST_RATES.filter(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG')).map(r=>parseFloat(r.rateValue)||0)[0]||0;
     let lngCost=0;
     BURNER_LNG_RATES.forEach(r=>{const prod=prodByMc[r.machineCode]||0;const lngInp=document.getElementById('engLng_'+r.machineCode);const lngUnit=lngInp?parseFloat(lngInp.value)||0:parseFloat(r.lngPerTon)||0;lngCost+=prod*lngUnit*lngPrice;});
-    const total=boilerCost+lngCost;
+    const deduct=COGEN_DEDUCTIONS.reduce((s,d)=>s+(parseFloat(d.monthlyAmount)||0),0);
+    const total=boilerCost+lngCost-deduct;
     return total/totalProdTon/1000; // 천원/톤
 }
 
@@ -1353,14 +1360,18 @@ function calcEnergyCost(){
         maintRows.push({code:m.boilerCode,name:boiler?boiler.boilerName:m.boilerCode,type:typeLabel,hrs:maintHrs,capReduce,steamLost,memo:m.memo||m.maintName||''});
     });
 
-    // 6) 총 에너지비
-    const totalEnergy=totalSteamCost+totalLngCost;
+    // 6) 고정차감 합계
+    const totalDeduct=COGEN_DEDUCTIONS.reduce((s,d)=>s+(parseFloat(d.monthlyAmount)||0),0);
+
+    // 7) 총 에너지비 = 보일러 운영비 + LNG 구매비 - 고정차감
+    const totalEnergy=totalSteamCost+totalLngCost-totalDeduct;
     const perTon=totalProd>0?totalEnergy/totalProd/1000:0; // 천원/톤
 
-    // 7) KPI 카드 렌더링
+    // 8) KPI 카드 렌더링
     document.getElementById('engSteamReq').textContent=fmtI(Math.round(totalSteamReq));
     document.getElementById('engSteamCost').textContent=fmtI(Math.round(totalSteamCost/1000000));
     document.getElementById('engLngCost').textContent=fmtI(Math.round(totalLngCost/1000000));
+    document.getElementById('engDeductCost').textContent=totalDeduct>0?'-'+fmtI(Math.round(totalDeduct/1000000)):'0';
     document.getElementById('engTotalCost').textContent=fmtI(Math.round(totalEnergy/1000000));
     document.getElementById('engPerTon').textContent=fmt(perTon);
 
