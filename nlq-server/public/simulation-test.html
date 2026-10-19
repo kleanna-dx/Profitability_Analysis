@@ -1706,7 +1706,7 @@ function openRefModal(){
             h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+UNIT_OPTIONS.map(u=>'<option value="'+u.unitCode+'">'+u.unitCode+' ('+u.unitName+')</option>').join('')+'</select>';
         }else if(c==='product'&&PRODUCT_OPTIONS.length){
             h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+PRODUCT_OPTIONS.map(p=>'<option value="'+p.productCode+'">'+p.productCode+(p.productName?' ('+p.productName+')':'')+'</option>').join('')+'</select>';
-        }else if(c==='boilerCode'&&BOILER_MASTERS_LIST.length){
+        }else if(c==='boilerCode'&&d.k!=='boiler-masters'&&BOILER_MASTERS_LIST.length){
             h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).map(b=>'<option value="'+b.boilerCode+'">'+b.boilerCode+' ('+b.boilerName+')</option>').join('')+'</select>';
         }else if(c==='boilerCode'){
             h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';
