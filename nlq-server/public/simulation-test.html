@@ -1524,12 +1524,13 @@ function renderCustomRef(key){
     }
 }
 
-// ── 엑셀 양식 다운로드 (빈 헤더만) ──
+// ── 엑셀 양식 다운로드 (빈 헤더만, 자동계산 필드 제외) ──
 function downloadRefTemplate(){
     const d=REFS[cRef];
-    const ws=XLSX.utils.aoa_to_sheet([d.h]);
-    // 컬럼 너비 자동 조정
-    ws['!cols']=d.h.map(h=>({wch:Math.max(h.length*2+4,14)}));
+    const autoFields=d.auto||[];
+    const headers=d.h.filter((_,i)=>!autoFields.includes(d.cols[i]));
+    const ws=XLSX.utils.aoa_to_sheet([headers]);
+    ws['!cols']=headers.map(h=>({wch:Math.max(h.length*2+4,14)}));
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws,d.l);
     XLSX.writeFile(wb,d.l+'_양식.xlsx');
