@@ -1360,8 +1360,8 @@ function calcEnergyCost(){
         const diffArrow=diff>0?'▲':diff<0?'▼':'';
         return '<tr><td style="font-weight:600;color:#4f46e5;">'+r.mc+'</td>'+
         '<td class="r mn">'+fmtI(Math.round(r.prodTon))+'</td>'+
-        '<td class="r mn" style="font-weight:600;">'+fmt(r.unitRate)+'</td>'+
-        '<td class="r mn" style="color:#94a3b8;font-size:11px;">'+(r.prevUnitRate>0?fmt(r.prevUnitRate):'-')+'</td>'+
+        '<td class="r mn" style="font-weight:600;">'+r.unitRate.toFixed(4)+'</td>'+
+        '<td class="r mn" style="color:#94a3b8;font-size:11px;">'+(r.prevUnitRate>0?r.prevUnitRate.toFixed(4):'-')+'</td>'+
         '<td class="r mn" style="font-size:10px;'+diffColor+'">'+(diffPct?diffArrow+Math.abs(diff).toFixed(4)+' ('+diffPct+'%)':'')+'</td>'+
         '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.steamNeed))+'</td></tr>';
     }).join('')+
