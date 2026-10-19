@@ -5,6 +5,7 @@ import lombok.*; import java.math.BigDecimal; import java.time.LocalDateTime;
 public class SteamUnitRate {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="RATE_ID") private Long rateId;
     @Column(name="YEAR",nullable=false) private Integer year;
+    @Column(name="MONTH") private Integer month;
     @Column(name="MACHINE_CODE",nullable=false,length=20) private String machineCode;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="STEAM_PER_TON",precision=8,scale=4) private BigDecimal steamPerTon;
@@ -15,6 +16,6 @@ public class SteamUnitRate {
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
-    @Builder public SteamUnitRate(Integer year,String machineCode,String division,BigDecimal steamPerTon,BigDecimal etcUsageTon,String limitNote,String memo){this.year=year;this.machineCode=machineCode;this.division=division!=null?division:"PS";this.steamPerTon=steamPerTon!=null?steamPerTon:BigDecimal.ZERO;this.etcUsageTon=etcUsageTon!=null?etcUsageTon:BigDecimal.ZERO;this.limitNote=limitNote;this.memo=memo;}
+    @Builder public SteamUnitRate(Integer year,Integer month,String machineCode,String division,BigDecimal steamPerTon,BigDecimal etcUsageTon,String limitNote,String memo){this.year=year;this.month=month;this.machineCode=machineCode;this.division=division!=null?division:"PS";this.steamPerTon=steamPerTon!=null?steamPerTon:BigDecimal.ZERO;this.etcUsageTon=etcUsageTon!=null?etcUsageTon:BigDecimal.ZERO;this.limitNote=limitNote;this.memo=memo;}
     public void update(BigDecimal steamPerTon,BigDecimal etcUsageTon,String limitNote,String memo){this.steamPerTon=steamPerTon;this.etcUsageTon=etcUsageTon;this.limitNote=limitNote;this.memo=memo;}
 }
