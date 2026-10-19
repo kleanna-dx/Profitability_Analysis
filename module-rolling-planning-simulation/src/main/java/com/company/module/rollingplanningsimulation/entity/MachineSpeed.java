@@ -18,9 +18,11 @@ public class MachineSpeed {
     @Column(name="THEORY_PROD_TPD",precision=12,scale=4) private BigDecimal theoryProdTpd;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="NOTE",length=200) private String note;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
 
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){
         createdAt=LocalDateTime.now();
         if(division==null)division="PS";

@@ -142,9 +142,11 @@ public class RawRecord {
     @Column(name = "FILE_NAME", length = 300)
     private String fileName;
 
+    @Column(name = "CREATED_BY") private String createdBy;
     @Column(name = "CREATED_AT", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
         this.createdAt = LocalDateTime.now();

@@ -19,8 +19,10 @@ public class EnergyMonthly {
     @Column(name="COST_PER_TON_STEAM",precision=12,scale=2) private BigDecimal costPerTonSteam;
     @Column(name="COST_PER_TON_PROD",precision=12,scale=2) private BigDecimal costPerTonProd;
     @Column(name="CALC_STATUS",nullable=false,length=20) private String calcStatus;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(calcStatus==null)calcStatus="DRAFT";}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
     @Builder public EnergyMonthly(String ym,String division,String calcStatus){this.ym=ym;this.division=division!=null?division:"PS";this.calcStatus=calcStatus!=null?calcStatus:"DRAFT";}

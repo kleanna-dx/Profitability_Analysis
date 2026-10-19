@@ -48,6 +48,7 @@ public class DailyOperationController {
                 .memo(str(body.get("memo")))
                 .build();
         }
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
 

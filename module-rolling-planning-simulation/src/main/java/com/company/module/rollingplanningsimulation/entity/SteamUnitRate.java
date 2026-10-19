@@ -12,10 +12,12 @@ public class SteamUnitRate {
     @Column(name="ETC_USAGE_TON",precision=12,scale=2) private BigDecimal etcUsageTon;
     @Column(name="LIMIT_NOTE",length=500) private String limitNote;
     @Column(name="MEMO",length=200) private String memo;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
-    @Builder public SteamUnitRate(Integer year,Integer month,String machineCode,String division,BigDecimal steamPerTon,BigDecimal etcUsageTon,String limitNote,String memo){this.year=year;this.month=month;this.machineCode=machineCode;this.division=division!=null?division:"PS";this.steamPerTon=steamPerTon!=null?steamPerTon:BigDecimal.ZERO;this.etcUsageTon=etcUsageTon!=null?etcUsageTon:BigDecimal.ZERO;this.limitNote=limitNote;this.memo=memo;}
-    public void update(BigDecimal steamPerTon,BigDecimal etcUsageTon,String limitNote,String memo){this.steamPerTon=steamPerTon;this.etcUsageTon=etcUsageTon;this.limitNote=limitNote;this.memo=memo;}
+    @Builder public SteamUnitRate(Integer year,Integer month,String machineCode,String division,BigDecimal steamPerTon,BigDecimal etcUsageTon,String limitNote,String memo){this.year=year;this.month=month;this.machineCode=machineCode;this.division=division!=null?division:"PS";this.steamPerTon=steamPerTon!=null?steamPerTon:BigDecimal.ZERO;this.etcUsageTon=etcUsageTon!=null?etcUsageTon:BigDecimal.ZERO;this.limitNote=limitNote;this.memo=memo;this.createdBy=createdBy;}
+    public void update(BigDecimal steamPerTon,BigDecimal etcUsageTon,String limitNote,String memo){this.steamPerTon=steamPerTon;this.etcUsageTon=etcUsageTon;this.limitNote=limitNote;this.memo=memo;this.createdBy=createdBy;}
 }

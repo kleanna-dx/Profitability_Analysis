@@ -27,6 +27,7 @@ public class BoilerMasterController {
             .division((String)body.getOrDefault("division","PS"))
             .displayOrder(body.get("displayOrder")!=null?Integer.parseInt(body.get("displayOrder").toString()):0)
             .build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }

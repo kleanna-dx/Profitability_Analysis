@@ -25,6 +25,7 @@ public class ProductMasterController {
             .displayOrder(body.get("displayOrder")!=null?Integer.parseInt(body.get("displayOrder").toString()):0)
             .isActive(body.get("isActive")!=null?Boolean.parseBoolean(body.get("isActive").toString()):true)
             .build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @DeleteMapping("/{id}")

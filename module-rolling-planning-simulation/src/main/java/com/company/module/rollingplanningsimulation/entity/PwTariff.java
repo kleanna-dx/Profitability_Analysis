@@ -42,12 +42,14 @@ public class PwTariff {
     @Column(name = "DIVISION", nullable = false, length = 20)
     private String division;
 
+    @Column(name = "CREATED_BY") private String createdBy;
     @Column(name = "CREATED_AT", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     @Column(name = "UPDATED_AT")
     private LocalDateTime updatedAt;
 
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
         this.createdAt = LocalDateTime.now();

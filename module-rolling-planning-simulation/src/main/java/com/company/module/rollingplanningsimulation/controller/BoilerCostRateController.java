@@ -22,6 +22,7 @@ public class BoilerCostRateController {
             .rateValue(body.get("rateValue")!=null?new BigDecimal(body.get("rateValue").toString()):BigDecimal.ZERO)
             .rateUnit((String)body.get("rateUnit")).division((String)body.getOrDefault("division","PS"))
             .memo((String)body.get("memo")).build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }

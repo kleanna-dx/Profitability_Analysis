@@ -11,8 +11,10 @@ public class ProductMaster {
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="DISPLAY_ORDER") private Integer displayOrder;
     @Column(name="IS_ACTIVE") private Boolean isActive;
+    @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
+    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(isActive==null)isActive=true;}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
     @Builder

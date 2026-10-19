@@ -20,6 +20,7 @@ public class SteamAllocRatioController {
             .machineCode((String)body.get("machineCode")).division((String)body.getOrDefault("division","PS"))
             .allocRatio(body.get("allocRatio")!=null?new BigDecimal(body.get("allocRatio").toString()):BigDecimal.ZERO)
             .memo((String)body.get("memo")).build();
+        if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }
