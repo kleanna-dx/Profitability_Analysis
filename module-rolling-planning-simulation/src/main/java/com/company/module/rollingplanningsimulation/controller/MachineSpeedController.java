@@ -18,6 +18,7 @@ public class MachineSpeedController {
     public ResponseEntity<ApiResponse<MachineSpeed>> save(@RequestBody MachineSpeed e) {
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
+    @PutMapping("/{id}") public ResponseEntity<ApiResponse<?>> update(@PathVariable Long id, @RequestBody Map<String,Object> body) { repo.deleteById(id); body.remove("id"); try { return save(body); } catch(Exception e) { return ResponseEntity.ok(ApiResponse.success("update failed: "+e.getMessage())); } }
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }
 }
