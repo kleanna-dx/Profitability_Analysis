@@ -2297,7 +2297,13 @@ async function saveRefEdit(id){
     if(window.CURRENT_USER)body.createdBy=window.CURRENT_USER;
     try{
         const r=await fetch(API+'/'+d.k+'/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-        if(!r.ok){const err=await r.text();console.warn('[saveRefEdit] 실패:',err);alert('수정 실패: '+err);return;}
+        if(!r.ok){
+            // PUT 미지원 시 delete+re-post 폴백
+            console.warn('[saveRefEdit] PUT 실패, delete+post 폴백 시도');
+            const dr=await fetch(API+'/'+d.k+'/'+id,{method:'DELETE'});
+            const pr=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+            if(!pr.ok){const err=await pr.text();alert('수정 실패: '+err);return;}
+        }
     }catch(e){alert('수정 실패: '+e.message);}
     closeModal();loadRef();
 }
