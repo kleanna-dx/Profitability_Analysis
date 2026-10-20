@@ -39,8 +39,8 @@ public class CogenDeductionController {
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
 
-    @PutMapping("/{id}")
-    public ResponseEntity<ApiResponse<?>> update(@PathVariable Long id, @RequestBody Map<String,Object> body) {
+    @SuppressWarnings("unchecked") @PutMapping("/{id}")
+    public ResponseEntity update(@PathVariable Long id, @RequestBody Map<String,Object> body) {
         repo.deleteById(id);
         body.remove("id");
         try { return save(body); } catch(Exception e) { return ResponseEntity.ok(ApiResponse.success("update failed: "+e.getMessage())); }
