@@ -434,7 +434,7 @@
     <div id="s4-energy" style="display:none;">
         <div class="sc" style="padding:20px;margin-bottom:16px;">
             <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 6px;"><i class="fas fa-fire-alt text-orange-500 mr-2"></i>에너지비 시뮬레이션</h3>
-            <p style="font-size:12px;color:#64748b;margin:0 0 16px;">생산량에 따른 스팀 구매비 + LNG 구매비를 시뮬레이션합니다. 보일러 정비 시 비용 증가 영향도 확인할 수 있습니다.</p>
+            <p style="font-size:12px;color:#64748b;margin:0 0 16px;">생산량에 따른 스팀 구매비 + LNG 버너비를 시뮬레이션합니다. 보일러 정비 시 비용 증가 영향도 확인할 수 있습니다.</p>
 
             <!-- 생산량 입력 -->
             <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin-bottom:16px;">
@@ -460,7 +460,7 @@
                     <div style="font-size:10px;color:#94a3b8;">백만원</div>
                 </div>
                 <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #3b82f6;">
-                    <div style="font-size:10px;color:#94a3b8;font-weight:600;">LNG 구매비</div>
+                    <div style="font-size:10px;color:#94a3b8;font-weight:600;">LNG 버너비</div>
                     <div style="font-size:18px;font-weight:800;color:#3b82f6;margin:4px 0;" id="engLngCost">-</div>
                     <div style="font-size:10px;color:#94a3b8;">백만원</div>
                 </div>
@@ -503,7 +503,7 @@
         <!-- LNG 계산 상세 -->
         <div class="sc" style="overflow:hidden;margin-bottom:14px;">
             <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
-                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-burn text-blue-400 mr-1"></i>LNG 구매비 상세</h3>
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-burn text-blue-400 mr-1"></i>LNG 버너비 상세 (제지 3호기 건조버너)</h3>
             </div>
             <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th class="r">생산량(톤)</th><th class="r">원단위(㎥/톤)</th><th class="r">LNG사용량(㎥)</th><th class="r">LNG단가(원/㎥)</th><th class="r">금액(백만원)</th></tr></thead><tbody id="engLngTb"></tbody></table></div>
         </div>
@@ -519,9 +519,15 @@
 
         <!-- 일별 스팀 배분 계획표 -->
         <div class="sc" style="overflow:hidden;margin-top:14px;">
-            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
                 <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-calendar-alt text-indigo-500 mr-1"></i>일별 스팀 배분 계획표</h3>
-                <span style="font-size:10px;color:#94a3b8;">보일러 우선순위 기반 일별 자동 배분 · 정비/운휴일 반영</span>
+                <span id="steamAllocLockBadge" style="display:none;font-size:10px;padding:3px 10px;border-radius:8px;background:#dcfce7;color:#166534;font-weight:700;"><i class="fas fa-lock mr-1"></i>확정됨 <span id="steamAllocLockInfo"></span></span>
+                <span style="font-size:10px;color:#94a3b8;">보일러 우선순위 기반 일별 자동 배분 · 셀 클릭 시 편집 가능</span>
+                <div style="display:flex;gap:5px;">
+                    <button onclick="saveDailySteamAlloc()" id="steamAllocSaveBtn" style="padding:4px 12px;background:#4f46e5;color:#fff;border:none;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;"><i class="fas fa-save mr-1"></i>저장</button>
+                    <button onclick="lockDailySteamAlloc()" id="steamAllocLockBtn" style="padding:4px 12px;background:#16a34a;color:#fff;border:none;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;"><i class="fas fa-lock mr-1"></i>확정</button>
+                    <button onclick="unlockDailySteamAlloc()" id="steamAllocUnlockBtn" style="display:none;padding:4px 12px;background:#ef4444;color:#fff;border:none;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;"><i class="fas fa-unlock mr-1"></i>잠금해제</button>
+                </div>
             </div>
             <div style="overflow-x:auto;max-height:600px;overflow-y:auto;" id="engDailyWrap">
                 <table class="st" style="font-size:11px;">
@@ -760,7 +766,7 @@ const REF_READY_ITEMS=[
     {k:'steam-price-intervals',l:'스팀 구간단가',desc:'복합보일러 구간별 스팀단가'},
     {k:'cogen-deductions',l:'연료비 고정차감 항목',desc:'감가상각/처분수익/지상권 등 (월별 관리)',yearFilter:true,monthFilter:true},
     {k:'boiler-cost-rates',l:'보일러 연료단가',desc:'LNG단가/소각로단가 등',yearFilter:true},
-    {k:'burner-lng-rates',l:'LNG보일러 원단위',desc:'LNG보일러 원단위',yearFilter:true},
+    {k:'burner-lng-rates',l:'LNG 버너 원단위',desc:'제지 3호기 건조 버너 LNG 원단위',yearFilter:true},
 
     {k:'machine-speeds',l:'제지 생산 선속',desc:'호기별/지종별 초지기 선속',yearFilter:true},
     {k:'waste-rates',l:'폐품률 마스터',desc:'호기×지종별 연간 폐품률(%)',yearFilter:true},
@@ -1797,6 +1803,104 @@ function calcEnergyCost(){
 }
 
 // ── 일별 스팀 배분 계획표 ──
+let STEAM_ALLOC_LOCKED=false;
+let STEAM_ALLOC_BOILERS=[]; // 렌더링 시 보일러 목록 보관 (저장용)
+
+function onSteamAllocEdit(day,boilerCode){
+    // 사용자 편집 시 해당 행의 스팀총계/T/H 자동 재계산
+    // (셀별 즉시 반영은 복잡하므로 저장 시 일괄 처리)
+}
+
+async function loadDailySteamAlloc(){
+    const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    try{
+        const r=await fetch(API+'/daily-steam-allocs?year='+yr+'&month='+mo+'&division='+div);
+        const j=await r.json();const data=j.data||[];
+        if(data.length){
+            STEAM_ALLOC_LOCKED=data.some(d=>d.isLocked===true);
+            if(STEAM_ALLOC_LOCKED){
+                const lp=data.find(d=>d.lockedBy);
+                updateSteamAllocLockUI(true,lp?.lockedBy||'',lp?.lockedAt||'');
+            }else{
+                updateSteamAllocLockUI(false);
+            }
+            // 저장된 데이터를 input에 반영
+            setTimeout(()=>{
+                data.forEach(d=>{
+                    const inp=document.getElementById('sa_'+d.day+'_'+d.boilerCode);
+                    if(inp)inp.value=d.allocTon>0?Math.round(parseFloat(d.allocTon)):'';
+                });
+            },200);
+        }
+    }catch(_){}
+}
+
+async function saveDailySteamAlloc(){
+    if(STEAM_ALLOC_LOCKED){alert('확정(잠금)된 데이터입니다.\n잠금 해제 후 수정하세요.');return;}
+    const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    const dim=new Date(yr,mo,0).getDate();
+    const rows=[];
+    for(let d=1;d<=dim;d++){
+        STEAM_ALLOC_BOILERS.forEach(b=>{
+            const inp=document.getElementById('sa_'+d+'_'+b.code);
+            const val=inp?parseFloat(inp.value)||0:0;
+            rows.push({day:d,boilerCode:b.code,allocTon:val,allocTph:b.steamPerHr>0&&val>0?val/24:0,dailyDemand:0,isShutdown:val<=0});
+        });
+    }
+    try{
+        const r=await fetch(API+'/daily-steam-allocs/batch',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({year:yr,month:mo,division:div,createdBy:window.CURRENT_USER||'',rows})});
+        const j=await r.json();
+        if(j.data?.error==='LOCKED'){alert(j.data.message);return;}
+        alert('일별 스팀 배분 저장 완료! ('+((j.data?.saved)||0)+'건)');
+    }catch(e){alert('저장 실패: '+e.message);}
+}
+
+async function lockDailySteamAlloc(){
+    if(!confirm('일별 스팀 배분을 확정(잠금)합니다.\n확정 후에는 수정이 불가합니다.\n\n계속하시겠습니까?'))return;
+    await saveDailySteamAlloc();
+    const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    try{
+        await fetch(API+'/daily-steam-allocs/lock',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({year:yr,month:mo,division:div,userId:window.CURRENT_USER||''})});
+        STEAM_ALLOC_LOCKED=true;
+        updateSteamAllocLockUI(true,window.CURRENT_USER||'',new Date().toLocaleString('ko-KR'));
+        calcEnergyCost(); // 재렌더링 (잠금 상태 반영)
+        alert('✅ 일별 스팀 배분이 확정되었습니다.');
+    }catch(e){alert('확정 실패: '+e.message);}
+}
+
+async function unlockDailySteamAlloc(){
+    if(!confirm('일별 스팀 배분 잠금을 해제합니다.\n수정이 가능해집니다.\n\n계속하시겠습니까?'))return;
+    const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
+    try{
+        await fetch(API+'/daily-steam-allocs/unlock',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({year:yr,month:mo,division:div})});
+        STEAM_ALLOC_LOCKED=false;
+        updateSteamAllocLockUI(false);
+        calcEnergyCost(); // 재렌더링
+        alert('🔓 잠금이 해제되었습니다.');
+    }catch(e){alert('잠금 해제 실패: '+e.message);}
+}
+
+function updateSteamAllocLockUI(locked,userId,lockedAt){
+    const badge=document.getElementById('steamAllocLockBadge');
+    const saveBtn=document.getElementById('steamAllocSaveBtn');
+    const lockBtn=document.getElementById('steamAllocLockBtn');
+    const unlockBtn=document.getElementById('steamAllocUnlockBtn');
+    if(locked){
+        if(badge){badge.style.display='';document.getElementById('steamAllocLockInfo').textContent='('+(userId||'')+' · '+(lockedAt?String(lockedAt).replace('T',' ').substring(0,16):'')+')';}
+        if(saveBtn)saveBtn.style.display='none';
+        if(lockBtn)lockBtn.style.display='none';
+        if(unlockBtn)unlockBtn.style.display='';
+    }else{
+        if(badge)badge.style.display='none';
+        if(saveBtn)saveBtn.style.display='';
+        if(lockBtn)lockBtn.style.display='';
+        if(unlockBtn)unlockBtn.style.display='none';
+    }
+}
+
 function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     const headEl=document.getElementById('engDailyHead');
     const tbEl=document.getElementById('engDailyTb');
@@ -1810,6 +1914,7 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
 
     // 활성 보일러 (우선순위 순)
     const boilers=boilerAllocRows.filter(r=>r.maxSupply>0||r.allocated>0);
+    STEAM_ALLOC_BOILERS=boilers; // 저장/로드용 보관
     if(!boilers.length){
         headEl.innerHTML='';tbEl.innerHTML='<tr><td colspan="3" style="text-align:center;padding:30px;color:#94a3b8;">보일러 데이터가 없습니다.</td></tr>';footEl.innerHTML='';return;
     }
@@ -1967,7 +2072,12 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
             const maint=maintDayMap[b.code];
             const isMainting=maint&&r.d>=maint.start&&r.d<=maint.end;
             const cellStyle=isMainting?'color:#ef4444;':'';
-            row+='<td class="r mn" style="'+cellStyle+'">'+(a>0?fmtI(Math.round(a)):(isMainting?'<span style="font-size:9px;">정비</span>':'-'))+'</td>';
+            const inputId='sa_'+r.d+'_'+b.code;
+            if(STEAM_ALLOC_LOCKED){
+                row+='<td class="r mn" style="'+cellStyle+'">'+(a>0?fmtI(Math.round(a)):(isMainting?'<span style="font-size:9px;">정비</span>':'-'))+'</td>';
+            }else{
+                row+='<td class="r mn" style="'+cellStyle+'padding:0!important;"><input id="'+inputId+'" type="number" value="'+(a>0?Math.round(a):'')+'" min="0" step="1" style="width:60px;padding:3px 4px;border:1px solid '+(isMainting?'#fecaca':'#e2e8f0')+';border-radius:4px;font-size:10px;text-align:right;font-family:inherit;background:'+(r.isHoliday?'#fef2f2':'#fff')+';" onchange="onSteamAllocEdit('+r.d+',\''+b.code+'\')"></td>';
+            }
             row+='<td class="r mn" style="color:#94a3b8;font-size:10px;">'+(h>0.01?fmt(h):'-')+'</td>';
         });
         const dayTotal=boilers.reduce((s,b)=>s+(r.alloc[b.code]||0),0);
@@ -2007,6 +2117,9 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     });
     const gt=Object.values(boilerTotals).reduce((s,v)=>s+v,0);
     const shortage=dayRows.reduce((s,r)=>s+r.remaining,0);
+    // DB 저장 데이터 로드 (input 값 덮어쓰기)
+    loadDailySteamAlloc();
+
     // 운휴 일수 집계
     const sdCount=dayRows.filter(r=>r.isHoliday).length;
     footEl.innerHTML=totalRow+tH+'<td class="r" style="color:#d97706;">'+fmtI(Math.round(gt))+'</td><td class="r" style="color:#166534;">'+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#ef4444;">'+(shortage>0?fmtI(Math.round(shortage)):'-')+'</td><td style="font-size:9px;color:#64748b;">가동 '+opDaysCount+'일'+(sdCount>0?' / 운휴 '+sdCount+'일':'')+'</td></tr>'+
@@ -2052,7 +2165,7 @@ function recalcProdSim(){
 }
 
 // ── Ref Management ──
-const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true},{k:'boiler-maintenances',l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','maintName','startDate','endDate','maintHours','capacityReduction','memo'],h:['연도','월','보일러','정비유형','정비명','시작일','종료일','정비시간(hr)','용량감소(%)','비고'],yearFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true},{k:'steam-price-intervals',l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)']},{k:'cogen-deductions',l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','boilerCode','rateType','rateName','rateValue','rateUnit'],h:['연도','보일러','단가유형','단가명','값','단위'],yearFilter:true},{k:'burner-lng-rates',l:'LNG보일러 원단위',i:'fa-wind',cols:['year','machineCode','lngPerTon','memo'],h:['연도','호기','원단위(㎥/톤)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
+const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true},{k:'boiler-maintenances',l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','maintName','startDate','endDate','maintHours','capacityReduction','memo'],h:['연도','월','보일러','정비유형','정비명','시작일','종료일','정비시간(hr)','용량감소(%)','비고'],yearFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true},{k:'steam-price-intervals',l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)']},{k:'cogen-deductions',l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','boilerCode','rateType','rateName','rateValue','rateUnit'],h:['연도','보일러','단가유형','단가명','값','단위'],yearFilter:true},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','machineCode','lngPerTon','memo'],h:['연도','호기','원단위(㎥/톤)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
 let cRef=0,refData=[],refDataPrev=[];
 function renderRefTabs(){document.getElementById('refTabs').innerHTML=REFS.map((d,i)=>'<div class="ref-tab'+(i===cRef?' active':'')+'" onclick="switchRef('+i+')"><i class="fas '+d.i+' mr-1"></i>'+d.l+'</div>').join('');}
 function switchRef(i){cRef=i;renderRefTabs();
