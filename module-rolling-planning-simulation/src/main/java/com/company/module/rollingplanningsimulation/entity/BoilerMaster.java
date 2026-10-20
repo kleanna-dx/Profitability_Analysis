@@ -12,6 +12,8 @@ public class BoilerMaster {
     @Column(name="CAPACITY_NOTE",length=200) private String capacityNote;
     @Column(name="IS_ACTIVE") private Boolean isActive;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
+    @Column(name="YEAR") private Integer year;
+    @Column(name="MONTH") private Integer month;
     @Column(name="DISPLAY_ORDER") private Integer displayOrder;
     @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
@@ -19,6 +21,6 @@ public class BoilerMaster {
     public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(isActive==null)isActive=true;}
     @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
-    @Builder public BoilerMaster(String boilerCode,String boilerName,String boilerType,BigDecimal steamPerHour,Integer priority,String capacityNote,Boolean isActive,String division,Integer displayOrder){this.boilerCode=boilerCode;this.boilerName=boilerName;this.boilerType=boilerType;this.steamPerHour=steamPerHour!=null?steamPerHour:BigDecimal.ZERO;this.priority=priority!=null?priority:99;this.capacityNote=capacityNote;this.isActive=isActive!=null?isActive:true;this.division=division!=null?division:"PS";this.displayOrder=displayOrder!=null?displayOrder:0;}
-    public void update(String boilerName,String boilerType,BigDecimal steamPerHour,Integer priority,String capacityNote,Boolean isActive){this.boilerName=boilerName;this.boilerType=boilerType;this.steamPerHour=steamPerHour;this.priority=priority;this.capacityNote=capacityNote;this.isActive=isActive;}
+    @Builder public BoilerMaster(String boilerCode,String boilerName,String boilerType,BigDecimal steamPerHour,Integer priority,String capacityNote,Boolean isActive,String division,Integer year,Integer month,Integer displayOrder){this.boilerCode=boilerCode;this.boilerName=boilerName;this.boilerType=boilerType;this.steamPerHour=steamPerHour!=null?steamPerHour:BigDecimal.ZERO;this.priority=priority!=null?priority:99;this.capacityNote=capacityNote;this.isActive=isActive!=null?isActive:true;this.division=division!=null?division:"PS";this.year=year!=null?year:0;this.month=month!=null?month:0;this.displayOrder=displayOrder!=null?displayOrder:0;}
+    public void update(String boilerName,String boilerType,BigDecimal steamPerHour,Integer priority,String capacityNote,Boolean isActive,Integer year,Integer month){this.boilerName=boilerName;this.boilerType=boilerType;this.steamPerHour=steamPerHour;this.priority=priority;this.capacityNote=capacityNote;this.isActive=isActive;if(year!=null)this.year=year;if(month!=null)this.month=month;}
 }

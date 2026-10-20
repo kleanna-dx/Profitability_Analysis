@@ -19,6 +19,7 @@ public class PwTimezoneDefController {
     public ResponseEntity<ApiResponse<PwTimezoneDefResponse>> save(@RequestBody PwTimezoneDefSaveRequest req) {
         return ResponseEntity.ok(ApiResponse.success(service.save(req)));
     }
+    @PutMapping("/{id}") public ResponseEntity<ApiResponse<?>> update(@PathVariable Long id, @RequestBody Map<String,Object> body) { repo.deleteById(id); body.remove("id"); try { return save(body); } catch(Exception e) { return ResponseEntity.ok(ApiResponse.success("update failed: "+e.getMessage())); } }
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { service.delete(id); return ResponseEntity.ok(ApiResponse.success(null)); }
 }
