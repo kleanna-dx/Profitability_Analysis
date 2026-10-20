@@ -488,7 +488,7 @@
             <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
                 <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-layer-group text-amber-400 mr-1"></i>스팀 구간별 단가 적용</h3>
             </div>
-            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>구간</th><th class="r">구간범위(톤)</th><th class="r">단가(원/톤)</th><th class="r">적용량(톤)</th><th class="r">금액(백만원)</th></tr></thead><tbody id="engSteamIntervalTb"></tbody></table></div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>보일러</th><th>구간</th><th class="r">구간범위(톤)</th><th class="r">단가(원/톤)</th><th class="r">적용량(톤)</th><th class="r">금액(백만원)</th></tr></thead><tbody id="engSteamIntervalTb"></tbody></table></div>
         </div>
 
         <!-- 보일러별 스팀 분배 (우선순위 기반) -->
@@ -1661,12 +1661,22 @@ function calcEnergyCost(){
     const steamShortage=steamRemaining;
     const totalBoilerCost=boilerAllocRows.reduce((s,r)=>s+r.boilerCost,0);
 
-    // 3-3) 구간단가 상세 테이블용 — 보일러별 구간단가 표시
-    //  구간단가는 해당 보일러의 배분량에만 적용 (다른 보일러는 스팀단가/LNG비용)
-    const intervalAllocated=boilerAllocRows.filter(r=>r.costNote==='구간단가').reduce((s,r)=>s+r.allocated,0);
-    const intervalRows=calcIntervalRows(intervalAllocated);
-    const totalAllocated=boilerAllocRows.reduce((s,r)=>s+r.allocated,0); // 전체 보일러 배분 합계
-    const totalSteamCost=totalBoilerCost; // 보일러 전체 비용 = 스팀 운영비 합계
+    // 3-3) 구간단가 상세 테이블용 — 보일러별 분리 표시
+    const intervalBoilers=boilerAllocRows.filter(r=>r.costNote==='구간단가');
+    let intervalRows=[];
+    intervalBoilers.forEach(br=>{
+        const bIvs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===br.code||(!iv.boilerCode&&intervalBoilers.length===1)).slice().sort((a,b)=>(a.intervalSeq||0)-(b.intervalSeq||0));
+        let rem=br.allocated;
+        bIvs.forEach(iv=>{
+            const min=parseFloat(iv.minUsageTon)||0;const max=iv.maxUsageTon?parseFloat(iv.maxUsageTon):Infinity;
+            const price=parseFloat(iv.pricePerTon)||0;const cap=max===Infinity?rem:(max-min);
+            const applied=rem>0?Math.min(rem,cap):0;const cost=applied*price;rem-=applied;
+            intervalRows.push({boiler:br.name,name:iv.intervalName||'구간',range:fmtI(Math.round(min))+'~'+(max===Infinity?'∞':fmtI(Math.round(max))),price,qty:applied,cost});
+        });
+    });
+    const intervalAllocated=intervalBoilers.reduce((s,r)=>s+r.allocated,0);
+    const totalAllocated=boilerAllocRows.reduce((s,r)=>s+r.allocated,0);
+    const totalSteamCost=totalBoilerCost;
 
     // 4) LNG 구매비 계산: Σ(호기별 생산톤 × LNG원단위) × LNG단가
     const lngPrice=BOILER_COST_RATES.filter(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG')).map(r=>parseFloat(r.rateValue)||0)[0]||0;
@@ -1725,17 +1735,27 @@ function calcEnergyCost(){
     '<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td class="r">'+fmtI(Math.round(totalProd))+'</td><td></td><td></td><td></td><td class="r" style="color:#ef4444;">'+fmtI(Math.round(totalSteamReq))+'</td></tr>';
 
     // 9) 스팀 구간 테이블
-    document.getElementById('engSteamIntervalTb').innerHTML=intervalRows.map(r=>
-        '<tr><td style="font-weight:600;">'+r.name+'</td>'+
-        '<td class="r mn">'+r.range+'</td>'+
-        '<td class="r mn">'+fmtI(Math.round(r.price))+'</td>'+
-        '<td class="r mn">'+fmtI(Math.round(r.qty))+'</td>'+
-        '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.cost/1000000))+'</td></tr>'
-    ).join('')+
-    '<tr style="background:#f8fafc;font-weight:700;"><td>합계 (구간단가 적용분)</td><td></td><td></td><td class="r">'+fmtI(Math.round(intervalAllocated))+'</td><td class="r" style="color:#d97706;">'+fmtI(Math.round(calcIntervalCost(intervalAllocated)/1000000))+'</td></tr>';
+    // 보일러별 소계 구분을 위해 이전 보일러 추적
+    let prevBoiler='';
+    document.getElementById('engSteamIntervalTb').innerHTML=intervalRows.map(r=>{
+        const showBoiler=r.boiler!==prevBoiler;
+        prevBoiler=r.boiler;
+        return '<tr>'+
+            '<td style="font-weight:600;color:#4f46e5;">'+(showBoiler?r.boiler:'')+'</td>'+
+            '<td style="font-weight:600;">'+r.name+'</td>'+
+            '<td class="r mn">'+r.range+'</td>'+
+            '<td class="r mn">'+fmtI(Math.round(r.price))+'</td>'+
+            '<td class="r mn">'+(r.qty>0?fmtI(Math.round(r.qty)):'-')+'</td>'+
+            '<td class="r mn" style="font-weight:700;">'+(r.cost>0?fmtI(Math.round(r.cost/1000000)):'-')+'</td></tr>';
+    }).join('')+
+    // 보일러별 소계
+    intervalBoilers.map(br=>{
+        return '<tr style="background:#f0f4ff;"><td style="font-weight:700;color:#4f46e5;">'+br.name+' 소계</td><td></td><td></td><td></td><td class="r" style="font-weight:700;">'+fmtI(Math.round(br.allocated))+'</td><td class="r" style="font-weight:700;color:#d97706;">'+fmtI(Math.round(br.boilerCost/1000000))+'</td></tr>';
+    }).join('')+
+    '<tr style="background:#f8fafc;font-weight:700;"><td>합계 (구간단가 적용분)</td><td></td><td></td><td></td><td class="r">'+fmtI(Math.round(intervalAllocated))+'</td><td class="r" style="color:#d97706;">'+fmtI(Math.round(intervalBoilers.reduce((s,r)=>s+r.boilerCost,0)/1000000))+'</td></tr>';
     // 전체 보일러 배분 합계 vs 스팀 필요량 비교 안내
     if(totalAllocated<totalSteamReq*0.99){
-        document.getElementById('engSteamIntervalTb').innerHTML+='<tr style="background:#fee2e2;"><td colspan="3" style="color:#991b1b;font-weight:700;">⚠ 보일러 배분 합계가 스팀 필요량 미달</td><td class="r" style="color:#991b1b;font-weight:700;">'+fmtI(Math.round(totalAllocated))+' / '+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#991b1b;">차이: '+fmtI(Math.round(totalSteamReq-totalAllocated))+'</td></tr>';
+        document.getElementById('engSteamIntervalTb').innerHTML+='<tr style="background:#fee2e2;"><td colspan="4" style="color:#991b1b;font-weight:700;">⚠ 보일러 배분 합계가 스팀 필요량 미달</td><td class="r" style="color:#991b1b;font-weight:700;">'+fmtI(Math.round(totalAllocated))+' / '+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#991b1b;">차이: '+fmtI(Math.round(totalSteamReq-totalAllocated))+'</td></tr>';
     }
 
     // 9-2) 보일러 분배 테이블
