@@ -20,13 +20,15 @@ public class SteamPriceIntervalController {
             .boilerCode((String)body.get("boilerCode"))
             .intervalSeq(body.get("intervalSeq")!=null?Integer.parseInt(body.get("intervalSeq").toString()):0)
             .intervalName((String)body.get("intervalName"))
-            .minUsageTon(body.get("minUsageTon")!=null?new BigDecimal(body.get("minUsageTon").toString()):BigDecimal.ZERO)
-            .maxUsageTon(body.get("maxUsageTon")!=null?new BigDecimal(body.get("maxUsageTon").toString()):null)
-            .pricePerTon(body.get("pricePerTon")!=null?new BigDecimal(body.get("pricePerTon").toString()):BigDecimal.ZERO)
+            .minUsageTon(parseBD(body.get("minUsageTon")))
+            .maxUsageTon(parseBDnull(body.get("maxUsageTon")))
+            .pricePerTon(parseBD(body.get("pricePerTon")))
             .division((String)body.getOrDefault("division","PS")).memo((String)body.get("memo")).build();
         if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
     @SuppressWarnings("unchecked") @PutMapping("/{id}") public ResponseEntity update(@PathVariable Long id, @RequestBody Map<String,Object> body) { repo.deleteById(id); body.remove("id"); try { return save(body); } catch(Exception e) { return ResponseEntity.ok(ApiResponse.success("update failed: "+e.getMessage())); } }
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }
+    private BigDecimal parseBD(Object v){if(v==null)return BigDecimal.ZERO;String s=v.toString().trim();if(s.isEmpty())return BigDecimal.ZERO;try{return new BigDecimal(s);}catch(Exception e){return BigDecimal.ZERO;}}
+    private BigDecimal parseBDnull(Object v){if(v==null)return null;String s=v.toString().trim();if(s.isEmpty())return null;try{return new BigDecimal(s);}catch(Exception e){return null;}}
 }
