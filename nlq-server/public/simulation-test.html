@@ -245,54 +245,89 @@
 
     <!-- 1-5 인터페이스 관리 -->
     <div id="s1-itf" style="display:none;">
-        <div class="sc" style="overflow:hidden;">
-            <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
-                <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-exchange-alt text-indigo-500 mr-2"></i>인터페이스 관리</h3>
-                <div style="display:flex;gap:6px;">
-                    <button onclick="runAllInterfaces()" style="padding:5px 14px;background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-play mr-1"></i>전체 실행</button>
-                    <button onclick="loadItfList()" style="padding:5px 12px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;"><i class="fas fa-sync-alt mr-1"></i>새로고침</button>
+        <!-- 인터페이스 상태 패널 -->
+        <div style="background:linear-gradient(135deg,#1e1b4b,#312e81);border-radius:12px;padding:18px 22px;color:#fff;margin-bottom:14px;position:relative;overflow:hidden;">
+            <div style="position:absolute;top:-50px;right:-50px;width:160px;height:160px;background:rgba(99,102,241,.15);border-radius:50%;"></div>
+            <div style="position:relative;z-index:1;">
+                <div style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;margin-bottom:4px;"><i class="fas fa-exchange-alt"></i> 인터페이스 상태</div>
+                <div style="font-size:11px;color:#c7d2fe;margin-bottom:12px;">경영시뮬레이션 기준정보 인터페이스 운영 현황</div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;" id="itfKpiCards"></div>
+            </div>
+        </div>
+
+        <!-- 탭 -->
+        <div style="display:flex;gap:2px;background:#fff;border:1px solid #e5e7eb;border-radius:10px 10px 0 0;border-bottom:none;padding:6px 6px 0;">
+            <button class="itf-tab active" onclick="switchItfTab('master')"><i class="fas fa-list mr-1"></i>인터페이스 마스터 관리</button>
+            <button class="itf-tab" onclick="switchItfTab('exec')"><i class="fas fa-clock mr-1"></i>인터페이스 수행관리</button>
+            <button class="itf-tab" onclick="switchItfTab('hist')"><i class="fas fa-history mr-1"></i>인터페이스 이력관리</button>
+        </div>
+        <style>.itf-tab{flex:0 0 auto;padding:9px 18px;border:none;background:transparent;color:#64748b;font-size:12px;font-weight:600;cursor:pointer;border-radius:8px 8px 0 0;font-family:inherit;border-bottom:3px solid transparent;}.itf-tab:hover{color:#4f46e5;background:#f8fafc;}.itf-tab.active{color:#4f46e5;background:#eef2ff;border-bottom-color:#4f46e5;}</style>
+
+        <!-- TAB: 마스터 관리 -->
+        <div class="sc" style="border-radius:0 10px 10px 10px;margin-bottom:14px;" id="itfTabMaster">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:11px;color:#64748b;">총 <b id="itfMasterCount">0</b> 건</span>
+                <button onclick="openItfMasterModal()" style="padding:4px 12px;background:#4f46e5;color:#fff;border:none;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;"><i class="fas fa-plus mr-1"></i>신규 등록</button>
+            </div>
+            <div style="overflow-x:auto;max-height:400px;">
+                <table class="st"><thead><tr>
+                    <th>인터페이스 ID</th><th>인터페이스 명</th><th>송신</th><th>수신</th>
+                    <th>RFC 함수명</th><th>대상 테이블</th><th>기본모드</th><th>활성</th>
+                    <th class="r">DB 건수</th><th>등록자</th><th style="width:70px;">관리</th>
+                </tr></thead><tbody id="itfMasterTbody"><tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">불러오는 중...</td></tr></tbody></table>
+            </div>
+        </div>
+
+        <!-- TAB: 수행관리 -->
+        <div class="sc" style="border-radius:0 10px 10px 10px;margin-bottom:14px;display:none;" id="itfTabExec">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <span style="font-size:10px;color:#64748b;font-weight:600;">인터페이스</span>
+                    <select id="itfExecFilter" onchange="renderItfExec()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;font-family:inherit;"><option value="ALL">전체</option></select>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-size:11px;color:#64748b;">총 <b id="itfExecCount">0</b> 건</span>
+                    <button onclick="openItfExecModal()" style="padding:4px 12px;background:#4f46e5;color:#fff;border:none;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;"><i class="fas fa-plus mr-1"></i>신규 등록</button>
                 </div>
             </div>
-            <!-- 인터페이스 목록 -->
-            <div style="overflow-x:auto;max-height:500px;" id="itfListWrap">
-                <table class="st">
-                    <thead><tr>
-                        <th style="width:30px;">#</th>
-                        <th>인터페이스명</th>
-                        <th>소스</th>
-                        <th>대상 테이블</th>
-                        <th class="r">최근 건수</th>
-                        <th>최근 실행</th>
-                        <th>상태</th>
-                        <th style="width:80px;">관리</th>
-                    </tr></thead>
-                    <tbody id="itfTbody"></tbody>
-                </table>
+            <div style="overflow-x:auto;max-height:400px;">
+                <table class="st"><thead><tr>
+                    <th style="width:40px;">ID</th><th>인터페이스</th><th>수행 주기</th><th>수행 시간/간격</th>
+                    <th>활성</th><th>마지막 수행</th><th>마지막 상태</th><th>다음 수행 예정</th>
+                    <th>비고</th><th>등록자</th><th style="width:70px;">관리</th>
+                </tr></thead><tbody id="itfExecTbody"><tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr></tbody></table>
             </div>
         </div>
 
-        <!-- 인터페이스 실행 이력 -->
-        <div class="sc" style="overflow:hidden;margin-top:14px;">
-            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
-                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-history text-amber-500 mr-1"></i>실행 이력</h3>
-                <span style="font-size:10px;color:#94a3b8;" id="itfHistCount">0건</span>
+        <!-- TAB: 이력관리 -->
+        <div class="sc" style="border-radius:0 10px 10px 10px;margin-bottom:14px;display:none;" id="itfTabHist">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;flex-wrap:wrap;gap:8px;">
+                <div style="display:flex;align-items:center;gap:4px;">
+                    <span style="font-size:10px;color:#64748b;font-weight:600;">인터페이스</span>
+                    <select id="itfHistRfc" onchange="renderItfHist()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;font-family:inherit;"><option value="ALL">전체</option></select>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;">
+                    <span style="font-size:10px;color:#64748b;font-weight:600;">상태</span>
+                    <select id="itfHistStatus" onchange="renderItfHist()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;font-family:inherit;">
+                        <option value="ALL">전체</option><option value="success">성공</option><option value="failed">실패</option><option value="running">실행중</option>
+                    </select>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;">
+                    <span style="font-size:10px;color:#64748b;font-weight:600;">기간</span>
+                    <input type="date" id="itfHistStart" style="padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:10px;font-family:inherit;">
+                    <span style="color:#94a3b8;">~</span>
+                    <input type="date" id="itfHistEnd" style="padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:10px;font-family:inherit;">
+                </div>
+                <button onclick="renderItfHist()" style="padding:4px 12px;background:#4f46e5;color:#fff;border:none;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;"><i class="fas fa-search mr-1"></i>조회</button>
+                <div style="flex:1;"></div>
+                <span style="font-size:11px;color:#64748b;">총 <b id="itfHistCount">0</b> 건</span>
             </div>
-            <div style="overflow-x:auto;max-height:300px;">
-                <table class="st">
-                    <thead><tr><th>인터페이스명</th><th>실행일시</th><th class="r">처리건수</th><th>소요시간</th><th>상태</th><th>비고</th></tr></thead>
-                    <tbody id="itfHistTbody"><tr><td colspan="6" style="text-align:center;padding:30px;color:#94a3b8;">실행 이력이 없습니다.</td></tr></tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- 안내 -->
-        <div style="margin-top:14px;padding:14px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;">
-            <div style="font-size:12px;font-weight:700;color:#4338ca;margin-bottom:6px;"><i class="fas fa-info-circle mr-1"></i>인터페이스 안내</div>
-            <div style="font-size:11px;color:#4338ca;line-height:1.7;">
-                • 기준정보 중 SAP/MES 등 외부 시스템에서 자동 연동되는 항목을 관리합니다<br>
-                • '실행' 버튼: 해당 인터페이스를 즉시 수동 실행합니다<br>
-                • '전체 실행': 모든 활성 인터페이스를 순차 실행합니다<br>
-                • 자동 연동 스케줄은 서버 설정에서 관리합니다 (현재: 매일 06:00)
+            <div style="overflow-x:auto;max-height:400px;">
+                <table class="st"><thead><tr>
+                    <th style="width:40px;">ID</th><th>인터페이스</th><th>구분</th><th>모드</th>
+                    <th>상태</th><th>시작</th><th>종료</th><th class="r">처리건수</th>
+                    <th>오류 메시지</th><th>실행자</th><th style="width:70px;">관리</th>
+                </tr></thead><tbody id="itfHistTbody"><tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr></tbody></table>
             </div>
         </div>
     </div>
@@ -2500,73 +2535,105 @@ async function saveOpt(){const body={};document.querySelectorAll('.modal-box inp
 function openSpeedModal(){let h='<h3><i class="fas fa-tachometer-alt text-blue-500"></i> 생산 선속 등록</h3>';[['machineCode','호기코드'],['product','지종'],['basisWeight','평량(g/m²)'],['trimWidth','지폭(mm)'],['speed','선속(m/min)'],['note','비고']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="closeModal()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
 function closeModal(){document.getElementById('modalBg').style.display='none';}
 
-// ── 인터페이스 관리 ──
-const ITF_LIST=[
-    {id:'ITF_STEAM_UNIT_RATE',name:'스팀사용 원단위',source:'에너지팀 수기입력',table:'rpsim_steam_unit_rate',apiKey:'steam-unit-rates',auto:false,schedule:'-'},
-    {id:'ITF_BOILER_MASTER',name:'보일러 마스터',source:'에너지팀 수기입력',table:'rpsim_boiler_master',apiKey:'boiler-masters',auto:false,schedule:'-'},
-    {id:'ITF_BOILER_MAINT',name:'보일러 정비계획',source:'에너지팀 수기입력',table:'rpsim_boiler_maintenance',apiKey:'boiler-maintenances',auto:false,schedule:'-'},
-    {id:'ITF_STEAM_PRICE',name:'스팀 구간단가',source:'에너지팀 수기입력',table:'rpsim_steam_price_interval',apiKey:'steam-price-intervals',auto:false,schedule:'-'},
-    {id:'ITF_BOILER_COST',name:'보일러 연료단가',source:'에너지팀 수기입력',table:'rpsim_boiler_cost_rate',apiKey:'boiler-cost-rates',auto:false,schedule:'-'},
-    {id:'ITF_COGEN_DEDUCT',name:'연료비 고정차감',source:'에너지팀 수기입력',table:'rpsim_cogen_deduction',apiKey:'cogen-deductions',auto:false,schedule:'-'},
-    {id:'ITF_LNG_BURNER',name:'LNG 버너 원단위',source:'에너지팀 수기입력',table:'rpsim_burner_lng_rate',apiKey:'burner-lng-rates',auto:false,schedule:'-'},
-    {id:'ITF_DAILY_OPS',name:'일별 가동시간',source:'생산관리 수기입력',table:'rpsim_daily_operation',apiKey:'daily-operations',auto:false,schedule:'-'},
-    {id:'ITF_MACHINE_SPEED',name:'제지 생산 선속',source:'생산관리 수기입력',table:'rpsim_machine_speed',apiKey:'machine-speeds',auto:false,schedule:'-'},
-    {id:'ITF_WASTE_RATE',name:'폐품률 마스터',source:'품질팀 수기입력',table:'rpsim_waste_rate',apiKey:'waste-rates',auto:false,schedule:'-'},
-    {id:'ITF_SAP_BW100',name:'원재료비 (ZOHPP100)',source:'SAP BW',table:'rpsim_raw_record',auto:true,schedule:'매월 초'},
-    {id:'ITF_SAP_BW101',name:'부재료비 (ZOHPP101)',source:'SAP BW',table:'rpsim_raw_record',auto:true,schedule:'매월 초'},
-    {id:'ITF_POWER_COST',name:'전력비 계산 결과',source:'전력비 모듈',table:'rpsim_pw_monthly_summary',auto:true,schedule:'전력비 확정 시'},
+// ── 인터페이스 관리 (마스터/수행/이력 3탭) ──
+const ITF_MASTERS=[
+    {id:'RPSIM_ITF_001',name:'스팀사용 원단위',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_steam_unit_rate',apiKey:'steam-unit-rates',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_002',name:'보일러 마스터',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_boiler_master',apiKey:'boiler-masters',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_003',name:'보일러 정비계획',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_boiler_maintenance',apiKey:'boiler-maintenances',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_004',name:'스팀 구간단가',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_steam_price_interval',apiKey:'steam-price-intervals',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_005',name:'보일러 연료단가',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_boiler_cost_rate',apiKey:'boiler-cost-rates',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_006',name:'연료비 고정차감',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_cogen_deduction',apiKey:'cogen-deductions',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_007',name:'LNG 버너 원단위',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_burner_lng_rate',apiKey:'burner-lng-rates',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_008',name:'일별 가동시간',sender:'생산관리',receiver:'RPSIM',rfcName:'-',table:'rpsim_daily_operation',apiKey:'daily-operations',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_009',name:'제지 생산 선속',sender:'생산관리',receiver:'RPSIM',rfcName:'-',table:'rpsim_machine_speed',apiKey:'machine-speeds',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_010',name:'폐품률 마스터',sender:'품질팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_waste_rate',apiKey:'waste-rates',mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_011',name:'원재료비 (ZOHPP100)',sender:'SAP BW',receiver:'RPSIM',rfcName:'ZOHPP100',table:'rpsim_raw_record',apiKey:null,mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_012',name:'부재료비 (ZOHPP101)',sender:'SAP BW',receiver:'RPSIM',rfcName:'ZOHPP101',table:'rpsim_raw_record',apiKey:null,mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_013',name:'전력비 계산 결과',sender:'전력비 모듈',receiver:'RPSIM',rfcName:'-',table:'rpsim_pw_monthly_summary',apiKey:null,mode:'MERGE',active:true},
 ];
-let ITF_HISTORY=[];
+let ITF_EXEC_DATA=[],ITF_HIST_DATA=[];
+
+function switchItfTab(tab){
+    document.querySelectorAll('.itf-tab').forEach(b=>b.classList.toggle('active',b.textContent.includes(tab==='master'?'마스터':tab==='exec'?'수행':'이력')));
+    document.getElementById('itfTabMaster').style.display=tab==='master'?'':'none';
+    document.getElementById('itfTabExec').style.display=tab==='exec'?'':'none';
+    document.getElementById('itfTabHist').style.display=tab==='hist'?'':'none';
+}
 
 async function loadItfList(){
+    // KPI 카드
     const div=getDiv();const yr=getYm().substring(0,4);const mo=parseInt(getYm().substring(4,6));
-    const tbody=document.getElementById('itfTbody');
-    if(!tbody)return;
-    let html='';
-    for(let i=0;i<ITF_LIST.length;i++){
-        const itf=ITF_LIST[i];
+    let totalDb=0,successCnt=0,failCnt=0;
+    const cnts={};
+    for(const itf of ITF_MASTERS){
         let cnt=0;
-        // API 호출로 건수 확인
         if(itf.apiKey){
             try{
                 let url=API+'/'+itf.apiKey+'?division='+div;
-                if(itf.apiKey!=='boiler-masters'&&itf.apiKey!=='steam-price-intervals') url+='&year='+yr;
-                if(['daily-operations','boiler-maintenances'].includes(itf.apiKey)) url+='&month='+mo;
+                if(!['boiler-masters','steam-price-intervals'].includes(itf.apiKey))url+='&year='+yr;
+                if(['daily-operations','boiler-maintenances','cogen-deductions'].includes(itf.apiKey))url+='&month='+mo;
                 const r=await fetch(url);const j=await r.json();
                 const arr=Array.isArray(j.data)?j.data:j.data?.content||j.data?.current||[];
                 cnt=Array.isArray(arr)?arr.length:0;
             }catch(_){}
         }
-        const statusBadge=cnt>0?
-            '<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#dcfce7;color:#166534;">완료</span>':
-            '<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#fee2e2;color:#991b1b;">미등록</span>';
-        const srcBadge=itf.auto?
-            '<span style="font-size:9px;padding:1px 6px;border-radius:6px;background:#dbeafe;color:#1d4ed8;">자동</span>':
-            '<span style="font-size:9px;padding:1px 6px;border-radius:6px;background:#f1f5f9;color:#64748b;">수기</span>';
-        html+='<tr>'+
-            '<td style="color:#94a3b8;font-weight:600;">'+(i+1)+'</td>'+
-            '<td style="font-weight:600;">'+itf.name+' '+srcBadge+'</td>'+
-            '<td style="font-size:11px;color:#64748b;">'+itf.source+'</td>'+
-            '<td style="font-size:10px;color:#94a3b8;font-family:monospace;">'+itf.table+'</td>'+
-            '<td class="r mn" style="font-weight:600;'+(cnt>0?'color:#4f46e5;':'color:#94a3b8;')+'">'+fmtI(cnt)+'</td>'+
-            '<td style="font-size:10px;color:#94a3b8;">'+itf.schedule+'</td>'+
-            '<td>'+statusBadge+'</td>'+
-            '<td>'+(itf.auto?'<button onclick="runInterface(\''+itf.id+'\')" style="font-size:10px;padding:3px 10px;background:#4f46e5;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;"><i class="fas fa-play mr-1"></i>실행</button>':'<span style="font-size:9px;color:#94a3b8;">기준정보 관리</span>')+'</td>'+
-            '</tr>';
+        cnts[itf.id]=cnt;totalDb+=cnt;
+        if(cnt>0)successCnt++;else failCnt++;
     }
-    tbody.innerHTML=html;
+    // KPI 렌더
+    document.getElementById('itfKpiCards').innerHTML=[
+        {icon:'fa-database',bg:'rgba(99,102,241,.2)',color:'#c7d2fe',label:'전체 DB 건수',value:fmtI(totalDb)},
+        {icon:'fa-check-circle',bg:'rgba(34,197,94,.2)',color:'#86efac',label:'등록 완료',value:successCnt},
+        {icon:'fa-times-circle',bg:'rgba(239,68,68,.2)',color:'#fca5a5',label:'미등록',value:failCnt},
+        {icon:'fa-list-alt',bg:'rgba(251,146,60,.2)',color:'#fdba74',label:'전체 인터페이스',value:ITF_MASTERS.length},
+    ].map(c=>'<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.08);border-radius:10px;padding:10px 16px;min-width:140px;"><div style="width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:'+c.bg+';"><i class="fas '+c.icon+'" style="color:'+c.color+';font-size:14px;"></i></div><div><div style="font-size:18px;font-weight:800;">'+c.value+'</div><div style="font-size:10px;color:#a5b4fc;">'+c.label+'</div></div></div>').join('');
+
+    // 마스터 테이블
+    const tbody=document.getElementById('itfMasterTbody');
+    document.getElementById('itfMasterCount').textContent=ITF_MASTERS.length;
+    tbody.innerHTML=ITF_MASTERS.map(itf=>{
+        const cnt=cnts[itf.id]||0;
+        const activeBadge=itf.active?'<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#dcfce7;color:#166534;">활성</span>':'<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#f1f5f9;color:#94a3b8;">비활성</span>';
+        const modeBadge='<span style="font-size:9px;padding:1px 6px;border-radius:6px;background:#fef3c7;color:#92400e;font-weight:600;">'+itf.mode+'</span>';
+        return '<tr>'+
+            '<td style="font-family:monospace;font-size:10px;color:#4338ca;">'+itf.id+'</td>'+
+            '<td style="font-weight:600;">'+itf.name+'</td>'+
+            '<td style="font-size:11px;">'+itf.sender+'</td>'+
+            '<td style="font-size:11px;">'+itf.receiver+'</td>'+
+            '<td style="font-size:10px;font-family:monospace;color:#64748b;">'+itf.rfcName+'</td>'+
+            '<td style="font-size:10px;font-family:monospace;color:#94a3b8;">'+itf.table+'</td>'+
+            '<td>'+modeBadge+'</td>'+
+            '<td>'+activeBadge+'</td>'+
+            '<td class="r mn" style="font-weight:600;'+(cnt>0?'color:#4f46e5':'color:#94a3b8')+'">'+fmtI(cnt)+'</td>'+
+            '<td style="font-size:10px;color:#94a3b8;">'+(window.CURRENT_USER||'admin')+'</td>'+
+            '<td><button onclick="editItfMaster(\''+itf.id+'\')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;"><i class="fas fa-edit"></i></button></td>'+
+            '</tr>';
+    }).join('');
+
+    // 수행관리/이력 필터 옵션
+    const filterOpts=ITF_MASTERS.map(itf=>'<option value="'+itf.id+'">'+itf.name+'</option>').join('');
+    document.getElementById('itfExecFilter').innerHTML='<option value="ALL">전체</option>'+filterOpts;
+    document.getElementById('itfHistRfc').innerHTML='<option value="ALL">전체</option>'+filterOpts;
+    renderItfExec();renderItfHist();
 }
 
-async function runInterface(itfId){
-    const itf=ITF_LIST.find(i=>i.id===itfId);
-    if(!itf){alert('인터페이스를 찾을 수 없습니다.');return;}
-    if(!itf.auto){alert(itf.name+'은(는) 수기입력 항목입니다.\n기준정보 관리 탭에서 직접 등록하세요.');return;}
-    alert('⚠ '+itf.name+' 자동 연동은 준비 중입니다.\n\n현재는 엑셀 업로드 또는 수기 입력으로 등록해주세요.');
+function renderItfExec(){
+    // 수행관리 — 현재는 스케줄 미구현이므로 안내 표시
+    const tbody=document.getElementById('itfExecTbody');
+    document.getElementById('itfExecCount').textContent='0';
+    tbody.innerHTML='<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;"><i class="fas fa-clock" style="font-size:20px;display:block;margin-bottom:8px;"></i>수행 스케줄이 등록되지 않았습니다.<br><span style="font-size:10px;">현재는 기준정보 관리에서 수기 입력 또는 엑셀 업로드로 등록합니다.</span></td></tr>';
 }
 
-async function runAllInterfaces(){
-    alert('⚠ 전체 인터페이스 자동 실행은 준비 중입니다.\n\n현재는 각 항목별로 기준정보 관리에서 수기 등록 또는 엑셀 업로드를 사용해주세요.');
+function renderItfHist(){
+    // 이력관리 — 현재는 이력 미구현이므로 안내 표시
+    const tbody=document.getElementById('itfHistTbody');
+    document.getElementById('itfHistCount').textContent='0';
+    tbody.innerHTML='<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;"><i class="fas fa-history" style="font-size:20px;display:block;margin-bottom:8px;"></i>실행 이력이 없습니다.<br><span style="font-size:10px;">인터페이스 수행 시 자동으로 이력이 기록됩니다.</span></td></tr>';
 }
+
+function openItfMasterModal(){alert('인터페이스 마스터 등록은 준비 중입니다.');}
+function openItfExecModal(){alert('수행 스케줄 등록은 준비 중입니다.');}
+function editItfMaster(id){alert('인터페이스 '+id+' 편집은 준비 중입니다.');}
 
 // ── SAP BW 엑셀 파싱 (ZOHPP100/101) ──
 let BW_DATA=[];   // 파싱된 전체 데이터
