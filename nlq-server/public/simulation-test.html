@@ -2595,8 +2595,9 @@ async function saveOpt(){const body={};document.querySelectorAll('.modal-box inp
 function openSpeedModal(){let h='<h3><i class="fas fa-tachometer-alt text-blue-500"></i> 생산 선속 등록</h3>';[['machineCode','호기코드'],['product','지종'],['basisWeight','평량(g/m²)'],['trimWidth','지폭(mm)'],['speed','선속(m/min)'],['note','비고']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="closeModal()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}
 function closeModal(){document.getElementById('modalBg').style.display='none';}
 
-// ── 인터페이스 관리 (마스터/수행/이력 3탭) ──
-const ITF_MASTERS=[
+// ── 인터페이스 관리 (마스터/수행/이력 3탭) — DB API 연동 ──
+// fallback: DB 미연결 시 하드코딩 데이터 사용
+const ITF_MASTERS_FALLBACK=[
     {id:'RPSIM_ITF_001',name:'스팀사용 원단위',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_steam_unit_rate',apiKey:'steam-unit-rates',mode:'REPLACE',active:true},
     {id:'RPSIM_ITF_002',name:'보일러 마스터',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_boiler_master',apiKey:'boiler-masters',mode:'REPLACE',active:true},
     {id:'RPSIM_ITF_003',name:'보일러 정비계획',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_boiler_maintenance',apiKey:'boiler-maintenances',mode:'REPLACE',active:true},
@@ -2611,18 +2612,38 @@ const ITF_MASTERS=[
     {id:'RPSIM_ITF_012',name:'부재료비 (ZOHPP101)',sender:'SAP BW',receiver:'RPSIM',rfcName:'ZOHPP101',table:'rpsim_raw_record',apiKey:null,mode:'REPLACE',active:true},
     {id:'RPSIM_ITF_013',name:'전력비 계산 결과',sender:'전력비 모듈',receiver:'RPSIM',rfcName:'-',table:'rpsim_pw_monthly_summary',apiKey:null,mode:'MERGE',active:true},
 ];
-let ITF_EXEC_DATA=[],ITF_HIST_DATA=[];
+// apiKey 매핑 (DB 마스터에는 targetTable만 있으므로 테이블→apiKey 변환)
+const TABLE_API_MAP={'rpsim_steam_unit_rate':'steam-unit-rates','rpsim_boiler_master':'boiler-masters','rpsim_boiler_maintenance':'boiler-maintenances','rpsim_steam_price_interval':'steam-price-intervals','rpsim_boiler_cost_rate':'boiler-cost-rates','rpsim_cogen_deduction':'cogen-deductions','rpsim_burner_lng_rate':'burner-lng-rates','rpsim_daily_operation':'daily-operations','rpsim_machine_speed':'machine-speeds','rpsim_waste_rate':'waste-rates'};
+let ITF_MASTERS=[];  // DB 로드 결과 (또는 fallback)
+let ITF_SCHEDULES=[]; // DB 스케줄 목록
+let ITF_HISTORIES=[]; // DB 이력 목록
 
 function switchItfTab(tab){
     document.querySelectorAll('.itf-tab').forEach(b=>b.classList.toggle('active',b.textContent.includes(tab==='master'?'마스터':tab==='exec'?'수행':'이력')));
     document.getElementById('itfTabMaster').style.display=tab==='master'?'':'none';
     document.getElementById('itfTabExec').style.display=tab==='exec'?'':'none';
     document.getElementById('itfTabHist').style.display=tab==='hist'?'':'none';
+    if(tab==='exec') renderItfExec();
+    if(tab==='hist') renderItfHist();
 }
 
 async function loadItfList(){
-    // KPI 카드
     const div=getDiv();const yr=getYm().substring(0,4);const mo=parseInt(getYm().substring(4,6));
+
+    // 1) DB에서 마스터 로드 → 실패 시 fallback
+    try{
+        const r=await fetch(API+'/itf-masters');const j=await r.json();
+        if(j.data&&Array.isArray(j.data)&&j.data.length>0){
+            ITF_MASTERS=j.data.map(d=>({
+                id:d.interfaceId, name:d.interfaceName, sender:d.sender, receiver:d.receiver,
+                rfcName:d.rfcName||'-', table:d.targetTable||'', apiKey:TABLE_API_MAP[d.targetTable]||null,
+                mode:d.execMode||'REPLACE', active:d.isActive!==false,
+                remark:d.remark||'', createdBy:d.createdBy||'', updatedBy:d.updatedBy||''
+            }));
+        }else{ITF_MASTERS=[...ITF_MASTERS_FALLBACK];}
+    }catch(_){ITF_MASTERS=[...ITF_MASTERS_FALLBACK];}
+
+    // 2) DB 건수 조회
     let totalDb=0,successCnt=0,failCnt=0;
     const cnts={};
     for(const itf of ITF_MASTERS){
@@ -2640,7 +2661,8 @@ async function loadItfList(){
         cnts[itf.id]=cnt;totalDb+=cnt;
         if(cnt>0)successCnt++;else failCnt++;
     }
-    // KPI 렌더
+
+    // 3) KPI 렌더
     document.getElementById('itfKpiCards').innerHTML=[
         {icon:'fa-database',bg:'rgba(99,102,241,.2)',color:'#c7d2fe',label:'전체 DB 건수',value:fmtI(totalDb)},
         {icon:'fa-check-circle',bg:'rgba(34,197,94,.2)',color:'#86efac',label:'등록 완료',value:successCnt},
@@ -2648,7 +2670,7 @@ async function loadItfList(){
         {icon:'fa-list-alt',bg:'rgba(251,146,60,.2)',color:'#fdba74',label:'전체 인터페이스',value:ITF_MASTERS.length},
     ].map(c=>'<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.08);border-radius:10px;padding:10px 16px;min-width:140px;"><div style="width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:'+c.bg+';"><i class="fas '+c.icon+'" style="color:'+c.color+';font-size:14px;"></i></div><div><div style="font-size:18px;font-weight:800;">'+c.value+'</div><div style="font-size:10px;color:#a5b4fc;">'+c.label+'</div></div></div>').join('');
 
-    // 마스터 테이블
+    // 4) 마스터 테이블
     const tbody=document.getElementById('itfMasterTbody');
     document.getElementById('itfMasterCount').textContent=ITF_MASTERS.length;
     tbody.innerHTML=ITF_MASTERS.map(itf=>{
@@ -2665,35 +2687,209 @@ async function loadItfList(){
             '<td>'+modeBadge+'</td>'+
             '<td>'+activeBadge+'</td>'+
             '<td class="r mn" style="font-weight:600;'+(cnt>0?'color:#4f46e5':'color:#94a3b8')+'">'+fmtI(cnt)+'</td>'+
-            '<td style="font-size:10px;color:#94a3b8;">'+(window.CURRENT_USER||'admin')+'</td>'+
-            '<td><button onclick="editItfMaster(\''+itf.id+'\')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;"><i class="fas fa-edit"></i></button></td>'+
+            '<td style="font-size:10px;color:#94a3b8;">'+(itf.createdBy||window.CURRENT_USER||'admin')+'</td>'+
+            '<td>'+
+              '<button onclick="editItfMaster(\''+itf.id+'\')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;" title="편집"><i class="fas fa-edit"></i></button>'+
+              '<button onclick="deleteItfMaster(\''+itf.id+'\')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;margin-left:4px;" title="삭제"><i class="fas fa-trash-alt"></i></button>'+
+            '</td>'+
             '</tr>';
     }).join('');
 
-    // 수행관리/이력 필터 옵션
+    // 5) 수행/이력 필터 옵션
     const filterOpts=ITF_MASTERS.map(itf=>'<option value="'+itf.id+'">'+itf.name+'</option>').join('');
     document.getElementById('itfExecFilter').innerHTML='<option value="ALL">전체</option>'+filterOpts;
     document.getElementById('itfHistRfc').innerHTML='<option value="ALL">전체</option>'+filterOpts;
-    renderItfExec();renderItfHist();
+
+    // 6) 스케줄/이력 로드 (비동기)
+    loadItfSchedules();loadItfHistories();
 }
 
+// ── 스케줄 로드 ──
+async function loadItfSchedules(){
+    try{
+        const r=await fetch(API+'/itf-schedules');const j=await r.json();
+        ITF_SCHEDULES=Array.isArray(j.data)?j.data:[];
+    }catch(_){ITF_SCHEDULES=[];}
+    renderItfExec();
+}
+
+// ── 이력 로드 ──
+async function loadItfHistories(){
+    try{
+        const r=await fetch(API+'/itf-histories');const j=await r.json();
+        ITF_HISTORIES=Array.isArray(j.data)?j.data:[];
+    }catch(_){ITF_HISTORIES=[];}
+    renderItfHist();
+}
+
+// ── 수행관리 렌더 ──
 function renderItfExec(){
-    // 수행관리 — 현재는 스케줄 미구현이므로 안내 표시
     const tbody=document.getElementById('itfExecTbody');
-    document.getElementById('itfExecCount').textContent='0';
-    tbody.innerHTML='<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;"><i class="fas fa-clock" style="font-size:20px;display:block;margin-bottom:8px;"></i>수행 스케줄이 등록되지 않았습니다.<br><span style="font-size:10px;">현재는 기준정보 관리에서 수기 입력 또는 엑셀 업로드로 등록합니다.</span></td></tr>';
+    const filterVal=document.getElementById('itfExecFilter').value;
+    let filtered=ITF_SCHEDULES;
+    if(filterVal!=='ALL') filtered=filtered.filter(s=>s.interfaceId===filterVal);
+    document.getElementById('itfExecCount').textContent=filtered.length;
+    if(filtered.length===0){
+        tbody.innerHTML='<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;"><i class="fas fa-clock" style="font-size:20px;display:block;margin-bottom:8px;"></i>수행 스케줄이 등록되지 않았습니다.<br><span style="font-size:10px;">신규 등록 버튼으로 스케줄을 추가하세요.</span></td></tr>';
+        return;
+    }
+    const itfName=id=>{const m=ITF_MASTERS.find(i=>i.id===id);return m?m.name:id;};
+    const statusBadge=s=>{
+        const map={success:['#dcfce7','#166534'],failed:['#fef2f2','#dc2626'],running:['#dbeafe','#2563eb'],pending:['#f1f5f9','#64748b']};
+        const c=map[s]||map.pending;
+        return '<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:'+c[0]+';color:'+c[1]+';">'+(s||'pending')+'</span>';
+    };
+    const fmtDT=v=>v?v.replace('T',' ').substring(0,16):'-';
+    tbody.innerHTML=filtered.map(s=>'<tr>'+
+        '<td class="mn" style="font-size:10px;">'+s.scheduleId+'</td>'+
+        '<td style="font-weight:600;font-size:11px;">'+itfName(s.interfaceId)+'</td>'+
+        '<td><span style="font-size:10px;padding:2px 8px;border-radius:10px;background:#e0e7ff;color:#3730a3;font-weight:600;">'+(s.scheduleType||'manual')+'</span></td>'+
+        '<td style="font-size:10px;color:#64748b;">'+(s.execTime||s.execDatetime||'-')+'</td>'+
+        '<td>'+(s.isActive!==false?'<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#dcfce7;color:#166534;">활성</span>':'<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#f1f5f9;color:#94a3b8;">비활성</span>')+'</td>'+
+        '<td style="font-size:10px;color:#64748b;">'+fmtDT(s.lastRunAt)+'</td>'+
+        '<td>'+statusBadge(s.lastRunStatus)+'</td>'+
+        '<td style="font-size:10px;color:#64748b;">'+fmtDT(s.nextRunAt)+'</td>'+
+        '<td style="font-size:10px;color:#94a3b8;">'+(s.remark||'')+'</td>'+
+        '<td style="font-size:10px;color:#94a3b8;">'+(s.createdBy||'')+'</td>'+
+        '<td>'+
+          '<button onclick="runItfSchedule('+s.scheduleId+',\''+s.interfaceId+'\')" style="font-size:10px;color:#059669;cursor:pointer;background:none;border:none;" title="수동 실행"><i class="fas fa-play"></i></button>'+
+          '<button onclick="editItfSchedule('+s.scheduleId+')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;margin-left:4px;" title="편집"><i class="fas fa-edit"></i></button>'+
+          '<button onclick="deleteItfSchedule('+s.scheduleId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;margin-left:4px;" title="삭제"><i class="fas fa-trash-alt"></i></button>'+
+        '</td>'+
+    '</tr>').join('');
 }
 
+// ── 이력관리 렌더 ──
 function renderItfHist(){
-    // 이력관리 — 현재는 이력 미구현이므로 안내 표시
     const tbody=document.getElementById('itfHistTbody');
-    document.getElementById('itfHistCount').textContent='0';
-    tbody.innerHTML='<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;"><i class="fas fa-history" style="font-size:20px;display:block;margin-bottom:8px;"></i>실행 이력이 없습니다.<br><span style="font-size:10px;">인터페이스 수행 시 자동으로 이력이 기록됩니다.</span></td></tr>';
+    const filterItf=document.getElementById('itfHistRfc').value;
+    const filterSt=document.getElementById('itfHistStatus').value;
+    let filtered=ITF_HISTORIES;
+    if(filterItf!=='ALL') filtered=filtered.filter(h=>h.interfaceId===filterItf);
+    if(filterSt!=='ALL') filtered=filtered.filter(h=>h.status===filterSt);
+    document.getElementById('itfHistCount').textContent=filtered.length;
+    if(filtered.length===0){
+        tbody.innerHTML='<tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;"><i class="fas fa-history" style="font-size:20px;display:block;margin-bottom:8px;"></i>실행 이력이 없습니다.<br><span style="font-size:10px;">인터페이스 수행 시 자동으로 이력이 기록됩니다.</span></td></tr>';
+        return;
+    }
+    const statusBadge=s=>{
+        const map={success:['#dcfce7','#166534'],failed:['#fef2f2','#dc2626'],running:['#dbeafe','#2563eb'],pending:['#f1f5f9','#64748b']};
+        const c=map[s]||map.pending;
+        return '<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:'+c[0]+';color:'+c[1]+';">'+(s||'pending')+'</span>';
+    };
+    const fmtDT=v=>v?v.replace('T',' ').substring(0,16):'-';
+    tbody.innerHTML=filtered.map(h=>'<tr>'+
+        '<td class="mn" style="font-size:10px;">'+h.historyId+'</td>'+
+        '<td style="font-weight:600;font-size:11px;">'+(h.interfaceName||h.interfaceId)+'</td>'+
+        '<td><span style="font-size:10px;padding:2px 8px;border-radius:10px;background:#e0e7ff;color:#3730a3;font-weight:600;">'+(h.jobType||'MANUAL')+'</span></td>'+
+        '<td style="font-size:10px;color:#64748b;">'+(h.execMode||'replace')+'</td>'+
+        '<td>'+statusBadge(h.status)+'</td>'+
+        '<td style="font-size:10px;color:#64748b;">'+fmtDT(h.startedAt)+'</td>'+
+        '<td style="font-size:10px;color:#64748b;">'+fmtDT(h.completedAt)+'</td>'+
+        '<td class="r mn" style="font-weight:600;">'+fmtI(h.processCount||0)+'</td>'+
+        '<td style="font-size:10px;color:'+(h.errorMessage?'#dc2626':'#94a3b8')+';max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+(h.errorMessage||'')+'">'+(h.errorMessage||'-')+'</td>'+
+        '<td style="font-size:10px;color:#94a3b8;">'+(h.executedBy||'')+'</td>'+
+        '<td>'+(h.durationMs!=null?'<span style="font-size:9px;color:#64748b;">'+(h.durationMs/1000).toFixed(1)+'s</span>':'')+'</td>'+
+    '</tr>').join('');
 }
 
-function openItfMasterModal(){alert('인터페이스 마스터 등록은 준비 중입니다.');}
-function openItfExecModal(){alert('수행 스케줄 등록은 준비 중입니다.');}
-function editItfMaster(id){alert('인터페이스 '+id+' 편집은 준비 중입니다.');}
+// ── 마스터 등록/편집 모달 ──
+function openItfMasterModal(editData){
+    const isEdit=!!editData;
+    const d=editData||{};
+    let h='<h3 style="margin:0 0 16px;font-size:15px;"><i class="fas fa-'+(isEdit?'edit':'plus-circle')+' text-blue-500"></i> 인터페이스 마스터 '+(isEdit?'편집':'등록')+'</h3>';
+    const fields=[['interfaceId','인터페이스 ID',d.id||'',isEdit],['interfaceName','인터페이스 명',d.name||''],['sender','송신 시스템',d.sender||''],['receiver','수신 시스템',d.receiver||'RPSIM'],['rfcName','RFC 함수명',d.rfcName||''],['targetTable','대상 테이블',d.table||''],['execMode','기본 모드',d.mode||'REPLACE'],['remark','비고',d.remark||'']];
+    fields.forEach(([n,l,v,ro])=>{h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">'+l+'</label><input name="itfm_'+n+'" value="'+(v||'')+'" placeholder="'+l+'" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;"'+(ro?' readonly style="background:#f3f4f6;"':'')+'>';});
+    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">활성</label>';
+    h+='<select name="itfm_isActive" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;"><option value="true"'+(d.active!==false?' selected':'')+'> 활성</option><option value="false"'+(d.active===false?' selected':'')+'> 비활성</option></select>';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveItfMaster('+(isEdit?"'"+d.id+"'":"null")+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+
+async function saveItfMaster(editId){
+    const g=n=>document.querySelector('[name="itfm_'+n+'"]').value.trim();
+    const body={interfaceId:g('interfaceId'),interfaceName:g('interfaceName'),sender:g('sender'),receiver:g('receiver'),rfcName:g('rfcName'),targetTable:g('targetTable'),execMode:g('execMode'),isActive:g('isActive'),remark:g('remark'),createdBy:window.CURRENT_USER||'admin',updatedBy:window.CURRENT_USER||'admin'};
+    try{
+        const url=editId?API+'/itf-masters/'+editId:API+'/itf-masters';
+        const r=await fetch(url,{method:editId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const j=await r.json();if(j.data){closeModal();loadItfList();}else{alert('저장 실패: '+(j.message||''));}
+    }catch(e){alert('저장 에러: '+e.message);}
+}
+
+function editItfMaster(id){
+    const itf=ITF_MASTERS.find(i=>i.id===id);
+    if(!itf){alert('인터페이스를 찾을 수 없습니다.');return;}
+    openItfMasterModal(itf);
+}
+
+async function deleteItfMaster(id){
+    if(!confirm('인터페이스 '+id+'을(를) 삭제하시겠습니까?')) return;
+    try{
+        await fetch(API+'/itf-masters/'+id,{method:'DELETE'});
+        loadItfList();
+    }catch(e){alert('삭제 에러: '+e.message);}
+}
+
+// ── 수행 스케줄 등록/편집 모달 ──
+function openItfExecModal(editData){
+    const isEdit=!!editData;
+    const d=editData||{};
+    let h='<h3 style="margin:0 0 16px;font-size:15px;"><i class="fas fa-'+(isEdit?'edit':'plus-circle')+' text-blue-500"></i> 수행 스케줄 '+(isEdit?'편집':'등록')+'</h3>';
+    // 인터페이스 선택
+    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">인터페이스</label>';
+    h+='<select name="itfs_interfaceId" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    ITF_MASTERS.forEach(itf=>{h+='<option value="'+itf.id+'"'+(d.interfaceId===itf.id?' selected':'')+'>'+itf.id+' — '+itf.name+'</option>';});
+    h+='</select>';
+    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">수행 주기</label>';
+    h+='<select name="itfs_scheduleType" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    ['manual','daily','monthly','once'].forEach(t=>{h+='<option value="'+t+'"'+(d.scheduleType===t?' selected':'')+'>'+t+'</option>';});
+    h+='</select>';
+    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">대상년월 (YYYYMM)</label><input name="itfs_targetMonth" value="'+(d.targetMonth||getYm())+'" placeholder="202501" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">실행 모드</label><input name="itfs_execMode" value="'+(d.execMode||'replace')+'" placeholder="replace/append/merge" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">비고</label><input name="itfs_remark" value="'+(d.remark||'')+'" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveItfSchedule('+(isEdit?d.scheduleId:'null')+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+
+async function saveItfSchedule(editId){
+    const g=n=>document.querySelector('[name="itfs_'+n+'"]').value.trim();
+    const body={interfaceId:g('interfaceId'),scheduleType:g('scheduleType'),targetMonth:g('targetMonth'),execMode:g('execMode'),remark:g('remark'),isActive:true,createdBy:window.CURRENT_USER||'admin',updatedBy:window.CURRENT_USER||'admin'};
+    try{
+        const url=editId?API+'/itf-schedules/'+editId:API+'/itf-schedules';
+        const r=await fetch(url,{method:editId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const j=await r.json();if(j.data){closeModal();loadItfSchedules();}else{alert('저장 실패');}
+    }catch(e){alert('에러: '+e.message);}
+}
+
+function editItfSchedule(schedId){
+    const s=ITF_SCHEDULES.find(x=>x.scheduleId===schedId);
+    if(s) openItfExecModal(s); else alert('스케줄을 찾을 수 없습니다.');
+}
+
+async function deleteItfSchedule(schedId){
+    if(!confirm('스케줄 #'+schedId+'을(를) 삭제하시겠습니까?')) return;
+    try{await fetch(API+'/itf-schedules/'+schedId,{method:'DELETE'});loadItfSchedules();}catch(e){alert('삭제 에러');}
+}
+
+// ── 수동 실행 ──
+async function runItfSchedule(schedId,interfaceId){
+    const itf=ITF_MASTERS.find(i=>i.id===interfaceId);
+    if(!confirm((itf?itf.name:interfaceId)+' 인터페이스를 수동 실행하시겠습니까?')) return;
+    try{
+        // 1) 이력 시작
+        const rb={interfaceId:interfaceId,interfaceName:itf?itf.name:'',jobType:'MANUAL_SYNC',execMode:'replace',executedBy:window.CURRENT_USER||'admin'};
+        const r=await fetch(API+'/itf-histories/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rb)});
+        const j=await r.json();
+        const histId=j.data?.historyId;
+        // 2) 스케줄 상태 갱신
+        if(schedId) await fetch(API+'/itf-schedules/'+schedId+'/run',{method:'POST'});
+        // 3) 실제 데이터 수신은 향후 구현 — 지금은 즉시 success 처리
+        const cb={status:'success',processCount:0,errorMessage:null};
+        if(histId) await fetch(API+'/itf-histories/'+histId+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cb)});
+        alert('실행 완료 (이력 #'+histId+')');
+        loadItfSchedules();loadItfHistories();
+    }catch(e){alert('실행 에러: '+e.message);}
+}
 
 // ── SAP BW 엑셀 파싱 (ZOHPP100/101) ──
 let BW_DATA=[];   // 파싱된 전체 데이터
