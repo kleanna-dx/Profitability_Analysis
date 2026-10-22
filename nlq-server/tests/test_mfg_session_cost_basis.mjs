@@ -315,6 +315,36 @@ assertMatch(htmlSrc,
     /optKey\s*=\s*`\$\{opt\.value\}\|\$\{opt\.zcgubunD\s*\|\|\s*['"]['"]\}`/,
     'I-7: option value 포맷 "<value>|<zcgubunD>" 사용');
 
+// [2026-10-22 신규] I-8 / I-9 — buildAnalysisDetailTable 호출부 모두 appliedCostBasis 전달
+//   사용자 신고: aggregate 결과표에 뱃지/드롭다운이 보이지 않음.
+//   원인: aggregate 호출부(appendBotMessage, 라인 ~3829)가 10번째 인자를 안 넘겨 undefined 로 호출됨.
+//         analysis 호출부(appendAnalysisOnlyMessage)만 appliedCostBasis 가 전달되고 있었음.
+//   재발 방지: 두 호출부 모두 10번째 인자로 appliedCostBasis 를 전달해야 함.
+
+// I-8: aggregate 호출부 (appendBotMessage) — data.appliedCostBasis 전달
+assertMatch(htmlSrc,
+    /buildAnalysisDetailTable\s*\(\s*detailTableId[\s\S]{0,500}data\.appliedCostBasis/,
+    'I-8: aggregate 호출부(appendBotMessage) 가 data.appliedCostBasis 를 10번째 인자로 전달 (뱃지/드롭다운 렌더용)');
+
+// I-9: analysis 호출부 (appendAnalysisOnlyMessage) — dataOrText.appliedCostBasis 전달
+assertMatch(htmlSrc,
+    /buildAnalysisDetailTable\s*\(\s*tableId[\s\S]{0,500}dataOrText\.appliedCostBasis/,
+    'I-9: analysis 호출부(appendAnalysisOnlyMessage) 가 dataOrText.appliedCostBasis 를 10번째 인자로 전달');
+
+// I-10: buildAnalysisDetailTable 호출 중 "9-인자 (appliedCostBasis 누락)" 가 없는지 재확인
+//   모든 호출의 인자 개수가 10개여야 함 (showWidenButton + appliedCostBasis 둘 다 명시)
+{
+    const callRe = /buildAnalysisDetailTable\s*\(([^)]*)\)/g;
+    const argCounts = [];
+    let m;
+    while ((m = callRe.exec(htmlSrc)) !== null) {
+        argCounts.push(m[1].split(',').map(s => s.trim()).filter(Boolean).length);
+    }
+    const bad = argCounts.filter(n => n < 10);
+    assert(bad.length === 0,
+        `I-10: 모든 buildAnalysisDetailTable 호출이 10-인자여야 함 — 9개 이하 호출=${bad.length}, 전체=${JSON.stringify(argCounts)}`);
+}
+
 // ============================================================
 // J. FRONTEND — onCostBasisDropdownChange 핸들러
 // ============================================================
