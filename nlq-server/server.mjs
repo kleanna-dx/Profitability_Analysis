@@ -15115,6 +15115,75 @@ app.patch('/api/history/session/:sessionKey/bookmark', async (req, res) => {
   }
 });
 
+// ============================================================
+// [2026-10-22 B-3] 세션 단위 — 가장 최근 history row 의 _sessionCostBasis UPDATE
+// ------------------------------------------------------------
+// 목적: 드롭다운에서 [매출원가] 등으로 변경 시, 서버가 new history row 를 쌓지 않고
+//       (B-3 방식은 재질의 안 함) 가장 최근 row 의 chart_config._sessionCostBasis 만 업데이트.
+//       → 채팅 재진입 시 restoreSession 이 "드롭다운 마지막 선택값" 을 복원 가능.
+// 프론트에서 fire-and-forget 로 호출 (실패해도 UI 는 정상). 1회 UPDATE 만 수행.
+// 스키마 변경 없음 — chart_config JSON 안에 _sessionCostBasis 필드만 UPSERT.
+// ============================================================
+app.patch('/api/history/session/:sessionKey/cost-basis', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const sessionKey = req.params.sessionKey;
+    const { sessionCostBasis } = req.body || {};
+    const normalized = normalizeSessionCostBasis(sessionCostBasis);
+    if (!normalized) {
+      return res.status(400).json({ error: 'sessionCostBasis가 whitelist에 매칭되지 않습니다.' });
+    }
+
+    // 가장 최근 row 1개 찾기 (chart_config 포함)
+    let latestRows;
+    if (sessionKey.startsWith('legacy_')) {
+      const id = parseInt(sessionKey.replace('legacy_', ''));
+      [latestRows] = await pool.query(
+        'SELECT id, chart_config FROM nl_query_history WHERE id=? AND user_id=?',
+        [id, userId]
+      );
+    } else {
+      [latestRows] = await pool.query(
+        'SELECT id, chart_config FROM nl_query_history WHERE session_id=? AND user_id=? ORDER BY created_at DESC LIMIT 1',
+        [sessionKey, userId]
+      );
+    }
+    if (!latestRows || latestRows.length === 0) {
+      return res.status(404).json({ error: '세션을 찾을 수 없습니다.' });
+    }
+
+    // chart_config JSON 병합 (_sessionCostBasis 필드만 교체, 다른 필드 유지)
+    const latest = latestRows[0];
+    let cfg = {};
+    try {
+      cfg = latest.chart_config
+        ? (typeof latest.chart_config === 'string' ? JSON.parse(latest.chart_config) : latest.chart_config)
+        : {};
+    } catch (parseErr) {
+      console.warn('[PATCH cost-basis] chart_config JSON 파싱 실패 → 빈 객체로 초기화:', parseErr.message);
+      cfg = {};
+    }
+    cfg._sessionCostBasis = {
+      value: normalized.value,
+      zcgubunD: normalized.zcgubunD || null,
+      source: normalized.source || 'dropdown_change',
+    };
+    await pool.query(
+      'UPDATE nl_query_history SET chart_config=? WHERE id=? AND user_id=?',
+      [JSON.stringify(cfg), latest.id, userId]
+    );
+    console.log(
+      `[PATCH cost-basis] updated history id=${latest.id} ` +
+      `value='${normalized.value}'${normalized.zcgubunD ? ` zcgubunD='${normalized.zcgubunD}'` : ''}`
+    );
+    res.json({ success: true, updatedId: latest.id });
+  } catch (err) {
+    console.error('[PATCH /api/history/session/:sessionKey/cost-basis] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 세션 전체 이력 조회 (세션 내 모든 질문+결과 반환)
 app.get('/api/history/session/:sessionId', async (req, res) => {
   try {
@@ -16328,6 +16397,92 @@ app.post('/api/execute-sql', async (req, res) => {
     res.json({ success: true, data: rows, rowCount: rows.length, executionTimeMs: execTime });
   } catch (err) {
     res.status(400).json({ error: err.sqlMessage || err.message });
+  }
+});
+
+// ============================================================
+// [2026-10-22 B-3] 제조원가 결과표 원가 기준 드롭다운 변경 전용 엔드포인트
+// ------------------------------------------------------------
+// 목적: 드롭다운에서 [매출원가] 등을 선택하면, 전체 자연어 질의를 다시 돌리지 않고
+//       기존 SQL 의 WHERE ZCGUBUN 조건만 regex 로 교체 → 즉시 DB 재조회 → 표/차트만 갱신.
+//       LLM 호출 전무. intent 분류/clarification/RAG/답변 생성 모두 생략.
+//
+// 재사용:
+//   - applyForcedCostBasisFilter() : ZCGUBUN WHERE 치환 (라인 ~10005)
+//   - normalizeSessionCostBasis()  : whitelist 검증
+//   - buildAppliedCostBasisResponse() : 프론트 뱃지/드롭다운 재조립용 메타
+//   - isReadOnlyQuery()            : SELECT-only 방어
+//   - nlqPoolQueryWithTimeout()    : 통상 질의와 동일한 timeout 적용
+//
+// 범위: sys_aimd_cot015 조회 SQL 전용 (수익성/cot043 거부).
+// 응답: /api/execute-sql 과 유사하되 newSql + appliedCostBasis 메타 포함.
+// ============================================================
+app.post('/api/nlq/rewrite-cost-basis', async (req, res) => {
+  try {
+    const { sql, costBasis } = req.body || {};
+    // 1) 입력 유효성
+    if (!sql || typeof sql !== 'string' || !sql.trim()) {
+      return res.status(400).json({ error: 'sql(string)이 필요합니다.' });
+    }
+    if (!costBasis || typeof costBasis.value !== 'string') {
+      return res.status(400).json({ error: 'costBasis.value가 필요합니다.' });
+    }
+    // 2) whitelist 검증 (프론트 전송값 신뢰 금지)
+    const normalized = normalizeSessionCostBasis(costBasis);
+    if (!normalized) {
+      return res.status(400).json({ error: 'costBasis가 whitelist에 매칭되지 않습니다.' });
+    }
+    // 3) SELECT-only 방어 (SQL injection 방지)
+    const roCheck = isReadOnlyQuery(sql);
+    if (!roCheck.ok) {
+      return res.status(400).json({ error: roCheck.reason || 'SELECT 쿼리만 허용됩니다.' });
+    }
+    // 4) 대상 테이블 체크 — sys_aimd_cot015 전용 (수익성/cot043 거부)
+    if (!/\bsys_aimd_cot015\b/i.test(sql)) {
+      return res.status(400).json({ error: '이 엔드포인트는 sys_aimd_cot015 조회 전용입니다.' });
+    }
+    // 5) WHERE 치환 (LLM 호출 없음, 결정적 regex)
+    const forcedCb = { value: normalized.value };
+    if (normalized.zcgubunD) forcedCb.zcgubunD = normalized.zcgubunD;
+    const newSql = applyForcedCostBasisFilter(sql, forcedCb);
+    if (!newSql || newSql === sql) {
+      // 치환이 적용되지 않음 — 원본 SQL 이 cot015 참조가 아니거나 치환 실패
+      console.warn('[rewrite-cost-basis] applyForcedCostBasisFilter 가 SQL 을 변경하지 않음 → 원본으로 실행');
+    }
+    // 6) DB 실행 (기존 함수 재사용 — timeout 등 동일 정책)
+    const startMs = Date.now();
+    const [rows] = await nlqPoolQueryWithTimeout(newSql, null, NLQ_DB_QUERY_TIMEOUT_MS);
+    const executionTimeMs = Date.now() - startMs;
+    const filteredRows = filterDummyRows(rows);
+    // 7) 하드 상한 (aggregate route 와 동일 정책 — 환경변수 재조회)
+    const AGG_HARD_CAP = parseInt(process.env.NLQ_AGGREGATE_ROW_HARD_CAP || '200000', 10);
+    const truncated = filteredRows.length > AGG_HARD_CAP;
+    const outRows = truncated ? filteredRows.slice(0, AGG_HARD_CAP) : filteredRows;
+    // 8) 응답용 appliedCostBasis 메타 (프론트 뱃지/드롭다운 재조립)
+    const appliedCostBasis = buildAppliedCostBasisResponse({
+      value: normalized.value,
+      zcgubunD: normalized.zcgubunD,
+      source: normalized.source || 'dropdown_change',
+    });
+    console.log(
+      `[rewrite-cost-basis] ok — value='${normalized.value}'` +
+      `${normalized.zcgubunD ? ` zcgubunD='${normalized.zcgubunD}'` : ''} ` +
+      `rows=${outRows.length} execMs=${executionTimeMs}`
+    );
+    res.json({
+      success: true,
+      data: outRows,
+      rowCount: outRows.length,
+      totalRowCount: filteredRows.length,
+      truncated,
+      truncatedLimit: truncated ? AGG_HARD_CAP : null,
+      newSql,
+      executionTimeMs,
+      appliedCostBasis,
+    });
+  } catch (err) {
+    console.error('[POST /api/nlq/rewrite-cost-basis] error:', err.message);
+    res.status(500).json({ error: err.sqlMessage || err.message });
   }
 });
 

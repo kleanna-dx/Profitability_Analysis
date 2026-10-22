@@ -361,23 +361,50 @@ assertMatch(htmlSrc,
     /onCostBasisDropdownChange[\s\S]{0,1500}currentCostBasis\s*=\s*\{[\s\S]{0,300}source:\s*['"]dropdown_change['"]/,
     'J-3: 드롭다운 변경 → currentCostBasis.source="dropdown_change" 로 즉시 업데이트');
 
-// J-4 ~ J-5: onCostBasisDropdownChange 함수 본문 전체를 추출해 하위 검증
+// [2026-10-22 B-3 전환] J-4 ~ J-7 전면 교체.
+//   방식 A (sendQuery 재호출) → 방식 B-3 (in-place 재조회) 전환으로
+//   아래 검증 포인트가 완전히 바뀜:
+//     - 더 이상 sendQuery 재호출 안 함 (J-4 반전)
+//     - 더 이상 "원 질의 텍스트" 역탐색 안 함 (J-6/J-7 삭제)
+//     - 대신 /api/nlq/rewrite-cost-basis 호출 (B-3 신규)
+//     - 표/차트 in-place 갱신 (B-3 신규)
+//     - selectEl.disabled 중복 방지 (유지 — J-5)
 {
     const m = htmlSrc.match(/async\s+function\s+onCostBasisDropdownChange\s*\(\s*selectEl\s*\)\s*\{([\s\S]*?)\n\s{0,4}\}\n/);
     const body = m ? m[1] : '';
-    assert(/await\s+sendQuery\s*\(\s*originalQuery\s*,\s*\{\s*costBasisDropdownResend:\s*true\s*\}\s*\)/.test(body),
-        'J-4: 드롭다운 변경 후 sendQuery(originalQuery, { costBasisDropdownResend: true }) 재호출');
+
+    // J-4 (반전): sendQuery 재호출 금지 (방식 A 패턴 완전 제거 확인)
+    assert(!/await\s+sendQuery\s*\(\s*originalQuery/.test(body),
+        'J-4: sendQuery(originalQuery, ...) 재호출 완전 제거 (방식 A → B-3 전환 완료)');
+
+    // J-5 (유지): 중복 변경 방지
     assert(/selectEl\.disabled\s*=\s*true/.test(body),
-        'J-5: 재질의 중 사용자 재조작 방지 (selectEl.disabled = true)');
+        'J-5: 중복 변경 방지 (selectEl.disabled = true)');
+
+    // J-6 신규: /api/nlq/rewrite-cost-basis 호출
+    assert(/fetch\s*\(\s*['"]\/api\/nlq\/rewrite-cost-basis['"]/.test(body),
+        'J-6: fetch(/api/nlq/rewrite-cost-basis) 호출 (B-3 in-place 재조회)');
+
+    // J-7 신규: 응답으로 analysisTableState.rows 교체 + renderAnalysisTable 재호출
+    assert(/st\.rows\s*=\s*data\.data/.test(body) && /renderAnalysisTable\s*\(\s*tableId\s*\)/.test(body),
+        'J-7: 응답으로 analysisTableState[tableId].rows 교체 + renderAnalysisTable(tableId) 재호출');
+
+    // J-8 신규: 차트도 함께 갱신 (사용자 요구사항 — 표 바뀌면 차트도 바뀌어야)
+    assert(/renderMsgChart\s*\(/.test(body) && /_nlqChartData\.data\s*=\s*data\.data/.test(body),
+        'J-8: 차트 canvas._nlqChartData.data 교체 + renderMsgChart 재호출 (표+차트 동시 갱신)');
+
+    // J-9 신규: 뱃지/드롭다운 재조립
+    assert(/refreshCostBasisBadgeAndDropdown\s*\(/.test(body),
+        'J-9: refreshCostBasisBadgeAndDropdown 호출 (뱃지/드롭다운 selected 교체)');
+
+    // J-10 신규: 답변 흐리게 효과
+    assert(/applyCostBasisDimEffect\s*\(/.test(body),
+        'J-10: applyCostBasisDimEffect 호출 (답변 영역 흐리게 + 안내 문구)');
+
+    // J-11 신규: history row UPDATE (채팅 재진입 복원용)
+    assert(/\/api\/history\/session\/[\s\S]{0,80}\/cost-basis/.test(body),
+        'J-11: PATCH /api/history/session/:id/cost-basis fire-and-forget 호출');
 }
-
-assertMatch(htmlSrc,
-    /onCostBasisDropdownChange[\s\S]{0,2500}sib\.classList\.contains\s*\(\s*['"]msg-user-row['"]\s*\)/,
-    'J-6: 원래 질의 텍스트 역탐색 — .msg-user-row 클래스 사용');
-
-assertMatch(htmlSrc,
-    /onCostBasisDropdownChange[\s\S]{0,2500}sib\.dataset\.queryText/,
-    'J-7: dataset.queryText 로 원래 질의 추출 (buildUserMessageRow 와 일치)');
 
 // ============================================================
 // K. FRONTEND — restoreSession 복원 로직
@@ -527,6 +554,130 @@ assertMatch(serverSrc,
     assert(matches.length === 1,
         `O-5: onCostBasisDropdownChange 함수 1회만 정의 — 실제=${matches.length}`);
 }
+
+// ============================================================
+// [2026-10-22 B-3] 신규 섹션 P — in-place 갱신 전환 검증
+// ------------------------------------------------------------
+// 방식 A (sendQuery 재호출) → 방식 B-3 (SQL WHERE 치환 + 표/차트만 교체)
+// 전환으로 생긴 신규 서버 엔드포인트 2개 + 프론트 헬퍼 3개 + state 확장 검증.
+// ============================================================
+
+// ─── P. SERVER — 신규 엔드포인트 2개
+// P-1: POST /api/nlq/rewrite-cost-basis 엔드포인트 정의
+assertMatch(serverSrc,
+    /app\.post\s*\(\s*['"]\/api\/nlq\/rewrite-cost-basis['"]/,
+    'P-1: POST /api/nlq/rewrite-cost-basis 엔드포인트 정의');
+
+// P-2: 신규 엔드포인트가 applyForcedCostBasisFilter 재사용 (LLM 호출 없음)
+assertMatch(serverSrc,
+    /\/api\/nlq\/rewrite-cost-basis[\s\S]{0,3000}applyForcedCostBasisFilter/,
+    'P-2: rewrite 엔드포인트가 applyForcedCostBasisFilter 재사용 (LLM 호출 없음)');
+
+// P-3: 신규 엔드포인트가 normalizeSessionCostBasis 로 whitelist 검증
+assertMatch(serverSrc,
+    /\/api\/nlq\/rewrite-cost-basis[\s\S]{0,3000}normalizeSessionCostBasis/,
+    'P-3: rewrite 엔드포인트가 normalizeSessionCostBasis 로 whitelist 검증');
+
+// P-4: 신규 엔드포인트가 isReadOnlyQuery 로 SELECT-only 방어
+assertMatch(serverSrc,
+    /\/api\/nlq\/rewrite-cost-basis[\s\S]{0,3000}isReadOnlyQuery/,
+    'P-4: rewrite 엔드포인트가 isReadOnlyQuery 로 SELECT-only 방어');
+
+// P-5: 신규 엔드포인트가 sys_aimd_cot015 전용 체크
+assertMatch(serverSrc,
+    /\/api\/nlq\/rewrite-cost-basis[\s\S]{0,3000}sys_aimd_cot015[\s\S]{0,500}전용/,
+    'P-5: rewrite 엔드포인트는 sys_aimd_cot015 전용 (수익성/cot043 거부)');
+
+// P-6: 응답에 newSql + appliedCostBasis 포함 (프론트 재사용용)
+assertMatch(serverSrc,
+    /\/api\/nlq\/rewrite-cost-basis[\s\S]{0,3000}newSql[\s\S]{0,500}appliedCostBasis/,
+    'P-6: rewrite 응답에 newSql + appliedCostBasis 포함');
+
+// P-7: PATCH /api/history/session/:sessionKey/cost-basis 엔드포인트 정의
+assertMatch(serverSrc,
+    /app\.patch\s*\(\s*['"]\/api\/history\/session\/:sessionKey\/cost-basis['"]/,
+    'P-7: PATCH /api/history/session/:sessionKey/cost-basis 엔드포인트 정의');
+
+// P-8: PATCH 엔드포인트가 chart_config._sessionCostBasis UPDATE (스키마 변경 없음)
+assertMatch(serverSrc,
+    /\/api\/history\/session\/:sessionKey\/cost-basis[\s\S]{0,2000}_sessionCostBasis/,
+    'P-8: PATCH 엔드포인트가 chart_config._sessionCostBasis 업데이트');
+
+// P-9: PATCH 엔드포인트가 UPDATE nl_query_history 로 저장 (ALTER 없음)
+assertMatch(serverSrc,
+    /\/api\/history\/session\/:sessionKey\/cost-basis[\s\S]{0,2000}UPDATE nl_query_history/,
+    'P-9: PATCH 엔드포인트가 UPDATE nl_query_history 로 저장 (스키마 변경 없음)');
+
+// ─── Q. FRONTEND — 헬퍼 함수 3개 + state 확장
+// Q-1: initAnalysisDetailTable 시그니처 확장 (sql, initialAppliedCostBasis, chartCanvasId)
+assertMatch(htmlSrc,
+    /function\s+initAnalysisDetailTable\s*\(\s*tableId\s*,\s*rows\s*,\s*columnOrder\s*,\s*columnLabels\s*,\s*fromHistory\s*,\s*widenable\s*,\s*sql\s*,\s*initialAppliedCostBasis\s*,\s*chartCanvasId\s*\)/,
+    'Q-1: initAnalysisDetailTable 시그니처에 sql/initialAppliedCostBasis/chartCanvasId 파라미터 추가');
+
+// Q-2: analysisTableState 에 sql 저장
+assertMatch(htmlSrc,
+    /analysisTableState\[tableId\]\s*=\s*\{[\s\S]{0,800}sql:\s*\(/,
+    'Q-2: analysisTableState 에 sql 저장 (드롭다운 재조회용)');
+
+// Q-3: analysisTableState 에 initialAppliedCostBasis 저장 (원래값 복귀 판정용)
+assertMatch(htmlSrc,
+    /analysisTableState\[tableId\]\s*=\s*\{[\s\S]{0,800}initialAppliedCostBasis:/,
+    'Q-3: analysisTableState 에 initialAppliedCostBasis 저장');
+
+// Q-4: analysisTableState 에 chartCanvasId 저장 (차트 재렌더용)
+assertMatch(htmlSrc,
+    /analysisTableState\[tableId\]\s*=\s*\{[\s\S]{0,800}chartCanvasId:/,
+    'Q-4: analysisTableState 에 chartCanvasId 저장 (차트 재렌더용)');
+
+// Q-5: 신규 헬퍼 isSameCostBasis 정의
+assertMatch(htmlSrc,
+    /function\s+isSameCostBasis\s*\(\s*a\s*,\s*b\s*\)/,
+    'Q-5: isSameCostBasis(a, b) 헬퍼 정의 (원래값 복귀 판정)');
+
+// Q-6: 신규 헬퍼 refreshCostBasisBadgeAndDropdown 정의
+assertMatch(htmlSrc,
+    /function\s+refreshCostBasisBadgeAndDropdown\s*\(\s*wrap\s*,\s*appliedCostBasis\s*\)/,
+    'Q-6: refreshCostBasisBadgeAndDropdown(wrap, appliedCostBasis) 헬퍼 정의');
+
+// Q-7: 신규 헬퍼 applyCostBasisDimEffect 정의
+assertMatch(htmlSrc,
+    /function\s+applyCostBasisDimEffect\s*\(\s*msgBot\s*,\s*\{\s*changed\s*,\s*newLabel\s*\}\s*\)/,
+    'Q-7: applyCostBasisDimEffect(msgBot, {changed, newLabel}) 헬퍼 정의');
+
+// Q-8: 답변 흐리게 처리에 opacity 사용 (0.65 또는 유사)
+assertMatch(htmlSrc,
+    /applyCostBasisDimEffect[\s\S]{0,1500}header\.style\.opacity/,
+    'Q-8: applyCostBasisDimEffect 가 header.style.opacity 로 답변 흐리게 처리');
+
+// Q-9: 안내 문구에 "표와 차트" 명시 (사용자에게 뭐가 바뀌었는지 전달)
+assertMatch(htmlSrc,
+    /cb-dim-notice[\s\S]{0,2000}표와 차트만 재조회/,
+    'Q-9: 안내 문구에 "표와 차트만 재조회" 명시 (사용자에게 범위 명확화)');
+
+// Q-10: 헬퍼 함수들이 각각 1회만 정의 (중복 방지)
+{
+    const a = (htmlSrc.match(/function\s+isSameCostBasis\s*\(/g) || []).length;
+    const b = (htmlSrc.match(/function\s+refreshCostBasisBadgeAndDropdown\s*\(/g) || []).length;
+    const c = (htmlSrc.match(/function\s+applyCostBasisDimEffect\s*\(/g) || []).length;
+    assert(a === 1 && b === 1 && c === 1,
+        `Q-10: 신규 헬퍼 3개 각각 1회만 정의 — isSameCostBasis=${a}, refreshCostBasisBadgeAndDropdown=${b}, applyCostBasisDimEffect=${c}`);
+}
+
+// ─── R. FRONTEND — initAnalysisDetailTable 호출부가 신규 인자 전달
+// R-1: aggregate 호출부 (라인 ~3946, _aggDetailInitCtx) 가 sql + chartCanvasId 포함
+assertMatch(htmlSrc,
+    /_aggDetailInitCtx\s*=\s*\{[\s\S]{0,500}sql:\s*data\.sql[\s\S]{0,500}chartCanvasId:\s*chartId/,
+    'R-1: aggregate 호출부가 _aggDetailInitCtx 에 sql + chartCanvasId 저장');
+
+// R-2: aggregate 호출부가 initAnalysisDetailTable 에 9개 인자 모두 전달
+assertMatch(htmlSrc,
+    /initAnalysisDetailTable\s*\(\s*\n?\s*detailTableId[\s\S]{0,500}_aggDetailInitCtx\.sql[\s\S]{0,300}_aggDetailInitCtx\.initialAppliedCostBasis[\s\S]{0,300}_aggDetailInitCtx\.chartCanvasId/,
+    'R-2: aggregate 호출부가 initAnalysisDetailTable 에 7~9번째 인자 모두 전달');
+
+// R-3: analysis 호출부도 sql + appliedCostBasis 전달 (chartCanvasId 는 null)
+assertMatch(htmlSrc,
+    /if\s*\(hasTable\)\s*\{[\s\S]{0,1500}initAnalysisDetailTable\s*\([\s\S]{0,500}_sqlForRequery[\s\S]{0,200}_initCbForRequery/,
+    'R-3: analysis 호출부도 initAnalysisDetailTable 에 sql + initialAppliedCostBasis 전달');
 
 // ============================================================
 // 결과 요약
