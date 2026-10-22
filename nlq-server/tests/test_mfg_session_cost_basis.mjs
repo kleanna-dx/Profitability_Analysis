@@ -827,6 +827,71 @@ assertMatch(htmlSrc,
 }
 
 // ============================================================
+// V. SERVER — self-fetch 2차 호출에서 forcedCostBasis.source 보존 (2026-10-22)
+// ------------------------------------------------------------
+// 사용자 신고 (후속): PR #532/#533 머지 후에도 "제품별 매출원가 TOP 5" 실행 시
+//   여전히 뱃지가 "매출원가 기준 (사용자 변경)" 으로 뜨고 드롭다운이 노출됨.
+//
+// 원인:
+//   async job 플로우:
+//     1차 호출 /api/nlq → confirmedForcedCostBasis = {value:'매출원가', source:'explicit_in_query'}
+//       → job.forcedCostBasis 로 저장
+//     self-fetch 2차 호출 /api/nlq (라인 ~13848) → body.forcedCostBasis = job.forcedCostBasis
+//       (source 포함해서 넘김)
+//     2차 호출 수신부 (라인 ~11537) → areaCtx.forcedCostBasis 로 세팅할 때
+//       {value, zcgubunD} 만 복사하고 **source 를 버림** ❌
+//     응답 조립부 (라인 ~13486, ~12182) → source || 'dropdown_change' 폴백
+//       → "사용자 변경" + showDropdown=true + 드롭다운 노출.
+//
+// 수정: 라인 11543 블록에 source 보존 로직 추가 (whitelist 검증 후).
+// ============================================================
+
+// V-1: SOURCE_WL whitelist 상수 정의 — 6개 source 모두 포함
+assertMatch(serverSrc,
+    /const\s+SOURCE_WL\s*=\s*new\s+Set\s*\(\s*\[[\s\S]{0,500}['"]explicit_in_query['"][\s\S]{0,500}['"]clarification_ui['"][\s\S]{0,500}['"]clarification_ui_subtype['"][\s\S]{0,500}['"]client_selection['"][\s\S]{0,500}['"]dropdown_change['"][\s\S]{0,500}['"]default_fallback['"][\s\S]{0,500}\]\s*\)/,
+    'V-1: SOURCE_WL whitelist — 6개 source 모두 포함');
+
+// V-2: req.body.forcedCostBasis.source 를 rawSrc 로 추출 (string 체크 포함)
+assertMatch(serverSrc,
+    /const\s+rawSrc\s*=\s*\(typeof\s+req\.body\.forcedCostBasis\.source\s*===\s*['"]string['"]\)[\s\S]{0,200}req\.body\.forcedCostBasis\.source\.trim\(\)/,
+    'V-2: rawSrc 추출 — req.body.forcedCostBasis.source 를 string 검증 후 trim');
+
+// V-3: whitelist 통과 시만 src 세팅, 미매칭 → undefined
+assertMatch(serverSrc,
+    /const\s+src\s*=\s*SOURCE_WL\.has\s*\(\s*rawSrc\s*\)\s*\?\s*rawSrc\s*:\s*undefined/,
+    'V-3: SOURCE_WL.has(rawSrc) ? rawSrc : undefined — whitelist 미매칭 시 undefined');
+
+// V-4: areaCtx.forcedCostBasis 조립 시 src 가 있으면 source 필드 추가 (whitelist 통과 시만)
+assertMatch(serverSrc,
+    /const\s+cb\s*=\s*\{\s*value:\s*v\s*\}[\s\S]{0,200}if\s*\(\s*zd\s*\)\s*cb\.zcgubunD\s*=\s*zd[\s\S]{0,100}if\s*\(\s*src\s*\)\s*cb\.source\s*=\s*src/,
+    'V-4: areaCtx.forcedCostBasis 조립 — src 가 truthy 일 때만 source 필드 추가 (조건부 할당)');
+
+// V-5: 수신 로그에 source 포함 (디버깅 가시성)
+assertMatch(serverSrc,
+    /\[NLQ:CostBasisForced\][\s\S]{0,500}\$\{src\s*\?\s*`\s*source="\$\{src\}"`\s*:\s*''\}/,
+    'V-5: [NLQ:CostBasisForced] 로그에 source="..." 조건부 출력');
+
+// V-6: 수정이 라인 11543 블록(req.body.forcedCostBasis 수신부) 안에만 적용되고
+//      다른 지점(응답 조립부 라인 13486, 12182) 은 source || 'dropdown_change' 폴백 유지
+//      (= 소스 유실의 '근원' 만 고치고 폴백 로직은 그대로 — 하위 호환).
+{
+    const fallbacks = (serverSrc.match(/source\s*:\s*areaCtx\.forcedCostBasis\.source\s*\|\|\s*['"]dropdown_change['"]/g) || []).length;
+    assert(fallbacks >= 2,
+        `V-6: 응답 조립부 폴백 로직 (source || 'dropdown_change') 보존 — 발견 ${fallbacks} 회 (aggregate + analysis)`);
+}
+
+// V-7: 1차 호출의 job 조립부(라인 14571) 는 confirmedForcedCostBasis 를 1순위로 사용
+//      — PR #532 승격 로직이 여기로 흘러들어가고, self-fetch body 에 그대로 실림
+assertMatch(serverSrc,
+    /forcedCostBasis:\s*confirmedForcedCostBasis\s*\|\|\s*\(\(\)\s*=>\s*\{/,
+    'V-7: job 조립부 — forcedCostBasis: confirmedForcedCostBasis || (() => { ... }) 패턴 유지');
+
+// V-8: self-fetch body 에 job.forcedCostBasis 를 그대로 실음 (source 포함)
+assertMatch(serverSrc,
+    /forcedCostBasis:\s*job\.forcedCostBasis\s*\|\|\s*null/,
+    'V-8: self-fetch body — forcedCostBasis: job.forcedCostBasis || null (source 포함 전달)');
+
+// ============================================================
 // 결과 요약
 // ============================================================
 console.log('\n=== TEST RESULT ===');

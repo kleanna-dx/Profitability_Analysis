@@ -11539,9 +11539,40 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
     const rawZd = (typeof req.body.forcedCostBasis.zcgubunD === 'string')
       ? req.body.forcedCostBasis.zcgubunD.trim() : '';
     const zd = (rawZd === '소비-소비' || rawZd === '입고-생산') ? rawZd : '';
+    // [2026-10-22 BUGFIX] source 필드도 whitelist 검증 후 보존.
+    //   배경: async job 플로우에서 1차 호출(/api/nlq) 가 confirmedForcedCostBasis 를
+    //   { value, zcgubunD?, source: 'explicit_in_query' } 로 세팅 → job.forcedCostBasis 로 저장 →
+    //   self-fetch body (라인 ~13848) 에 그대로 실어 2차 호출로 보냄.
+    //   그런데 여기(2차 호출 수신부)에서 source 를 버리고 { value, zcgubunD } 로만 세팅하면
+    //   aggregate 응답 조립부(라인 ~13486) 에서 source 가 undefined 가 되어
+    //   `source || 'dropdown_change'` 폴백에 떨어짐 → 뱃지가 "(사용자 변경)" 으로 뜨고
+    //   showDropdown=true → 드롭다운 노출 → "자연어로 매출원가 명시했는데 드롭다운 뜸" 버그.
+    //
+    //   source whitelist:
+    //     - 'explicit_in_query'         : 질의에 ZCGUBUN 명시 (PR #532 승격 경로)
+    //     - 'clarification_ui'          : 1차 명확화 선택 ([실제/매출/표준])
+    //     - 'clarification_ui_subtype'  : 2차 명확화 선택 (표준원가 서브타입)
+    //     - 'client_selection'          : 프론트 명확화 재요청 (라인 14579/14580 과 일관)
+    //     - 'dropdown_change'           : 드롭다운 즉시 전환 (B-3 플로우)
+    //     - 'default_fallback'          : 사용자 미명시 (서버 자동 매핑)
+    //   whitelist 미매칭 → undefined (= 하류의 'dropdown_change' 폴백 유지, 기존 동작과 호환).
+    const SOURCE_WL = new Set([
+      'explicit_in_query',
+      'clarification_ui',
+      'clarification_ui_subtype',
+      'client_selection',
+      'dropdown_change',
+      'default_fallback',
+    ]);
+    const rawSrc = (typeof req.body.forcedCostBasis.source === 'string')
+      ? req.body.forcedCostBasis.source.trim() : '';
+    const src = SOURCE_WL.has(rawSrc) ? rawSrc : undefined;
     if (v === '실제원가' || v === '매출원가' || v === '표준원가') {
-      areaCtx.forcedCostBasis = zd ? { value: v, zcgubunD: zd } : { value: v };
-      console.log(`[NLQ:CostBasisForced] forcedCostBasis 수신 → value="${v}"${zd ? ` zcgubunD="${zd}"` : ''}`);
+      const cb = { value: v };
+      if (zd) cb.zcgubunD = zd;
+      if (src) cb.source = src;
+      areaCtx.forcedCostBasis = cb;
+      console.log(`[NLQ:CostBasisForced] forcedCostBasis 수신 → value="${v}"${zd ? ` zcgubunD="${zd}"` : ''}${src ? ` source="${src}"` : ''}`);
     } else {
       console.warn(`[NLQ:CostBasisForced] forcedCostBasis whitelist 위반 (무시): value="${v}"`);
     }
