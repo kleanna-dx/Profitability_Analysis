@@ -668,11 +668,21 @@ assertMatch(htmlSrc,
     /cb-dim-notice[\s\S]{0,2000}표\/차트\/SQL은 재조회/,
     'Q-9: 안내 문구에 "표/차트/SQL은 재조회" 명시 (사용자에게 범위 명확화)');
 
-// Q-9b 신규: applyCostBasisDimEffect 가 SQL 탭 안의 설명 블록도 흐리게 처리
-//   (상단 답변만 흐리게 하면 SQL 탭 안의 설명은 그대로 남아 사용자가 혼란)
-assertMatch(htmlSrc,
-    /applyCostBasisDimEffect[\s\S]{0,2500}sqlExplanationBlock\.style\.opacity/,
-    'Q-9b: applyCostBasisDimEffect 가 SQL 탭 안의 설명 블록도 흐리게 처리 (sqlExplanationBlock)');
+// Q-9b (반전, 2026-10-22): SQL 탭 상단 설명 블록이 아예 제거되었으므로
+//   sqlExplanationBlock 흐리게 처리 로직도 제거됨을 검증.
+//   (사용자 요구: 거의 안 보는 공간이라 아예 제거)
+assertNoMatch(htmlSrc,
+    /sqlExplanationBlock\.style\.opacity/,
+    'Q-9b: sqlExplanationBlock 흐리게 처리 로직 제거 (SQL 탭 설명 블록 자체 제거됨)');
+
+// Q-9c 신규: SQL 탭 안의 LLM 설명 블록 자체가 render 코드에서 제거됨
+//   data.explanation 을 보라색 info 박스로 렌더하던 블록이 삭제되고 주석만 남음.
+{
+    // "data.explanation ? `<div ... border-left:3px solid #6366f1 ..." 패턴이 더 이상 없어야 함
+    const hasExplanationBlock = /data\.explanation\s*\?\s*`<div[^`]{0,500}border-left:3px solid #6366f1/.test(htmlSrc);
+    assert(!hasExplanationBlock,
+        'Q-9c: SQL 탭 상단 LLM 설명 블록 render 코드 제거됨 (사용자 요구: 아예 제거)');
+}
 
 // Q-10: 헬퍼 함수들이 각각 1회만 정의 (중복 방지)
 {

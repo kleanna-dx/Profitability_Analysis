@@ -2030,35 +2030,25 @@ function refreshCostBasisBadgeAndDropdown(wrap, appliedCostBasis) {
     }
 }
 
-// [B-3] 답변 영역 + SQL 탭 설명을 "흐리게" 처리 + 안내 문구 삽입/제거.
+// [B-3] 답변 영역을 "흐리게" 처리 + 안내 문구 삽입/제거.
 //   changed=true  : 드롭다운이 최초값 외의 값으로 변경됨 → 흐리게 + 안내 띄움
 //   changed=false : 다시 최초값으로 돌아감 → 흐리게/안내 모두 해제
 //
 // 흐리게 처리 대상:
-//   1) 상단 답변 영역 (.msg-bot-header) — 사용자 질문 바로 아래 요약 답변
-//   2) SQL 탭 안의 설명 블록 ([id$="_sql"] res-panel 안의 info 블록) — "sys_aimd_cot015 테이블에서..."
-//   둘 다 원 질의 기준으로 LLM 이 생성한 자연어이므로, 표/차트가 바뀐 후에는
-//   "표의 숫자와 다를 수 있다" 는 사실을 사용자에게 명확히 전달해야 함 (환각 회피).
+//   - 상단 답변 영역 (.msg-bot-header) — LLM 이 자유 생성한 요약 답변
+//     원 질의 기준이므로 표/차트가 바뀐 후에는 "표의 숫자와 다를 수 있다" 는 사실을
+//     사용자에게 명확히 전달 (환각 회피).
+//   - [2026-10-22] SQL 탭 상단의 설명 블록은 아예 제거되어 처리 대상 없음
+//     (사용자 요구: 거의 안 보는 공간 — 라인 4088 참조).
 //
 // 안내 문구는 결과표 바로 위에 1회만 삽입. 중복 삽입 방지.
 function applyCostBasisDimEffect(msgBot, { changed, newLabel }) {
     if (!msgBot) return;
     const header = msgBot.querySelector('.msg-bot-header');
-    // SQL 탭 안의 설명 info 블록 — border-left:3px solid #6366f1 인 보라색 안내 박스
-    //   라인 4042~4045 구조: <div id="${id}_sql" class="res-panel">
-    //                         <div style="... border-left: 3px solid #6366f1 ...">
-    //                           <i class="fa-info-circle"></i>${esc(data.explanation)}
-    //                         </div>
-    //                         <div class="sql-display-wrap">...</div>
-    //                       </div>
-    //   첫 번째 자식 div (설명 블록) 를 찾기 위해 selector 사용.
-    const sqlTab = msgBot.querySelector('[id$="_sql"].res-panel');
-    const sqlExplanationBlock = sqlTab ? sqlTab.querySelector(':scope > div[style*="border-left"]') : null;
     const existingNotice = msgBot.querySelector('.cb-dim-notice');
 
     if (changed) {
         if (header) header.style.opacity = '0.65';
-        if (sqlExplanationBlock) sqlExplanationBlock.style.opacity = '0.65';
         if (!existingNotice) {
             const notice = document.createElement('div');
             notice.className = 'cb-dim-notice';
@@ -2070,7 +2060,7 @@ function applyCostBasisDimEffect(msgBot, { changed, newLabel }) {
             notice.innerHTML =
                 `<i class="fas fa-info-circle" style="margin-right:6px;color:#f59e0b;"></i>` +
                 `원가 기준이 <strong>'${esc(newLabel)}'</strong>로 변경되어 아래 표/차트/SQL은 재조회되었습니다. ` +
-                `<span style="color:#92400e;">상단 답변 문구와 SQL 탭의 설명은 원래 질의 기준이므로 표의 숫자와 다를 수 있습니다.</span>`;
+                `<span style="color:#92400e;">상단 답변 문구는 원래 질의 기준이므로 표의 숫자와 다를 수 있습니다.</span>`;
             // 결과표 바로 위에 삽입
             const wrap = msgBot.querySelector('.analysis-detail-wrap');
             if (wrap && wrap.parentNode) {
@@ -2083,7 +2073,6 @@ function applyCostBasisDimEffect(msgBot, { changed, newLabel }) {
         }
     } else {
         if (header) header.style.opacity = '';
-        if (sqlExplanationBlock) sqlExplanationBlock.style.opacity = '';
         if (existingNotice) existingNotice.remove();
     }
 }
@@ -4086,9 +4075,10 @@ function appendBotMessage(data) {
                 <div class="chart-container"><canvas id="${chartId}" height="300"></canvas></div>
             </div>
             <div id="${id}_sql" class="res-panel">
-                ${data.explanation ? `<div style="padding:10px 14px;background:#f0f4ff;border-radius:8px;margin-bottom:8px;font-size:12.5px;color:#475569;line-height:1.6;border-left:3px solid #6366f1;">
-                    <i class="fas fa-info-circle" style="color:#6366f1;margin-right:6px;"></i>${esc(data.explanation)}
-                </div>` : ''}
+                <!-- [2026-10-22] SQL 탭 상단의 LLM 설명 블록 제거 (사용자 요구).
+                     기존에는 data.explanation 을 보라색 info 박스로 표시했으나,
+                     사용자가 거의 안 보고 공간만 차지한다는 피드백.
+                     SQL 자체는 아래 <pre id="${id}_sqlPre"> 에 그대로 표시됨. -->
                 <div class="sql-display-wrap">
                     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px 0;background:#0f172a;">
                         <span style="font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">GENERATED SQL</span>
