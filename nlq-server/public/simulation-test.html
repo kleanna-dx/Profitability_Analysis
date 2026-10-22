@@ -2853,8 +2853,9 @@ async function saveItfMaster(editId){
     const g=n=>document.querySelector('[name="itfm_'+n+'"]').value.trim();
     const body={interfaceId:g('interfaceId'),interfaceName:g('interfaceName'),sender:g('sender'),receiver:g('receiver'),rfcName:g('rfcName'),targetTable:g('targetTable'),execMode:g('execMode'),isActive:g('isActive'),remark:g('remark'),createdBy:window.CURRENT_USER||'admin',updatedBy:window.CURRENT_USER||'admin'};
     try{
-        const url=editId?API+'/itf-masters/'+editId:API+'/itf-masters';
+        const url=editId?API+'/itf-masters/'+encodeURIComponent(editId):API+'/itf-masters';
         const r=await fetch(url,{method:editId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(!r.ok){const t=await r.text();alert('저장 실패 ('+r.status+'): '+t);return;}
         const j=await r.json();if(j.data){closeModal();loadItfList();}else{alert('저장 실패: '+(j.message||''));}
     }catch(e){alert('저장 에러: '+e.message);}
 }
@@ -2868,7 +2869,8 @@ function editItfMaster(id){
 async function deleteItfMaster(id){
     if(!confirm('인터페이스 '+id+'을(를) 삭제하시겠습니까?')) return;
     try{
-        await fetch(API+'/itf-masters/'+id,{method:'DELETE'});
+        const r=await fetch(API+'/itf-masters/'+encodeURIComponent(id),{method:'DELETE'});
+        if(!r.ok){const t=await r.text();alert('삭제 실패 ('+r.status+'): '+t);return;}
         loadItfList();
     }catch(e){alert('삭제 에러: '+e.message);}
 }
@@ -2911,7 +2913,11 @@ function editItfSchedule(schedId){
 
 async function deleteItfSchedule(schedId){
     if(!confirm('스케줄 #'+schedId+'을(를) 삭제하시겠습니까?')) return;
-    try{await fetch(API+'/itf-schedules/'+schedId,{method:'DELETE'});loadItfSchedules();}catch(e){alert('삭제 에러');}
+    try{
+        const r=await fetch(API+'/itf-schedules/'+schedId,{method:'DELETE'});
+        if(!r.ok){const t=await r.text();alert('삭제 실패 ('+r.status+'): '+t);return;}
+        loadItfSchedules();
+    }catch(e){alert('삭제 에러: '+e.message);}
 }
 
 // ── 수동 실행 ──
