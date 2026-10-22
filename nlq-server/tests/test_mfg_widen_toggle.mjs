@@ -92,16 +92,19 @@ const buildSigMatch = html.match(/function\s+buildAnalysisDetailTable\s*\(\s*([^
 assert(buildSigMatch, 'buildAnalysisDetailTable 함수 정의 존재');
 if (buildSigMatch) {
   const params = buildSigMatch[1].split(',').map(s => s.trim()).filter(Boolean);
-  assertEqual(params.length, 9, 'buildAnalysisDetailTable 파라미터 개수는 9개');
-  assertEqual(params[0], 'tableId',         'param[0] = tableId');
-  assertEqual(params[1], 'rows',            'param[1] = rows');
-  assertEqual(params[2], 'columnOrder',     'param[2] = columnOrder');
-  assertEqual(params[3], 'columnLabels',    'param[3] = columnLabels');
-  assertEqual(params[4], 'rowCount',        'param[4] = rowCount');
-  assertEqual(params[5], 'sql',             'param[5] = sql');
-  assertEqual(params[6], 'fromHistory',     'param[6] = fromHistory');
-  assertEqual(params[7], 'periodInfo',      'param[7] = periodInfo');
-  assertEqual(params[8], 'showWidenButton', 'param[8] = showWidenButton (신규 옵션)');
+  // [2026-10-16] 10번째 파라미터 appliedCostBasis 신규 추가 (제조원가 세션 원가 기준 뱃지/드롭다운용).
+  //   widen toggle 자체는 그대로 유지 — 아래 9번째 파라미터 showWidenButton 검증은 변함없음.
+  assertEqual(params.length, 10, 'buildAnalysisDetailTable 파라미터 개수는 10개 (appliedCostBasis 신규 추가)');
+  assertEqual(params[0], 'tableId',          'param[0] = tableId');
+  assertEqual(params[1], 'rows',             'param[1] = rows');
+  assertEqual(params[2], 'columnOrder',      'param[2] = columnOrder');
+  assertEqual(params[3], 'columnLabels',     'param[3] = columnLabels');
+  assertEqual(params[4], 'rowCount',         'param[4] = rowCount');
+  assertEqual(params[5], 'sql',              'param[5] = sql');
+  assertEqual(params[6], 'fromHistory',      'param[6] = fromHistory');
+  assertEqual(params[7], 'periodInfo',       'param[7] = periodInfo');
+  assertEqual(params[8], 'showWidenButton',  'param[8] = showWidenButton (widen toggle)');
+  assertEqual(params[9], 'appliedCostBasis', 'param[9] = appliedCostBasis (제조원가 세션 원가 기준)');
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -360,7 +363,11 @@ assert(
 // ─────────────────────────────────────────────────────────────────
 console.log('[9] analysis 호출부 미변경 확인');
 
-// buildAnalysisDetailTable 호출: aggregate 는 9-인자, analysis 는 8-인자
+// [2026-10-16] 10번째 파라미터 appliedCostBasis 추가 이후:
+//   - aggregate 호출: 10-인자 (showWidenButton=_mfgShowWidenBtn, appliedCostBasis=data.appliedCostBasis)
+//   - analysis 호출: 10-인자 (showWidenButton=false(명시), appliedCostBasis=dataOrText.appliedCostBasis)
+//   핵심은 "analysis 경로는 showWidenButton 을 명시적으로 false 로 전달해 widen toggle 비활성 유지".
+//   호출 인자 개수가 아니라 "analysis 호출의 showWidenButton 자리가 false 인지" 로 검증.
 const buildCallRe = /buildAnalysisDetailTable\s*\(([^)]*)\)/g;
 const buildCallCounts = [];
 let bm;
@@ -369,8 +376,13 @@ while ((bm = buildCallRe.exec(html)) !== null) {
   buildCallCounts.push(args.length);
 }
 console.log('  buildAnalysisDetailTable 호출 인자 개수:', buildCallCounts);
-assert(buildCallCounts.some(n => n === 9), '9-인자 호출(aggregate) 존재');
-assert(buildCallCounts.some(n => n === 8), '8-인자 호출(analysis, showWidenButton undefined) 존재');
+assert(buildCallCounts.some(n => n === 10 || n === 9), '현황집계 경로 호출(≥9-인자) 존재');
+// analysis 호출부 — showWidenButton 자리가 명시적으로 false 인지 확인
+//   패턴: 'buildAnalysisDetailTable(... , false, (typeof dataOrText ...)'  →  false, (
+assert(
+  /buildAnalysisDetailTable\s*\([^)]*,\s*false\s*,\s*\(typeof\s+dataOrText/.test(html),
+  'analysis 호출부에서 showWidenButton 자리가 명시적 false (widen toggle 비활성 유지)'
+);
 
 // initAnalysisDetailTable 호출: aggregate 는 6-인자, analysis 는 5-인자
 const initCallRe = /initAnalysisDetailTable\s*\(/g;

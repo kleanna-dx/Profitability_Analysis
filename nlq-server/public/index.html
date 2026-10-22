@@ -1763,6 +1763,154 @@ let domainsList = [];
 let sessionDomainLocked = false;
 const domainIcons = { PS:'fa-scroll', HL:'fa-home', MGMT:'fa-briefcase', EXEC:'fa-briefcase' };
 
+// ============================================================
+// [2026-10-16] 제조원가(sys_aimd_cot015) 세션 원가 기준 — 메모리 상태값
+// ------------------------------------------------------------
+// 역할:
+//   - 사용자가 선택한 원가 기준(ZCGUBUN)을 채팅 세션 동안 유지
+//   - 매 질의 요청 body 에 sessionCostBasis 로 자동 포함 (currentDomain 과 동일 패턴)
+//   - DB 조회 없이 메모리에서 즉시 꺼내 사용 → 성능 영향 0
+//
+// 유지 범위:
+//   - 평소 채팅 중: 이 변수 그대로 유지 (턴 수 무관)
+//   - 드롭다운 변경: 즉시 업데이트 + 재질의
+//   - 명확화 UI 선택: 즉시 업데이트
+//   - 질의 텍스트 명시 ("매출원가 TOP5"): 서버 응답의 appliedCostBasis 로 역동기화
+//   - 채팅 재진입: restoreSession() 이 DB 최신 row 의 _sessionCostBasis 로 복원
+//   - 새 채팅 시작: resetCurrentCostBasis() 로 기본값('실제원가') 리셋
+//
+// 기본값:
+//   { value: '실제원가', zcgubunD: null, source: 'default_fallback' }
+//
+// 적용 조건:
+//   - 서버 응답에 appliedCostBasis 가 있는 경우에만 (sys_aimd_cot015 질의)
+//   - 다른 영역/테이블 (수익성분석, cot043) 응답엔 appliedCostBasis 가 없음 → 메모리값 유지하지만 WHERE 주입 안 됨
+// ============================================================
+let currentCostBasis = { value: '실제원가', zcgubunD: null, source: 'default_fallback' };
+
+// 세션 원가 기준 리셋 (새 채팅 시작/페이지 초기 로드 시 호출)
+function resetCurrentCostBasis() {
+    currentCostBasis = { value: '실제원가', zcgubunD: null, source: 'default_fallback' };
+    console.log('[CostBasis] 메모리 변수 리셋 → 기본값(실제원가)');
+}
+
+// 서버 응답의 appliedCostBasis 로부터 메모리 변수 동기화
+//   - 서버가 사용자 명시(explicit_in_query)를 감지했거나 명확화 UI 선택을 반영했을 때
+//   - response.appliedCostBasis = { value, zcgubunD, source, label, showDropdown, options }
+function syncCostBasisFromResponse(appliedCostBasis) {
+    if (!appliedCostBasis || typeof appliedCostBasis.value !== 'string') return;
+    const prev = JSON.stringify(currentCostBasis);
+    currentCostBasis = {
+        value: appliedCostBasis.value,
+        zcgubunD: appliedCostBasis.zcgubunD || null,
+        source: appliedCostBasis.source || 'dropdown_change',
+    };
+    const curr = JSON.stringify(currentCostBasis);
+    if (prev !== curr) {
+        console.log(`[CostBasis] 서버 응답으로 동기화: ${prev} → ${curr}`);
+    }
+}
+
+// ============================================================
+// [2026-10-16] 결과표 toolbar 원가 기준 드롭다운 변경 핸들러
+// ------------------------------------------------------------
+// buildAnalysisDetailTable 가 조립한 <select> 의 onchange="onCostBasisDropdownChange(this)"
+// 에서 호출됨.
+//   - select.value 포맷: "<value>|<zcgubunD or empty>"
+//   - 선택 즉시: currentCostBasis 를 { source:'dropdown_change' } 로 업데이트
+//   - 그 다음: 결과표가 렌더링된 "원래 질의 텍스트" 를 가져와 sendQuery 재호출
+//     (서버는 sessionCostBasis 3순위 폴백으로 WHERE 치환만 하므로 LLM 호출 없이 즉시 재조회)
+//
+// "원래 질의 텍스트" 추출 전략:
+//   - select 가 포함된 결과표 바로 위 사용자 말풍선(.msg-user) 의 질의 텍스트를 찾음
+//   - 가장 마지막 .msg-user 의 질의 텍스트 fallback
+//   - 못 찾으면 조용히 중단 (알림 X — 사용자 혼선 방지)
+// ============================================================
+async function onCostBasisDropdownChange(selectEl) {
+    try {
+        if (!selectEl || typeof selectEl.value !== 'string') return;
+        const raw = selectEl.value;
+        const sepIdx = raw.indexOf('|');
+        const newValue = (sepIdx >= 0) ? raw.slice(0, sepIdx) : raw;
+        const newZcgubunD = (sepIdx >= 0) ? raw.slice(sepIdx + 1) : '';
+        if (!newValue) {
+            console.warn('[CostBasisDropdown] 빈 value — 무시');
+            return;
+        }
+
+        // 메모리 변수 즉시 업데이트 (서버가 응답 appliedCostBasis 로 다시 덮어쓰지만
+        // 재질의 payload 조립 시점에서 이미 반영된 값이 들어가야 함)
+        const prev = JSON.stringify(currentCostBasis);
+        currentCostBasis = {
+            value: newValue,
+            zcgubunD: newZcgubunD || null,
+            source: 'dropdown_change',
+        };
+        console.log(`[CostBasisDropdown] 선택 변경: ${prev} → ${JSON.stringify(currentCostBasis)}`);
+
+        // 원래 질의 텍스트 찾기
+        //   1) select 가 포함된 결과표 블록을 거슬러 올라가며 "직전" .msg-user-row 를 찾음
+        //      (buildUserMessageRow 에서 row.dataset.queryText = query 로 보존됨)
+        //   2) 그래도 못 찾으면 chat 영역의 "마지막" .msg-user-row 를 사용 (fallback)
+        let originalQuery = '';
+        try {
+            // 결과표의 가장 가까운 조상 중 chat 메시지 컨테이너 (.msg-bot) 를 찾은 뒤
+            // 그 직전 형제 중 .msg-user-row 를 역탐색
+            let anchor = selectEl.closest('.msg-bot') || selectEl.closest('[class*="msg-"]');
+            if (anchor) {
+                let sib = anchor.previousElementSibling;
+                while (sib) {
+                    if (sib.classList && sib.classList.contains('msg-user-row')) {
+                        if (sib.dataset && typeof sib.dataset.queryText === 'string') {
+                            originalQuery = sib.dataset.queryText.trim();
+                        } else {
+                            const bubble = sib.querySelector('.msg-user');
+                            originalQuery = (bubble ? bubble.textContent : sib.textContent || '').trim();
+                        }
+                        break;
+                    }
+                    sib = sib.previousElementSibling;
+                }
+            }
+            if (!originalQuery) {
+                const userRows = document.querySelectorAll('#chatArea .msg-user-row');
+                if (userRows.length > 0) {
+                    const last = userRows[userRows.length - 1];
+                    if (last.dataset && typeof last.dataset.queryText === 'string') {
+                        originalQuery = last.dataset.queryText.trim();
+                    } else {
+                        const bubble = last.querySelector('.msg-user');
+                        originalQuery = (bubble ? bubble.textContent : last.textContent || '').trim();
+                    }
+                }
+            }
+        } catch (findErr) {
+            console.warn('[CostBasisDropdown] 원래 질의 탐색 중 오류 (비치명):', findErr);
+        }
+
+        if (!originalQuery) {
+            console.warn('[CostBasisDropdown] 원래 질의 텍스트를 찾지 못해 재질의 중단 — 메모리 값만 변경됨');
+            return;
+        }
+
+        // 선택 중 사용자 재조작 방지: select 비활성화
+        selectEl.disabled = true;
+
+        try {
+            if (typeof sendQuery === 'function') {
+                await sendQuery(originalQuery, { costBasisDropdownResend: true });
+            } else {
+                console.warn('[CostBasisDropdown] sendQuery 함수를 찾지 못함');
+            }
+        } finally {
+            // 재질의 후 UI 자체가 다시 렌더되므로 disabled 복원은 사실상 no-op 이지만 안전상 복원
+            try { selectEl.disabled = false; } catch (_) {}
+        }
+    } catch (err) {
+        console.error('[CostBasisDropdown] 핸들러 오류:', err);
+    }
+}
+
 async function initDomainAndRole() {
     try {
         const res = await fetch('/api/me');
@@ -2867,6 +3015,20 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
                 console.log(`[CostBasisClarify] 재요청 forcedCostBasis: value="${_fcb.value}"${_fcb.zcgubunD ? ` zcgubunD="${_fcb.zcgubunD}"` : ''}`);
             }
         } catch (_) {}
+        // [2026-10-16] 제조원가 세션 원가 기준 — 매 질의 요청 body 에 메모리 변수 포함
+        //   - sys_aimd_cot015 조회 시 서버가 WHERE ZCGUBUN 조건 자동 주입에 활용
+        //   - forcedCostBasis(명확화 재요청) 가 우선순위 높으므로 둘 다 보내도 서버가 알아서 처리
+        //   - currentCostBasis 는 { value, zcgubunD, source } — 서버가 whitelist 검증
+        //   - 수익성분석(bw_profitability_data) 등 다른 영역 질의 시엔 서버가 무시 (sys_aimd_cot015 전용 적용)
+        try {
+            if (currentCostBasis && typeof currentCostBasis.value === 'string') {
+                asyncPayload.sessionCostBasis = {
+                    value: currentCostBasis.value,
+                    zcgubunD: currentCostBasis.zcgubunD || null,
+                    source: currentCostBasis.source || 'default_fallback',
+                };
+            }
+        } catch (_) {}
         // [2026-08-31 PR #407] 명확화 chip 목록을 서버로 전송
         //   - 서버는 이 값을 chart_config._clarificationSelections 에 병합하여 히스토리에 저장
         //   - 재조회 시 sendQuery 를 재실행하지 않고 chip 만 복원 (Q3-a)
@@ -3199,9 +3361,14 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     } else if (data.isAnalysisAnswer) {
         appendAnalysisOnlyMessage(data);
         pushConversationContext({ query, data, overrideSql: null });
+        // [2026-10-16] 분석 응답의 appliedCostBasis 로 세션 메모리 역동기화
+        //   (서버가 사용자 명시 ["매출원가 ..." 질의] 감지 시 결정값을 돌려줌)
+        if (data.appliedCostBasis) syncCostBasisFromResponse(data.appliedCostBasis);
     } else {
         appendBotMessage(data);
         pushConversationContext({ query, data });
+        // [2026-10-16] 집계 응답의 appliedCostBasis 로 세션 메모리 역동기화
+        if (data.appliedCostBasis) syncCostBasisFromResponse(data.appliedCostBasis);
     }
 }
 
@@ -4957,6 +5124,20 @@ async function resendQueryWithForcedCostBasis(originalQuery, subArea, forcedCost
     if (subArea) window.__forceMfgSubArea = subArea;
     window.__forceCostBasis = zd ? { value: forcedCostBasis.value, zcgubunD: zd }
                                  : { value: forcedCostBasis.value };
+
+    // [2026-10-16] 명확화 UI 선택 → 세션 원가 기준 메모리 변수 동기화
+    //   서버가 응답 appliedCostBasis 로도 덮어쓰지만 재질의 payload 조립 시점에서
+    //   이미 반영된 값이 들어가야 서버 forcedCostBasis 결정 블록이 일관되게 동작.
+    //   source 는 명확화 UI 경유를 보존 — 서버가 응답에서 clarification_ui/subtype 으로 치환해 돌려줌.
+    try {
+        currentCostBasis = {
+            value: forcedCostBasis.value,
+            zcgubunD: zd || null,
+            source: 'clarification_ui',
+        };
+        console.log(`[CostBasisClarify] 메모리 변수 동기화: ${JSON.stringify(currentCostBasis)}`);
+    } catch (_) {}
+
     try {
         if (typeof sendQuery === 'function') {
             await sendQuery(trimmedQuery, { clarifyResend: true });
@@ -5145,7 +5326,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
     const tableId = 'aatbl_' + (++msgCounter);
 
     const tableSection = hasTable
-        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo)
+        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, false, (typeof dataOrText === 'object' && dataOrText) ? dataOrText.appliedCostBasis : null)
         : '';
 
     el.innerHTML = `
@@ -5179,7 +5360,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
 //   - <thead> 헤더 클릭 시 정렬
 //   - 실제 데이터 채움과 이벤트 바인딩은 initAnalysisDetailTable 에서.
 // ============================================================
-function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, showWidenButton) {
+function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, showWidenButton, appliedCostBasis) {
     // [2026-09-17] showWidenButton (선택, 9번째 인자)
     //   - true 일 때만 헤더 우측에 '가로 넓게 보기' 토글 버튼 렌더 (제조원가 현황집계 전용)
     //   - 미지정/false 이면 기존 UI 그대로 (분석질문, 수익성분석 등 영향 없음)
@@ -5242,14 +5423,58 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
     // SQL 다운로드/펼침 토글 옵션
     const sqlToggleId = tableId + '_sqltoggle';
     const sqlPanelId = tableId + '_sqlpanel';
+
+    // [2026-10-16] 제조원가 세션 원가 기준 뱃지 + 드롭다운 HTML 조립
+    //   - appliedCostBasis 가 있을 때만 렌더 (sys_aimd_cot015 질의 결과)
+    //   - 뱃지: 현재 적용된 원가 기준 + 어떻게 결정됐는지 (source) 안내
+    //   - 드롭다운: showDropdown=true 일 때만 (기본값/드롭다운 변경 시) — 사용자가 즉시 전환 가능
+    //   - 명확화/질의명시 경우: 드롭다운 없이 뱃지만 (사용자가 바꾸려면 자연어 질의로)
+    let costBasisBadgeHtml = '';
+    let costBasisDropdownHtml = '';
+    if (appliedCostBasis && typeof appliedCostBasis.value === 'string') {
+        // 뱃지 — source 별 안내 문구
+        const sourceLabelMap = {
+            'default_fallback':           '기본값',
+            'dropdown_change':            '사용자 변경',
+            'clarification_ui':           '사용자 선택',
+            'clarification_ui_subtype':   '사용자 선택',
+            'explicit_in_query':          '질문에서 명시',
+        };
+        const sourceLabel = sourceLabelMap[appliedCostBasis.source] || '사용자 변경';
+        const labelText = appliedCostBasis.label || appliedCostBasis.value;
+        costBasisBadgeHtml = `
+            <div id="${tableId}_cbBadge" class="cb-badge" style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:#eef2ff;border-bottom:1px solid #e0e7ff;color:#4c1d95;font-size:12px;font-weight:600;">
+                <i class="fas fa-coins" style="color:#6d28d9;"></i>
+                <span><strong>${esc(labelText)}</strong> 기준 <span style="color:#6b7280;font-weight:500;">(${esc(sourceLabel)})</span></span>
+            </div>`;
+
+        // 드롭다운 — showDropdown=true 일 때만 toolbar 에 삽입
+        //   onchange: 선택값 파싱 → onCostBasisDropdownChange(tableId, value, zcgubunD)
+        if (appliedCostBasis.showDropdown && Array.isArray(appliedCostBasis.options)) {
+            const optionsHtml = appliedCostBasis.options.map(opt => {
+                // option value = "value|zcgubunD" 포맷 (zcgubunD 없으면 'value|' 로 끝)
+                const optKey = `${opt.value}|${opt.zcgubunD || ''}`;
+                const curKey = `${appliedCostBasis.value}|${appliedCostBasis.zcgubunD || ''}`;
+                const sel = (optKey === curKey) ? ' selected' : '';
+                return `<option value="${esc(optKey)}"${sel}>${esc(opt.label)}</option>`;
+            }).join('');
+            costBasisDropdownHtml = `
+                <select id="${tableId}_cbSelect" title="원가 기준 변경 (즉시 재조회)" onchange="onCostBasisDropdownChange(this)" style="padding:5px 8px;border:1px solid #c7d2fe;border-radius:6px;font-size:12px;background:#fff;color:#4c1d95;font-weight:600;">
+                    ${optionsHtml}
+                </select>`;
+        }
+    }
+
     return `
     <div class="analysis-detail-wrap" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+        ${costBasisBadgeHtml}
         <div class="analysis-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:linear-gradient(135deg,#eef2ff,#f5f3ff);border-bottom:1px solid #e5e7eb;flex-wrap:wrap;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;color:#4c1d95;font-size:12px;font-weight:700;">
                 <i class="fas fa-table"></i>
                 <span>분석 대상 상세 결과 <span id="${tableId}_count" style="color:#6b7280;font-weight:500;">(${rowCount.toLocaleString('ko-KR')}행)</span>${periodHtml}</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                ${costBasisDropdownHtml}
                 <div style="position:relative;">
                     <i class="fas fa-search" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#9ca3af;font-size:11px;pointer-events:none;"></i>
                     <input type="text" id="${tableId}_search" placeholder="검색" style="padding:5px 8px 5px 26px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;width:140px;" />
@@ -7352,6 +7577,41 @@ async function restoreSession(sessionKey, hintDomain) {
             }
         } catch (_) {}
 
+        // ============================================================
+        // [2026-10-16] 제조원가 세션 원가 기준(_sessionCostBasis) 복원
+        // ------------------------------------------------------------
+        // items 는 ORDER BY created_at ASC 로 반환 (서버 /api/history/session/:id)
+        // → items[items.length-1] 이 가장 최신 row.
+        // 최신 row 의 chart_config._sessionCostBasis 가 있으면 메모리 변수 복원.
+        // 없으면 (예: 수익성/다른 영역 세션) 기본값으로 리셋.
+        // 재질의 UI 는 트리거하지 않음 (chip 복원과 동일 — "복원만, 재실행 안 함").
+        // ============================================================
+        try {
+            let _restoredCb = null;
+            // 최신 → 과거 순으로 역탐색하여 가장 먼저 발견된 _sessionCostBasis 사용
+            for (let i = items.length - 1; i >= 0; i--) {
+                const _it = items[i];
+                const _cfg = (_it && _it.chart_config) || {};
+                if (_cfg._sessionCostBasis && typeof _cfg._sessionCostBasis.value === 'string') {
+                    _restoredCb = _cfg._sessionCostBasis;
+                    break;
+                }
+            }
+            if (_restoredCb) {
+                currentCostBasis = {
+                    value: _restoredCb.value,
+                    zcgubunD: _restoredCb.zcgubunD || null,
+                    source: _restoredCb.source || 'default_fallback',
+                };
+                console.log(`[CostBasis:Restore] 세션 원가 기준 복원: ${JSON.stringify(currentCostBasis)}`);
+            } else {
+                // 복원 대상 없음 → 기본값으로 리셋 (이전 세션 잔여값 방지)
+                resetCurrentCostBasis();
+            }
+        } catch (cbRestoreErr) {
+            console.warn('[CostBasis:Restore] 복원 중 오류 (비치명):', cbRestoreErr);
+        }
+
         items.forEach(item => {
             // 사용자 질문 말풍선 + 자주질문 하트 (이력 복원 시에도 동일하게)
             const _userRow = buildUserMessageRow(
@@ -7495,6 +7755,10 @@ function startNewChat() {
     chatSessionId = crypto.randomUUID();
     conversationContext = [];
     sessionDomainLocked = false;
+    // [2026-10-16] 새 채팅 시작 시 제조원가 세션 원가 기준도 리셋
+    //   → 이전 세션에서 변경한 값이 새 세션에 누출되지 않도록 보장.
+    //   (수익성/다른 영역에서 새 세션 시작하더라도 기본값 리셋은 안전 — 서버가 sys_aimd_cot015 질의일 때만 사용)
+    try { resetCurrentCostBasis(); } catch (_) {}
     renderDomainSelectorBar();
     // [2026-08-24] 새 채팅 시작 시 업무영역/세부업무영역 잠금 해제
     //   → 사용자가 새 채팅에서 다시 자유롭게 area/subArea 를 선택 가능.
