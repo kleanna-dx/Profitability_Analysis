@@ -1404,7 +1404,7 @@
         
         <!-- 용어집 버튼 — 학습관리 데이터 재사용 팝업 오픈. 열림 상태 시 ▼ 화살표 표시 -->
         <button id="glossaryToggleBtn" class="glossary-toggle-btn" onclick="toggleGlossaryPanel()" aria-expanded="false" title="현재 도메인의 인식 가능한 용어(컬럼/동의어) 보기">
-            <span>용어집</span><span class="glossary-arrow" aria-hidden="true">▼</span>
+            <span>용어집T</span><span class="glossary-arrow" aria-hidden="true">▼</span>
         </button>
 
         <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
@@ -1762,6 +1762,320 @@ let userDefaultDomain = null;
 let domainsList = [];
 let sessionDomainLocked = false;
 const domainIcons = { PS:'fa-scroll', HL:'fa-home', MGMT:'fa-briefcase', EXEC:'fa-briefcase' };
+
+// ============================================================
+// [2026-10-16] 제조원가(sys_aimd_cot015) 세션 원가 기준 — 메모리 상태값
+// ------------------------------------------------------------
+// 역할:
+//   - 사용자가 선택한 원가 기준(ZCGUBUN)을 채팅 세션 동안 유지
+//   - 매 질의 요청 body 에 sessionCostBasis 로 자동 포함 (currentDomain 과 동일 패턴)
+//   - DB 조회 없이 메모리에서 즉시 꺼내 사용 → 성능 영향 0
+//
+// 유지 범위:
+//   - 평소 채팅 중: 이 변수 그대로 유지 (턴 수 무관)
+//   - 드롭다운 변경: 즉시 업데이트 + 재질의
+//   - 명확화 UI 선택: 즉시 업데이트
+//   - 질의 텍스트 명시 ("매출원가 TOP5"): 서버 응답의 appliedCostBasis 로 역동기화
+//   - 채팅 재진입: restoreSession() 이 DB 최신 row 의 _sessionCostBasis 로 복원
+//   - 새 채팅 시작: resetCurrentCostBasis() 로 기본값('실제원가') 리셋
+//
+// 기본값:
+//   { value: '실제원가', zcgubunD: null, source: 'default_fallback' }
+//
+// 적용 조건:
+//   - 서버 응답에 appliedCostBasis 가 있는 경우에만 (sys_aimd_cot015 질의)
+//   - 다른 영역/테이블 (수익성분석, cot043) 응답엔 appliedCostBasis 가 없음 → 메모리값 유지하지만 WHERE 주입 안 됨
+// ============================================================
+let currentCostBasis = { value: '실제원가', zcgubunD: null, source: 'default_fallback' };
+
+// 세션 원가 기준 리셋 (새 채팅 시작/페이지 초기 로드 시 호출)
+function resetCurrentCostBasis() {
+    currentCostBasis = { value: '실제원가', zcgubunD: null, source: 'default_fallback' };
+    console.log('[CostBasis] 메모리 변수 리셋 → 기본값(실제원가)');
+}
+
+// 서버 응답의 appliedCostBasis 로부터 메모리 변수 동기화
+//   - 서버가 사용자 명시(explicit_in_query)를 감지했거나 명확화 UI 선택을 반영했을 때
+//   - response.appliedCostBasis = { value, zcgubunD, source, label, showDropdown, options }
+function syncCostBasisFromResponse(appliedCostBasis) {
+    if (!appliedCostBasis || typeof appliedCostBasis.value !== 'string') return;
+    const prev = JSON.stringify(currentCostBasis);
+    currentCostBasis = {
+        value: appliedCostBasis.value,
+        zcgubunD: appliedCostBasis.zcgubunD || null,
+        source: appliedCostBasis.source || 'dropdown_change',
+    };
+    const curr = JSON.stringify(currentCostBasis);
+    if (prev !== curr) {
+        console.log(`[CostBasis] 서버 응답으로 동기화: ${prev} → ${curr}`);
+    }
+}
+
+// ============================================================
+// [2026-10-22 B-3] 결과표 toolbar 원가 기준 드롭다운 변경 핸들러
+// ------------------------------------------------------------
+// 설계 전환 (방식 A → 방식 B-3):
+//   방식 A (이전): sendQuery(originalQuery, { costBasisDropdownResend: true })
+//     → 전체 자연어 질의 파이프라인 재실행 → 새 사용자 bubble + 새 봇 카드 쌓임.
+//     → 2~5초 소요, 채팅 로그 지저분, "같은 질문 또 던진" UX 어긋남.
+//   방식 B-3 (현재): fetch('/api/nlq/rewrite-cost-basis')
+//     → 서버가 기존 SQL 의 WHERE ZCGUBUN 만 regex 치환해서 즉시 재조회 (LLM 호출 없음).
+//     → 50~300ms, 기존 결과 카드의 "표+차트만" 교체. 사용자 bubble/카드 신규 생성 없음.
+//     → 상단 답변 영역은 opacity:0.65 로 흐리게 + 안내 문구 1줄 삽입
+//        (원 답변 숫자와 바뀐 표 숫자가 다름을 명확히 표시 — 환각 회피, 데이터 신뢰성 보장).
+//
+// select.value 포맷: "<value>|<zcgubunD or empty>"  (buildAnalysisDetailTable 참조)
+//
+// 흐름:
+//   1) 메모리 변수 currentCostBasis 즉시 업데이트 (다음 질의로 이어짐 보장)
+//   2) 드롭다운이 속한 결과표의 tableId / analysisTableState 꺼냄 (원 SQL 보관됨)
+//   3) 중복 변경 방지: select 비활성화
+//   4) POST /api/nlq/rewrite-cost-basis → 서버에서 WHERE 치환 + DB 재조회
+//   5) 응답으로 state.rows + state.sql 교체 → renderAnalysisTable 로 표 재렌더
+//   6) 차트 canvas 에 저장된 _nlqChartData.data 도 교체 → renderMsgChart 재호출
+//   7) 뱃지/드롭다운 selected 상태 재조립 (DOM in-place 교체)
+//   8) 답변 영역 opacity:0.65 적용 + 안내 문구 1줄 삽입 (원래값 복귀 시 해제)
+//   9) PATCH /api/history/session/:id/cost-basis fire-and-forget
+//      → 채팅 재진입 시 복원 보장 (chart_config._sessionCostBasis UPDATE)
+// ============================================================
+async function onCostBasisDropdownChange(selectEl) {
+    try {
+        if (!selectEl || typeof selectEl.value !== 'string') return;
+        const raw = selectEl.value;
+        const sepIdx = raw.indexOf('|');
+        const newValue = (sepIdx >= 0) ? raw.slice(0, sepIdx) : raw;
+        const newZcgubunD = (sepIdx >= 0) ? raw.slice(sepIdx + 1) : '';
+        if (!newValue) {
+            console.warn('[CostBasisDropdown] 빈 value — 무시');
+            return;
+        }
+
+        // 1) 메모리 변수 즉시 업데이트 (다음 질의로 이어짐 보장 — payload 자동 포함)
+        const prev = JSON.stringify(currentCostBasis);
+        currentCostBasis = {
+            value: newValue,
+            zcgubunD: newZcgubunD || null,
+            source: 'dropdown_change',
+        };
+        console.log(`[CostBasisDropdown] 선택 변경: ${prev} → ${JSON.stringify(currentCostBasis)}`);
+
+        // 2) 드롭다운이 속한 결과표 식별
+        const wrap = selectEl.closest('.analysis-detail-wrap');
+        if (!wrap) {
+            console.warn('[CostBasisDropdown] .analysis-detail-wrap 미발견 — 중단');
+            return;
+        }
+        const tableEl = wrap.querySelector('table.data-table');
+        const tableId = tableEl ? tableEl.id : null;
+        if (!tableId || !analysisTableState[tableId]) {
+            console.warn('[CostBasisDropdown] tableId 또는 state 미발견 — 중단');
+            return;
+        }
+        const st = analysisTableState[tableId];
+        if (!st.sql) {
+            console.warn('[CostBasisDropdown] 원 SQL 없음 (st.sql=null) — 재조회 불가. 이력 재열람 등에서 발생 가능.');
+            alert('이 결과표는 원가 기준 변경을 지원하지 않습니다. 질문을 다시 입력해 주세요.');
+            // selected 복원
+            selectEl.value = `${currentCostBasis.value}|${currentCostBasis.zcgubunD || ''}`;
+            return;
+        }
+
+        // 3) 중복 변경 방지
+        selectEl.disabled = true;
+
+        try {
+            // 4) 서버 호출 — LLM 없음, WHERE regex 치환 + DB 실행
+            const r = await fetch('/api/nlq/rewrite-cost-basis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sql: st.sql,
+                    costBasis: {
+                        value: newValue,
+                        zcgubunD: newZcgubunD || null,
+                        source: 'dropdown_change',
+                    },
+                }),
+            });
+            if (!r.ok) {
+                const errBody = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+                throw new Error(errBody.error || `서버 오류 (HTTP ${r.status})`);
+            }
+            const data = await r.json();
+            if (!data.success) throw new Error(data.error || '재조회 실패');
+
+            // 5) 표 상태 교체 + 재렌더 (in-place)
+            st.rows = data.data;
+            st.sql = data.newSql || st.sql;   // 다음 변경을 위한 치환 기준 갱신
+            st.page = 1;                      // 데이터 바뀌면 1페이지로 이동
+            // sortCol/sortDir/search 는 유지 (사용자가 설정한 정렬/검색 보존)
+            if (typeof renderAnalysisTable === 'function') {
+                renderAnalysisTable(tableId);
+            }
+
+            // 6) 차트 자동 갱신 — canvas._nlqChartData.data 교체 + renderMsgChart 재호출
+            //   차트 데이터는 canvas DOM 에 _nlqChartData 로 붙어있음 (라인 ~3964 참조).
+            //   표 데이터와 분리된 저장소이므로 명시적으로 교체 필요.
+            if (st.chartCanvasId) {
+                const chartCanvas = document.getElementById(st.chartCanvasId);
+                if (chartCanvas && chartCanvas._nlqChartData && typeof renderMsgChart === 'function') {
+                    try {
+                        chartCanvas._nlqChartData.data = data.data;
+                        // 현재 선택된 차트 유형 유지 (라디오 그룹에서 체크된 값)
+                        let currentChartType = null;
+                        const chkRadio = document.querySelector(`input[name="${st.chartCanvasId}_type"]:checked`);
+                        if (chkRadio) currentChartType = chkRadio.value;
+                        renderMsgChart(st.chartCanvasId, chartCanvas._nlqChartData, currentChartType);
+                        console.log(`[CostBasisDropdown] 차트 갱신: canvasId=${st.chartCanvasId} rows=${data.data.length}`);
+                    } catch (chartErr) {
+                        console.warn('[CostBasisDropdown] 차트 갱신 실패 (비치명):', chartErr.message);
+                    }
+                }
+            }
+
+            // 7) SQL 탭 갱신 — SQL pre (하이라이트된 코드) + SQL 편집기 textarea 둘 다 새 SQL 로 교체
+            //   [2026-10-22 B-3 fix] 사용자 지적: 표/차트는 바뀌는데 SQL 탭의 쿼리/설명이 그대로 남아있어 혼란.
+            //   aggregate 경로의 SQL 패널 DOM id 규칙:
+            //     - 결과표 tableId = 'atbl_' + id  (id = 'msg' + counter)  → 라인 3916
+            //     - SQL pre         = `${id}_sqlPre`                        → 라인 4051
+            //     - SQL 편집기 TA   = `${id}_editorTa`                      → 라인 4053
+            //     - 설명 블록       = `${id}_sql` div 안의 info 블록        → 라인 4042~4045
+            //   analysis 경로 결과표는 전용 SQL 탭이 없으므로 (res-tabs 밖) no-op.
+            {
+                const msgIdMatch = /^atbl_(.+)$/.exec(tableId);
+                if (msgIdMatch && data.newSql) {
+                    const msgId = msgIdMatch[1];
+                    // SQL pre (문법 하이라이트) 교체
+                    const sqlPre = document.getElementById(msgId + '_sqlPre');
+                    if (sqlPre && typeof formatAndHighlightSql === 'function') {
+                        sqlPre.innerHTML = formatAndHighlightSql(data.newSql);
+                    }
+                    // SQL 편집기 textarea 교체 (사용자가 편집하려 할 때 혼란 방지)
+                    const sqlTa = document.getElementById(msgId + '_editorTa');
+                    if (sqlTa && typeof formatSqlText === 'function') {
+                        sqlTa.value = formatSqlText(data.newSql);
+                    }
+                }
+            }
+
+            // 8) 뱃지/드롭다운 재조립 + 메모리 변수 동기화
+            if (data.appliedCostBasis) {
+                syncCostBasisFromResponse(data.appliedCostBasis);
+                refreshCostBasisBadgeAndDropdown(wrap, data.appliedCostBasis);
+            }
+
+            // 9) 답변 영역 + SQL 탭 설명 흐리게 + 안내 문구 (원래값 복귀 시 해제)
+            //   [2026-10-22 B-3 fix] SQL 탭 안의 설명 블록도 "원 질의 기준" 이므로 함께 흐리게.
+            //   LLM 재호출 없이 설명을 완벽히 재생성할 수 없으므로, 원 설명을 유지하되 "표 숫자와 다를 수 있음" 안내.
+            const msgBot = wrap.closest('.msg-bot');
+            if (msgBot) {
+                const isBackToInitial = isSameCostBasis(data.appliedCostBasis, st.initialAppliedCostBasis);
+                applyCostBasisDimEffect(msgBot, {
+                    changed: !isBackToInitial,
+                    newLabel: (data.appliedCostBasis && data.appliedCostBasis.label) || newValue,
+                });
+            }
+
+            // 9) history row UPDATE — 채팅 재진입 복원용 (fire-and-forget)
+            if (typeof chatSessionId === 'string' && chatSessionId) {
+                fetch(`/api/history/session/${encodeURIComponent(chatSessionId)}/cost-basis`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionCostBasis: currentCostBasis }),
+                }).catch(err => console.warn('[CostBasisDropdown] history UPDATE 실패 (비치명):', err.message));
+            }
+        } finally {
+            selectEl.disabled = false;
+        }
+    } catch (err) {
+        console.error('[CostBasisDropdown] 핸들러 오류:', err);
+        alert('원가 기준 재조회에 실패했습니다: ' + (err.message || err));
+    }
+}
+
+// [B-3] 두 appliedCostBasis 가 "값 기준으로" 같은지 비교 (source/label 등 메타 제외)
+function isSameCostBasis(a, b) {
+    if (!a || !b) return false;
+    return (a.value === b.value) && ((a.zcgubunD || null) === (b.zcgubunD || null));
+}
+
+// [B-3] 뱃지 + 드롭다운 selected 상태를 새 appliedCostBasis 로 in-place 재조립.
+//   DOM 자체를 재생성하지 않고 textContent / selected 속성만 교체 — 표 상태와 독립.
+function refreshCostBasisBadgeAndDropdown(wrap, appliedCostBasis) {
+    if (!wrap || !appliedCostBasis) return;
+    // 뱃지 교체 (sourceLabel + labelText)
+    const badgeDiv = wrap.querySelector('[id$="_cbBadge"]');
+    if (badgeDiv) {
+        const sourceLabelMap = {
+            'default_fallback':           '기본값',
+            'dropdown_change':            '사용자 변경',
+            'clarification_ui':           '사용자 선택',
+            'clarification_ui_subtype':   '사용자 선택',
+            'explicit_in_query':          '질문에서 명시',
+        };
+        const sourceLabel = sourceLabelMap[appliedCostBasis.source] || '사용자 변경';
+        const labelText = appliedCostBasis.label || appliedCostBasis.value;
+        badgeDiv.innerHTML = `
+            <i class="fas fa-coins" style="color:#6d28d9;"></i>
+            <span><strong>${esc(labelText)}</strong> 기준 <span style="color:#6b7280;font-weight:500;">(${esc(sourceLabel)})</span></span>
+        `;
+    }
+    // 드롭다운 selected 상태만 교체 (옵션 DOM 재생성 X — 사용자 포커스/스크롤 보존)
+    const selectEl = wrap.querySelector('[id$="_cbSelect"]');
+    if (selectEl) {
+        const curKey = `${appliedCostBasis.value}|${appliedCostBasis.zcgubunD || ''}`;
+        for (const opt of selectEl.options) {
+            opt.selected = (opt.value === curKey);
+        }
+    }
+}
+
+// [B-3] 답변 영역을 "흐리게" 처리 + 안내 문구 삽입/제거.
+//   changed=true  : 드롭다운이 최초값 외의 값으로 변경됨 → 흐리게 + 안내 띄움
+//   changed=false : 다시 최초값으로 돌아감 → 흐리게/안내 모두 해제
+//
+// 흐리게 처리 대상:
+//   - 상단 답변 영역 (.msg-bot-header) — LLM 이 자유 생성한 요약 답변
+//     원 질의 기준이므로 표/차트가 바뀐 후에는 "표의 숫자와 다를 수 있다" 는 사실을
+//     사용자에게 명확히 전달 (환각 회피).
+//   - [2026-10-22] SQL 탭 상단의 설명 블록은 아예 제거되어 처리 대상 없음
+//     (사용자 요구: 거의 안 보는 공간 — 라인 4088 참조).
+//
+// 안내 문구는 결과표 바로 위에 1회만 삽입. 중복 삽입 방지.
+function applyCostBasisDimEffect(msgBot, { changed, newLabel }) {
+    if (!msgBot) return;
+    const header = msgBot.querySelector('.msg-bot-header');
+    const existingNotice = msgBot.querySelector('.cb-dim-notice');
+
+    if (changed) {
+        if (header) header.style.opacity = '0.65';
+        if (!existingNotice) {
+            const notice = document.createElement('div');
+            notice.className = 'cb-dim-notice';
+            notice.setAttribute('role', 'note');
+            notice.style.cssText =
+                'padding:10px 14px;background:#fef3c7;border:1px solid #fcd34d;' +
+                'color:#78350f;font-size:12.5px;line-height:1.6;margin:10px 0 6px 0;' +
+                'border-radius:8px;';
+            notice.innerHTML =
+                `<i class="fas fa-info-circle" style="margin-right:6px;color:#f59e0b;"></i>` +
+                `원가 기준이 <strong>'${esc(newLabel)}'</strong>로 변경되어 아래 표/차트/SQL은 재조회되었습니다. ` +
+                `<span style="color:#92400e;">상단 답변 문구는 원래 질의 기준이므로 표의 숫자와 다를 수 있습니다.</span>`;
+            // 결과표 바로 위에 삽입
+            const wrap = msgBot.querySelector('.analysis-detail-wrap');
+            if (wrap && wrap.parentNode) {
+                wrap.parentNode.insertBefore(notice, wrap);
+            }
+        } else {
+            // 이미 있으면 라벨만 교체
+            const strongEl = existingNotice.querySelector('strong');
+            if (strongEl) strongEl.textContent = `'${newLabel}'`;
+        }
+    } else {
+        if (header) header.style.opacity = '';
+        if (existingNotice) existingNotice.remove();
+    }
+}
 
 async function initDomainAndRole() {
     try {
@@ -2867,6 +3181,20 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
                 console.log(`[CostBasisClarify] 재요청 forcedCostBasis: value="${_fcb.value}"${_fcb.zcgubunD ? ` zcgubunD="${_fcb.zcgubunD}"` : ''}`);
             }
         } catch (_) {}
+        // [2026-10-16] 제조원가 세션 원가 기준 — 매 질의 요청 body 에 메모리 변수 포함
+        //   - sys_aimd_cot015 조회 시 서버가 WHERE ZCGUBUN 조건 자동 주입에 활용
+        //   - forcedCostBasis(명확화 재요청) 가 우선순위 높으므로 둘 다 보내도 서버가 알아서 처리
+        //   - currentCostBasis 는 { value, zcgubunD, source } — 서버가 whitelist 검증
+        //   - 수익성분석(bw_profitability_data) 등 다른 영역 질의 시엔 서버가 무시 (sys_aimd_cot015 전용 적용)
+        try {
+            if (currentCostBasis && typeof currentCostBasis.value === 'string') {
+                asyncPayload.sessionCostBasis = {
+                    value: currentCostBasis.value,
+                    zcgubunD: currentCostBasis.zcgubunD || null,
+                    source: currentCostBasis.source || 'default_fallback',
+                };
+            }
+        } catch (_) {}
         // [2026-08-31 PR #407] 명확화 chip 목록을 서버로 전송
         //   - 서버는 이 값을 chart_config._clarificationSelections 에 병합하여 히스토리에 저장
         //   - 재조회 시 sendQuery 를 재실행하지 않고 chip 만 복원 (Q3-a)
@@ -3199,9 +3527,14 @@ async function runAnalysisAsync({ query, typingEl, reqStartMs, timeoutMs, mySeq,
     } else if (data.isAnalysisAnswer) {
         appendAnalysisOnlyMessage(data);
         pushConversationContext({ query, data, overrideSql: null });
+        // [2026-10-16] 분석 응답의 appliedCostBasis 로 세션 메모리 역동기화
+        //   (서버가 사용자 명시 ["매출원가 ..." 질의] 감지 시 결정값을 돌려줌)
+        if (data.appliedCostBasis) syncCostBasisFromResponse(data.appliedCostBasis);
     } else {
         appendBotMessage(data);
         pushConversationContext({ query, data });
+        // [2026-10-16] 집계 응답의 appliedCostBasis 로 세션 메모리 역동기화
+        if (data.appliedCostBasis) syncCostBasisFromResponse(data.appliedCostBasis);
     }
 }
 
@@ -3655,8 +3988,22 @@ function appendBotMessage(data) {
             }
             _mfgShowWidenBtn = (_areaForWiden === 'manufacturing-cost');
         } catch (_) { _mfgShowWidenBtn = false; }
-        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo, _mfgShowWidenBtn);
-        _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory, widenable: _mfgShowWidenBtn };
+        // [2026-10-22 FIX] 10번째 인자 appliedCostBasis 를 전달해야 결과표 toolbar 에 뱃지/드롭다운이 렌더됨.
+        //   PR #525 작성 시 analysis 호출부(라인 ~5329)만 appliedCostBasis 를 추가하고
+        //   aggregate(현황집계 — appendBotMessage) 쪽인 이 호출부는 9번째까지만 전달해 뱃지/드롭다운이 안 보였음.
+        //   data.appliedCostBasis 는 서버 aggregate route 가 sys_aimd_cot015 질의 시에만 생성해서 응답에 포함.
+        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo, _mfgShowWidenBtn, data.appliedCostBasis || null);
+        // [2026-10-22 B-3] 드롭다운 원가 기준 변경 시 in-place 재조회를 위해 원 SQL + appliedCostBasis + chartId 를 state 에 저장.
+        //   - data.sql: 서버가 실행한 최종 SQL (ZCGUBUN WHERE 치환의 기준)
+        //   - data.appliedCostBasis: 최초 적용 메타 (사용자가 다시 원래값으로 돌리면 흐리게 해제)
+        //   - chartId: 같은 메시지의 차트 canvas id. 표 갱신 시 차트도 함께 재렌더용.
+        _aggDetailInitCtx = {
+            rows: data.data, cols, colLabels, fromHistory,
+            widenable: _mfgShowWidenBtn,
+            sql: data.sql || '',
+            initialAppliedCostBasis: data.appliedCostBasis || null,
+            chartCanvasId: chartId,
+        };
     }
 
     // Analysis HTML (분석 답변 패널)
@@ -3728,9 +4075,10 @@ function appendBotMessage(data) {
                 <div class="chart-container"><canvas id="${chartId}" height="300"></canvas></div>
             </div>
             <div id="${id}_sql" class="res-panel">
-                ${data.explanation ? `<div style="padding:10px 14px;background:#f0f4ff;border-radius:8px;margin-bottom:8px;font-size:12.5px;color:#475569;line-height:1.6;border-left:3px solid #6366f1;">
-                    <i class="fas fa-info-circle" style="color:#6366f1;margin-right:6px;"></i>${esc(data.explanation)}
-                </div>` : ''}
+                <!-- [2026-10-22] SQL 탭 상단의 LLM 설명 블록 제거 (사용자 요구).
+                     기존에는 data.explanation 을 보라색 info 박스로 표시했으나,
+                     사용자가 거의 안 보고 공간만 차지한다는 피드백.
+                     SQL 자체는 아래 <pre id="${id}_sqlPre"> 에 그대로 표시됨. -->
                 <div class="sql-display-wrap">
                     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px 0;background:#0f172a;">
                         <span style="font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">GENERATED SQL</span>
@@ -3779,7 +4127,11 @@ function appendBotMessage(data) {
             _aggDetailInitCtx.colLabels,
             _aggDetailInitCtx.fromHistory,
             // [2026-09-17] 제조원가 현황집계에서만 '넓게 보기' 버튼 활성
-            _aggDetailInitCtx.widenable
+            _aggDetailInitCtx.widenable,
+            // [2026-10-22 B-3] 7~9번째 인자: 드롭다운 원가 기준 변경 시 in-place 재조회용
+            _aggDetailInitCtx.sql,
+            _aggDetailInitCtx.initialAppliedCostBasis,
+            _aggDetailInitCtx.chartCanvasId
         );
     }
 
@@ -4957,6 +5309,20 @@ async function resendQueryWithForcedCostBasis(originalQuery, subArea, forcedCost
     if (subArea) window.__forceMfgSubArea = subArea;
     window.__forceCostBasis = zd ? { value: forcedCostBasis.value, zcgubunD: zd }
                                  : { value: forcedCostBasis.value };
+
+    // [2026-10-16] 명확화 UI 선택 → 세션 원가 기준 메모리 변수 동기화
+    //   서버가 응답 appliedCostBasis 로도 덮어쓰지만 재질의 payload 조립 시점에서
+    //   이미 반영된 값이 들어가야 서버 forcedCostBasis 결정 블록이 일관되게 동작.
+    //   source 는 명확화 UI 경유를 보존 — 서버가 응답에서 clarification_ui/subtype 으로 치환해 돌려줌.
+    try {
+        currentCostBasis = {
+            value: forcedCostBasis.value,
+            zcgubunD: zd || null,
+            source: 'clarification_ui',
+        };
+        console.log(`[CostBasisClarify] 메모리 변수 동기화: ${JSON.stringify(currentCostBasis)}`);
+    } catch (_) {}
+
     try {
         if (typeof sendQuery === 'function') {
             await sendQuery(trimmedQuery, { clarifyResend: true });
@@ -5145,7 +5511,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
     const tableId = 'aatbl_' + (++msgCounter);
 
     const tableSection = hasTable
-        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo)
+        ? buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, false, (typeof dataOrText === 'object' && dataOrText) ? dataOrText.appliedCostBasis : null)
         : '';
 
     el.innerHTML = `
@@ -5167,7 +5533,17 @@ function appendAnalysisOnlyMessage(dataOrText) {
 
     // 표 인터랙션 바인딩 (검색·정렬·페이지네이션)
     if (hasTable) {
-        initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory);
+        // [2026-10-22 B-3] 7~9번째 인자: 드롭다운 원가 기준 변경 시 in-place 재조회용
+        //   - sql: dataOrText.sql 또는 외부 sql 변수 (상위 scope)
+        //   - appliedCostBasis: dataOrText 가 객체일 때만 꺼냄
+        //   - chartCanvasId: analysis route 상세표는 전용 차트 canvas 를 안 가지므로 null
+        const _sqlForRequery = (typeof dataOrText === 'object' && dataOrText && typeof dataOrText.sql === 'string')
+            ? dataOrText.sql
+            : (typeof sql === 'string' ? sql : null);
+        const _initCbForRequery = (typeof dataOrText === 'object' && dataOrText)
+            ? (dataOrText.appliedCostBasis || null)
+            : null;
+        initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory, false, _sqlForRequery, _initCbForRequery, null);
     }
 
     scrollToBottom();
@@ -5179,7 +5555,7 @@ function appendAnalysisOnlyMessage(dataOrText) {
 //   - <thead> 헤더 클릭 시 정렬
 //   - 실제 데이터 채움과 이벤트 바인딩은 initAnalysisDetailTable 에서.
 // ============================================================
-function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, showWidenButton) {
+function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, showWidenButton, appliedCostBasis) {
     // [2026-09-17] showWidenButton (선택, 9번째 인자)
     //   - true 일 때만 헤더 우측에 '가로 넓게 보기' 토글 버튼 렌더 (제조원가 현황집계 전용)
     //   - 미지정/false 이면 기존 UI 그대로 (분석질문, 수익성분석 등 영향 없음)
@@ -5242,14 +5618,58 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
     // SQL 다운로드/펼침 토글 옵션
     const sqlToggleId = tableId + '_sqltoggle';
     const sqlPanelId = tableId + '_sqlpanel';
+
+    // [2026-10-16] 제조원가 세션 원가 기준 뱃지 + 드롭다운 HTML 조립
+    //   - appliedCostBasis 가 있을 때만 렌더 (sys_aimd_cot015 질의 결과)
+    //   - 뱃지: 현재 적용된 원가 기준 + 어떻게 결정됐는지 (source) 안내
+    //   - 드롭다운: showDropdown=true 일 때만 (기본값/드롭다운 변경 시) — 사용자가 즉시 전환 가능
+    //   - 명확화/질의명시 경우: 드롭다운 없이 뱃지만 (사용자가 바꾸려면 자연어 질의로)
+    let costBasisBadgeHtml = '';
+    let costBasisDropdownHtml = '';
+    if (appliedCostBasis && typeof appliedCostBasis.value === 'string') {
+        // 뱃지 — source 별 안내 문구
+        const sourceLabelMap = {
+            'default_fallback':           '기본값',
+            'dropdown_change':            '사용자 변경',
+            'clarification_ui':           '사용자 선택',
+            'clarification_ui_subtype':   '사용자 선택',
+            'explicit_in_query':          '질문에서 명시',
+        };
+        const sourceLabel = sourceLabelMap[appliedCostBasis.source] || '사용자 변경';
+        const labelText = appliedCostBasis.label || appliedCostBasis.value;
+        costBasisBadgeHtml = `
+            <div id="${tableId}_cbBadge" class="cb-badge" style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:#eef2ff;border-bottom:1px solid #e0e7ff;color:#4c1d95;font-size:12px;font-weight:600;">
+                <i class="fas fa-coins" style="color:#6d28d9;"></i>
+                <span><strong>${esc(labelText)}</strong> 기준 <span style="color:#6b7280;font-weight:500;">(${esc(sourceLabel)})</span></span>
+            </div>`;
+
+        // 드롭다운 — showDropdown=true 일 때만 toolbar 에 삽입
+        //   onchange: 선택값 파싱 → onCostBasisDropdownChange(tableId, value, zcgubunD)
+        if (appliedCostBasis.showDropdown && Array.isArray(appliedCostBasis.options)) {
+            const optionsHtml = appliedCostBasis.options.map(opt => {
+                // option value = "value|zcgubunD" 포맷 (zcgubunD 없으면 'value|' 로 끝)
+                const optKey = `${opt.value}|${opt.zcgubunD || ''}`;
+                const curKey = `${appliedCostBasis.value}|${appliedCostBasis.zcgubunD || ''}`;
+                const sel = (optKey === curKey) ? ' selected' : '';
+                return `<option value="${esc(optKey)}"${sel}>${esc(opt.label)}</option>`;
+            }).join('');
+            costBasisDropdownHtml = `
+                <select id="${tableId}_cbSelect" title="원가 기준 변경 (즉시 재조회)" onchange="onCostBasisDropdownChange(this)" style="padding:5px 8px;border:1px solid #c7d2fe;border-radius:6px;font-size:12px;background:#fff;color:#4c1d95;font-weight:600;">
+                    ${optionsHtml}
+                </select>`;
+        }
+    }
+
     return `
     <div class="analysis-detail-wrap" style="margin-top:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+        ${costBasisBadgeHtml}
         <div class="analysis-detail-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:linear-gradient(135deg,#eef2ff,#f5f3ff);border-bottom:1px solid #e5e7eb;flex-wrap:wrap;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;color:#4c1d95;font-size:12px;font-weight:700;">
                 <i class="fas fa-table"></i>
                 <span>분석 대상 상세 결과 <span id="${tableId}_count" style="color:#6b7280;font-weight:500;">(${rowCount.toLocaleString('ko-KR')}행)</span>${periodHtml}</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                ${costBasisDropdownHtml}
                 <div style="position:relative;">
                     <i class="fas fa-search" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#9ca3af;font-size:11px;pointer-events:none;"></i>
                     <input type="text" id="${tableId}_search" placeholder="검색" style="padding:5px 8px 5px 26px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;width:140px;" />
@@ -5326,7 +5746,13 @@ const analysisTableState = {};
 //   - 초기 렌더
 //   - 검색어 변경 / 페이지 크기 변경 시 재렌더
 // ============================================================
-function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory, widenable) {
+function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromHistory, widenable, sql, initialAppliedCostBasis, chartCanvasId) {
+    // [2026-10-22 B-3] 7번째 인자부터 (선택):
+    //   sql                    : 이 표를 만든 원 SQL. 드롭다운 변경 시 WHERE 치환 재조회에 재사용.
+    //   initialAppliedCostBasis: 최초 적용된 원가 기준 메타. 사용자가 드롭다운 다시 원래값으로
+    //                            돌렸는지 판별하여 "답변 흐리게" 효과를 해제할지 결정.
+    //   chartCanvasId          : 같은 메시지의 차트 canvas id. 표 갱신 시 차트도 함께 재렌더용.
+    //   세 값 모두 undefined 여도 기존 호출부(이력 재열람 등)는 영향 없음.
     // [2026-09-12] 증감/차이 컬럼 인덱스 집합 (Set of column index) — 셀 렌더 시 시각 강조에 사용
     const deltaColIdxSet = new Set();
     (columnOrder || []).forEach((c, idx) => {
@@ -5356,6 +5782,10 @@ function initAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, fromH
         fromHistory: !!fromHistory,   // [2026-07-21] 이력 재열람 여부 (안내 문구 유지용)
         deltaColIdxSet: deltaColIdxSet,  // [2026-09-12] 증감/차이 컬럼 인덱스 집합
         unitPriceColIdxSet: unitPriceColIdxSet,  // [2026-09-17] 개당 단가 컬럼 인덱스 집합 (제조원가만)
+        // [2026-10-22 B-3] 드롭다운 원가 기준 변경 시 in-place 재조회 지원
+        sql: (typeof sql === 'string' && sql.trim()) ? sql : null,
+        initialAppliedCostBasis: initialAppliedCostBasis || null,
+        chartCanvasId: (typeof chartCanvasId === 'string' && chartCanvasId.trim()) ? chartCanvasId : null,
     };
     const st = analysisTableState[tableId];
     const searchEl = document.getElementById(tableId + '_search');
@@ -7352,6 +7782,41 @@ async function restoreSession(sessionKey, hintDomain) {
             }
         } catch (_) {}
 
+        // ============================================================
+        // [2026-10-16] 제조원가 세션 원가 기준(_sessionCostBasis) 복원
+        // ------------------------------------------------------------
+        // items 는 ORDER BY created_at ASC 로 반환 (서버 /api/history/session/:id)
+        // → items[items.length-1] 이 가장 최신 row.
+        // 최신 row 의 chart_config._sessionCostBasis 가 있으면 메모리 변수 복원.
+        // 없으면 (예: 수익성/다른 영역 세션) 기본값으로 리셋.
+        // 재질의 UI 는 트리거하지 않음 (chip 복원과 동일 — "복원만, 재실행 안 함").
+        // ============================================================
+        try {
+            let _restoredCb = null;
+            // 최신 → 과거 순으로 역탐색하여 가장 먼저 발견된 _sessionCostBasis 사용
+            for (let i = items.length - 1; i >= 0; i--) {
+                const _it = items[i];
+                const _cfg = (_it && _it.chart_config) || {};
+                if (_cfg._sessionCostBasis && typeof _cfg._sessionCostBasis.value === 'string') {
+                    _restoredCb = _cfg._sessionCostBasis;
+                    break;
+                }
+            }
+            if (_restoredCb) {
+                currentCostBasis = {
+                    value: _restoredCb.value,
+                    zcgubunD: _restoredCb.zcgubunD || null,
+                    source: _restoredCb.source || 'default_fallback',
+                };
+                console.log(`[CostBasis:Restore] 세션 원가 기준 복원: ${JSON.stringify(currentCostBasis)}`);
+            } else {
+                // 복원 대상 없음 → 기본값으로 리셋 (이전 세션 잔여값 방지)
+                resetCurrentCostBasis();
+            }
+        } catch (cbRestoreErr) {
+            console.warn('[CostBasis:Restore] 복원 중 오류 (비치명):', cbRestoreErr);
+        }
+
         items.forEach(item => {
             // 사용자 질문 말풍선 + 자주질문 하트 (이력 복원 시에도 동일하게)
             const _userRow = buildUserMessageRow(
@@ -7495,6 +7960,10 @@ function startNewChat() {
     chatSessionId = crypto.randomUUID();
     conversationContext = [];
     sessionDomainLocked = false;
+    // [2026-10-16] 새 채팅 시작 시 제조원가 세션 원가 기준도 리셋
+    //   → 이전 세션에서 변경한 값이 새 세션에 누출되지 않도록 보장.
+    //   (수익성/다른 영역에서 새 세션 시작하더라도 기본값 리셋은 안전 — 서버가 sys_aimd_cot015 질의일 때만 사용)
+    try { resetCurrentCostBasis(); } catch (_) {}
     renderDomainSelectorBar();
     // [2026-08-24] 새 채팅 시작 시 업무영역/세부업무영역 잠금 해제
     //   → 사용자가 새 채팅에서 다시 자유롭게 area/subArea 를 선택 가능.

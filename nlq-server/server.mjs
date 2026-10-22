@@ -9792,8 +9792,17 @@ function applyForcedCostCompFilter(inputSql, forcedCostComp) {
 }
 
 /**
- * WHERE 조건 문자열에서 잔여 AND/OR, 빈 괄호, 연속 AND 등을 정리.
- * ZCOSTCOMP_NM 조건 제거 후 발생하는 문법 오류 방어용.
+ * WHERE 조건 문자열에서 잔여 AND/OR, 빈 괄호, 연속 AND, 중첩 외곽 괄호를 정리.
+ * ZCOSTCOMP_NM 조건 제거 후 발생하는 문법 오류 방어 + 반복 호출 시 괄호 누적 방지용.
+ *
+ * [2026-10-22] 중첩 외곽 괄호 정리 추가 (사용자 신고):
+ *   드롭다운에서 원가 기준을 반복 변경 시 WHERE 절에 다음 패턴 누적:
+ *     AND (((((((CALMONTH = '202608')))))))
+ *   원인: applyForcedCostBasisFilter 가 매 호출마다 cond 를 `(cond)` 로 감싸서 반환.
+ *     그 결과가 다시 입력으로 들어오면 또 괄호 1겹 추가 → 호출마다 괄호 누적.
+ *   해결: "조건식 전체를 1겹으로 감싸는 중첩 외곽 괄호" 를 반복 벗겨냄.
+ *     주의: `(A) AND (B)` 같이 "서로 다른 괄호 2개" 는 벗기면 안 됨.
+ *           오직 "전체가 1개의 괄호쌍으로 감싸진" 경우만 벗김.
  */
 function _sanitizeWhereCond(cond) {
   if (!cond) return cond;
@@ -9812,6 +9821,31 @@ function _sanitizeWhereCond(cond) {
   s = s.replace(/\(\s*(?:AND|OR)\s+/gi, '(');
   s = s.replace(/\s+(?:AND|OR)\s*\)/gi, ')');
   s = s.trim();
+  // 중첩 외곽 괄호 1겹씩 벗기기 — 반복 호출로 누적된 괄호 정리
+  //   예:  "(((CALMONTH='202608')))"  →  "CALMONTH='202608'"
+  //   조건: 문자열이 '(' 로 시작하고 ')' 로 끝날 때, 바깥 괄호쌍이 전체를 감싸는지 확인.
+  //         감쌀 경우 1겹 벗기고 반복 (최대 20회 — 비정상 입력 방어).
+  for (let i = 0; i < 20; i++) {
+    if (s.length < 2 || s[0] !== '(' || s[s.length - 1] !== ')') break;
+    // 바깥 괄호쌍이 "같은 쌍" 인지 depth tracking 으로 확인.
+    //   문자열/주석 안의 괄호는 무시 (SQL 표준에 비해 보수적).
+    let depth = 0, inString = false, outerIsSinglePair = true;
+    for (let j = 0; j < s.length; j++) {
+      const ch = s[j];
+      if (ch === "'" && (j === 0 || s[j - 1] !== '\\')) inString = !inString;
+      if (inString) continue;
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        // 중간에 depth 가 0 이 되면 → 바깥 괄호쌍이 전체를 감싸지 않음
+        //   예: "(A) AND (B)" → j=2 에서 depth=0 됨 → 벗기면 안 됨
+        if (depth === 0 && j < s.length - 1) { outerIsSinglePair = false; break; }
+      }
+    }
+    if (!outerIsSinglePair) break;
+    // 바깥 괄호쌍 벗기기 + 양끝 공백 제거
+    s = s.slice(1, -1).trim();
+  }
   return s;
 }
 
@@ -12106,12 +12140,25 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           columnOrder: detailColumnOrder,
           columnLabels: detailColumnLabels,
         };
+        // [2026-10-16] analysis route 세션 원가 기준 응답 메타 — aggregate 와 동일 패턴
+        // [2026-10-22 FIX] 이 scope 에는 'selectedTable' 지역변수가 없음 (ReferenceError 유발).
+        //   올바른 참조는 areaCtx.table — area context 가 결정한 실제 대상 테이블.
+        let appliedCostBasisAnalysis = null;
+        if (areaCtx && areaCtx.table === 'sys_aimd_cot015') {
+          const _effCb = (areaCtx && areaCtx.forcedCostBasis) ? {
+            value: areaCtx.forcedCostBasis.value,
+            zcgubunD: areaCtx.forcedCostBasis.zcgubunD || null,
+            source: areaCtx.forcedCostBasis.source || 'dropdown_change',
+          } : { value: '실제원가', zcgubunD: null, source: 'default_fallback' };
+          appliedCostBasisAnalysis = buildAppliedCostBasisResponse(_effCb);
+        }
         saveHistory(
           nlqUserIdAnalysis, query, execRecord.baseSql,
           analysis, 'analysis', analysisChartConfig, detailRows,
           execRecord.baseRowCount, execRecord.baseExecMs || 0, 'SUCCESS', null, session_id || null, activeDomain,
           // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
-          { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections }
+          // [2026-10-16] 세션 원가 기준도 함께 저장 (chart_config._sessionCostBasis)
+          { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections, sessionCostBasis: appliedCostBasisAnalysis }
         ).catch(e => console.error('[History] 저장 실패:', e.message));
 
         // [2026-07-31] 분석 결과 상세표 옆에 실제 조회 기간 표시.
@@ -12149,6 +12196,8 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           executionSummary: summary,             // 진단용
           validation: validation,                // 진단용
           executionDiagnostics: execRecord.diagnostics,  // 진단용 (variance=0 원인 등)
+          // [2026-10-16] 제조원가 세션 원가 기준 메타 (sys_aimd_cot015 전용)
+          appliedCostBasis: appliedCostBasisAnalysis,
         });
       } catch (analysisErr) {
         // ★ 분석 경로 실패 시: 친절한 안내 + 진단용 상세 에러 정보 함께 반환
@@ -12903,9 +12952,12 @@ ${_colHintList}
     }
 
     // [3] CostBasis 무결성 soft-warning
+    // [2026-10-22 FIX] 'tableWhitelist' 지역변수 미선언 (ReferenceError, 그간 catch 로 삼켜져 로그만 남음).
+    //   올바른 참조는 areaCtx.tableWhitelist — 파일 전반에서 사용하는 area context 필드.
+    //   (여기서는 try/catch 로 응답 자체는 이미 정상이었지만, 검증 로직이 실제로 돌지 않고 있었음)
     try {
       const _costIntegrity = validateCostBasisSqlIntegrity({
-        sql, query, tableWhitelist,
+        sql, query, tableWhitelist: (areaCtx && areaCtx.tableWhitelist) || [],
       });
       if (!_costIntegrity.valid) {
         console.warn(
@@ -13417,6 +13469,30 @@ ${formatRule}
     //   - 이력 재열람 경로도 saved 된 generated_sql 로 동일 계산이 가능하므로 일관됨.
     const periodInfo = extractPeriodInfoFromSql(sql);
 
+    // [2026-10-16] 제조원가 세션 원가 기준(appliedCostBasis) 응답 메타데이터.
+    //   sys_aimd_cot015 조회 시에만 추가 (수익성분석/cot043 영향 없음).
+    //   프론트는 이 필드가 있을 때만 결과표에 드롭다운/뱃지 렌더링.
+    //   areaCtx.forcedCostBasis 가 없으면 default_fallback 간주 (서버가 WHERE 안 넣었지만 사용자에겐 "실제원가로 보임" 표시).
+    // [2026-10-22 FIX] 이 scope 에는 'selectedTable' 지역변수가 없음 (ReferenceError 유발, 500 응답).
+    //   올바른 참조는 areaCtx.table — area context 가 결정한 실제 대상 테이블
+    //   (파일 전반에서 areaCtx.table, areaCtx.tableWhitelist 로 일관되게 사용 중).
+    let appliedCostBasisMeta = null;
+    if (areaCtx && areaCtx.table === 'sys_aimd_cot015') {
+      // areaCtx.forcedCostBasis 는 { value, zcgubunD?, source? } 형태.
+      //   source 가 없으면 (서버 자동 매핑/명확화/세션에서 왔는지 불명) 'dropdown_change' 로 fallback.
+      const _effectiveCostBasis = (areaCtx && areaCtx.forcedCostBasis) ? {
+        value: areaCtx.forcedCostBasis.value,
+        zcgubunD: areaCtx.forcedCostBasis.zcgubunD || null,
+        source: areaCtx.forcedCostBasis.source || 'dropdown_change',
+      } : {
+        // forcedCostBasis 가 없으면 실제원가 기본값 간주 (사용자가 명시 안 함 → 서버가 LLM 자유 생성 상태)
+        //   이 케이스는 "원가 기준이 질의에 안 걸린 cot015 조회" (예: "제품 리스트" 같은 non-cost 조회)
+        //   showDropdown 결정은 default_fallback → true
+        value: '실제원가', zcgubunD: null, source: 'default_fallback',
+      };
+      appliedCostBasisMeta = buildAppliedCostBasisResponse(_effectiveCostBasis);
+    }
+
     const result = {
       success: true,
       query,
@@ -13440,12 +13516,17 @@ ${formatRule}
       //   분석질문 모드(analysisRequired=true)는 이미 분석 답변을 제공하므로 안내 불필요.
       //   실제로 안내 문구를 붙일지는 프론트 렌더링 단계에서 결정 (queryMode==='aggregate' && suggestAnalysis).
       suggestAnalysis: (userQueryMode === 'aggregate' && suggestAnalysis === true),
+      // [2026-10-16] 제조원가 세션 원가 기준 메타데이터 (sys_aimd_cot015 전용)
+      //   프론트는 appliedCostBasis.showDropdown 보고 결과표에 드롭다운/뱃지 렌더.
+      //   null 이면 cot015 질의 아님 → 프론트는 아무것도 렌더하지 않음.
+      appliedCostBasis: appliedCostBasisMeta,
     };
 
     // 5. 이력 저장 (비동기, 실패해도 응답에 영향 없음)
     const nlqUserId = req.session?.user?.id || null;
     // [2026-08-31 PR #407] clarificationSelections 전달 (chip 히스토리 저장용)
-    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain, { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections })
+    // [2026-10-16] 세션 원가 기준도 chart_config 에 함께 저장 (채팅 재진입 시 복원용)
+    saveHistory(nlqUserId, query, sql, explanation, chartType || 'table', chartConfig || {}, rows, rows.length, execTime, 'SUCCESS', null, session_id || null, activeDomain, { businessAreaCode: areaKeyToDbCode(areaCtx.area), clarificationSelections, sessionCostBasis: appliedCostBasisMeta })
       .catch(e => console.error('[History] 저장 실패:', e.message));
 
     // [PR #335] aggregate 정상 종료 타이밍 로그
@@ -14307,6 +14388,38 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
 
     const elementIntent = detectCostElementIntent(query);
     const explicitZcgubun = detectExplicitZcgubunInQuery(query);
+
+    // ============================================================
+    // [2026-10-22 BUGFIX] 명시 감지는 항상 confirmedForcedCostBasis 로 승격
+    // ------------------------------------------------------------
+    // 사용자 신고: "제품별 매출원가 TOP 5" 질의 시 상단 설명은 "매출원가" 지만
+    //   SQL/뱃지는 "실제원가" 로 조회됨.
+    // 원인: 이전 세션에서 드롭다운을 "실제원가" 로 설정 → currentCostBasis 메모리에
+    //   { 실제원가, dropdown_change } 저장 → 새 질의 payload 의 sessionCostBasis 로 전송.
+    //   아래 shouldGate 블록은 "원가요소" 키워드가 있어야만 confirmedForcedCostBasis 를
+    //   세팅하므로, "매출원가" 명시만 있는 질의는 confirmedForcedCostBasis=null → 3순위
+    //   sessionCostBasis(실제원가) 가 승리 → 사용자 의도(매출원가)와 어긋남.
+    //
+    // 수정: shouldGate 와 별개로, 질의에 ZCGUBUN 이 명시된 경우(explicit=true) 는
+    //   항상 confirmedForcedCostBasis 로 세팅 (= 1순위, 세션값보다 우선).
+    //   단, 표준원가 서브타입이 빠진 경우("표준원가" 만) 는 아래 shouldGate Case C 에서
+    //   2차 명확화 응답을 돌려야 하므로 여기서는 세팅하지 않음.
+    // ============================================================
+    if (
+      !confirmedForcedCostBasis
+      && explicitZcgubun.explicit
+      && explicitZcgubun.zcgubun
+      && !(explicitZcgubun.zcgubun === '표준원가' && !explicitZcgubun.zcgubunD)
+    ) {
+      if (explicitZcgubun.zcgubun === '표준원가' && explicitZcgubun.zcgubunD) {
+        confirmedForcedCostBasis = { value: '표준원가', zcgubunD: explicitZcgubun.zcgubunD, source: 'explicit_in_query' };
+        console.log(`[CostBasisExplicit] 명시 감지 (서브타입 포함) → session 보다 우선. matchedKeyword="${explicitZcgubun.matchedKeyword}" → ZCGUBUN='표준원가', ZCGUBUN_D='${explicitZcgubun.zcgubunD}'`);
+      } else {
+        confirmedForcedCostBasis = { value: explicitZcgubun.zcgubun, source: 'explicit_in_query' };
+        console.log(`[CostBasisExplicit] 명시 감지 → session 보다 우선. matchedKeyword="${explicitZcgubun.matchedKeyword}" → zcgubun="${explicitZcgubun.zcgubun}"`);
+      }
+    }
+
     // 트리거: 원가요소 트리거가 있거나, 또는 사용자가 처음부터 "표준원가" 만 명시한 경우도
     //   ("표준원가 알려줘" — 요구사항 #6/#7: 표준원가 단독 시 반드시 2차 확정 필요).
     const shouldGate = elementIntent.matched
@@ -14444,22 +14557,36 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
         : null
     ),
     // [2026-09-16] sys_aimd_cot015 ZCGUBUN 명확화 확정값 (있으면 SQL 실행 전 강제 주입)
-    //   우선순위:
+    //   우선순위 (높음 → 낮음):
     //     1) 이 request 안에서 서버가 "사용자 명시" 로 자동 확정한 값 (confirmedForcedCostBasis)
     //     2) 프론트가 명확화 응답 후 재요청 시 body 로 실어보낸 값 (req.body.forcedCostBasis)
-    //   둘 다 없으면 null → 강제 필터 미주입 (기존 흐름).
+    //     3) [2026-10-16 신규] 프론트 메모리 세션 상태값 (req.body.sessionCostBasis)
+    //        - cot015 질의 중 사용자가 드롭다운/명확화 등으로 이미 결정한 원가 기준
+    //        - 평소 질의 시 매 요청에 자동 포함됨 (currentDomain 과 동일 패턴)
+    //        - whitelist 검증 통과 시에만 적용 (normalizeSessionCostBasis)
+    //     4) 모두 없으면 null → 강제 필터 미주입 (기존 흐름).
     //   value 는 실제원가 / 매출원가 / 표준원가 중 하나로만 허용 (whitelist).
     //   zcgubunD 는 '소비-소비' / '입고-생산' whitelist. 표준원가 서브타입 확정 시에만 존재.
     //   표준원가 + zcgubunD 미실림 → 위 clarification 게이트에서 이미 2차 응답 반환됨.
     forcedCostBasis: confirmedForcedCostBasis || (() => {
+      // 2순위: forcedCostBasis (명확화 재요청)
       const raw = req.body?.forcedCostBasis;
-      if (!raw || typeof raw.value !== 'string') return null;
-      const v = raw.value.trim();
-      if (v !== '실제원가' && v !== '매출원가' && v !== '표준원가') return null;
-      const rawZd = (typeof raw.zcgubunD === 'string') ? raw.zcgubunD.trim() : '';
-      const zd = (rawZd === '소비-소비' || rawZd === '입고-생산') ? rawZd : '';
-      return zd ? { value: v, zcgubunD: zd, source: 'client_selection' }
-                : { value: v, source: 'client_selection' };
+      if (raw && typeof raw.value === 'string') {
+        const v = raw.value.trim();
+        if (v === '실제원가' || v === '매출원가' || v === '표준원가') {
+          const rawZd = (typeof raw.zcgubunD === 'string') ? raw.zcgubunD.trim() : '';
+          const zd = (rawZd === '소비-소비' || rawZd === '입고-생산') ? rawZd : '';
+          return zd ? { value: v, zcgubunD: zd, source: 'client_selection' }
+                    : { value: v, source: 'client_selection' };
+        }
+      }
+      // 3순위: sessionCostBasis (프론트 메모리 세션 상태)
+      //   normalizeSessionCostBasis 가 whitelist 검증 (옵션 매칭 실패 시 null 반환).
+      //   source 는 프론트가 보낸 값 유지 (default_fallback / dropdown_change / clarification_ui / explicit_in_query).
+      //   source='default_fallback' 인 경우 → 사용자가 명시 안 함을 의미하므로 WHERE 는 '실제원가' 로 자동 주입.
+      const sessionCb = normalizeSessionCostBasis(req.body?.sessionCostBasis);
+      if (sessionCb) return sessionCb;
+      return null;
     })(),
     // [2026-09-13] body 로 전달된 UI 도메인 (self-fetch body 에도 다시 실어서 이중 방어)
     //   이미 위 [DomainSync] 블록에서 세션에 반영했지만, self-fetch 중 세션 상태가
@@ -14680,6 +14807,93 @@ setInterval(() => {
 }, 60_000);
 
 // ============================================================
+// [2026-10-16] 제조원가(sys_aimd_cot015) 원가 기준(ZCGUBUN) 세션 상태 관리
+// ------------------------------------------------------------
+// 배경:
+//   사용자 신고 — "2026년 8월 인건비 TOP5" 같은 질의에 ZCGUBUN 명시가 없으면
+//   LLM 이 실제원가+매출원가+표준원가를 함께 SUM 하는 문제가 있었음.
+//   detectCostElementIntent 트리거("원가요소/원가유형/원가항목") 외에는
+//   명확화 UI 가 작동하지 않아서 LLM 자유 생성으로 원가 기준이 섞임.
+//
+// 해결:
+//   1) 서버가 받아들이는 원가 기준 입력을 whitelist 로 결정론적 처리.
+//      LLM 추론 없이 WHERE 조건 템플릿 치환으로 100% 결정론.
+//   2) 프론트가 세션 상태로 들고 다니는 sessionCostBasis 를 요청마다 전송.
+//      (업무영역 currentDomain 과 동일 패턴 — 토큰 비용 증가 없음)
+//   3) 사용자 명시 (질의 텍스트/명확화 UI) 시엔 그 값이 세션 상태를 갱신.
+//
+// 적용 범위:
+//   - selectedTable === 'sys_aimd_cot015' 인 경우에만 (제조원가 전용)
+//   - 수익성분석(bw_profitability_data) 및 cot043 영향 없음
+//   - 자연어 질의의 현황집계(aggregate) + 분석질문(analysis) 두 모드 모두 적용
+//
+// 상태 유지:
+//   - 평소: 프론트 메모리 변수 (let currentCostBasis) — DB 조회 0회
+//   - 영구: nl_query_history.chart_config._sessionCostBasis (스키마 변경 없음)
+//   - 채팅 재진입 시: restoreSession() 이 최신 row 1개의 _sessionCostBasis 복원
+//   - 새 채팅 시: 기본값 '실제원가' 로 리셋
+// ============================================================
+
+// 4개 원가 기준의 canonical 정의 (whitelist + WHERE 템플릿)
+//   label: 사용자에게 노출하는 라벨
+//   zcgubun / zcgubunD: DB WHERE 조건 (서버가 SQL 에 자동 주입)
+//   value: 세션 상태값의 canonical key (프론트/서버 공통 식별자)
+//
+// value / zcgubunD 조합이 유일해야 하므로 검증 함수 isValidCostBasis() 로 whitelist 체크.
+const COST_BASIS_OPTIONS = [
+  { value: '실제원가', zcgubunD: null,       label: '실제원가'              },
+  { value: '매출원가', zcgubunD: null,       label: '매출원가'              },
+  { value: '표준원가', zcgubunD: '입고-생산', label: '실제원가의 표준원가'  },
+  { value: '표준원가', zcgubunD: '소비-소비', label: '매출원가의 표준원가'  },
+];
+
+// 기본값 — 사용자가 명시 안 하면 이 값으로 조회됨
+const DEFAULT_COST_BASIS = { value: '실제원가', zcgubunD: null, source: 'default_fallback' };
+
+// 세션 원가 기준 whitelist 검증 (프론트 전송값 신뢰 금지)
+//   - 값이 COST_BASIS_OPTIONS 에 정확히 매칭되면 그대로 반환
+//   - 매칭 안 되면 null (강제 주입 안 함, 기존 흐름 유지)
+//   - source 는 whitelist 외에도 'default_fallback'/'clarification_ui'/'explicit_in_query'/'dropdown_change' 중 하나로 정규화
+function normalizeSessionCostBasis(raw) {
+  if (!raw || typeof raw.value !== 'string') return null;
+  const value = String(raw.value).trim();
+  const zcgubunD = (typeof raw.zcgubunD === 'string' && raw.zcgubunD.trim()) ? raw.zcgubunD.trim() : null;
+  const match = COST_BASIS_OPTIONS.find(opt => opt.value === value && opt.zcgubunD === zcgubunD);
+  if (!match) return null;
+  const allowedSources = new Set(['default_fallback', 'clarification_ui', 'clarification_ui_subtype', 'explicit_in_query', 'dropdown_change']);
+  const source = (typeof raw.source === 'string' && allowedSources.has(raw.source)) ? raw.source : 'dropdown_change';
+  return { value, zcgubunD, source };
+}
+
+// 현재 적용된 원가 기준 + 드롭다운 노출 플래그 + 전체 옵션을 응답으로 전달.
+//   프론트는 appliedCostBasis.showDropdown 을 보고 결과표에 드롭다운/뱃지 렌더링.
+//
+// showDropdown 규칙:
+//   - 'default_fallback'  : true  (사용자가 선택 안 함 → 선택권 제공)
+//   - 'dropdown_change'   : true  (드롭다운 변경 흐름이니 또 바꿀 수 있어야)
+//   - 'clarification_ui'  : false (명확화 버튼으로 선택 → 중복 UI 지양)
+//   - 'clarification_ui_subtype' : false (2차 명확화도 명시적 선택)
+//   - 'explicit_in_query' : false (사용자가 질의에 명시 → 다시 바꾸려면 질의 입력)
+//
+// label 조합:
+//   - zcgubunD 있는 경우 (표준원가 서브타입): COST_BASIS_OPTIONS 의 label 사용
+//   - 외: value 그대로
+function buildAppliedCostBasisResponse(costBasis) {
+  if (!costBasis) return null;
+  const opt = COST_BASIS_OPTIONS.find(o => o.value === costBasis.value && o.zcgubunD === (costBasis.zcgubunD || null));
+  const label = opt ? opt.label : costBasis.value;
+  const showDropdown = (costBasis.source === 'default_fallback' || costBasis.source === 'dropdown_change');
+  return {
+    value: costBasis.value,
+    zcgubunD: costBasis.zcgubunD || null,
+    label,
+    source: costBasis.source,
+    showDropdown,
+    options: COST_BASIS_OPTIONS.map(o => ({ value: o.value, zcgubunD: o.zcgubunD, label: o.label })),
+  };
+}
+
+// ============================================================
 // 이력 보관 정책 (자연어질의 / nl_query_history)
 // ============================================================
 // - 시간 기준: 보관기간(NLQ_HISTORY_RETENTION_DAYS, 기본 31일) 초과 행은 자동 DELETE
@@ -14807,6 +15021,22 @@ async function saveHistory(userId, queryText, sql, explanation, chartType, chart
   if (_clarChips.length > 0) {
     _cfgToPersist = { ...(chartConfig || {}), _clarificationSelections: _clarChips };
     console.log(`[History:ClarifyChips] 저장 병합: ${JSON.stringify(_clarChips)}`);
+  }
+  // [2026-10-16] 세션 원가 기준(ZCGUBUN) 저장 — 채팅 재진입 시 복원용.
+  //   - 스키마 변경 없이 chart_config JSON 안에 _sessionCostBasis 필드로 저장 (언더스코어 메타 규약).
+  //   - options.sessionCostBasis 는 aggregate/analysis route 가 전달하는 appliedCostBasis 메타.
+  //   - 저장 포맷: { value, zcgubunD, source }  (라벨/옵션 리스트는 저장 안 함 — 복원 시 재조립)
+  //   - cot015 외 영역에서는 options.sessionCostBasis = null → 저장 안 됨
+  if (options && options.sessionCostBasis && typeof options.sessionCostBasis.value === 'string') {
+    const _scb = options.sessionCostBasis;
+    _cfgToPersist = {
+      ...(_cfgToPersist || {}),
+      _sessionCostBasis: {
+        value: _scb.value,
+        zcgubunD: _scb.zcgubunD || null,
+        source: _scb.source || 'default_fallback',
+      },
+    };
   }
   const configJson = _cfgToPersist ? JSON.stringify(_cfgToPersist) : null;
   const requestId = (options && options.requestId) ? String(options.requestId).slice(0, 64) : null;
@@ -14947,6 +15177,75 @@ app.patch('/api/history/session/:sessionKey/bookmark', async (req, res) => {
     res.json({ success: true, is_bookmarked: newVal });
   } catch (err) {
     console.error('[PATCH /api/history/session/:sessionKey/bookmark] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// [2026-10-22 B-3] 세션 단위 — 가장 최근 history row 의 _sessionCostBasis UPDATE
+// ------------------------------------------------------------
+// 목적: 드롭다운에서 [매출원가] 등으로 변경 시, 서버가 new history row 를 쌓지 않고
+//       (B-3 방식은 재질의 안 함) 가장 최근 row 의 chart_config._sessionCostBasis 만 업데이트.
+//       → 채팅 재진입 시 restoreSession 이 "드롭다운 마지막 선택값" 을 복원 가능.
+// 프론트에서 fire-and-forget 로 호출 (실패해도 UI 는 정상). 1회 UPDATE 만 수행.
+// 스키마 변경 없음 — chart_config JSON 안에 _sessionCostBasis 필드만 UPSERT.
+// ============================================================
+app.patch('/api/history/session/:sessionKey/cost-basis', async (req, res) => {
+  try {
+    const userId = req.session?.user?.id || null;
+    if (!userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    const sessionKey = req.params.sessionKey;
+    const { sessionCostBasis } = req.body || {};
+    const normalized = normalizeSessionCostBasis(sessionCostBasis);
+    if (!normalized) {
+      return res.status(400).json({ error: 'sessionCostBasis가 whitelist에 매칭되지 않습니다.' });
+    }
+
+    // 가장 최근 row 1개 찾기 (chart_config 포함)
+    let latestRows;
+    if (sessionKey.startsWith('legacy_')) {
+      const id = parseInt(sessionKey.replace('legacy_', ''));
+      [latestRows] = await pool.query(
+        'SELECT id, chart_config FROM nl_query_history WHERE id=? AND user_id=?',
+        [id, userId]
+      );
+    } else {
+      [latestRows] = await pool.query(
+        'SELECT id, chart_config FROM nl_query_history WHERE session_id=? AND user_id=? ORDER BY created_at DESC LIMIT 1',
+        [sessionKey, userId]
+      );
+    }
+    if (!latestRows || latestRows.length === 0) {
+      return res.status(404).json({ error: '세션을 찾을 수 없습니다.' });
+    }
+
+    // chart_config JSON 병합 (_sessionCostBasis 필드만 교체, 다른 필드 유지)
+    const latest = latestRows[0];
+    let cfg = {};
+    try {
+      cfg = latest.chart_config
+        ? (typeof latest.chart_config === 'string' ? JSON.parse(latest.chart_config) : latest.chart_config)
+        : {};
+    } catch (parseErr) {
+      console.warn('[PATCH cost-basis] chart_config JSON 파싱 실패 → 빈 객체로 초기화:', parseErr.message);
+      cfg = {};
+    }
+    cfg._sessionCostBasis = {
+      value: normalized.value,
+      zcgubunD: normalized.zcgubunD || null,
+      source: normalized.source || 'dropdown_change',
+    };
+    await pool.query(
+      'UPDATE nl_query_history SET chart_config=? WHERE id=? AND user_id=?',
+      [JSON.stringify(cfg), latest.id, userId]
+    );
+    console.log(
+      `[PATCH cost-basis] updated history id=${latest.id} ` +
+      `value='${normalized.value}'${normalized.zcgubunD ? ` zcgubunD='${normalized.zcgubunD}'` : ''}`
+    );
+    res.json({ success: true, updatedId: latest.id });
+  } catch (err) {
+    console.error('[PATCH /api/history/session/:sessionKey/cost-basis] error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -16164,6 +16463,92 @@ app.post('/api/execute-sql', async (req, res) => {
     res.json({ success: true, data: rows, rowCount: rows.length, executionTimeMs: execTime });
   } catch (err) {
     res.status(400).json({ error: err.sqlMessage || err.message });
+  }
+});
+
+// ============================================================
+// [2026-10-22 B-3] 제조원가 결과표 원가 기준 드롭다운 변경 전용 엔드포인트
+// ------------------------------------------------------------
+// 목적: 드롭다운에서 [매출원가] 등을 선택하면, 전체 자연어 질의를 다시 돌리지 않고
+//       기존 SQL 의 WHERE ZCGUBUN 조건만 regex 로 교체 → 즉시 DB 재조회 → 표/차트만 갱신.
+//       LLM 호출 전무. intent 분류/clarification/RAG/답변 생성 모두 생략.
+//
+// 재사용:
+//   - applyForcedCostBasisFilter() : ZCGUBUN WHERE 치환 (라인 ~10005)
+//   - normalizeSessionCostBasis()  : whitelist 검증
+//   - buildAppliedCostBasisResponse() : 프론트 뱃지/드롭다운 재조립용 메타
+//   - isReadOnlyQuery()            : SELECT-only 방어
+//   - nlqPoolQueryWithTimeout()    : 통상 질의와 동일한 timeout 적용
+//
+// 범위: sys_aimd_cot015 조회 SQL 전용 (수익성/cot043 거부).
+// 응답: /api/execute-sql 과 유사하되 newSql + appliedCostBasis 메타 포함.
+// ============================================================
+app.post('/api/nlq/rewrite-cost-basis', async (req, res) => {
+  try {
+    const { sql, costBasis } = req.body || {};
+    // 1) 입력 유효성
+    if (!sql || typeof sql !== 'string' || !sql.trim()) {
+      return res.status(400).json({ error: 'sql(string)이 필요합니다.' });
+    }
+    if (!costBasis || typeof costBasis.value !== 'string') {
+      return res.status(400).json({ error: 'costBasis.value가 필요합니다.' });
+    }
+    // 2) whitelist 검증 (프론트 전송값 신뢰 금지)
+    const normalized = normalizeSessionCostBasis(costBasis);
+    if (!normalized) {
+      return res.status(400).json({ error: 'costBasis가 whitelist에 매칭되지 않습니다.' });
+    }
+    // 3) SELECT-only 방어 (SQL injection 방지)
+    const roCheck = isReadOnlyQuery(sql);
+    if (!roCheck.ok) {
+      return res.status(400).json({ error: roCheck.reason || 'SELECT 쿼리만 허용됩니다.' });
+    }
+    // 4) 대상 테이블 체크 — sys_aimd_cot015 전용 (수익성/cot043 거부)
+    if (!/\bsys_aimd_cot015\b/i.test(sql)) {
+      return res.status(400).json({ error: '이 엔드포인트는 sys_aimd_cot015 조회 전용입니다.' });
+    }
+    // 5) WHERE 치환 (LLM 호출 없음, 결정적 regex)
+    const forcedCb = { value: normalized.value };
+    if (normalized.zcgubunD) forcedCb.zcgubunD = normalized.zcgubunD;
+    const newSql = applyForcedCostBasisFilter(sql, forcedCb);
+    if (!newSql || newSql === sql) {
+      // 치환이 적용되지 않음 — 원본 SQL 이 cot015 참조가 아니거나 치환 실패
+      console.warn('[rewrite-cost-basis] applyForcedCostBasisFilter 가 SQL 을 변경하지 않음 → 원본으로 실행');
+    }
+    // 6) DB 실행 (기존 함수 재사용 — timeout 등 동일 정책)
+    const startMs = Date.now();
+    const [rows] = await nlqPoolQueryWithTimeout(newSql, null, NLQ_DB_QUERY_TIMEOUT_MS);
+    const executionTimeMs = Date.now() - startMs;
+    const filteredRows = filterDummyRows(rows);
+    // 7) 하드 상한 (aggregate route 와 동일 정책 — 환경변수 재조회)
+    const AGG_HARD_CAP = parseInt(process.env.NLQ_AGGREGATE_ROW_HARD_CAP || '200000', 10);
+    const truncated = filteredRows.length > AGG_HARD_CAP;
+    const outRows = truncated ? filteredRows.slice(0, AGG_HARD_CAP) : filteredRows;
+    // 8) 응답용 appliedCostBasis 메타 (프론트 뱃지/드롭다운 재조립)
+    const appliedCostBasis = buildAppliedCostBasisResponse({
+      value: normalized.value,
+      zcgubunD: normalized.zcgubunD,
+      source: normalized.source || 'dropdown_change',
+    });
+    console.log(
+      `[rewrite-cost-basis] ok — value='${normalized.value}'` +
+      `${normalized.zcgubunD ? ` zcgubunD='${normalized.zcgubunD}'` : ''} ` +
+      `rows=${outRows.length} execMs=${executionTimeMs}`
+    );
+    res.json({
+      success: true,
+      data: outRows,
+      rowCount: outRows.length,
+      totalRowCount: filteredRows.length,
+      truncated,
+      truncatedLimit: truncated ? AGG_HARD_CAP : null,
+      newSql,
+      executionTimeMs,
+      appliedCostBasis,
+    });
+  } catch (err) {
+    console.error('[POST /api/nlq/rewrite-cost-basis] error:', err.message);
+    res.status(500).json({ error: err.sqlMessage || err.message });
   }
 });
 

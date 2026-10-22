@@ -1,0 +1,152 @@
+-- ============================================================================
+-- 057_mfg_session_cost_basis.sql
+--
+-- [2026-10-16] 제조원가(sys_aimd_cot015) 자연어 질의
+--              — 원가 기준(ZCGUBUN) 세션 상태 관리 기능
+--
+-- ★ 중요 ★  이 PR 은 데이터베이스 스키마 변경이 전혀 없음.
+--            운영 적용 시 이 파일을 실행할 필요 없음 (문서 전용).
+--            애플리케이션 코드 (nlq-server/server.mjs + public/index.html)
+--            배포만으로 기능이 활성화됨.
+--
+-- ----------------------------------------------------------------------------
+-- 배경
+-- ----------------------------------------------------------------------------
+-- 사용자 신고:
+--   제조원가 영역에서 "매출원가로 보여줘" 라고 한 뒤 바로 이어서
+--   "인건비 TOP5" 라고 물으면 다시 실제원가(기본값)로 돌아가거나,
+--   ZCGUBUN 필터가 아예 안 걸려 서로 다른 원가 기준(실제/매출/표준)의
+--   금액이 섞여 SUM 되는 문제.
+--
+-- 원인:
+--   기존 ZCGUBUN 명확화 UI 는 "원가요소/원가유형/원가항목" 같은 특정
+--   키워드가 질의에 있을 때만 트리거되어, "인건비 TOP5" 같은 자유 질의는
+--   ZCGUBUN 필터가 안 들어감 → LLM 자유 생성 SQL → ZCGUBUN 섞여서 SUM.
+--
+-- ----------------------------------------------------------------------------
+-- 해결 (방법 2: 서버 WHERE 템플릿 치환 — LLM 호출 없음)
+-- ----------------------------------------------------------------------------
+-- 서버 (nlq-server/server.mjs):
+--   - 상수 COST_BASIS_OPTIONS (4개 원가 기준) + DEFAULT_COST_BASIS 정의
+--     * 실제원가 / 매출원가 / 실제원가의 표준원가(ZCGUBUN_D='입고-생산')
+--     * / 매출원가의 표준원가(ZCGUBUN_D='소비-소비')
+--   - normalizeSessionCostBasis(raw) — 프론트 전송값 whitelist 검증
+--   - buildAppliedCostBasisResponse(costBasis) — showDropdown 결정 + 응답 조립
+--   - forcedCostBasis 결정 블록에 sessionCostBasis 3순위 폴백 추가
+--     * 1순위: confirmedForcedCostBasis (서버 자동 확정)
+--     * 2순위: req.body.forcedCostBasis (명확화 재요청)
+--     * 3순위: req.body.sessionCostBasis (프론트 메모리 세션 상태) ← 신규
+--   - aggregate / analysis route 양쪽에 appliedCostBasis 응답 메타 추가
+--   - saveHistory 에서 chart_config._sessionCostBasis 저장 로직 추가
+--     (언더스코어 메타 규약 — 기존 _clarificationSelections 와 공존)
+--
+-- 프론트 (nlq-server/public/index.html):
+--   - let currentCostBasis 메모리 변수 + 헬퍼 함수 3종
+--     (reset / sync / onCostBasisDropdownChange)
+--   - sendQuery payload 에 매번 sessionCostBasis 자동 포함
+--     (currentDomain 과 동일 패턴)
+--   - 응답 수신 시 syncCostBasisFromResponse 호출 (aggregate+analysis 둘 다)
+--   - buildAnalysisDetailTable 에 appliedCostBasis 파라미터 추가
+--     → 결과표 toolbar 에 뱃지 (source 라벨 포함) + 조건부 드롭다운
+--   - 드롭다운 onchange → onCostBasisDropdownChange(this) → 즉시 재질의
+--     (서버는 WHERE 치환만 → LLM 호출 없음)
+--   - restoreSession() 에 _sessionCostBasis 복원 로직 (items 최신 row)
+--   - startNewChat() 에 resetCurrentCostBasis() 호출
+--   - resendQueryWithForcedCostBasis() 안에 currentCostBasis 동기화
+--
+-- ----------------------------------------------------------------------------
+-- 상태 저장소
+-- ----------------------------------------------------------------------------
+-- (1) 세션 중 — 프론트 메모리 (let currentCostBasis)
+--     * 매 질의 payload 에 자동 포함
+--     * 응답 appliedCostBasis 로 서버가 다시 동기화
+--
+-- (2) 영구 — nl_query_history.chart_config JSON 안에 _sessionCostBasis 필드
+--     * 스키마 변경 없음 (기존 JSON 컬럼 재활용)
+--     * 포맷: { value, zcgubunD, source }
+--     * 라벨/옵션 리스트는 저장 안 함 (복원 시 서버 상수에서 재조립)
+--
+-- 복원 흐름:
+--   채팅 재진입 → restoreSession() → DB 1회 조회 →
+--   items(ORDER BY created_at ASC) 역탐색 → 최신 1개의 _sessionCostBasis 복원 →
+--   currentCostBasis 메모리 변수 세팅
+--
+-- ----------------------------------------------------------------------------
+-- 적용 범위 / 격리
+-- ----------------------------------------------------------------------------
+-- 적용:
+--   - 제조원가 (sys_aimd_cot015) — aggregate(현황집계) + analysis(분석질문) 둘 다
+--
+-- 격리 (영향 없음):
+--   - 수익성분석 (bw_profitability_data) — 서버가 selectedTable 체크로 skip
+--   - cot043 등 다른 테이블 — 동일하게 skip
+--   - VQB (builder_query_history) — 별개 route (/api/builder), 미건드림
+--   - deyang 모듈 (module-rolling-planning-simulation) — 완전 미건드림
+--
+-- ----------------------------------------------------------------------------
+-- 운영 적용 가이드
+-- ----------------------------------------------------------------------------
+-- 이 PR 은 코드 배포만으로 활성화됨.
+--
+-- 운영 절차:
+--   1. git merge jswon → develop
+--   2. (사용자 승인 후) develop → main
+--   3. 운영 서버 git pull + pm2 restart nlq-server
+--   4. 사용자가 해당 기능을 사용하기 시작하는 즉시 chart_config JSON 에
+--      _sessionCostBasis 필드가 자동으로 쌓이기 시작
+--
+-- 롤백 절차:
+--   - 코드만 revert 하면 됨 (DB 변경 없음)
+--   - 롤백 후에도 chart_config._sessionCostBasis 데이터는 그대로 남지만
+--     구 버전 서버/프론트가 이 필드를 전혀 읽지 않으므로 무해함
+--     (언더스코어 메타 규약의 forward compatibility)
+--
+-- ----------------------------------------------------------------------------
+-- 검증
+-- ----------------------------------------------------------------------------
+-- 신규 테스트:
+--   nlq-server/tests/test_mfg_session_cost_basis.mjs — 68 assertions, 전원 PASS
+--
+-- 전체 회귀 테스트:
+--   37/37 PASS (영향받은 2개 기존 테스트 — test_mfg_widen_toggle.mjs,
+--   test_mfg_unit_price_column.mjs — 는 신규 파라미터 추가에 맞춰 갱신)
+--
+-- ----------------------------------------------------------------------------
+-- 참고: chart_config._sessionCostBasis 저장 포맷 예시
+-- ----------------------------------------------------------------------------
+-- 사용자가 "매출원가로 TOP5" 질의 → ZCGUBUN 명확화 선택 → 저장되는 포맷:
+--   {
+--     "columnOrder":  [...],
+--     "columnLabels": {...},
+--     "_clarificationSelections": [...],      -- 기존 메타 (PR #407)
+--     "_sessionCostBasis": {                   -- 신규 메타 (이 PR)
+--       "value":    "매출원가",
+--       "zcgubunD": null,
+--       "source":   "clarification_ui"
+--     }
+--   }
+--
+-- 사용자가 드롭다운에서 "실제원가의 표준원가" 선택 → 저장되는 포맷:
+--   "_sessionCostBasis": {
+--     "value":    "표준원가",
+--     "zcgubunD": "입고-생산",
+--     "source":   "dropdown_change"
+--   }
+--
+-- source 값 매핑:
+--   - default_fallback         : 사용자 미명시 (서버가 기본 '실제원가' 간주)
+--   - dropdown_change          : 드롭다운에서 변경
+--   - clarification_ui         : 1차 명확화 UI 에서 선택
+--   - clarification_ui_subtype : 2차 표준원가 서브타입 명확화
+--   - explicit_in_query        : 질문에 직접 명시 (서버 감지)
+--
+-- showDropdown 노출 규칙:
+--   true  : default_fallback / dropdown_change
+--   false : clarification_ui / clarification_ui_subtype / explicit_in_query
+--           (사용자가 이미 명시적 선택을 한 상태 → 뱃지만 표시)
+--
+-- ============================================================================
+
+-- 이 파일에는 실행할 DDL/DML 이 없음 (스키마 변경 없음).
+-- 운영 적용 시 참조만 하고 넘어가면 됨.
+SELECT 'PR #525: 제조원가 세션 원가 기준 관리 — 스키마 변경 없음 (문서 전용)' AS note;
