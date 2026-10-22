@@ -176,9 +176,11 @@ assertMatch(serverSrc,
 // C. SERVER — aggregate route 응답에 appliedCostBasis 메타 추가
 // ============================================================
 
+// [2026-10-22 FIX] 'selectedTable' 지역변수가 route scope 에 없어 500 에러를 유발.
+//   올바른 참조는 areaCtx.table — 파일 전반 일관성 유지.
 assertMatch(serverSrc,
-    /let\s+appliedCostBasisMeta\s*=\s*null\s*;\s*\n\s*if\s*\(\s*selectedTable\s*===\s*['"]sys_aimd_cot015['"]\s*\)/,
-    'C-1: aggregate route — sys_aimd_cot015 조건 분기');
+    /let\s+appliedCostBasisMeta\s*=\s*null\s*;\s*\n\s*if\s*\(\s*areaCtx\s*&&\s*areaCtx\.table\s*===\s*['"]sys_aimd_cot015['"]\s*\)/,
+    'C-1: aggregate route — areaCtx.table === "sys_aimd_cot015" 조건 분기 (selectedTable ReferenceError 수정)');
 
 assertMatch(serverSrc,
     /appliedCostBasisMeta\s*=\s*buildAppliedCostBasisResponse\s*\(\s*_effectiveCostBasis\s*\)/,
@@ -400,14 +402,62 @@ assertMatch(htmlSrc,
 }
 
 // N-2: appliedCostBasis 는 sys_aimd_cot015 조건 안에서만 생성 (aggregate route)
+// [2026-10-22 FIX] selectedTable → areaCtx.table 패턴 반영
 assertMatch(serverSrc,
-    /if\s*\(\s*selectedTable\s*===\s*['"]sys_aimd_cot015['"]\s*\)\s*\{[\s\S]{0,1500}appliedCostBasisMeta\s*=\s*buildAppliedCostBasisResponse/,
-    'N-2: aggregate route — appliedCostBasis 는 sys_aimd_cot015 조건 분기 안에서만 생성');
+    /if\s*\(\s*areaCtx\s*&&\s*areaCtx\.table\s*===\s*['"]sys_aimd_cot015['"]\s*\)\s*\{[\s\S]{0,1500}appliedCostBasisMeta\s*=\s*buildAppliedCostBasisResponse/,
+    'N-2: aggregate route — appliedCostBasis 는 areaCtx.table === sys_aimd_cot015 조건 분기 안에서만 생성');
 
 // N-3: deyang 모듈 (module-rolling-planning-simulation) 미건드림
 assertNoMatch(serverSrc,
     /module-rolling-planning-simulation[\s\S]{0,500}sessionCostBasis/,
     'N-3: deyang 모듈 영역에 sessionCostBasis 변경 없음');
+
+// ============================================================
+// [2026-10-22 신규] N-4 / N-5 / N-6 — ReferenceError 재발 방지
+// ------------------------------------------------------------
+// 사용자 신고: "2026년 8월 인건비가 가장 많이 들어간 품목 TOP 5" 질의 시
+//   - ReferenceError: selectedTable is not defined (server.mjs:13438)
+//   - ReferenceError: tableWhitelist is not defined (CostBasisIntegrity)
+// 원인: aggregate/analysis route 메인 핸들러 scope 에는 'selectedTable'
+//       지역변수가 없음. 일부 함수 내부 파라미터로만 존재. 따라서
+//       route 레벨 if 조건에서는 반드시 areaCtx.table 을 써야 함.
+//       tableWhitelist 도 동일 — areaCtx.tableWhitelist 가 올바른 참조.
+// 방지: route scope 에서 'if (selectedTable ===' 패턴을 금지한다.
+//       또한 CostBasisIntegrity 호출의 tableWhitelist 는 areaCtx 를 거쳐야 함.
+// ============================================================
+
+// N-4: appliedCostBasis 생성 블록 근처에서 'selectedTable' 직접 참조 금지
+//   (사용자 신고 ReferenceError 재발 방지 — 해당 scope 에는 const selectedTable 선언 없음)
+//   참고: 라인 ~14069 에 const selectedTable = areaCtx.table 선언이 있는 다른 scope 에서는
+//   selectedTable 사용이 정상이므로, 전역 금지가 아니라 appliedCostBasis 블록 주변만 체크.
+{
+    // appliedCostBasisMeta 블록 전후 300줄 범위에서 selectedTable 참조 금지
+    const metaBlockIdx = serverSrc.indexOf('let appliedCostBasisMeta');
+    const analysisBlockIdx = serverSrc.indexOf('let appliedCostBasisAnalysis');
+    const checkRegions = [];
+    if (metaBlockIdx >= 0) {
+        // 블록 시작부터 200자 범위 (조건 분기 라인까지만)
+        checkRegions.push(serverSrc.slice(metaBlockIdx, metaBlockIdx + 200));
+    }
+    if (analysisBlockIdx >= 0) {
+        checkRegions.push(serverSrc.slice(analysisBlockIdx, analysisBlockIdx + 200));
+    }
+    const badRegions = checkRegions.filter(r => /if\s*\(\s*selectedTable\s*===/.test(r));
+    assert(badRegions.length === 0,
+        `N-4: appliedCostBasis 생성 블록은 selectedTable 를 참조하면 안 됨 (ReferenceError 재발 방지) — 위반=${badRegions.length}`);
+}
+
+// N-5: CostBasisIntegrity 호출은 반드시 areaCtx.tableWhitelist 를 거쳐야 함
+assertMatch(serverSrc,
+    /validateCostBasisSqlIntegrity\s*\(\s*\{[\s\S]{0,300}tableWhitelist:\s*\(areaCtx\s*&&\s*areaCtx\.tableWhitelist\)/,
+    'N-5: validateCostBasisSqlIntegrity 호출은 areaCtx.tableWhitelist 를 전달해야 함 (tableWhitelist is not defined 재발 방지)');
+
+// N-6: aggregate + analysis 두 route 모두 areaCtx.table === sys_aimd_cot015 패턴 사용
+{
+    const matches = serverSrc.match(/areaCtx\s*&&\s*areaCtx\.table\s*===\s*['"]sys_aimd_cot015['"]/g) || [];
+    assert(matches.length >= 2,
+        `N-6: areaCtx.table === "sys_aimd_cot015" 조건 분기가 aggregate+analysis 2곳 이상 — 실제=${matches.length}`);
+}
 
 // ============================================================
 // O. CODE_HEALTH — 중복 선언/문법 안전성
