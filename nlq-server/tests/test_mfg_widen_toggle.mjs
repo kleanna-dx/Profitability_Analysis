@@ -350,8 +350,10 @@ assert(
   "area === 'manufacturing-cost' 정확 비교"
 );
 assert(
-  /buildAnalysisDetailTable\([^)]*_mfgShowWidenBtn\s*\)/.test(html),
-  'buildAnalysisDetailTable 호출 시 _mfgShowWidenBtn 을 9번째 인자로 전달'
+  // [2026-10-22] aggregate 호출부에 _mfgShowWidenBtn 가 9번째 인자로 전달되어야 함.
+  //   10번째 인자(appliedCostBasis) 가 추가되었으므로 `_mfgShowWidenBtn` 뒤에 `)` 또는 `,` 둘 다 허용.
+  /buildAnalysisDetailTable\([^)]*_mfgShowWidenBtn\s*[,)]/.test(html),
+  'buildAnalysisDetailTable 호출 시 _mfgShowWidenBtn 을 9번째 인자로 전달 (10번째 appliedCostBasis 뒤따를 수 있음)'
 );
 assert(
   /_aggDetailInitCtx\.widenable/.test(html),

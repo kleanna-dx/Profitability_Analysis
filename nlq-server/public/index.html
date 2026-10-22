@@ -3822,7 +3822,11 @@ function appendBotMessage(data) {
             }
             _mfgShowWidenBtn = (_areaForWiden === 'manufacturing-cost');
         } catch (_) { _mfgShowWidenBtn = false; }
-        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo, _mfgShowWidenBtn);
+        // [2026-10-22 FIX] 10번째 인자 appliedCostBasis 를 전달해야 결과표 toolbar 에 뱃지/드롭다운이 렌더됨.
+        //   PR #525 작성 시 analysis 호출부(라인 ~5329)만 appliedCostBasis 를 추가하고
+        //   aggregate(현황집계 — appendBotMessage) 쪽인 이 호출부는 9번째까지만 전달해 뱃지/드롭다운이 안 보였음.
+        //   data.appliedCostBasis 는 서버 aggregate route 가 sys_aimd_cot015 질의 시에만 생성해서 응답에 포함.
+        tableHtml = truncNotice + buildAnalysisDetailTable(detailTableId, data.data, cols, colLabels, totalRowsForDisplay, '', fromHistory, data.periodInfo, _mfgShowWidenBtn, data.appliedCostBasis || null);
         _aggDetailInitCtx = { rows: data.data, cols, colLabels, fromHistory, widenable: _mfgShowWidenBtn };
     }
 
