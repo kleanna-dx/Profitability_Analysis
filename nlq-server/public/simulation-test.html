@@ -2971,20 +2971,60 @@ async function deleteItfSchedule(schedId){
 async function runItfSchedule(schedId,interfaceId){
     const itf=ITF_MASTERS.find(i=>i.id===interfaceId);
     if(!confirm((itf?itf.name:interfaceId)+' 인터페이스를 수동 실행하시겠습니까?')) return;
+    const yr=parseInt(getYm().substring(0,4));
+    const div=getDiv();
     try{
-        // 1) 이력 시작
-        const rb={interfaceId:interfaceId,interfaceName:itf?itf.name:'',jobType:'MANUAL_SYNC',execMode:'replace',executedBy:window.CURRENT_USER||'admin'};
-        const r=await fetch(API+'/itf-histories/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rb)});
-        const j=await r.json();
-        const histId=j.data?.historyId;
-        // 2) 스케줄 상태 갱신
+        // 스케줄 상태 갱신
         if(schedId) await fetch(API+'/itf-schedules/'+schedId+'/run',{method:'POST'});
-        // 3) 실제 데이터 수신은 향후 구현 — 지금은 즉시 success 처리
-        const cb={status:'success',processCount:0,errorMessage:null};
-        if(histId) await fetch(API+'/itf-histories/'+histId+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cb)});
-        alert('실행 완료 (이력 #'+histId+')');
+
+        // ★ 에너지팀 인터페이스 — 실제 DB 수신 API 호출
+        const energyPriceIds=['RPSIM_ITF_002','RPSIM_ITF_004','RPSIM_ITF_005','RPSIM_ITF_006'];
+        const energyUnitIds=['RPSIM_ITF_001','RPSIM_ITF_007'];
+        let result=null;
+
+        if(energyPriceIds.includes(interfaceId)){
+            // 단가 관련 → energy-sync/prices
+            const r=await fetch(API+'/energy-sync/prices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({year:yr,division:div,executedBy:window.CURRENT_USER||'admin'})});
+            result=await r.json();
+        } else if(energyUnitIds.includes(interfaceId)){
+            // 원단위 관련 → energy-sync/unit-rates
+            const r=await fetch(API+'/energy-sync/unit-rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({year:yr,division:div,executedBy:window.CURRENT_USER||'admin'})});
+            result=await r.json();
+        } else {
+            // 그 외 (생산관리/SAP BW 등) → 이력만 생성 (향후 구현)
+            const rb={interfaceId:interfaceId,interfaceName:itf?itf.name:'',jobType:'MANUAL_SYNC',execMode:'replace',executedBy:window.CURRENT_USER||'admin'};
+            const r=await fetch(API+'/itf-histories/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rb)});
+            const j=await r.json();
+            const histId=j.data?.historyId;
+            const cb={status:'success',processCount:0,errorMessage:null};
+            if(histId) await fetch(API+'/itf-histories/'+histId+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cb)});
+            result=j;
+        }
+
+        const cnt=result?.data?.processCount||result?.data?.totalCount||0;
+        const err=result?.data?.error;
+        if(err){
+            alert('실행 에러: '+err);
+        } else {
+            alert('실행 완료! '+cnt+'건 처리'+(result?.data?.historyId?' (이력 #'+result.data.historyId+')':''));
+            // 에너지비 데이터 리로드
+            await loadEnergyData();
+        }
         loadItfSchedules();loadItfHistories();
     }catch(e){alert('실행 에러: '+e.message);}
+}
+
+// ── 에너지팀 전체 수신 (단가+원단위 통합) — 인터페이스 관리 외부에서도 호출 가능 ──
+async function runEnergySyncAll(){
+    if(!confirm('에너지팀 데이터(단가+원단위)를 수신하시겠습니까?')) return;
+    const yr=parseInt(getYm().substring(0,4));const div=getDiv();
+    try{
+        const r=await fetch(API+'/energy-sync/all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({year:yr,division:div,executedBy:window.CURRENT_USER||'admin'})});
+        const j=await r.json();
+        if(j.data?.error){alert('에러: '+j.data.error);return;}
+        alert('에너지팀 데이터 수신 완료!\n단가: '+(j.data?.priceCount||0)+'건\n원단위: '+(j.data?.unitRateCount||0)+'건');
+        await loadEnergyData();
+    }catch(e){alert('수신 에러: '+e.message);}
 }
 
 // ── SAP BW 엑셀 파싱 (ZOHPP100/101) ──
