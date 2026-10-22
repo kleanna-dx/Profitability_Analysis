@@ -772,6 +772,61 @@ assertMatch(htmlSrc,
     'R-3: analysis 호출부도 initAnalysisDetailTable 에 sql + initialAppliedCostBasis 전달');
 
 // ============================================================
+// U. FRONTEND — ⓘ 툴팁 (옵션 A + 1-C, 2026-10-22)
+// ------------------------------------------------------------
+// 사용자 신고: 자연어로 "매출원가" 명시했는데 드롭다운이 활성화돼서
+//   다른 값으로 바꿀 수 있는 게 어색함.
+// 결정: 옵션 A (드롭다운 완전 제거, showDropdown=false 활용) + 1-C (ⓘ 툴팁).
+//   서버는 이미 explicit_in_query 시 showDropdown=false 리턴하도록 설계됨 (PR #525).
+//   프론트는 showDropdown=false 일 때 드롭다운 안 그림 (라인 5648) — 설계대로 동작.
+//   추가로 드롭다운이 없을 때 "자연어 재질의로 바꿀 수 있다" 는 안내 ⓘ 아이콘 추가.
+// ============================================================
+
+// U-1: buildAnalysisDetailTable 가 hintIconHtml 변수를 showDropdown=false 조건으로 생성
+assertMatch(htmlSrc,
+    /const\s+hintIconHtml\s*=\s*\(\s*!appliedCostBasis\.showDropdown\s*\)/,
+    'U-1: buildAnalysisDetailTable — hintIconHtml 은 !showDropdown 조건으로 생성');
+
+// U-2: ⓘ 아이콘 HTML — fa-info-circle 클래스 + cb-hint-icon 클래스 + title 속성 포함
+assertMatch(htmlSrc,
+    /fas\s+fa-info-circle\s+cb-hint-icon[\s\S]{0,500}title=["'][^"']*자연어로[^"']*다시 질문/,
+    'U-2: ⓘ 아이콘 — fa-info-circle + cb-hint-icon + title 안내 포함 (자연어 재질의)');
+
+// U-3: ⓘ title 에 구체적 예시 포함 (사용자가 어떻게 바꿀지 즉시 이해)
+//   title 값 안에 작은따옴표가 포함되므로 `[^"]*` 로만 매칭 (큰따옴표만 종료 문자)
+assertMatch(htmlSrc,
+    /title="[^"]*예시[^"]*(제품별 실제원가|매출원가의 표준원가)/,
+    'U-3: ⓘ title 안내문에 자연어 예시 포함');
+
+// U-4: ⓘ 아이콘은 뱃지 안쪽 끝에 삽입 (${hintIconHtml} 로 템플릿 보간)
+assertMatch(htmlSrc,
+    /<\/span>\$\{hintIconHtml\}\s*\n?\s*<\/div>`;/,
+    'U-4: ⓘ 아이콘은 뱃지 span 뒤, div 닫기 직전에 삽입');
+
+// U-5: refreshCostBasisBadgeAndDropdown (B-3 재갱신) 도 동일한 hintIconHtml 로직 포함
+{
+    const refreshFn = htmlSrc.match(/function\s+refreshCostBasisBadgeAndDropdown[\s\S]*?\n\}/);
+    assert(refreshFn && /const\s+hintIconHtml\s*=\s*\(\s*!appliedCostBasis\.showDropdown\s*\)/.test(refreshFn[0]),
+        'U-5: refreshCostBasisBadgeAndDropdown 도 !showDropdown 조건으로 hintIconHtml 생성 (방어 코드)');
+}
+
+// U-6: refreshCostBasisBadgeAndDropdown 가 showDropdown=false 응답에서 드롭다운 숨기는 분기 포함
+{
+    const refreshFn = htmlSrc.match(/function\s+refreshCostBasisBadgeAndDropdown[\s\S]*?\n\}/);
+    assert(refreshFn && /selectEl\.style\.display\s*=\s*['"]none['"]/.test(refreshFn[0]),
+        'U-6: refreshCostBasisBadgeAndDropdown — showDropdown=false 분기에서 드롭다운 숨김 (방어 코드)');
+}
+
+// U-7: refreshCostBasisBadgeAndDropdown 가 showDropdown=true 인 경우 selected 유지 + display 복원
+{
+    const refreshFn = htmlSrc.match(/function\s+refreshCostBasisBadgeAndDropdown[\s\S]*?\n\}/);
+    assert(refreshFn
+        && /if\s*\(\s*appliedCostBasis\.showDropdown\s*\)/.test(refreshFn[0])
+        && /selectEl\.style\.display\s*=\s*['"]['"]\s*;/.test(refreshFn[0]),
+        'U-7: refreshCostBasisBadgeAndDropdown — showDropdown=true 분기에서 display 복원 ("")');
+}
+
+// ============================================================
 // 결과 요약
 // ============================================================
 console.log('\n=== TEST RESULT ===');

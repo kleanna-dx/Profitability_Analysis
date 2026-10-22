@@ -2003,7 +2003,7 @@ function isSameCostBasis(a, b) {
 //   DOM 자체를 재생성하지 않고 textContent / selected 속성만 교체 — 표 상태와 독립.
 function refreshCostBasisBadgeAndDropdown(wrap, appliedCostBasis) {
     if (!wrap || !appliedCostBasis) return;
-    // 뱃지 교체 (sourceLabel + labelText)
+    // 뱃지 교체 (sourceLabel + labelText + 조건부 ⓘ 아이콘)
     const badgeDiv = wrap.querySelector('[id$="_cbBadge"]');
     if (badgeDiv) {
         const sourceLabelMap = {
@@ -2015,17 +2015,32 @@ function refreshCostBasisBadgeAndDropdown(wrap, appliedCostBasis) {
         };
         const sourceLabel = sourceLabelMap[appliedCostBasis.source] || '사용자 변경';
         const labelText = appliedCostBasis.label || appliedCostBasis.value;
+        // [2026-10-22] buildAnalysisDetailTable 와 동일 규칙: 드롭다운이 없을 때만 ⓘ 노출
+        //   재갱신 응답에서도 showDropdown 플래그 그대로 반영 (방어 코드).
+        const hintIconHtml = (!appliedCostBasis.showDropdown)
+            ? `<i class="fas fa-info-circle cb-hint-icon" title="다른 원가 기준으로 보려면 자연어로 다시 질문해 주세요.&#10;예시: '제품별 실제원가 TOP 5', '매출원가의 표준원가 알려줘'" style="margin-left:4px;color:#8b5cf6;cursor:help;font-size:12px;" aria-label="원가 기준 변경 안내"></i>`
+            : '';
         badgeDiv.innerHTML = `
             <i class="fas fa-coins" style="color:#6d28d9;"></i>
-            <span><strong>${esc(labelText)}</strong> 기준 <span style="color:#6b7280;font-weight:500;">(${esc(sourceLabel)})</span></span>
+            <span><strong>${esc(labelText)}</strong> 기준 <span style="color:#6b7280;font-weight:500;">(${esc(sourceLabel)})</span></span>${hintIconHtml}
         `;
     }
-    // 드롭다운 selected 상태만 교체 (옵션 DOM 재생성 X — 사용자 포커스/스크롤 보존)
+    // 드롭다운 처리:
+    //   - showDropdown=true  : selected 상태만 교체 (옵션 DOM 재생성 X — 사용자 포커스/스크롤 보존)
+    //   - showDropdown=false : [2026-10-22 보강] 드롭다운이 떠있으면 숨김 (방어 코드)
+    //     * 실제로는 B-3 재갱신 흐름(드롭다운 → 재조회)에서는 source=dropdown_change,
+    //       showDropdown=true 가 유지되므로 이 경로를 탈 일은 거의 없음.
+    //     * 다만 서버 로직 변경/엣지 케이스 대비.
     const selectEl = wrap.querySelector('[id$="_cbSelect"]');
     if (selectEl) {
-        const curKey = `${appliedCostBasis.value}|${appliedCostBasis.zcgubunD || ''}`;
-        for (const opt of selectEl.options) {
-            opt.selected = (opt.value === curKey);
+        if (appliedCostBasis.showDropdown) {
+            const curKey = `${appliedCostBasis.value}|${appliedCostBasis.zcgubunD || ''}`;
+            for (const opt of selectEl.options) {
+                opt.selected = (opt.value === curKey);
+            }
+            selectEl.style.display = '';
+        } else {
+            selectEl.style.display = 'none';
         }
     }
 }
@@ -5637,10 +5652,19 @@ function buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowC
         };
         const sourceLabel = sourceLabelMap[appliedCostBasis.source] || '사용자 변경';
         const labelText = appliedCostBasis.label || appliedCostBasis.value;
+
+        // [2026-10-22] showDropdown=false 일 때 (= 질문에서 명시 / 명확화로 확정)
+        //   → 드롭다운이 사라지므로 "다른 기준으로 바꾸려면?" 안내가 필요함
+        //   → 뱃지 끝에 ⓘ 아이콘 추가 (hover 시 자연어 재질의 안내)
+        //   showDropdown=true 일 때는 드롭다운 자체가 바로 옆에 있으므로 ⓘ 불필요.
+        const hintIconHtml = (!appliedCostBasis.showDropdown)
+            ? `<i class="fas fa-info-circle cb-hint-icon" title="다른 원가 기준으로 보려면 자연어로 다시 질문해 주세요.&#10;예시: '제품별 실제원가 TOP 5', '매출원가의 표준원가 알려줘'" style="margin-left:4px;color:#8b5cf6;cursor:help;font-size:12px;" aria-label="원가 기준 변경 안내"></i>`
+            : '';
+
         costBasisBadgeHtml = `
             <div id="${tableId}_cbBadge" class="cb-badge" style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:#eef2ff;border-bottom:1px solid #e0e7ff;color:#4c1d95;font-size:12px;font-weight:600;">
                 <i class="fas fa-coins" style="color:#6d28d9;"></i>
-                <span><strong>${esc(labelText)}</strong> 기준 <span style="color:#6b7280;font-weight:500;">(${esc(sourceLabel)})</span></span>
+                <span><strong>${esc(labelText)}</strong> 기준 <span style="color:#6b7280;font-weight:500;">(${esc(sourceLabel)})</span></span>${hintIconHtml}
             </div>`;
 
         // 드롭다운 — showDropdown=true 일 때만 toolbar 에 삽입
