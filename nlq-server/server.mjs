@@ -14388,6 +14388,38 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
 
     const elementIntent = detectCostElementIntent(query);
     const explicitZcgubun = detectExplicitZcgubunInQuery(query);
+
+    // ============================================================
+    // [2026-10-22 BUGFIX] 명시 감지는 항상 confirmedForcedCostBasis 로 승격
+    // ------------------------------------------------------------
+    // 사용자 신고: "제품별 매출원가 TOP 5" 질의 시 상단 설명은 "매출원가" 지만
+    //   SQL/뱃지는 "실제원가" 로 조회됨.
+    // 원인: 이전 세션에서 드롭다운을 "실제원가" 로 설정 → currentCostBasis 메모리에
+    //   { 실제원가, dropdown_change } 저장 → 새 질의 payload 의 sessionCostBasis 로 전송.
+    //   아래 shouldGate 블록은 "원가요소" 키워드가 있어야만 confirmedForcedCostBasis 를
+    //   세팅하므로, "매출원가" 명시만 있는 질의는 confirmedForcedCostBasis=null → 3순위
+    //   sessionCostBasis(실제원가) 가 승리 → 사용자 의도(매출원가)와 어긋남.
+    //
+    // 수정: shouldGate 와 별개로, 질의에 ZCGUBUN 이 명시된 경우(explicit=true) 는
+    //   항상 confirmedForcedCostBasis 로 세팅 (= 1순위, 세션값보다 우선).
+    //   단, 표준원가 서브타입이 빠진 경우("표준원가" 만) 는 아래 shouldGate Case C 에서
+    //   2차 명확화 응답을 돌려야 하므로 여기서는 세팅하지 않음.
+    // ============================================================
+    if (
+      !confirmedForcedCostBasis
+      && explicitZcgubun.explicit
+      && explicitZcgubun.zcgubun
+      && !(explicitZcgubun.zcgubun === '표준원가' && !explicitZcgubun.zcgubunD)
+    ) {
+      if (explicitZcgubun.zcgubun === '표준원가' && explicitZcgubun.zcgubunD) {
+        confirmedForcedCostBasis = { value: '표준원가', zcgubunD: explicitZcgubun.zcgubunD, source: 'explicit_in_query' };
+        console.log(`[CostBasisExplicit] 명시 감지 (서브타입 포함) → session 보다 우선. matchedKeyword="${explicitZcgubun.matchedKeyword}" → ZCGUBUN='표준원가', ZCGUBUN_D='${explicitZcgubun.zcgubunD}'`);
+      } else {
+        confirmedForcedCostBasis = { value: explicitZcgubun.zcgubun, source: 'explicit_in_query' };
+        console.log(`[CostBasisExplicit] 명시 감지 → session 보다 우선. matchedKeyword="${explicitZcgubun.matchedKeyword}" → zcgubun="${explicitZcgubun.zcgubun}"`);
+      }
+    }
+
     // 트리거: 원가요소 트리거가 있거나, 또는 사용자가 처음부터 "표준원가" 만 명시한 경우도
     //   ("표준원가 알려줘" — 요구사항 #6/#7: 표준원가 단독 시 반드시 2차 확정 필요).
     const shouldGate = elementIntent.matched
