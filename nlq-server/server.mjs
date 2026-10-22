@@ -12107,8 +12107,10 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
           columnLabels: detailColumnLabels,
         };
         // [2026-10-16] analysis route 세션 원가 기준 응답 메타 — aggregate 와 동일 패턴
+        // [2026-10-22 FIX] 이 scope 에는 'selectedTable' 지역변수가 없음 (ReferenceError 유발).
+        //   올바른 참조는 areaCtx.table — area context 가 결정한 실제 대상 테이블.
         let appliedCostBasisAnalysis = null;
-        if (selectedTable === 'sys_aimd_cot015') {
+        if (areaCtx && areaCtx.table === 'sys_aimd_cot015') {
           const _effCb = (areaCtx && areaCtx.forcedCostBasis) ? {
             value: areaCtx.forcedCostBasis.value,
             zcgubunD: areaCtx.forcedCostBasis.zcgubunD || null,
@@ -12916,9 +12918,12 @@ ${_colHintList}
     }
 
     // [3] CostBasis 무결성 soft-warning
+    // [2026-10-22 FIX] 'tableWhitelist' 지역변수 미선언 (ReferenceError, 그간 catch 로 삼켜져 로그만 남음).
+    //   올바른 참조는 areaCtx.tableWhitelist — 파일 전반에서 사용하는 area context 필드.
+    //   (여기서는 try/catch 로 응답 자체는 이미 정상이었지만, 검증 로직이 실제로 돌지 않고 있었음)
     try {
       const _costIntegrity = validateCostBasisSqlIntegrity({
-        sql, query, tableWhitelist,
+        sql, query, tableWhitelist: (areaCtx && areaCtx.tableWhitelist) || [],
       });
       if (!_costIntegrity.valid) {
         console.warn(
@@ -13434,8 +13439,11 @@ ${formatRule}
     //   sys_aimd_cot015 조회 시에만 추가 (수익성분석/cot043 영향 없음).
     //   프론트는 이 필드가 있을 때만 결과표에 드롭다운/뱃지 렌더링.
     //   areaCtx.forcedCostBasis 가 없으면 default_fallback 간주 (서버가 WHERE 안 넣었지만 사용자에겐 "실제원가로 보임" 표시).
+    // [2026-10-22 FIX] 이 scope 에는 'selectedTable' 지역변수가 없음 (ReferenceError 유발, 500 응답).
+    //   올바른 참조는 areaCtx.table — area context 가 결정한 실제 대상 테이블
+    //   (파일 전반에서 areaCtx.table, areaCtx.tableWhitelist 로 일관되게 사용 중).
     let appliedCostBasisMeta = null;
-    if (selectedTable === 'sys_aimd_cot015') {
+    if (areaCtx && areaCtx.table === 'sys_aimd_cot015') {
       // areaCtx.forcedCostBasis 는 { value, zcgubunD?, source? } 형태.
       //   source 가 없으면 (서버 자동 매핑/명확화/세션에서 왔는지 불명) 'dropdown_change' 로 fallback.
       const _effectiveCostBasis = (areaCtx && areaCtx.forcedCostBasis) ? {
