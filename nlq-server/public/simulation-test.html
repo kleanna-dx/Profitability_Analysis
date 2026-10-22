@@ -2002,20 +2002,64 @@ function updateSteamAllocFooter(){
     const dim=new Date(yr,mo,0).getDate();
     let grandTotal=0;const boilerSums={};
     STEAM_ALLOC_BOILERS.forEach(b=>{boilerSums[b.code]=0;});
+    // 일별 합산 + 부족·초과 합산 + 가동일수 재산출
+    let totalDemand=0, totalShortage=0, opDays=0, totalOpHours=0;
     for(let d=1;d<=dim;d++){
         STEAM_ALLOC_BOILERS.forEach(b=>{
             const inp=document.getElementById('sa_'+d+'_'+b.code);
             const v=inp?parseFloat(inp.value)||0:0;
             boilerSums[b.code]+=v;grandTotal+=v;
         });
+        // 일필요량
+        const demandEl=document.getElementById('saDemand_'+d);
+        const demand=demandEl?parseFloat(demandEl.dataset.val)||0:0;
+        totalDemand+=demand;
+        // 부족·초과
+        const dayTotalEl=document.getElementById('saTotal_'+d);
+        const dayT=dayTotalEl?parseFloat(dayTotalEl.textContent.replace(/,/g,''))||0:0;
+        if(demand>0){
+            const diff=dayT-demand;
+            if(diff<0) totalShortage+=Math.abs(diff);
+        }
+        // 가동시간
+        const opHEl=document.getElementById('saOpH_'+d);
+        const opH=opHEl?parseFloat(opHEl.dataset.val)||0:0;
+        if(opH>0){opDays++;totalOpHours+=opH;}
     }
-    // 누계 행의 각 보일러 합계 갱신
+    if(opDays<=0) opDays=dim;
+    // 1) 보일러별 누계 + 평균T/H
     STEAM_ALLOC_BOILERS.forEach(b=>{
         const el=document.getElementById('saFootTotal_'+b.code);
-        if(el)el.textContent=fmtI(Math.round(boilerSums[b.code]));
+        if(el) el.textContent=fmtI(Math.round(boilerSums[b.code]));
+        // 누계 행 평균T/H
+        const tphEl=document.getElementById('saFootTph_'+b.code);
+        if(tphEl) tphEl.textContent=totalOpHours>0?fmt(boilerSums[b.code]/totalOpHours):'-';
+        // 평균 행: 일평균 배분
+        const avgEl=document.getElementById('saFootAvg_'+b.code);
+        if(avgEl) avgEl.textContent=fmtI(Math.round(boilerSums[b.code]/opDays));
+        // 평균 행: 평균T/H
+        const avgTphEl=document.getElementById('saFootAvgTph_'+b.code);
+        if(avgTphEl){const avgPerDay=boilerSums[b.code]/opDays;const avgOpH=totalOpHours/opDays;avgTphEl.textContent=avgOpH>0?fmt(avgPerDay/avgOpH):'-';}
     });
+    // 2) 전체 누계
     const gtEl=document.getElementById('saFootGrandTotal');
-    if(gtEl)gtEl.textContent=fmtI(Math.round(grandTotal));
+    if(gtEl) gtEl.textContent=fmtI(Math.round(grandTotal));
+    // 3) 일필요량 누계 (고정값이지만 일관성)
+    const demTotEl=document.getElementById('saFootDemandTotal');
+    if(demTotEl) demTotEl.textContent=fmtI(Math.round(totalDemand));
+    // 4) 부족·초과 누계
+    const shortEl=document.getElementById('saFootShortage');
+    if(shortEl){
+        const diff=grandTotal-totalDemand;
+        if(Math.abs(diff)<1){shortEl.textContent='-';shortEl.style.color='#94a3b8';}
+        else if(diff<0){shortEl.textContent='-'+fmtI(Math.round(Math.abs(diff)));shortEl.style.color='#ef4444';}
+        else{shortEl.textContent='+'+fmtI(Math.round(diff));shortEl.style.color='#2563eb';}
+    }
+    // 5) 평균 행: 전체 평균
+    const avgTotEl=document.getElementById('saFootAvgTotal');
+    if(avgTotEl) avgTotEl.textContent=fmtI(Math.round(grandTotal/opDays));
+    const avgDemEl=document.getElementById('saFootAvgDemand');
+    if(avgDemEl) avgDemEl.textContent=fmtI(Math.round(totalDemand/opDays));
 }
 
 async function loadDailySteamAlloc(){
@@ -2325,8 +2369,8 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         const t=boilerTotals[b.code];
         const avgTD=t/opDaysCount;
         const avgTH=totalOpHoursAll>0?t/totalOpHoursAll:0;
-        tH+='<td class="r" style="color:#4f46e5;" id="saFootTotal_'+b.code+'">'+fmtI(Math.round(t))+'</td><td class="r" style="color:#94a3b8;">'+fmt(avgTH)+'</td>';
-        aH+='<td class="r">'+fmtI(Math.round(avgTD))+'</td><td class="r" style="color:#94a3b8;">'+fmt(totalOpHoursAll>0?avgTD/(totalOpHoursAll/opDaysCount):0)+'</td>';
+        tH+='<td class="r" style="color:#4f46e5;" id="saFootTotal_'+b.code+'">'+fmtI(Math.round(t))+'</td><td class="r" style="color:#94a3b8;" id="saFootTph_'+b.code+'">'+fmt(avgTH)+'</td>';
+        aH+='<td class="r" id="saFootAvg_'+b.code+'">'+fmtI(Math.round(avgTD))+'</td><td class="r" style="color:#94a3b8;" id="saFootAvgTph_'+b.code+'">'+fmt(totalOpHoursAll>0?avgTD/(totalOpHoursAll/opDaysCount):0)+'</td>';
     });
     const gt=Object.values(boilerTotals).reduce((s,v)=>s+v,0);
     const shortage=dayRows.reduce((s,r)=>s+r.remaining,0);
@@ -2335,8 +2379,11 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
 
     // 운휴 일수 집계
     const sdCount=dayRows.filter(r=>r.isHoliday).length;
-    footEl.innerHTML=totalRow+tH+'<td class="r" style="color:#d97706;" id="saFootGrandTotal">'+fmtI(Math.round(gt))+'</td><td class="r" style="color:#166534;">'+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#ef4444;">'+(shortage>0?fmtI(Math.round(shortage)):'-')+'</td><td style="font-size:9px;color:#64748b;">가동 '+opDaysCount+'일'+(sdCount>0?' / 운휴 '+sdCount+'일':'')+'</td></tr>'+
-        avgRow+aH+'<td class="r">'+fmtI(Math.round(gt/opDaysCount))+'</td><td class="r">'+fmtI(Math.round(totalSteamReq/opDaysCount))+'</td><td class="r">-</td><td></td></tr>';
+    footEl.innerHTML=totalRow+tH+'<td class="r" style="color:#d97706;" id="saFootGrandTotal">'+fmtI(Math.round(gt))+'</td><td class="r" style="color:#166534;" id="saFootDemandTotal">'+fmtI(Math.round(totalSteamReq))+'</td><td class="r" style="color:#ef4444;" id="saFootShortage">'+(shortage>0?fmtI(Math.round(shortage)):'-')+'</td><td style="font-size:9px;color:#64748b;" id="saFootInfo">가동 '+opDaysCount+'일'+(sdCount>0?' / 운휴 '+sdCount+'일':'')+'</td></tr>'+
+        avgRow+aH+'<td class="r" id="saFootAvgTotal">'+fmtI(Math.round(gt/opDaysCount))+'</td><td class="r" id="saFootAvgDemand">'+fmtI(Math.round(totalSteamReq/opDaysCount))+'</td><td class="r">-</td><td></td></tr>';
+    // 평균 T/H 셀에도 id 부여 (업데이트용) — 위 aH에서 이미 생성된 것이므로 데이터 속성으로 관리
+    window._saFootOpDays=opDaysCount;
+    window._saFootTotalOpHours=totalOpHoursAll;
 }
 
 // ── Product Sim (API 데이터 기반) ──
