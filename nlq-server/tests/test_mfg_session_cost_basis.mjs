@@ -404,6 +404,19 @@ assertMatch(htmlSrc,
     // J-11 신규: history row UPDATE (채팅 재진입 복원용)
     assert(/\/api\/history\/session\/[\s\S]{0,80}\/cost-basis/.test(body),
         'J-11: PATCH /api/history/session/:id/cost-basis fire-and-forget 호출');
+
+    // J-12 신규 (2026-10-22 B-3 fix): SQL 탭의 SQL pre 를 새 SQL (data.newSql) 로 교체
+    //   사용자 신고: 표/차트는 바뀌는데 SQL 탭의 쿼리가 그대로 남아있어 혼란.
+    assert(
+        /_sqlPre/.test(body) && /data\.newSql/.test(body) && /formatAndHighlightSql/.test(body),
+        'J-12: SQL 탭 pre (_sqlPre) 를 data.newSql + formatAndHighlightSql 로 교체'
+    );
+
+    // J-13 신규 (2026-10-22 B-3 fix): SQL 편집기 textarea 도 함께 교체
+    assert(
+        /_editorTa/.test(body) && /formatSqlText/.test(body),
+        'J-13: SQL 편집기 textarea (_editorTa) 도 data.newSql 로 교체 (편집 혼란 방지)'
+    );
 }
 
 // ============================================================
@@ -649,10 +662,17 @@ assertMatch(htmlSrc,
     /applyCostBasisDimEffect[\s\S]{0,1500}header\.style\.opacity/,
     'Q-8: applyCostBasisDimEffect 가 header.style.opacity 로 답변 흐리게 처리');
 
-// Q-9: 안내 문구에 "표와 차트" 명시 (사용자에게 뭐가 바뀌었는지 전달)
+// Q-9: 안내 문구에 "표/차트/SQL" 명시 (사용자에게 뭐가 바뀌었는지 전달)
+//   [2026-10-22 B-3 fix] SQL 탭도 함께 갱신되므로 안내 문구에 SQL 포함.
 assertMatch(htmlSrc,
-    /cb-dim-notice[\s\S]{0,2000}표와 차트만 재조회/,
-    'Q-9: 안내 문구에 "표와 차트만 재조회" 명시 (사용자에게 범위 명확화)');
+    /cb-dim-notice[\s\S]{0,2000}표\/차트\/SQL은 재조회/,
+    'Q-9: 안내 문구에 "표/차트/SQL은 재조회" 명시 (사용자에게 범위 명확화)');
+
+// Q-9b 신규: applyCostBasisDimEffect 가 SQL 탭 안의 설명 블록도 흐리게 처리
+//   (상단 답변만 흐리게 하면 SQL 탭 안의 설명은 그대로 남아 사용자가 혼란)
+assertMatch(htmlSrc,
+    /applyCostBasisDimEffect[\s\S]{0,2500}sqlExplanationBlock\.style\.opacity/,
+    'Q-9b: applyCostBasisDimEffect 가 SQL 탭 안의 설명 블록도 흐리게 처리 (sqlExplanationBlock)');
 
 // Q-10: 헬퍼 함수들이 각각 1회만 정의 (중복 방지)
 {
