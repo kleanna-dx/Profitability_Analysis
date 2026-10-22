@@ -420,6 +420,37 @@ assertMatch(htmlSrc,
 }
 
 // ============================================================
+// [2026-10-22] S. SERVER — _sanitizeWhereCond 중첩 외곽 괄호 벗기기
+// ------------------------------------------------------------
+// 사용자 신고: 드롭다운에서 원가 기준을 반복 변경하면 SQL WHERE 절에
+//   AND (((((((CALMONTH = '202608'))))))) 처럼 괄호가 누적됨.
+// 원인: applyForcedCostBasisFilter 가 매 호출마다 cond 를 `(cond)` 로 감싸서
+//   반환 → 그 결과가 다음 호출의 입력이 되어 또 괄호 1겹 추가 → 반복.
+// 수정: _sanitizeWhereCond 에 중첩 외곽 괄호 벗기기 로직 추가.
+//   핵심 조건: "전체를 감싸는 1개의 괄호쌍" 일 때만 벗김. (A) AND (B) 는 X.
+// ============================================================
+
+// S-1: 중첩 외곽 괄호 벗기기 for 루프 (최대 20회)
+assertMatch(serverSrc,
+    /function\s+_sanitizeWhereCond[\s\S]{0,2000}중첩 외곽 괄호[\s\S]{0,500}for\s*\(\s*let\s+i\s*=\s*0\s*;\s*i\s*<\s*20\s*;/,
+    'S-1: _sanitizeWhereCond 에 중첩 외곽 괄호 벗기기 for 루프 (최대 20회)');
+
+// S-2: outerIsSinglePair 체크 — (A) AND (B) 같은 다중 괄호쌍은 안 벗김
+assertMatch(serverSrc,
+    /function\s+_sanitizeWhereCond[\s\S]{0,2500}outerIsSinglePair\s*=\s*true[\s\S]{0,500}depth\s*===\s*0\s*&&\s*j\s*<\s*s\.length\s*-\s*1/,
+    'S-2: outerIsSinglePair depth tracking (여러 괄호쌍 보호)');
+
+// S-3: 문자열(') 안의 괄호 무시 — "'2026(08)'" 같은 문자열 보호
+assertMatch(serverSrc,
+    /function\s+_sanitizeWhereCond[\s\S]{0,2500}inString\s*=\s*false[\s\S]{0,500}inString\s*=\s*!inString/,
+    'S-3: 문자열 리터럴 안의 괄호 무시 (SQL 문자열 보호)');
+
+// S-4: 바깥 괄호쌍 벗기기 — s.slice(1, -1)
+assertMatch(serverSrc,
+    /function\s+_sanitizeWhereCond[\s\S]{0,2500}s\s*=\s*s\.slice\s*\(\s*1\s*,\s*-1\s*\)\.trim\s*\(\s*\)/,
+    'S-4: 바깥 괄호쌍 벗기기 — s.slice(1, -1).trim()');
+
+// ============================================================
 // K. FRONTEND — restoreSession 복원 로직
 // ============================================================
 

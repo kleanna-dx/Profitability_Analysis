@@ -9792,8 +9792,17 @@ function applyForcedCostCompFilter(inputSql, forcedCostComp) {
 }
 
 /**
- * WHERE 조건 문자열에서 잔여 AND/OR, 빈 괄호, 연속 AND 등을 정리.
- * ZCOSTCOMP_NM 조건 제거 후 발생하는 문법 오류 방어용.
+ * WHERE 조건 문자열에서 잔여 AND/OR, 빈 괄호, 연속 AND, 중첩 외곽 괄호를 정리.
+ * ZCOSTCOMP_NM 조건 제거 후 발생하는 문법 오류 방어 + 반복 호출 시 괄호 누적 방지용.
+ *
+ * [2026-10-22] 중첩 외곽 괄호 정리 추가 (사용자 신고):
+ *   드롭다운에서 원가 기준을 반복 변경 시 WHERE 절에 다음 패턴 누적:
+ *     AND (((((((CALMONTH = '202608')))))))
+ *   원인: applyForcedCostBasisFilter 가 매 호출마다 cond 를 `(cond)` 로 감싸서 반환.
+ *     그 결과가 다시 입력으로 들어오면 또 괄호 1겹 추가 → 호출마다 괄호 누적.
+ *   해결: "조건식 전체를 1겹으로 감싸는 중첩 외곽 괄호" 를 반복 벗겨냄.
+ *     주의: `(A) AND (B)` 같이 "서로 다른 괄호 2개" 는 벗기면 안 됨.
+ *           오직 "전체가 1개의 괄호쌍으로 감싸진" 경우만 벗김.
  */
 function _sanitizeWhereCond(cond) {
   if (!cond) return cond;
@@ -9812,6 +9821,31 @@ function _sanitizeWhereCond(cond) {
   s = s.replace(/\(\s*(?:AND|OR)\s+/gi, '(');
   s = s.replace(/\s+(?:AND|OR)\s*\)/gi, ')');
   s = s.trim();
+  // 중첩 외곽 괄호 1겹씩 벗기기 — 반복 호출로 누적된 괄호 정리
+  //   예:  "(((CALMONTH='202608')))"  →  "CALMONTH='202608'"
+  //   조건: 문자열이 '(' 로 시작하고 ')' 로 끝날 때, 바깥 괄호쌍이 전체를 감싸는지 확인.
+  //         감쌀 경우 1겹 벗기고 반복 (최대 20회 — 비정상 입력 방어).
+  for (let i = 0; i < 20; i++) {
+    if (s.length < 2 || s[0] !== '(' || s[s.length - 1] !== ')') break;
+    // 바깥 괄호쌍이 "같은 쌍" 인지 depth tracking 으로 확인.
+    //   문자열/주석 안의 괄호는 무시 (SQL 표준에 비해 보수적).
+    let depth = 0, inString = false, outerIsSinglePair = true;
+    for (let j = 0; j < s.length; j++) {
+      const ch = s[j];
+      if (ch === "'" && (j === 0 || s[j - 1] !== '\\')) inString = !inString;
+      if (inString) continue;
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        // 중간에 depth 가 0 이 되면 → 바깥 괄호쌍이 전체를 감싸지 않음
+        //   예: "(A) AND (B)" → j=2 에서 depth=0 됨 → 벗기면 안 됨
+        if (depth === 0 && j < s.length - 1) { outerIsSinglePair = false; break; }
+      }
+    }
+    if (!outerIsSinglePair) break;
+    // 바깥 괄호쌍 벗기기 + 양끝 공백 제거
+    s = s.slice(1, -1).trim();
+  }
   return s;
 }
 
