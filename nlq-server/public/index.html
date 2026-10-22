@@ -1933,13 +1933,40 @@ async function onCostBasisDropdownChange(selectEl) {
                 }
             }
 
-            // 7) 뱃지/드롭다운 재조립 + 메모리 변수 동기화
+            // 7) SQL 탭 갱신 — SQL pre (하이라이트된 코드) + SQL 편집기 textarea 둘 다 새 SQL 로 교체
+            //   [2026-10-22 B-3 fix] 사용자 지적: 표/차트는 바뀌는데 SQL 탭의 쿼리/설명이 그대로 남아있어 혼란.
+            //   aggregate 경로의 SQL 패널 DOM id 규칙:
+            //     - 결과표 tableId = 'atbl_' + id  (id = 'msg' + counter)  → 라인 3916
+            //     - SQL pre         = `${id}_sqlPre`                        → 라인 4051
+            //     - SQL 편집기 TA   = `${id}_editorTa`                      → 라인 4053
+            //     - 설명 블록       = `${id}_sql` div 안의 info 블록        → 라인 4042~4045
+            //   analysis 경로 결과표는 전용 SQL 탭이 없으므로 (res-tabs 밖) no-op.
+            {
+                const msgIdMatch = /^atbl_(.+)$/.exec(tableId);
+                if (msgIdMatch && data.newSql) {
+                    const msgId = msgIdMatch[1];
+                    // SQL pre (문법 하이라이트) 교체
+                    const sqlPre = document.getElementById(msgId + '_sqlPre');
+                    if (sqlPre && typeof formatAndHighlightSql === 'function') {
+                        sqlPre.innerHTML = formatAndHighlightSql(data.newSql);
+                    }
+                    // SQL 편집기 textarea 교체 (사용자가 편집하려 할 때 혼란 방지)
+                    const sqlTa = document.getElementById(msgId + '_editorTa');
+                    if (sqlTa && typeof formatSqlText === 'function') {
+                        sqlTa.value = formatSqlText(data.newSql);
+                    }
+                }
+            }
+
+            // 8) 뱃지/드롭다운 재조립 + 메모리 변수 동기화
             if (data.appliedCostBasis) {
                 syncCostBasisFromResponse(data.appliedCostBasis);
                 refreshCostBasisBadgeAndDropdown(wrap, data.appliedCostBasis);
             }
 
-            // 8) 답변 영역 흐리게 + 안내 문구 (원래값 복귀 시 해제)
+            // 9) 답변 영역 + SQL 탭 설명 흐리게 + 안내 문구 (원래값 복귀 시 해제)
+            //   [2026-10-22 B-3 fix] SQL 탭 안의 설명 블록도 "원 질의 기준" 이므로 함께 흐리게.
+            //   LLM 재호출 없이 설명을 완벽히 재생성할 수 없으므로, 원 설명을 유지하되 "표 숫자와 다를 수 있음" 안내.
             const msgBot = wrap.closest('.msg-bot');
             if (msgBot) {
                 const isBackToInitial = isSameCostBasis(data.appliedCostBasis, st.initialAppliedCostBasis);
@@ -2003,17 +2030,35 @@ function refreshCostBasisBadgeAndDropdown(wrap, appliedCostBasis) {
     }
 }
 
-// [B-3] 답변 영역을 "흐리게" 처리 + 안내 문구 삽입/제거.
-//   changed=true  : 드롭다운이 최초값 외의 값으로 변경됨 → 답변 흐리게 + 안내 띄움
+// [B-3] 답변 영역 + SQL 탭 설명을 "흐리게" 처리 + 안내 문구 삽입/제거.
+//   changed=true  : 드롭다운이 최초값 외의 값으로 변경됨 → 흐리게 + 안내 띄움
 //   changed=false : 다시 최초값으로 돌아감 → 흐리게/안내 모두 해제
+//
+// 흐리게 처리 대상:
+//   1) 상단 답변 영역 (.msg-bot-header) — 사용자 질문 바로 아래 요약 답변
+//   2) SQL 탭 안의 설명 블록 ([id$="_sql"] res-panel 안의 info 블록) — "sys_aimd_cot015 테이블에서..."
+//   둘 다 원 질의 기준으로 LLM 이 생성한 자연어이므로, 표/차트가 바뀐 후에는
+//   "표의 숫자와 다를 수 있다" 는 사실을 사용자에게 명확히 전달해야 함 (환각 회피).
+//
 // 안내 문구는 결과표 바로 위에 1회만 삽입. 중복 삽입 방지.
 function applyCostBasisDimEffect(msgBot, { changed, newLabel }) {
     if (!msgBot) return;
     const header = msgBot.querySelector('.msg-bot-header');
+    // SQL 탭 안의 설명 info 블록 — border-left:3px solid #6366f1 인 보라색 안내 박스
+    //   라인 4042~4045 구조: <div id="${id}_sql" class="res-panel">
+    //                         <div style="... border-left: 3px solid #6366f1 ...">
+    //                           <i class="fa-info-circle"></i>${esc(data.explanation)}
+    //                         </div>
+    //                         <div class="sql-display-wrap">...</div>
+    //                       </div>
+    //   첫 번째 자식 div (설명 블록) 를 찾기 위해 selector 사용.
+    const sqlTab = msgBot.querySelector('[id$="_sql"].res-panel');
+    const sqlExplanationBlock = sqlTab ? sqlTab.querySelector(':scope > div[style*="border-left"]') : null;
     const existingNotice = msgBot.querySelector('.cb-dim-notice');
 
     if (changed) {
         if (header) header.style.opacity = '0.65';
+        if (sqlExplanationBlock) sqlExplanationBlock.style.opacity = '0.65';
         if (!existingNotice) {
             const notice = document.createElement('div');
             notice.className = 'cb-dim-notice';
@@ -2024,8 +2069,8 @@ function applyCostBasisDimEffect(msgBot, { changed, newLabel }) {
                 'border-radius:8px;';
             notice.innerHTML =
                 `<i class="fas fa-info-circle" style="margin-right:6px;color:#f59e0b;"></i>` +
-                `원가 기준이 <strong>'${esc(newLabel)}'</strong>로 변경되어 아래 표와 차트만 재조회되었습니다. ` +
-                `<span style="color:#92400e;">상단 답변 문구는 원래 질의 기준이므로 표의 숫자와 다를 수 있습니다.</span>`;
+                `원가 기준이 <strong>'${esc(newLabel)}'</strong>로 변경되어 아래 표/차트/SQL은 재조회되었습니다. ` +
+                `<span style="color:#92400e;">상단 답변 문구와 SQL 탭의 설명은 원래 질의 기준이므로 표의 숫자와 다를 수 있습니다.</span>`;
             // 결과표 바로 위에 삽입
             const wrap = msgBot.querySelector('.analysis-detail-wrap');
             if (wrap && wrap.parentNode) {
@@ -2038,6 +2083,7 @@ function applyCostBasisDimEffect(msgBot, { changed, newLabel }) {
         }
     } else {
         if (header) header.style.opacity = '';
+        if (sqlExplanationBlock) sqlExplanationBlock.style.opacity = '';
         if (existingNotice) existingNotice.remove();
     }
 }
