@@ -451,6 +451,37 @@ assertMatch(serverSrc,
     'S-4: 바깥 괄호쌍 벗기기 — s.slice(1, -1).trim()');
 
 // ============================================================
+// [2026-10-22 BUGFIX] T. 명시 감지 승격 — session 값보다 우선
+// ------------------------------------------------------------
+// 사용자 신고: "제품별 매출원가 TOP 5" 질의 시 상단 설명은 매출원가 지만
+//   SQL/뱃지는 실제원가 (이전 드롭다운 세션 값) 로 조회됨.
+// 원인: shouldGate 블록이 "원가요소" 키워드가 있을 때만 confirmedForcedCostBasis
+//   를 세팅. "매출원가" 명시만 있는 질의는 confirmedForcedCostBasis=null →
+//   3순위 sessionCostBasis(실제원가) 가 승리 → 사용자 의도와 어긋남.
+// 수정: shouldGate 와 별개로 explicit 감지된 ZCGUBUN 은 항상 1순위로 승격.
+// ============================================================
+
+// T-1: shouldGate 블록 위에 명시 감지 승격 로직 존재
+assertMatch(serverSrc,
+    /\[CostBasisExplicit\][\s\S]{0,500}명시 감지[\s\S]{0,200}session 보다 우선/,
+    'T-1: [CostBasisExplicit] 명시 감지 로그 (session 보다 우선 승격)');
+
+// T-2: 승격 조건 — explicit=true + zcgubun 있음 + (표준원가 서브타입 없는 케이스는 제외)
+assertMatch(serverSrc,
+    /!confirmedForcedCostBasis[\s\S]{0,300}explicitZcgubun\.explicit[\s\S]{0,300}explicitZcgubun\.zcgubun[\s\S]{0,500}!\s*\(\s*explicitZcgubun\.zcgubun\s*===\s*['"]표준원가['"]\s*&&\s*!explicitZcgubun\.zcgubunD\s*\)/,
+    'T-2: 승격 조건 — explicit=true AND zcgubun 있음 AND NOT (표준원가 only without zcgubunD)');
+
+// T-3: 서브타입 포함 (표준원가 + zcgubunD) 승격 로직
+assertMatch(serverSrc,
+    /\[CostBasisExplicit\][\s\S]{0,500}explicitZcgubun\.zcgubun\s*===\s*['"]표준원가['"][\s\S]{0,300}explicitZcgubun\.zcgubunD[\s\S]{0,200}source:\s*['"]explicit_in_query['"]/,
+    'T-3: 표준원가 + 서브타입 명시 → 승격 (source=explicit_in_query)');
+
+// T-4: 실제원가/매출원가 명시 → 승격 (source=explicit_in_query)
+assertMatch(serverSrc,
+    /\[CostBasisExplicit\][\s\S]{0,1000}else\s*\{[\s\S]{0,500}value:\s*explicitZcgubun\.zcgubun[\s\S]{0,300}source:\s*['"]explicit_in_query['"]/,
+    'T-4: 실제원가/매출원가 명시 → 승격 (source=explicit_in_query)');
+
+// ============================================================
 // K. FRONTEND — restoreSession 복원 로직
 // ============================================================
 
