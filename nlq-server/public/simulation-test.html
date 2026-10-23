@@ -3008,7 +3008,7 @@ async function runItfSchedule(schedId,interfaceId){
         } else {
             alert('실행 완료! '+cnt+'건 처리'+(result?.data?.historyId?' (이력 #'+result.data.historyId+')':''));
             // 에너지비 데이터 리로드
-            await loadEnergyData();
+            await loadEnergyRefData();
         }
         loadItfSchedules();loadItfHistories();
     }catch(e){alert('실행 에러: '+e.message);}
@@ -3023,7 +3023,7 @@ async function runEnergySyncAll(){
         const j=await r.json();
         if(j.data?.error){alert('에러: '+j.data.error);return;}
         alert('에너지팀 데이터 수신 완료!\n단가: '+(j.data?.priceCount||0)+'건\n원단위: '+(j.data?.unitRateCount||0)+'건');
-        await loadEnergyData();
+        await loadEnergyRefData();
     }catch(e){alert('수신 에러: '+e.message);}
 }
 
