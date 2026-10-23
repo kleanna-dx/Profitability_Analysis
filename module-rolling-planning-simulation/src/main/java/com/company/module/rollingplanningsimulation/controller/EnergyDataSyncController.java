@@ -57,7 +57,7 @@ public class EnergyDataSyncController {
         } catch (Exception e) {
             completeHistory(hist, "failed", 0, e.getMessage());
             log.error("[EnergySync] 단가 수신 에러", e);
-            return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage())));
+            return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage() + (e.getCause() != null ? " | Cause: " + e.getCause().getMessage() : ""))));
         }
     }
 
@@ -83,7 +83,7 @@ public class EnergyDataSyncController {
         } catch (Exception e) {
             completeHistory(hist, "failed", 0, e.getMessage());
             log.error("[EnergySync] 원단위 수신 에러", e);
-            return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage())));
+            return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage() + (e.getCause() != null ? " | Cause: " + e.getCause().getMessage() : ""))));
         }
     }
 
@@ -109,7 +109,7 @@ public class EnergyDataSyncController {
         } catch (Exception e) {
             completeHistory(hist, "failed", 0, e.getMessage());
             log.error("[EnergySync] 전체 수신 에러", e);
-            return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage())));
+            return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage() + (e.getCause() != null ? " | Cause: " + e.getCause().getMessage() : ""))));
         }
     }
 

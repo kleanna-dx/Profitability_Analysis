@@ -1,0 +1,91 @@
+-- =====================================================================
+-- 24_create_raw_material_inventory.sql
+-- 경영시뮬레이션 원부재료 데이터 테이블
+-- SAP RFC Z_BI_WEB_EX_BL_2 → rpsim_raw_material (원재료+부재료 통합)
+-- SAP RFC Z_BI_WEB_EX_BL_3 → rpsim_raw_inventory (원부자재 수불부)
+-- =====================================================================
+
+-- 1) 원부재료 사용현황 (ZOHPP100 원재료 + ZOHPP101 부재료 통합)
+-- DATA_TYPE: '100'=원재료, '101'=부재료
+CREATE TABLE IF NOT EXISTS rpsim_raw_material (
+    SEQ             BIGINT       NOT NULL AUTO_INCREMENT,
+    DATA_TYPE       VARCHAR(3)   NOT NULL DEFAULT '100' COMMENT '데이터구분 (100=원재료, 101=부재료)',
+    CALMONTH        VARCHAR(6)   NOT NULL COMMENT '달력연도/월 (YYYYMM)',
+    ZPROCESS        VARCHAR(3)   DEFAULT NULL COMMENT '공정',
+    ZPROCESS_NM     VARCHAR(40)  DEFAULT NULL COMMENT '공정명',
+    ZMACHINE        VARCHAR(4)   DEFAULT NULL COMMENT '생산호기',
+    ZMACHINE_NM     VARCHAR(40)  DEFAULT NULL COMMENT '생산호기명',
+    PRODH1          VARCHAR(18)  DEFAULT NULL COMMENT '제품계층 구조레벨 1',
+    PRODH1_NM       VARCHAR(40)  DEFAULT NULL COMMENT '제품계층 구조레벨 1명',
+    PRODH2          VARCHAR(18)  DEFAULT NULL COMMENT '제품 계층구조레벨 2',
+    PRODH2_NM       VARCHAR(40)  DEFAULT NULL COMMENT '제품 계층구조레벨 2명',
+    PRODH3          VARCHAR(18)  DEFAULT NULL COMMENT '제품 계층구조레벨 3',
+    PRODH3_NM       VARCHAR(40)  DEFAULT NULL COMMENT '제품 계층구조레벨 3명',
+    PRODH4          VARCHAR(18)  DEFAULT NULL COMMENT '제품 계층구조레벨 4',
+    PRODH4_NM       VARCHAR(40)  DEFAULT NULL COMMENT '제품 계층구조레벨 4명',
+    MATERIAL        VARCHAR(18)  DEFAULT NULL COMMENT '자재',
+    MATERIAL_NM     VARCHAR(40)  DEFAULT NULL COMMENT '자재명',
+    UNIT            VARCHAR(3)   DEFAULT NULL COMMENT '단위',
+    ZUNIT           VARCHAR(3)   DEFAULT NULL COMMENT '기준수량단위(KG/EA)',
+    ZPRD_UNIT       VARCHAR(3)   DEFAULT NULL COMMENT '단위(생산수량)',
+    ZSCR_UNIT       VARCHAR(3)   DEFAULT NULL COMMENT '단위(폐품수량)',
+    CURRENCY        VARCHAR(5)   DEFAULT NULL COMMENT '통화',
+    MATL_GROUP      VARCHAR(9)   DEFAULT NULL COMMENT '자재 그룹',
+    MATL_GROUP_NM   VARCHAR(40)  DEFAULT NULL COMMENT '자재 그룹명',
+    ZJPCODE         VARCHAR(30)  DEFAULT NULL COMMENT '지종/제품구분',
+    ZJPCODE_NM      VARCHAR(40)  DEFAULT NULL COMMENT '지종/제품구분명',
+    ZMATGROUP       VARCHAR(9)   DEFAULT NULL COMMENT '자재그룹(대분류)',
+    ZMATGROUP_NM    VARCHAR(40)  DEFAULT NULL COMMENT '자재그룹(대분류)명',
+    ZPUNIT          DECIMAL(17,3) DEFAULT 0 COMMENT '계획 원단위(KG/Ton)',
+    ZREQ_QTY        DECIMAL(17,3) DEFAULT 0 COMMENT '구성부품수량',
+    ZBASEQTY        DECIMAL(17,3) DEFAULT 0 COMMENT '기준수량',
+    ZTUNIT          DECIMAL(17,3) DEFAULT 0 COMMENT '계획 원단위(폐품포함)',
+    ZRDCD_M01       BIGINT       DEFAULT 0 COMMENT '계획 단가',
+    ZPDTBQTY        DECIMAL(17,3) DEFAULT 0 COMMENT '계획 배부수량',
+    ZTPQTY          DECIMAL(17,3) DEFAULT 0 COMMENT '총생산량',
+    ZPRD_QTY        DECIMAL(17,3) DEFAULT 0 COMMENT '생산수량',
+    ZSCR_QTY        DECIMAL(17,3) DEFAULT 0 COMMENT '폐품수량',
+    ZLUNIT          DECIMAL(17,3) DEFAULT 0 COMMENT '실제 원단위(KG/Ton)',
+    ZDTB_QTY        DECIMAL(17,3) DEFAULT 0 COMMENT '실제 배부수량',
+    ZTPRICE         BIGINT       DEFAULT 0 COMMENT '실제단가',
+    ZTRAWMATR       BIGINT       DEFAULT 0 COMMENT '실제 재료비',
+    ZZLBKUM60       DECIMAL(17,3) DEFAULT 0 COMMENT '출고수량',
+    ZRAMT_060       BIGINT       DEFAULT 0 COMMENT '출고금액',
+    ZTUSEDIF        BIGINT       DEFAULT 0 COMMENT '계획대비 사용량 차이',
+    ZTPRIDIF        BIGINT       DEFAULT 0 COMMENT '계획대비 단가 차이',
+    PRIMARY KEY (SEQ),
+    KEY idx_rpsim_raw_mat_calmonth (CALMONTH),
+    KEY idx_rpsim_raw_mat_type (DATA_TYPE),
+    KEY idx_rpsim_raw_mat_machine (ZMACHINE),
+    KEY idx_rpsim_raw_mat_material (MATERIAL)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='경영시뮬레이션 원부재료 사용현황 (ZOHPP100+101 통합)';
+
+-- 2) 원부자재 수불부 (ZOHCO008)
+CREATE TABLE IF NOT EXISTS rpsim_raw_inventory (
+    SEQ             BIGINT       NOT NULL AUTO_INCREMENT,
+    CALMONTH        VARCHAR(6)   NOT NULL COMMENT '달력연도/월 (YYYYMM)',
+    PLANT           VARCHAR(4)   DEFAULT NULL COMMENT '플랜트',
+    PLANT_NM        VARCHAR(20)  DEFAULT NULL COMMENT '플랜트 명',
+    MATL_GROUP      VARCHAR(9)   DEFAULT NULL COMMENT '자재 그룹',
+    MATL_GROUP_NM   VARCHAR(20)  DEFAULT NULL COMMENT '자재그룹명',
+    ZMATGROUP       VARCHAR(9)   DEFAULT NULL COMMENT '자재그룹(대분류)',
+    ZMATGROUP_NM    VARCHAR(40)  DEFAULT NULL COMMENT '자재그룹(대분류)명',
+    MATL_TYPE       VARCHAR(4)   DEFAULT NULL COMMENT '자재유형',
+    MATL_TYPE_NM    VARCHAR(40)  DEFAULT NULL COMMENT '자재 유형명',
+    MATERIAL        VARCHAR(18)  DEFAULT NULL COMMENT '자재',
+    MATERIAL_NM     VARCHAR(40)  DEFAULT NULL COMMENT '자재명',
+    CURRENCY        VARCHAR(5)   DEFAULT NULL COMMENT '통화',
+    BASE_UOM        VARCHAR(3)   DEFAULT NULL COMMENT '기본 단위',
+    ZLBKUM          DECIMAL(17,3) DEFAULT 0 COMMENT '기초-수량',
+    ZRNETPR         BIGINT       DEFAULT 0 COMMENT '기초-실제단가',
+    ZLBKUM020       DECIMAL(17,3) DEFAULT 0 COMMENT '입고-수량',
+    ZRNETPR20       BIGINT       DEFAULT 0 COMMENT '입고-표준단가',
+    ZLBKUM60        DECIMAL(17,3) DEFAULT 0 COMMENT '출고-수량',
+    ZRNETPR60       BIGINT       DEFAULT 0 COMMENT '출고-실제단가',
+    ZLBKUM101       DECIMAL(17,3) DEFAULT 0 COMMENT '기말-수량',
+    ZRNETP110       BIGINT       DEFAULT 0 COMMENT '기말-실제단가',
+    PRIMARY KEY (SEQ),
+    KEY idx_rpsim_raw_inv_calmonth (CALMONTH),
+    KEY idx_rpsim_raw_inv_plant (PLANT),
+    KEY idx_rpsim_raw_inv_material (MATERIAL)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='경영시뮬레이션 원부자재 수불부 (ZOHCO008)';

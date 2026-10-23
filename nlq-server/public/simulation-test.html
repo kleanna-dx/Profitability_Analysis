@@ -2698,8 +2698,8 @@ const ITF_MASTERS_FALLBACK=[
     {id:'RPSIM_ITF_008',name:'일별 가동시간',sender:'생산관리',receiver:'RPSIM',rfcName:'-',table:'rpsim_daily_operation',apiKey:'daily-operations',mode:'REPLACE',active:true},
     {id:'RPSIM_ITF_009',name:'제지 생산 선속',sender:'생산관리',receiver:'RPSIM',rfcName:'-',table:'rpsim_machine_speed',apiKey:'machine-speeds',mode:'REPLACE',active:true},
     {id:'RPSIM_ITF_010',name:'폐품률 마스터',sender:'품질팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_waste_rate',apiKey:'waste-rates',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_011',name:'원재료비 (ZOHPP100)',sender:'SAP BW',receiver:'RPSIM',rfcName:'ZOHPP100',table:'rpsim_raw_record',apiKey:null,mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_012',name:'부재료비 (ZOHPP101)',sender:'SAP BW',receiver:'RPSIM',rfcName:'ZOHPP101',table:'rpsim_raw_record',apiKey:null,mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_011',name:'원재료비 (ZOHPP100)',sender:'SAP BW',receiver:'RPSIM',rfcName:'Z_BI_WEB_EX_BL_2',table:'rpsim_raw_material',apiKey:null,mode:'REPLACE',active:true},
+    {id:'RPSIM_ITF_012',name:'부재료비 (ZOHPP101)',sender:'SAP BW',receiver:'RPSIM',rfcName:'Z_BI_WEB_EX_BL_2',table:'rpsim_raw_material',apiKey:null,mode:'REPLACE',active:true},
     {id:'RPSIM_ITF_013',name:'전력비 계산 결과',sender:'전력비 모듈',receiver:'RPSIM',rfcName:'-',table:'rpsim_pw_monthly_summary',apiKey:null,mode:'MERGE',active:true},
 ];
 // apiKey 매핑 (DB 마스터에는 targetTable만 있으므로 테이블→apiKey 변환)
