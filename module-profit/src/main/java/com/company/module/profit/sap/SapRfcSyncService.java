@@ -53,7 +53,7 @@ public class SapRfcSyncService {
      * 매핑 / 숫자·소수 컬럼 집합 / INSERT · DELETE · COUNT SQL) 를 이 객체가
      * 통째로 들고 있는다.</p>
      */
-    static final class TableMapping {
+    public static final class TableMapping {
         final String targetTable;
         final List<String> dbColumns;
         final Map<String, String> sapFieldToDbColumn;
@@ -298,6 +298,130 @@ public class SapRfcSyncService {
     );
 
     // ================================================================
+    // 매핑 (4) 경영시뮬레이션 원부재료 — rpsim_raw_material (ZOHPP100/101 통합)
+    //   ※ Z_BI_WEB_EX_BL_2 → T_DATA
+    //   ※ DATA_TYPE 컬럼은 RFC 응답에 없으므로 INSERT 후 별도 UPDATE 또는
+    //     호출 측에서 지정 (기본 '100')
+    // ================================================================
+
+    private static final List<String> DB_COLUMNS_RPSIM_RAW_MATERIAL = List.of(
+            "CALMONTH",
+            "ZPROCESS", "ZPROCESS_NM", "ZMACHINE", "ZMACHINE_NM",
+            "PRODH1", "PRODH1_NM", "PRODH2", "PRODH2_NM",
+            "PRODH3", "PRODH3_NM", "PRODH4", "PRODH4_NM",
+            "MATERIAL", "MATERIAL_NM",
+            "UNIT", "ZUNIT", "ZPRD_UNIT", "ZSCR_UNIT", "CURRENCY",
+            "MATL_GROUP", "MATL_GROUP_NM",
+            "ZJPCODE", "ZJPCODE_NM", "ZMATGROUP", "ZMATGROUP_NM",
+            "ZPUNIT", "ZREQ_QTY", "ZBASEQTY", "ZTUNIT", "ZRDCD_M01",
+            "ZPDTBQTY", "ZTPQTY", "ZPRD_QTY", "ZSCR_QTY",
+            "ZLUNIT", "ZDTB_QTY", "ZTPRICE", "ZTRAWMATR",
+            "ZZLBKUM60", "ZRAMT_060", "ZTUSEDIF", "ZTPRIDIF"
+    );
+
+    /** SAP /BIC/ 접두어 제거 후 매핑 */
+    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_RPSIM_RAW;
+    static {
+        Map<String, String> m = new HashMap<>();
+        m.put("ZPROCESS",    "ZPROCESS");
+        m.put("ZPROCESS_NM", "ZPROCESS_NM");
+        m.put("ZMACHINE",    "ZMACHINE");
+        m.put("ZMACHINE_NM", "ZMACHINE_NM");
+        m.put("ZUNIT",       "ZUNIT");
+        m.put("ZPRD_UNIT",   "ZPRD_UNIT");
+        m.put("ZSCR_UNIT",   "ZSCR_UNIT");
+        m.put("ZJPCODE",     "ZJPCODE");
+        m.put("ZJPCODE_NM",  "ZJPCODE_NM");
+        m.put("ZMATGROUP",   "ZMATGROUP");
+        m.put("ZMATGROUP_NM","ZMATGROUP_NM");
+        m.put("ZPUNIT",      "ZPUNIT");
+        m.put("ZREQ_QTY",    "ZREQ_QTY");
+        m.put("ZBASEQTY",    "ZBASEQTY");
+        m.put("ZTUNIT",      "ZTUNIT");
+        m.put("ZRDCD_M01",   "ZRDCD_M01");
+        m.put("ZPDTBQTY",    "ZPDTBQTY");
+        m.put("ZTPQTY",      "ZTPQTY");
+        m.put("ZPRD_QTY",    "ZPRD_QTY");
+        m.put("ZSCR_QTY",    "ZSCR_QTY");
+        m.put("ZLUNIT",      "ZLUNIT");
+        m.put("ZDTB_QTY",    "ZDTB_QTY");
+        m.put("ZTPRICE",     "ZTPRICE");
+        m.put("ZTRAWMATR",   "ZTRAWMATR");
+        m.put("ZZLBKUM60",   "ZZLBKUM60");
+        m.put("ZRAMT_060",   "ZRAMT_060");
+        m.put("ZTUSEDIF",    "ZTUSEDIF");
+        m.put("ZTPRIDIF",    "ZTPRIDIF");
+        SAP_FIELD_TO_DB_COLUMN_RPSIM_RAW = Collections.unmodifiableMap(m);
+    }
+
+    private static final Set<String> DECIMAL_COLUMNS_RPSIM_RAW = Set.of(
+            "ZPUNIT", "ZREQ_QTY", "ZBASEQTY", "ZTUNIT", "ZPDTBQTY",
+            "ZTPQTY", "ZPRD_QTY", "ZSCR_QTY", "ZLUNIT", "ZDTB_QTY", "ZZLBKUM60"
+    );
+    private static final Set<String> NUMERIC_COLUMNS_RPSIM_RAW;
+    static {
+        Set<String> nums = new HashSet<>(DECIMAL_COLUMNS_RPSIM_RAW);
+        nums.addAll(Set.of("ZRDCD_M01", "ZTPRICE", "ZTRAWMATR", "ZRAMT_060", "ZTUSEDIF", "ZTPRIDIF"));
+        NUMERIC_COLUMNS_RPSIM_RAW = Collections.unmodifiableSet(nums);
+    }
+
+    static final TableMapping RPSIM_RAW_MATERIAL_MAPPING = new TableMapping(
+            "rpsim_raw_material",
+            DB_COLUMNS_RPSIM_RAW_MATERIAL,
+            SAP_FIELD_TO_DB_COLUMN_RPSIM_RAW,
+            NUMERIC_COLUMNS_RPSIM_RAW,
+            DECIMAL_COLUMNS_RPSIM_RAW
+    );
+
+    // ================================================================
+    // 매핑 (5) 경영시뮬레이션 원부자재 수불부 — rpsim_raw_inventory (ZOHCO008)
+    //   ※ Z_BI_WEB_EX_BL_3 → T_DATA
+    // ================================================================
+
+    private static final List<String> DB_COLUMNS_RPSIM_RAW_INVENTORY = List.of(
+            "CALMONTH", "PLANT", "PLANT_NM",
+            "MATL_GROUP", "MATL_GROUP_NM", "ZMATGROUP", "ZMATGROUP_NM",
+            "MATL_TYPE", "MATL_TYPE_NM", "MATERIAL", "MATERIAL_NM",
+            "CURRENCY", "BASE_UOM",
+            "ZLBKUM", "ZRNETPR", "ZLBKUM020", "ZRNETPR20",
+            "ZLBKUM60", "ZRNETPR60", "ZLBKUM101", "ZRNETP110"
+    );
+
+    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_RPSIM_INV;
+    static {
+        Map<String, String> m = new HashMap<>();
+        m.put("ZMATGROUP",    "ZMATGROUP");
+        m.put("ZMATGROUP_NM", "ZMATGROUP_NM");
+        m.put("ZLBKUM",       "ZLBKUM");
+        m.put("ZRNETPR",      "ZRNETPR");
+        m.put("ZLBKUM020",    "ZLBKUM020");
+        m.put("ZRNETPR20",    "ZRNETPR20");
+        m.put("ZLBKUM60",     "ZLBKUM60");
+        m.put("ZRNETPR60",    "ZRNETPR60");
+        m.put("ZLBKUM101",    "ZLBKUM101");
+        m.put("ZRNETP110",    "ZRNETP110");
+        SAP_FIELD_TO_DB_COLUMN_RPSIM_INV = Collections.unmodifiableMap(m);
+    }
+
+    private static final Set<String> DECIMAL_COLUMNS_RPSIM_INV = Set.of(
+            "ZLBKUM", "ZLBKUM020", "ZLBKUM60", "ZLBKUM101"
+    );
+    private static final Set<String> NUMERIC_COLUMNS_RPSIM_INV;
+    static {
+        Set<String> nums = new HashSet<>(DECIMAL_COLUMNS_RPSIM_INV);
+        nums.addAll(Set.of("ZRNETPR", "ZRNETPR20", "ZRNETPR60", "ZRNETP110"));
+        NUMERIC_COLUMNS_RPSIM_INV = Collections.unmodifiableSet(nums);
+    }
+
+    static final TableMapping RPSIM_RAW_INVENTORY_MAPPING = new TableMapping(
+            "rpsim_raw_inventory",
+            DB_COLUMNS_RPSIM_RAW_INVENTORY,
+            SAP_FIELD_TO_DB_COLUMN_RPSIM_INV,
+            NUMERIC_COLUMNS_RPSIM_INV,
+            DECIMAL_COLUMNS_RPSIM_INV
+    );
+
+    // ================================================================
     // 매핑 선택 / SAP 필드명 정규화
     // ================================================================
 
@@ -306,7 +430,7 @@ public class SapRfcSyncService {
      * <p>null/blank 이면 수익성 기본 매핑(=기존 동작) 을 반환하여 후위호환 보장.
      * 알 수 없는 값이면 즉시 예외로 실패시켜 오적재를 원천 차단.</p>
      */
-    private static TableMapping resolveMapping(String targetTable) {
+    public static TableMapping resolveMapping(String targetTable) {
         if (targetTable == null || targetTable.isBlank()) {
             return PROFITABILITY_MAPPING;
         }
@@ -314,10 +438,12 @@ public class SapRfcSyncService {
             case "bw_profitability_data": return PROFITABILITY_MAPPING;
             case "sys_aimd_cot015":       return MFG_COST_COT015_MAPPING;
             case "sys_aimd_cot043":       return MFG_COST_COT043_MAPPING;
+            case "rpsim_raw_material":    return RPSIM_RAW_MATERIAL_MAPPING;
+            case "rpsim_raw_inventory":   return RPSIM_RAW_INVENTORY_MAPPING;
             default:
                 throw new IllegalArgumentException(
                         "지원하지 않는 target_table 입니다: '" + targetTable + "'"
-                        + " (허용: bw_profitability_data, sys_aimd_cot015, sys_aimd_cot043)");
+                        + " (허용: bw_profitability_data, sys_aimd_cot015, sys_aimd_cot043, rpsim_raw_material, rpsim_raw_inventory)");
         }
     }
 

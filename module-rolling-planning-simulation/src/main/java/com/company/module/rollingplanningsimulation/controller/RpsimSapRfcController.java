@@ -1,20 +1,28 @@
 package com.company.module.rollingplanningsimulation.controller;
 
 import com.company.core.common.response.ApiResponse;
-import com.company.module.rollingplanningsimulation.service.RpsimSapRfcService;
+import com.company.module.profit.sap.SapRfcSyncService;
+import com.company.module.rollingplanningsimulation.entity.RpsimItfHistory;
+import com.company.module.rollingplanningsimulation.repository.RpsimItfHistoryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.*;
 
 /**
  * 경영시뮬레이션 SAP RFC 동기화 API
  *
+ * <p>기존 수익성분석의 SapRfcSyncService(검증된 JCo 호출 로직)를 재사용하여
+ * rfcName/targetTable 라우팅으로 RPSIM 테이블에 적재합니다.</p>
+ *
  * <ul>
- *   <li>POST /rolling-planning-simulation-api/sap-rfc/raw-material   — 원부재료 (Z_BI_WEB_EX_BL_2)</li>
- *   <li>POST /rolling-planning-simulation-api/sap-rfc/raw-inventory  — 원부자재 수불부 (Z_BI_WEB_EX_BL_3)</li>
+ *   <li>POST /rolling-planning-simulation-api/sap-rfc/raw-material   — 원부재료 (Z_BI_WEB_EX_BL_2 → rpsim_raw_material)</li>
+ *   <li>POST /rolling-planning-simulation-api/sap-rfc/raw-inventory  — 원부자재 수불부 (Z_BI_WEB_EX_BL_3 → rpsim_raw_inventory)</li>
  *   <li>POST /rolling-planning-simulation-api/sap-rfc/all            — 전체 실행</li>
  *   <li>GET  /rolling-planning-simulation-api/sap-rfc/check/{cmonth} — 데이터 존재 확인</li>
  * </ul>
@@ -25,44 +33,85 @@ import java.util.*;
 @Slf4j
 public class RpsimSapRfcController {
 
-    private final RpsimSapRfcService rfcService;
+    /** 기존 수익성분석의 검증된 SAP RFC 서비스 재사용 */
+    private final SapRfcSyncService sapRfcSyncService;
+    private final RpsimItfHistoryRepository histRepo;
+    private final JdbcTemplate jdbcTemplate;
 
     /**
-     * 원부재료 사용현황 수신 (Z_BI_WEB_EX_BL_2)
-     * body: { cmonth: "202610", mode: "replace", executedBy: "deyang" }
+     * 원부재료 사용현황 수신 (Z_BI_WEB_EX_BL_2 → rpsim_raw_material)
      */
     @PostMapping("/raw-material")
     public ResponseEntity<ApiResponse<Map<String, Object>>> syncRawMaterial(@RequestBody Map<String, Object> body) {
         String cmonth = (String) body.getOrDefault("cmonth", "");
         String mode = (String) body.getOrDefault("mode", "replace");
         String executedBy = (String) body.getOrDefault("executedBy", "");
+
+        RpsimItfHistory hist = createHistory("RPSIM_RFC_001", "원부재료 사용현황 (Z_BI_WEB_EX_BL_2)", executedBy);
+
         try {
-            Map<String, Object> result = rfcService.executeRawMaterial(cmonth, mode, executedBy);
+            // 기존 수익성분석 서비스의 execute 호출 — rfcName/targetTable로 라우팅
+            // 1) batch_jobs 레코드 생성 (수익성분석과 동일한 이력 관리)
+            var batch = sapRfcSyncService.createBatchJob(cmonth, mode, executedBy);
+
+            // 2) 비동기가 아닌 동기 실행 (결과를 즉시 반환하기 위해)
+            sapRfcSyncService.execute(batch.getId(), cmonth, mode, "Z_BI_WEB_EX_BL_2",
+                    SapRfcSyncService.resolveMapping("rpsim_raw_material"));
+
+            // 3) 결과 확인
+            long insertedCount = sapRfcSyncService.countExistingData(cmonth, "rpsim_raw_material");
+
+            completeHistory(hist, "success", (int) insertedCount, null);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("rfcName", "Z_BI_WEB_EX_BL_2");
+            result.put("cmonth", cmonth);
+            result.put("totalInserted", insertedCount);
+            result.put("batchId", batch.getId());
+            result.put("historyId", hist.getHistoryId());
             return ResponseEntity.ok(ApiResponse.success(result));
+
         } catch (Exception e) {
-            log.error("[RPSIM RFC] raw-material 에러", e);
             String detail = e.getMessage();
             if (e.getCause() != null) detail += " | Cause: " + e.getCause().getMessage();
+            completeHistory(hist, "failed", 0, detail);
+            log.error("[RPSIM RFC] raw-material 에러", e);
             return ResponseEntity.ok(ApiResponse.success(Map.of("error", detail)));
         }
     }
 
     /**
-     * 원부자재 수불부 수신 (Z_BI_WEB_EX_BL_3)
-     * body: { cmonth: "202610", mode: "replace", executedBy: "deyang" }
+     * 원부자재 수불부 수신 (Z_BI_WEB_EX_BL_3 → rpsim_raw_inventory)
      */
     @PostMapping("/raw-inventory")
     public ResponseEntity<ApiResponse<Map<String, Object>>> syncRawInventory(@RequestBody Map<String, Object> body) {
         String cmonth = (String) body.getOrDefault("cmonth", "");
         String mode = (String) body.getOrDefault("mode", "replace");
         String executedBy = (String) body.getOrDefault("executedBy", "");
+
+        RpsimItfHistory hist = createHistory("RPSIM_RFC_002", "원부자재 수불부 (Z_BI_WEB_EX_BL_3)", executedBy);
+
         try {
-            Map<String, Object> result = rfcService.executeRawInventory(cmonth, mode, executedBy);
+            var batch = sapRfcSyncService.createBatchJob(cmonth, mode, executedBy);
+            sapRfcSyncService.execute(batch.getId(), cmonth, mode, "Z_BI_WEB_EX_BL_3",
+                    SapRfcSyncService.resolveMapping("rpsim_raw_inventory"));
+
+            long insertedCount = sapRfcSyncService.countExistingData(cmonth, "rpsim_raw_inventory");
+            completeHistory(hist, "success", (int) insertedCount, null);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("rfcName", "Z_BI_WEB_EX_BL_3");
+            result.put("cmonth", cmonth);
+            result.put("totalInserted", insertedCount);
+            result.put("batchId", batch.getId());
+            result.put("historyId", hist.getHistoryId());
             return ResponseEntity.ok(ApiResponse.success(result));
+
         } catch (Exception e) {
-            log.error("[RPSIM RFC] raw-inventory 에러", e);
             String detail = e.getMessage();
             if (e.getCause() != null) detail += " | Cause: " + e.getCause().getMessage();
+            completeHistory(hist, "failed", 0, detail);
+            log.error("[RPSIM RFC] raw-inventory 에러", e);
             return ResponseEntity.ok(ApiResponse.success(Map.of("error", detail)));
         }
     }
@@ -72,19 +121,14 @@ public class RpsimSapRfcController {
      */
     @PostMapping("/all")
     public ResponseEntity<ApiResponse<Map<String, Object>>> syncAll(@RequestBody Map<String, Object> body) {
-        String cmonth = (String) body.getOrDefault("cmonth", "");
-        String mode = (String) body.getOrDefault("mode", "replace");
-        String executedBy = (String) body.getOrDefault("executedBy", "");
         Map<String, Object> result = new LinkedHashMap<>();
         try {
-            Map<String, Object> mat = rfcService.executeRawMaterial(cmonth, mode, executedBy);
-            result.put("rawMaterial", mat);
+            result.put("rawMaterial", syncRawMaterial(body).getBody().getData());
         } catch (Exception e) {
             result.put("rawMaterialError", e.getMessage());
         }
         try {
-            Map<String, Object> inv = rfcService.executeRawInventory(cmonth, mode, executedBy);
-            result.put("rawInventory", inv);
+            result.put("rawInventory", syncRawInventory(body).getBody().getData());
         } catch (Exception e) {
             result.put("rawInventoryError", e.getMessage());
         }
@@ -97,17 +141,36 @@ public class RpsimSapRfcController {
     @GetMapping("/check/{cmonth}")
     public ResponseEntity<ApiResponse<Map<String, Object>>> check(@PathVariable String cmonth) {
         try {
-            Long matCount = rfcService.getJdbcTemplate().queryForObject(
-                    "SELECT COUNT(*) FROM rpsim_raw_material WHERE CALMONTH=?", Long.class, cmonth);
-            Long invCount = rfcService.getJdbcTemplate().queryForObject(
-                    "SELECT COUNT(*) FROM rpsim_raw_inventory WHERE CALMONTH=?", Long.class, cmonth);
+            long matCount = sapRfcSyncService.countExistingData(cmonth, "rpsim_raw_material");
+            long invCount = sapRfcSyncService.countExistingData(cmonth, "rpsim_raw_inventory");
             return ResponseEntity.ok(ApiResponse.success(Map.of(
                     "cmonth", cmonth,
-                    "rawMaterialCount", matCount != null ? matCount : 0,
-                    "rawInventoryCount", invCount != null ? invCount : 0
+                    "rawMaterialCount", matCount,
+                    "rawInventoryCount", invCount
             )));
         } catch (Exception e) {
             return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage())));
         }
+    }
+
+    // ================================================================
+    // 이력 헬퍼
+    // ================================================================
+
+    private RpsimItfHistory createHistory(String interfaceId, String interfaceName, String executedBy) {
+        RpsimItfHistory h = RpsimItfHistory.builder()
+                .interfaceId(interfaceId).interfaceName(interfaceName)
+                .jobType("SAP_RFC_SYNC").execMode("replace").status("running")
+                .startedAt(LocalDateTime.now()).executedBy(executedBy)
+                .build();
+        return histRepo.save(h);
+    }
+
+    private void completeHistory(RpsimItfHistory h, String status, int processCount, String errorMessage) {
+        LocalDateTime now = LocalDateTime.now();
+        int durationMs = h.getStartedAt() != null
+                ? (int) Duration.between(h.getStartedAt(), now).toMillis() : 0;
+        h.complete(status, now, durationMs, processCount, errorMessage);
+        histRepo.save(h);
     }
 }
