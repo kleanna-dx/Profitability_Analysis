@@ -68,6 +68,21 @@ public class RpsimItfScheduleController {
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
 
+    /* 활성/비활성 토글 */
+    @PostMapping("/{id}/toggle")
+    public ResponseEntity<ApiResponse<Map<String,Object>>> toggle(@PathVariable Long id) {
+        RpsimItfSchedule e = repo.findById(id).orElseThrow(() -> new RuntimeException("Not found: " + id));
+        boolean newState = !Boolean.TRUE.equals(e.getIsActive());
+        e.update(e.getScheduleType(), e.getExecTime(), e.getExecDatetime(),
+                e.getExecDayOfMonth(), e.getTargetMonth(), e.getExecMode(),
+                newState, e.getRemark(), e.getUpdatedBy());
+        repo.save(e);
+        Map<String,Object> r = new java.util.LinkedHashMap<>();
+        r.put("scheduleId", id);
+        r.put("is_active", newState);
+        return ResponseEntity.ok(ApiResponse.success(r));
+    }
+
     /* 삭제 */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
