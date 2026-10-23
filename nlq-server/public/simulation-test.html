@@ -573,6 +573,14 @@
                 <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-tint text-red-400 mr-1"></i>스팀 필요량 산출</h3>
             </div>
             <div style="overflow-x:auto;"><table class="st"><thead><tr><th>호기</th><th class="r">생산량(톤)</th><th class="r">원단위(톤/톤)</th><th class="r" style="color:#94a3b8;font-size:10px;">전년동월</th><th class="r" style="font-size:10px;">증감</th><th class="r">스팀필요량(톤)</th></tr></thead><tbody id="engSteamTb"></tbody></table></div>
+            <!-- 라인 비중 스케일 안내 -->
+            <div id="engLineRatioInfo" style="padding:8px 16px;background:#eff6ff;border-top:1px solid #dbeafe;display:none;">
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                    <i class="fas fa-chart-pie" style="color:#3b82f6;font-size:11px;"></i>
+                    <span style="font-size:11px;font-weight:700;color:#1e40af;">라인 스팀비중 기반 일별 수요 스케일</span>
+                    <span id="engLineRatioDetail" style="font-size:10px;color:#3b82f6;"></span>
+                </div>
+            </div>
         </div>
         <div class="sc" style="overflow:hidden;margin-bottom:14px;">
             <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
@@ -860,7 +868,8 @@ const REF_READY_ITEMS=[
 
     {k:'machine-speeds',l:'제지 생산 선속',desc:'호기별/지종별 초지기 선속',yearFilter:true},
     {k:'waste-rates',l:'폐품률 마스터',desc:'호기×지종별 연간 폐품률(%)',yearFilter:true},
-    {k:'daily-operations',l:'일별 가동시간',desc:'호기별 일별 가동시간/운휴 등록',yearFilter:true,monthFilter:true}
+    {k:'daily-operations',l:'일별 가동시간',desc:'호기별 일별 가동시간/운휴 등록',yearFilter:true,monthFilter:true},
+    {k:'line-steam-ratios',l:'라인 스팀비중',desc:'라인별 스팀수요 비중 (PM2:20%,PM3:70% 등)',yearFilter:true}
 ];
 async function renderReady(){
     const ym=document.getElementById('selYm')?.value||'202605';
@@ -1322,6 +1331,7 @@ function getCapaProdByMc(){
 
 // ── 에너지비 시뮬레이션 (STEP4 탭) ──
 let STEAM_UNIT_RATES=[], STEAM_UNIT_RATES_PREV=[], STEAM_PRICE_INTERVALS=[], BURNER_LNG_RATES=[], BOILER_COST_RATES=[], BOILER_MAINTENANCES=[], BOILER_MASTERS_LIST=[], COGEN_DEDUCTIONS=[], DAILY_OPS=[];
+let LINE_STEAM_RATIOS=[]; // 라인별 스팀수요 비중 마스터 (PM2:20%, PM3:70% 등)
 
 // ── 전력비 기준정보 ──
 let PW_LINES=[], PW_TARIFFS=[], PW_PEAK_DEMANDS=[], PW_FIXED_ITEMS=[];
@@ -1404,6 +1414,9 @@ async function loadEnergyRefData(){
     // boiler-plans 제거됨 — 일별 가동시간(DAILY_OPS)으로 대체
     try{const mo=parseInt(getYm().substring(4,6));const r=await fetch(API+'/cogen-deductions?year='+yr+'&month='+mo+'&division='+div);const j=await r.json();COGEN_DEDUCTIONS=j.data||j.content||[];if(!Array.isArray(COGEN_DEDUCTIONS))COGEN_DEDUCTIONS=COGEN_DEDUCTIONS.content||[];}catch(_){COGEN_DEDUCTIONS=[];}
     try{const mo=parseInt(getYm().substring(4,6));const r=await fetch(API+'/daily-operations?year='+yr+'&month='+mo+'&division='+div);const j=await r.json();DAILY_OPS=j.data||j.content||[];if(!Array.isArray(DAILY_OPS))DAILY_OPS=DAILY_OPS.content||[];}catch(_){DAILY_OPS=[];}
+    // 라인별 스팀수요 비중 마스터
+    try{const r=await fetch(API+'/line-steam-ratios?year='+yr+'&division='+div);const j=await r.json();LINE_STEAM_RATIOS=j.data||j.content||[];if(!Array.isArray(LINE_STEAM_RATIOS))LINE_STEAM_RATIOS=[];}catch(_){LINE_STEAM_RATIOS=[];}
+    if(!LINE_STEAM_RATIOS.length) LINE_STEAM_RATIOS=[{machineCode:'PM2',steamRatio:20,year:parseInt(yr),division:div},{machineCode:'PM3',steamRatio:70,year:parseInt(yr),division:div}];
     // ── 샘플 데이터 폴백 (API 연결 불가 시 시뮬레이션 데모용) ──
     if(!STEAM_UNIT_RATES.length){
         const mo=parseInt(getYm().substring(4,6));
@@ -1538,19 +1551,22 @@ function calcEnergyPerTon(totalProdTon){
         const unitRate=rateInp?parseFloat(rateInp.value)||0:parseFloat(r.steamPerTon)||0;
         totalSteam+=(prodByMc[r.machineCode]||0)*unitRate;
     });
-    // ★ 일별 균등 배분 → 보일러별 합산 (calcEnergyCost와 동일 로직)
+    // ★ 일별 가중 배분 → 보일러별 합산 (calcEnergyCost와 동일 로직 + 라인 비중 스케일)
     const ym2=getYm();const yr2=parseInt(ym2.substring(0,4));const mo2=parseInt(ym2.substring(4,6));
     const dim2=new Date(yr2,mo2,0).getDate();
     const sorted=BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));
-    const dm2={};DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=dim2){const isSDf=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const rawH=parseFloat(op.operationHours)||0;const isSD=isSDf||rawH<=0;const hrs=isSD?0:rawH;if(!dm2[d])dm2[d]={sd:isSD,h:hrs};else{dm2[d].h=Math.max(dm2[d].h,hrs);if(!isSD)dm2[d].sd=false;}}});
+    const dm2={};const dlOps2={};
+    DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=dim2){const isSDf=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const rawH=parseFloat(op.operationHours)||0;const isSD=isSDf||rawH<=0;const hrs=isSD?0:rawH;const mc=op.machineCode||'';if(!dm2[d])dm2[d]={sd:isSD,h:hrs};else{dm2[d].h=Math.max(dm2[d].h,hrs);if(!isSD)dm2[d].sd=false;}if(mc){if(!dlOps2[d])dlOps2[d]={};dlOps2[d][mc]={isSD,hrs};}}});
     const mm2={};BOILER_MAINTENANCES.forEach(m=>{const sd=m.startDate?new Date(m.startDate).getDate():null;const ed=m.endDate?new Date(m.endDate).getDate():null;if(sd&&ed)mm2[m.boilerCode]={s:sd,e:ed,c:parseFloat(m.capacityReduction)||100};else if(parseFloat(m.maintHours)>0){const dy=Math.ceil(parseFloat(m.maintHours)/24);mm2[m.boilerCode]={s:1,e:dy,c:parseFloat(m.capacityReduction)||100};}});
-    // 가동일수 → 균등 배분 + 부족분 재배분
-    let opD2=0;for(let d=1;d<=dim2;d++){const dop=dm2[d];if(!dop||!dop.sd)opD2++;}
-    if(opD2<=0)opD2=dim2;
-    const dsBase2=totalSteam/opD2;
-    // 일별 cap
-    const dc2=[];for(let d=1;d<=dim2;d++){const dop=dm2[d];const isSD=dop?dop.sd:false;const opH=dop?dop.h:(isSD?0:24);if(isSD||opH<=0){dc2.push(0);continue;}let mx=0;sorted.forEach(b=>{const mt=mm2[b.boilerCode];const isM=mt&&d>=mt.s&&d<=mt.e;const cr=isM?(100-mt.c)/100:1;mx+=(parseFloat(b.steamPerHour)||0)*opH*cr;});dc2.push(mx);}
-    const dd2=dc2.map(c=>c>0?dsBase2:0);
+    // 라인 비중 스케일 (calcEnergyPerTon 경량)
+    const tLR2=LINE_STEAM_RATIOS.reduce((s,r)=>s+(parseFloat(r.steamRatio)||0),0)||100;
+    function gDLS2(day){const lo=dlOps2[day];if(!lo||!Object.keys(lo).length)return 1;let ar=0;LINE_STEAM_RATIOS.forEach(r=>{const l=lo[r.machineCode];if(!l||!l.isSD)ar+=parseFloat(r.steamRatio)||0;});return tLR2>0?ar/tLR2:1;}
+    // 가동일수 + 가중스케일 합
+    let opD2=0,tWS2=0;for(let d=1;d<=dim2;d++){const dop=dm2[d];if(!dop||!dop.sd){opD2++;tWS2+=gDLS2(d);}}
+    if(opD2<=0){opD2=dim2;tWS2=dim2;}
+    // 일별 cap + 라인 비중 반영 수요
+    const dc2=[];const dd2=new Array(dim2).fill(0);
+    for(let d=1;d<=dim2;d++){const dop=dm2[d];const isSD=dop?dop.sd:false;const opH=dop?dop.h:(isSD?0:24);if(isSD||opH<=0){dc2.push(0);continue;}let mx=0;sorted.forEach(b=>{const mt=mm2[b.boilerCode];const isM=mt&&d>=mt.s&&d<=mt.e;const cr=isM?(100-mt.c)/100:1;mx+=(parseFloat(b.steamPerHour)||0)*opH*cr;});dc2.push(mx);dd2[d-1]=tWS2>0?totalSteam*(gDLS2(d)/tWS2):totalSteam/opD2;}
     for(let it=0;it<10;it++){let ts=0,tm=0;const sh2=[],mg2=[];for(let i=0;i<dim2;i++){if(dc2[i]<=0){sh2.push(0);mg2.push(0);continue;}const df=dd2[i]-dc2[i];if(df>0){sh2.push(df);mg2.push(0);ts+=df;}else{sh2.push(0);mg2.push(-df);tm+=(-df);}}if(ts<1)break;if(tm<1)break;const rd=Math.min(ts,tm);for(let i=0;i<dim2;i++){if(sh2[i]>0)dd2[i]-=sh2[i];if(mg2[i]>0&&tm>0)dd2[i]+=rd*(mg2[i]/tm);}}
     const bAlloc={};sorted.forEach(b=>{bAlloc[b.boilerCode]=0;});
     for(let d=0;d<dim2;d++){if(dc2[d]<=0)continue;let rem=dd2[d];sorted.forEach(b=>{const mt=mm2[b.boilerCode];const isM=mt&&(d+1)>=mt.s&&(d+1)<=mt.e;const cr=isM?(100-mt.c)/100:1;const dop=dm2[d+1];const opH=dop?dop.h:24;const cap=(parseFloat(b.steamPerHour)||0)*opH*cr;const a=Math.min(rem,cap);bAlloc[b.boilerCode]+=a;rem=Math.max(0,rem-a);});}
@@ -1636,6 +1652,8 @@ function calcEnergyCost(){
 
     // 일별 가동시간 맵 구축 (같은 일에 여러 호기 → 최대 가동시간)
     const dailyOpMap_={};
+    // ★ 호기별 일별 가동/운휴 상태 (라인 비중 스케일용)
+    const dailyLineOps_={};
     DAILY_OPS.forEach(op=>{
         const d=parseInt(op.day)||0;
         if(d>=1&&d<=daysInMonth_){
@@ -1643,8 +1661,11 @@ function calcEnergyCost(){
             const rawHrs=parseFloat(op.operationHours)||0;
             const isSD=isSDFlag||rawHrs<=0;
             const hrs=isSD?0:rawHrs;
+            const mc=op.machineCode||'';
             if(!dailyOpMap_[d]){dailyOpMap_[d]={isShutdown:isSD,hours:hrs};}
             else{dailyOpMap_[d].hours=Math.max(dailyOpMap_[d].hours,hrs);if(!isSD)dailyOpMap_[d].isShutdown=false;}
+            // 호기별 가동 상태 추적
+            if(mc){if(!dailyLineOps_[d])dailyLineOps_[d]={};dailyLineOps_[d][mc]={isSD,hrs};}
         }
     });
     // 폴백 OD
@@ -1656,6 +1677,19 @@ function calcEnergyCost(){
         }
     }
 
+    // ★ 라인 비중 스케일 — LINE_STEAM_RATIOS 기반 일별 수요 축소
+    const totalLineRatio_=LINE_STEAM_RATIOS.reduce((s,r)=>s+(parseFloat(r.steamRatio)||0),0)||100;
+    function getDayLineScale_(day){
+        const lineOps=dailyLineOps_[day];
+        if(!lineOps||!Object.keys(lineOps).length) return 1; // 호기별 데이터 없으면 전체 가동 가정
+        let activeRatio=0;
+        LINE_STEAM_RATIOS.forEach(r=>{
+            const lo=lineOps[r.machineCode];
+            if(!lo||!lo.isSD) activeRatio+=parseFloat(r.steamRatio)||0; // 미등록 or 가동 → 비중 포함
+        });
+        return totalLineRatio_>0?activeRatio/totalLineRatio_:1;
+    }
+
     // 보일러별 정비일 맵
     const maintDayMap_={};
     BOILER_MAINTENANCES.forEach(m=>{
@@ -1665,33 +1699,35 @@ function calcEnergyCost(){
         else if(parseFloat(m.maintHours)>0){const days=Math.ceil(parseFloat(m.maintHours)/24);maintDayMap_[m.boilerCode]={start:1,end:days,cap:parseFloat(m.capacityReduction)||100};}
     });
 
-    // ★ 일별 균등 배분 → 보일러별 합산 (renderDailyAlloc과 동일 로직)
-    // 가동일수 산출
+    // ★ 일별 가중 배분 → 보일러별 합산 (renderDailyAlloc과 동일 로직)
+    // 가동일수 산출 + 라인 비중 가중 수요 합계
     let opDays_=0;
+    let totalWeightedScale_=0; // 가동일의 라인 스케일 합계
     for(let d=1;d<=daysInMonth_;d++){
         const dop=dailyOpMap_[d];
         const isSD=dop?dop.isShutdown:false;
-        if(!isSD) opDays_++;
+        if(!isSD){opDays_++;totalWeightedScale_+=getDayLineScale_(d);}
     }
-    if(opDays_<=0) opDays_=daysInMonth_;
-    const dailySteamBase_=totalSteamReq/opDays_;
+    if(opDays_<=0){opDays_=daysInMonth_;totalWeightedScale_=daysInMonth_;}
 
     const boilerMonthAlloc={};boilersSorted.forEach(b=>{boilerMonthAlloc[b.boilerCode]=0;});
     let steamRemainingTotal=0;
     let totalMaxSup={};boilersSorted.forEach(b=>{totalMaxSup[b.boilerCode]=0;});
 
-    // 일별 cap 산출
+    // 일별 cap 산출 + 라인 비중 반영 수요 계산
     const dCaps_=[];
+    const dd_=new Array(daysInMonth_).fill(0);
     for(let d=1;d<=daysInMonth_;d++){
         const dop=dailyOpMap_[d];const isSD=dop?dop.isShutdown:false;const opH=dop?dop.hours:(isSD?0:24);
         if(isSD||opH<=0){dCaps_.push({opH:0,caps:{},maxCap:0});continue;}
         let mx=0;const caps={};
         boilersSorted.forEach(b=>{const mt=maintDayMap_[b.boilerCode];const isM=mt&&d>=mt.start&&d<=mt.end;const cr=isM?(100-mt.cap)/100:1;const c=(parseFloat(b.steamPerHour)||0)*opH*cr;caps[b.boilerCode]=c;mx+=c;});
         dCaps_.push({opH,caps,maxCap:mx});
+        // ★ 일별 수요 = 총필요량 × (해당일 라인스케일 / 전체 가동일 라인스케일 합)
+        const dayScale=getDayLineScale_(d);
+        dd_[d-1]=totalWeightedScale_>0?totalSteamReq*(dayScale/totalWeightedScale_):totalSteamReq/opDays_;
     }
-    // 균등 배분 + 부족분 재배분
-    const dd_=new Array(daysInMonth_).fill(0);
-    for(let d=0;d<daysInMonth_;d++){if(dCaps_[d].opH>0)dd_[d]=dailySteamBase_;}
+    // 부족분 재배분
     for(let iter=0;iter<10;iter++){
         let tShort=0,tMarg=0;const sh_=[],mg_=[];
         for(let d=0;d<daysInMonth_;d++){if(dCaps_[d].opH<=0){sh_.push(0);mg_.push(0);continue;}const diff=dd_[d]-dCaps_[d].maxCap;if(diff>0){sh_.push(diff);mg_.push(0);tShort+=diff;}else{sh_.push(0);mg_.push(-diff);tMarg+=(-diff);}}
@@ -1866,6 +1902,27 @@ function calcEnergyCost(){
         '<td class="r mn" style="font-weight:700;">'+fmtI(Math.round(r.steamNeed))+'</td></tr>';
     }).join('')+
     '<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td class="r">'+fmtI(Math.round(totalProd))+'</td><td></td><td></td><td></td><td class="r" style="color:#ef4444;">'+fmtI(Math.round(totalSteamReq))+'</td></tr>';
+
+    // 8-2) 라인 비중 스케일 안내 패널
+    const lrInfoEl=document.getElementById('engLineRatioInfo');
+    const lrDetailEl=document.getElementById('engLineRatioDetail');
+    if(lrInfoEl&&lrDetailEl&&LINE_STEAM_RATIOS.length){
+        lrInfoEl.style.display='';
+        const parts=LINE_STEAM_RATIOS.map(r=>'<b>'+r.machineCode+'</b> '+(parseFloat(r.steamRatio)||0).toFixed(1)+'%');
+        // 라인별 비가동일 수 카운트
+        let scaleNote='';
+        const scaleDays={};
+        for(let d=1;d<=daysInMonth_;d++){
+            const sc=getDayLineScale_(d);
+            const k=Math.round(sc*100);
+            if(!scaleDays[k])scaleDays[k]=0;scaleDays[k]++;
+        }
+        const scaleKeys=Object.keys(scaleDays).map(Number).sort((a,b)=>b-a);
+        if(scaleKeys.length>1||scaleKeys[0]!==100){
+            scaleNote=' · '+scaleKeys.map(k=>k+'%: '+scaleDays[k]+'일').join(', ');
+        }
+        lrDetailEl.innerHTML='| '+parts.join(' · ')+' | 합계 '+totalLineRatio_.toFixed(1)+'%'+scaleNote;
+    }else if(lrInfoEl){lrInfoEl.style.display='none';}
 
     // 9) 스팀 구간 테이블
     // 보일러별 소계 구분을 위해 이전 보일러 추적
@@ -2204,19 +2261,40 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
     });
     if(!Object.keys(dailyOpMap).length){let sd=0;OD.forEach(o=>{sd+=parseFloat(o.psM||0)/1440;});sd=Math.round(sd);for(let i=0;i<sd&&i<daysInMonth;i++)dailyOpMap[daysInMonth-i]={isShutdown:true,hours:0,reason:'계획운휴'};}
 
-    // ★ STEP 1: 가동일수 산출 → 일평균 스팀 필요량 (균등 배분)
-    //   운휴일 = 스팀 0, 가동일 = 총필요량 ÷ 가동일수 (운휴일 못 쓴 양을 가동일에 분산)
+    // ★ 라인 비중 스케일 — LINE_STEAM_RATIOS 기반 일별 수요 축소
+    // 호기별 일별 가동/운휴 → 가동 라인 비중 합 / 전체 비중 합 = 스케일
+    const dailyLineOpsDA={};
+    dailyLineStatus&&Object.keys(dailyLineStatus).forEach(d=>{
+        const arr=dailyLineStatus[d];if(!arr)return;
+        const m={};arr.forEach(ls=>{if(ls.mc)m[ls.mc]={isSD:ls.isSD};});
+        dailyLineOpsDA[d]=m;
+    });
+    const totalLineRatioDA=LINE_STEAM_RATIOS.reduce((s,r)=>s+(parseFloat(r.steamRatio)||0),0)||100;
+    function getDayLineScaleDA(day){
+        const lo=dailyLineOpsDA[day];
+        if(!lo||!Object.keys(lo).length) return 1;
+        let activeRatio=0;
+        LINE_STEAM_RATIOS.forEach(r=>{
+            const l=lo[r.machineCode];
+            if(!l||!l.isSD) activeRatio+=parseFloat(r.steamRatio)||0;
+        });
+        return totalLineRatioDA>0?activeRatio/totalLineRatioDA:1;
+    }
+
+    // ★ STEP 1: 가동일수 산출 + 라인 비중 가중 수요 합계
+    //   운휴일 = 스팀 0, 가동일 = 라인 비중 스케일에 따라 차등 배분
     //   보일러 가동시간 = 생산라인 가동시간 (일별 가동시간 관리에서 읽음)
     let opDaysCount=0;
+    let totalWeightedScaleDA=0;
     for(let d=1;d<=daysInMonth;d++){
         const dop=dailyOpMap[d];
         const isSD=dop?dop.isShutdown:false;
-        if(!isSD) opDaysCount++;
+        if(!isSD){opDaysCount++;totalWeightedScaleDA+=getDayLineScaleDA(d);}
     }
-    if(opDaysCount<=0) opDaysCount=daysInMonth; // 폴백: 전일 가동
-    const dailySteamBase=totalSteamReq/opDaysCount; // 가동일 균등 배분
+    if(opDaysCount<=0){opDaysCount=daysInMonth;totalWeightedScaleDA=daysInMonth;}
 
-    // ★ STEP 2: 일별 계산 — 1차 균등 배분 후, 부족분을 여유 있는 가동일에 재배분 (반복)
+    // ★ STEP 2: 일별 계산 — 라인 비중 반영 가중 배분 + 부족분 재배분 (반복)
+    //   일별 수요 = 총필요량 × (해당일 스케일 / 전체 가동일 스케일 합)
     //   보일러 cap = steamPerHour × 해당일 가동시간 (생산라인 = 보일러)
     //   목표: 월 배분 합계 = totalSteamReq (부족 없이 전량 배분)
 
@@ -2228,6 +2306,7 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         const dop=dailyOpMap[d];
         const isHoliday=dop?dop.isShutdown:false;
         const dayOpHours=dop?dop.hours:(isHoliday?0:24);
+        const lineScale=getDayLineScaleDA(d);
         // 일별 보일러 최대공급 합계 (cap)
         let dayMaxCap=0;
         const boilerCaps={};
@@ -2239,12 +2318,17 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
             boilerCaps[b.code]=cap;
             dayMaxCap+=cap;
         });
-        dayInfo.push({d,dowLabel,isHoliday,dayOpHours,dayMaxCap,boilerCaps});
+        dayInfo.push({d,dowLabel,isHoliday,dayOpHours,dayMaxCap,boilerCaps,lineScale});
     }
 
-    // 1차 균등 배분 + 부족분 재배분 (최대 10회 반복)
+    // 라인 비중 반영 가중 배분 + 부족분 재배분 (최대 10회 반복)
     const dayDemand=new Array(daysInMonth).fill(0); // 일별 스팀 수요
-    dayInfo.forEach((di,i)=>{if(!di.isHoliday) dayDemand[i]=dailySteamBase;});
+    dayInfo.forEach((di,i)=>{
+        if(!di.isHoliday){
+            // ★ 일별 수요 = 총필요량 × (해당일 라인스케일 / 전체 가동일 스케일합)
+            dayDemand[i]=totalWeightedScaleDA>0?totalSteamReq*(di.lineScale/totalWeightedScaleDA):totalSteamReq/opDaysCount;
+        }
+    });
 
     for(let iter=0;iter<10;iter++){
         let totalShortage=0;
@@ -2341,16 +2425,18 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         row+='<td class="r mn" style="color:'+diffColor+';" id="saDiff_'+r.d+'">'+diffText+'</td>';
         // 가동시간 히든 (T/H 재계산용)
         row+='<span id="saOpH_'+r.d+'" data-val="'+r.dayOpHours+'" style="display:none;"></span>';
-        // 라인상태: 호기별 운휴/가동 표시
+        // 라인상태: 호기별 운휴/가동 표시 + 라인 비중 스케일
         const lineStatus=dailyLineStatus[r.d]||[];
         let lineHtml='';
+        const dayScale=r.isHoliday?0:(dayInfo[r.d-1]?dayInfo[r.d-1].lineScale:1);
+        const scaleLabel=(!r.isHoliday&&dayScale<0.999)?'<span style="display:inline-block;padding:0 4px;margin:0 2px;border-radius:3px;font-size:8px;font-weight:700;background:#dbeafe;color:#1d4ed8;" title="라인 비중 스케일: 가동 라인 비중합/전체 비중합">'+Math.round(dayScale*100)+'%</span>':'';
         if(r.isHoliday&&!lineStatus.length){
             lineHtml='<span style="color:#ef4444;font-size:9px;">전체운휴</span>';
         } else if(lineStatus.length){
             lineHtml=lineStatus.map(ls=>{
                 if(ls.isSD) return '<span style="display:inline-block;padding:0 3px;margin:0 1px;border-radius:3px;font-size:8px;font-weight:700;background:#fee2e2;color:#dc2626;" title="'+(ls.reason||'운휴')+'">'+ls.mc+'⏸</span>';
                 return '<span style="display:inline-block;padding:0 3px;margin:0 1px;border-radius:3px;font-size:8px;font-weight:600;background:#dcfce7;color:#16a34a;" title="'+ls.hrs+'h 가동">'+ls.mc+'</span>';
-            }).join('');
+            }).join('')+scaleLabel;
         } else {
             lineHtml='<span style="font-size:8px;color:#94a3b8;">-</span>';
         }
@@ -2425,7 +2511,7 @@ function recalcProdSim(){
 }
 
 // ── Ref Management ──
-const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true},{k:'boiler-maintenances',l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','maintName','startDate','endDate','maintHours','capacityReduction','memo'],h:['연도','월','보일러','정비유형','정비명','시작일','종료일','정비시간(hr)','용량감소(%)','비고'],yearFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true},{k:'steam-price-intervals',l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)']},{k:'cogen-deductions',l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','month','boilerCode','rateType','rateName','rateValue','rateUnit','factor'],h:['연도','월','보일러','단가유형','단가명','값','단위','FACTOR'],yearFilter:true,monthFilter:true},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','machineCode','lngPerTon','memo'],h:['연도','호기','원단위(㎥/톤)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
+const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true},{k:'boiler-maintenances',l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','maintName','startDate','endDate','maintHours','capacityReduction','memo'],h:['연도','월','보일러','정비유형','정비명','시작일','종료일','정비시간(hr)','용량감소(%)','비고'],yearFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true},{k:'steam-price-intervals',l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)']},{k:'cogen-deductions',l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','month','boilerCode','rateType','rateName','rateValue','rateUnit','factor'],h:['연도','월','보일러','단가유형','단가명','값','단위','FACTOR'],yearFilter:true,monthFilter:true},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','machineCode','lngPerTon','memo'],h:['연도','호기','원단위(㎥/톤)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true},{k:'line-steam-ratios',l:'라인 스팀비중',i:'fa-chart-pie',cols:['year','machineCode','steamRatio','memo'],h:['연도','호기','스팀비중(%)','비고'],yearFilter:true}];
 let cRef=0,refData=[],refDataPrev=[];
 function renderRefTabs(){document.getElementById('refTabs').innerHTML=REFS.map((d,i)=>'<div class="ref-tab'+(i===cRef?' active':'')+'" onclick="switchRef('+i+')"><i class="fas '+d.i+' mr-1"></i>'+d.l+'</div>').join('');}
 function switchRef(i){cRef=i;renderRefTabs();
@@ -2542,7 +2628,7 @@ async function uploadRefExcel(input){
                 const field=headerMap[k];
                 if(field){
                     let v=row[k];
-                    if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','volumePerMonth','containerFeeKrw','extraFeeKrw','rate'].includes(field))v=parseFloat(v)||0;
+                    if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','volumePerMonth','containerFeeKrw','extraFeeKrw','rate','steamRatio'].includes(field))v=parseFloat(v)||0;
                     else if(['year','month','displayOrder','sortOrder'].includes(field))v=parseInt(v)||0;
                     else if(field==='isActive')v=(v==='Y'||v===true||v==='true'||v===1||v==='활성'||v==='Active');
                     body[field]=v;
@@ -2618,7 +2704,7 @@ async function openRefModal(){
     document.getElementById('modalBox').innerHTML=h;
     document.getElementById('modalBg').style.display='flex';
 }
-async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate'].includes(c))v=parseFloat(v)||0;else if(c==='year')v=parseInt(v)||0;else if(c==='month'){v=v.trim()===''?null:parseInt(v);if(v!==null&&(isNaN(v)||v<1||v>12))v=null;}else if(c==='isActive')v=(v==='true');body[c]=v;}});if(!body.division)body.division=document.getElementById('selDiv')?.value||'PS';if(window.CURRENT_USER)body.createdBy=window.CURRENT_USER;try{const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const err=await r.text();console.warn('[saveRef] 실패:',err);alert('저장 실패: '+err);return;}}catch(e){alert('저장 실패: '+e.message);}closeModal();loadRef();}
+async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate','steamRatio'].includes(c))v=parseFloat(v)||0;else if(c==='year')v=parseInt(v)||0;else if(c==='month'){v=v.trim()===''?null:parseInt(v);if(v!==null&&(isNaN(v)||v<1||v>12))v=null;}else if(c==='isActive')v=(v==='true');body[c]=v;}});if(!body.division)body.division=document.getElementById('selDiv')?.value||'PS';if(window.CURRENT_USER)body.createdBy=window.CURRENT_USER;try{const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const err=await r.text();console.warn('[saveRef] 실패:',err);alert('저장 실패: '+err);return;}}catch(e){alert('저장 실패: '+e.message);}closeModal();loadRef();}
 async function delRef(id){if(!confirm('삭제하시겠습니까?'))return;try{await fetch(API+'/'+REFS[cRef].k+'/'+id,{method:'DELETE'});}catch(_){}loadRef();}
 
 // ── 기준정보 인라인 편집 ──
@@ -2657,7 +2743,7 @@ async function saveRefEdit(id){
         const el=document.querySelector('.modal-box [name="'+c+'"]');
         if(el){
             let v=el.value;
-            if(['steamPerHour','hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate','rateValue','steamPerTon','lngPerTon','wasteRatePct','pricePerTon','monthlyAmount','operationHours','maintHours','capacityReduction','speed','theoryProdTpd','trimWidth','basisWeight','usageRatio','amountKrw','effectiveKw','measuredKw'].includes(c)){
+            if(['steamPerHour','hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate','rateValue','steamPerTon','lngPerTon','wasteRatePct','pricePerTon','monthlyAmount','operationHours','maintHours','capacityReduction','speed','theoryProdTpd','trimWidth','basisWeight','usageRatio','amountKrw','effectiveKw','measuredKw','steamRatio'].includes(c)){
                 v=v.trim()===''?null:parseFloat(v);
             }else if(['year','month','day','priority','intervalSeq','displayOrder','startHour','endHour','hours'].includes(c)){
                 v=v.trim()===''?null:parseInt(v);
