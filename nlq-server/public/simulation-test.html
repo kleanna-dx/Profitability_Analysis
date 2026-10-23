@@ -2990,12 +2990,12 @@ async function runItfSchedule(schedId,interfaceId){
             // 원단위 관련 → energy-sync/unit-rates
             const r=await fetch(API+'/energy-sync/unit-rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({year:yr,division:div,executedBy:window.CURRENT_USER||'admin'})});
             result=await r.json();
-        } else if(interfaceId==='RPSIM_ITF_011'||interfaceId==='RPSIM_ITF_012'){
+        } else if(interfaceId==='RPSIM_ITF_011'||interfaceId==='RPSIM_ITF_012'||interfaceId==='Z_BI_WEB_EX_BL_2'||(itf&&itf.table==='rpsim_raw_material')){
             // SAP RFC 원부재료 → sap-rfc/raw-material (Z_BI_WEB_EX_BL_2)
             const cmonth=getYm();
             const r=await fetch(API+'/sap-rfc/raw-material',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmonth:cmonth,mode:'replace',executedBy:window.CURRENT_USER||'admin'})});
             result=await r.json();
-        } else if(interfaceId==='RPSIM_ITF_014'){
+        } else if(interfaceId==='RPSIM_ITF_014'||interfaceId==='Z_BI_WEB_EX_BL_3'||(itf&&itf.table==='rpsim_raw_inventory')){
             // SAP RFC 원부자재 수불부 → sap-rfc/raw-inventory (Z_BI_WEB_EX_BL_3)
             const cmonth=getYm();
             const r=await fetch(API+'/sap-rfc/raw-inventory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmonth:cmonth,mode:'replace',executedBy:window.CURRENT_USER||'admin'})});
