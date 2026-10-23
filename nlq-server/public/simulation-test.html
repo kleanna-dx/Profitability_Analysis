@@ -272,9 +272,9 @@
             <div style="overflow-x:auto;max-height:400px;">
                 <table class="st"><thead><tr>
                     <th>인터페이스 ID</th><th>인터페이스 명</th><th>송신</th><th>수신</th>
-                    <th>RFC 함수명</th><th>대상 테이블</th><th>기본모드</th><th>활성</th>
+                    <th>RFC 함수명</th><th>RFC Func. / REST URL</th><th>RFC Param</th><th>대상 테이블</th><th>기본모드</th><th>활성</th>
                     <th class="r">DB 건수</th><th>등록자</th><th style="width:70px;">관리</th>
-                </tr></thead><tbody id="itfMasterTbody"><tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">불러오는 중...</td></tr></tbody></table>
+                </tr></thead><tbody id="itfMasterTbody"><tr><td colspan="13" style="text-align:center;padding:30px;color:#94a3b8;">불러오는 중...</td></tr></tbody></table>
             </div>
         </div>
 
@@ -2726,7 +2726,8 @@ async function loadItfList(){
         if(j.data&&Array.isArray(j.data)&&j.data.length>0){
             ITF_MASTERS=j.data.map(d=>({
                 id:d.interfaceId, name:d.interfaceName, sender:d.sender, receiver:d.receiver,
-                rfcName:d.rfcName||'-', table:d.targetTable||'', apiKey:TABLE_API_MAP[d.targetTable]||null,
+                rfcName:d.rfcName||'-', rfcFuncOrUrl:d.rfcFuncOrUrl||'', rfcParam:d.rfcParam||'',
+                table:d.targetTable||'', apiKey:TABLE_API_MAP[d.targetTable]||null,
                 mode:d.execMode||'REPLACE', active:d.isActive!==false,
                 remark:d.remark||'', createdBy:d.createdBy||'', updatedBy:d.updatedBy||''
             }));
@@ -2772,8 +2773,10 @@ async function loadItfList(){
             '<td style="font-weight:600;">'+itf.name+'</td>'+
             '<td style="font-size:11px;">'+itf.sender+'</td>'+
             '<td style="font-size:11px;">'+itf.receiver+'</td>'+
-            '<td style="font-size:10px;font-family:monospace;color:#64748b;">'+itf.rfcName+'</td>'+
-            '<td style="font-size:10px;font-family:monospace;color:#94a3b8;">'+itf.table+'</td>'+
+            '<td style="font-size:10px;font-family:monospace;color:#7c3aed;font-weight:600;">'+(itf.rfcName||'-')+'</td>'+
+            '<td style="font-size:9px;font-family:monospace;color:#64748b;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+(itf.rfcFuncOrUrl||'')+'">'+(itf.rfcFuncOrUrl||'')+'</td>'+
+            '<td style="font-size:9px;font-family:monospace;color:#94a3b8;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+(itf.rfcParam||'')+'">'+(itf.rfcParam||'-')+'</td>'+
+            '<td style="font-size:10px;font-family:monospace;color:#0f766e;font-weight:600;">'+(itf.table||'')+'</td>'+
             '<td>'+modeBadge+'</td>'+
             '<td>'+activeBadge+'</td>'+
             '<td class="r mn" style="font-weight:600;'+(cnt>0?'color:#4f46e5':'color:#94a3b8')+'">'+fmtI(cnt)+'</td>'+
@@ -2868,19 +2871,28 @@ function renderItfHist(){
         return '<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:'+c[0]+';color:'+c[1]+';">'+(s||'pending')+'</span>';
     };
     const fmtDT=v=>v?v.replace('T',' ').substring(0,16):'-';
-    tbody.innerHTML=filtered.map(h=>'<tr>'+
+    tbody.innerHTML=filtered.map(h=>{
+        const errPreview=(h.errorMessage||'').length>50?h.errorMessage.substring(0,50)+'…':(h.errorMessage||'-');
+        return '<tr>'+
         '<td class="mn" style="font-size:10px;">'+h.historyId+'</td>'+
-        '<td style="font-weight:600;font-size:11px;">'+(h.interfaceName||h.interfaceId)+'</td>'+
+        '<td>'+
+          (h.rfcName?'<span style="font-size:10px;font-family:monospace;color:#7c3aed;font-weight:600;">'+h.rfcName+'</span><br>':'')+
+          '<span style="font-weight:600;font-size:11px;">'+(h.interfaceId||'')+(h.interfaceName?' <span style="color:#94a3b8;font-weight:400;">('+h.interfaceName+')</span>':'')+'</span>'+
+        '</td>'+
         '<td><span style="font-size:10px;padding:2px 8px;border-radius:10px;background:#e0e7ff;color:#3730a3;font-weight:600;">'+(h.jobType||'MANUAL')+'</span></td>'+
         '<td style="font-size:10px;color:#64748b;">'+(h.execMode||'replace')+'</td>'+
         '<td>'+statusBadge(h.status)+'</td>'+
         '<td style="font-size:10px;color:#64748b;">'+fmtDT(h.startedAt)+'</td>'+
         '<td style="font-size:10px;color:#64748b;">'+fmtDT(h.completedAt)+'</td>'+
-        '<td class="r mn" style="font-weight:600;">'+fmtI(h.processCount||0)+'</td>'+
-        '<td style="font-size:10px;color:'+(h.errorMessage?'#dc2626':'#94a3b8')+';max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+(h.errorMessage||'')+'">'+(h.errorMessage||'-')+'</td>'+
+        '<td class="r mn" style="font-weight:600;">'+fmtI(h.insertedRows||h.processCount||0)+'</td>'+
+        '<td style="font-size:10px;color:'+(h.errorMessage?'#dc2626':'#94a3b8')+';max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+(h.errorMessage||'')+'">'+errPreview+'</td>'+
         '<td style="font-size:10px;color:#94a3b8;">'+(h.executedBy||'')+'</td>'+
-        '<td>'+(h.durationMs!=null?'<span style="font-size:9px;color:#64748b;">'+(h.durationMs/1000).toFixed(1)+'s</span>':'')+'</td>'+
-    '</tr>').join('');
+        '<td style="white-space:nowrap;">'+
+          '<button onclick="openItfHistDetail('+h.historyId+')" style="font-size:9px;color:#4f46e5;cursor:pointer;background:none;border:none;padding:2px 4px;" title="상세보기"><i class="fas fa-search-plus"></i> 더보기</button>'+
+          (h.status==='failed'?'<button onclick="rerunItfHist('+h.historyId+')" style="font-size:9px;color:#f59e0b;cursor:pointer;background:none;border:none;padding:2px 4px;" title="재수행"><i class="fas fa-redo"></i></button>':'')+
+        '</td>'+
+        '</tr>';
+    }).join('');
 }
 
 // ── 마스터 등록/편집 모달 ──
@@ -2888,7 +2900,7 @@ function openItfMasterModal(editData){
     const isEdit=!!editData;
     const d=editData||{};
     let h='<h3 style="margin:0 0 16px;font-size:15px;"><i class="fas fa-'+(isEdit?'edit':'plus-circle')+' text-blue-500"></i> 인터페이스 마스터 '+(isEdit?'편집':'등록')+'</h3>';
-    const fields=[['interfaceId','인터페이스 ID',d.id||'',isEdit],['interfaceName','인터페이스 명',d.name||''],['sender','송신 시스템',d.sender||''],['receiver','수신 시스템',d.receiver||'RPSIM'],['rfcName','RFC 함수명',d.rfcName||''],['targetTable','대상 테이블',d.table||''],['execMode','기본 모드',d.mode||'REPLACE'],['remark','비고',d.remark||'']];
+    const fields=[['interfaceId','인터페이스 ID',d.id||'',isEdit],['interfaceName','인터페이스 명',d.name||''],['sender','송신 시스템',d.sender||''],['receiver','수신 시스템',d.receiver||'RPSIM'],['rfcName','RFC 함수명',d.rfcName||''],['rfcFuncOrUrl','RFC Func. / REST URL',d.rfcFuncOrUrl||''],['rfcParam','RFC Param (JSON)',d.rfcParam||''],['targetTable','대상 테이블 (인터페이스 테이블)',d.table||''],['execMode','기본 모드',d.mode||'REPLACE'],['remark','비고',d.remark||'']];
     fields.forEach(([n,l,v,ro])=>{h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">'+l+'</label><input name="itfm_'+n+'" value="'+(v||'')+'" placeholder="'+l+'" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;"'+(ro?' readonly style="background:#f3f4f6;"':'')+'>';});
     h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">활성</label>';
     h+='<select name="itfm_isActive" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;"><option value="true"'+(d.active!==false?' selected':'')+'> 활성</option><option value="false"'+(d.active===false?' selected':'')+'> 비활성</option></select>';
@@ -2898,7 +2910,7 @@ function openItfMasterModal(editData){
 
 async function saveItfMaster(editId){
     const g=n=>document.querySelector('[name="itfm_'+n+'"]').value.trim();
-    const body={interfaceId:g('interfaceId'),interfaceName:g('interfaceName'),sender:g('sender'),receiver:g('receiver'),rfcName:g('rfcName'),targetTable:g('targetTable'),execMode:g('execMode'),isActive:g('isActive'),remark:g('remark'),createdBy:window.CURRENT_USER||'admin',updatedBy:window.CURRENT_USER||'admin'};
+    const body={interfaceId:g('interfaceId'),interfaceName:g('interfaceName'),sender:g('sender'),receiver:g('receiver'),rfcName:g('rfcName'),rfcFuncOrUrl:g('rfcFuncOrUrl'),rfcParam:g('rfcParam'),targetTable:g('targetTable'),execMode:g('execMode'),isActive:g('isActive'),remark:g('remark'),createdBy:window.CURRENT_USER||'admin',updatedBy:window.CURRENT_USER||'admin'};
     try{
         const url=editId?API+'/itf-masters/'+encodeURIComponent(editId):API+'/itf-masters';
         const r=await fetch(url,{method:editId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -2968,85 +2980,105 @@ async function deleteItfSchedule(schedId){
 }
 
 // ── 수동 실행 ──
-async function runItfSchedule(schedId,interfaceId){
+// ── 수행관리 실행 모달 (년월+모드 선택 후 동적 실행) ──
+const MODE_LABELS={replace:'REPLACE — 기존 삭제 후 적재',append:'APPEND — 기존 유지 + 추가','dry-run':'DRY-RUN — 시뮬레이션 (실제 적재 없음)'};
+let _runItfId=null,_runSchedId=null;
+
+function runItfSchedule(schedId,interfaceId){
     const itf=ITF_MASTERS.find(i=>i.id===interfaceId);
-    if(!confirm((itf?itf.name:interfaceId)+' 인터페이스를 수동 실행하시겠습니까?')) return;
-    const yr=parseInt(getYm().substring(0,4));
-    const div=getDiv();
-    try{
-        // 스케줄 상태 갱신
-        if(schedId) await fetch(API+'/itf-schedules/'+schedId+'/run',{method:'POST'});
-
-        // ★ 에너지팀 인터페이스 — 실제 DB 수신 API 호출
-        const energyPriceIds=['RPSIM_ITF_002','RPSIM_ITF_004','RPSIM_ITF_005','RPSIM_ITF_006'];
-        const energyUnitIds=['RPSIM_ITF_001','RPSIM_ITF_007'];
-        let result=null;
-
-        if(energyPriceIds.includes(interfaceId)){
-            // 단가 관련 → energy-sync/prices
-            const r=await fetch(API+'/energy-sync/prices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({year:yr,division:div,executedBy:window.CURRENT_USER||'admin'})});
-            result=await r.json();
-        } else if(energyUnitIds.includes(interfaceId)){
-            // 원단위 관련 → energy-sync/unit-rates
-            const r=await fetch(API+'/energy-sync/unit-rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({year:yr,division:div,executedBy:window.CURRENT_USER||'admin'})});
-            result=await r.json();
-        } else if(interfaceId==='RPSIM_ITF_011'||interfaceId==='RPSIM_ITF_012'||interfaceId==='Z_BI_WEB_EX_BL_2'||(itf&&itf.table==='rpsim_raw_material')){
-            // SAP RFC 원부재료 → sap-rfc/raw-material (Z_BI_WEB_EX_BL_2)
-            const cmonth=getYm();
-            const r=await fetch(API+'/sap-rfc/raw-material',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmonth:cmonth,mode:'replace',executedBy:window.CURRENT_USER||'admin'})});
-            result=await r.json();
-        } else if(interfaceId==='RPSIM_ITF_014'||interfaceId==='Z_BI_WEB_EX_BL_3'||(itf&&itf.table==='rpsim_raw_inventory')){
-            // SAP RFC 원부자재 수불부 → sap-rfc/raw-inventory (Z_BI_WEB_EX_BL_3)
-            const cmonth=getYm();
-            const r=await fetch(API+'/sap-rfc/raw-inventory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmonth:cmonth,mode:'replace',executedBy:window.CURRENT_USER||'admin'})});
-            result=await r.json();
-        } else {
-            // 그 외 (생산관리 등) → 이력만 생성
-            const rb={interfaceId:interfaceId,interfaceName:itf?itf.name:'',jobType:'MANUAL_SYNC',execMode:'replace',executedBy:window.CURRENT_USER||'admin'};
-            const r=await fetch(API+'/itf-histories/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rb)});
-            const j=await r.json();
-            const histId=j.data?.historyId;
-            const cb={status:'success',processCount:0,errorMessage:null};
-            if(histId) await fetch(API+'/itf-histories/'+histId+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cb)});
-            result=j;
-        }
-
-        const d=result?.data||{};
-        const cnt=d.processCount||d.totalCount||d.totalInserted||0;
-        const err=d.error;
-        const histId=d.historyId;
-        // 상세 결과 메시지 구성
-        let msg='';
-        if(err){
-            msg='❌ 실행 에러\n\n'+err;
-            if(histId) msg+='\n\n이력 #'+histId+' 에서 상세 확인 가능';
-        } else {
-            msg='✅ 실행 완료!\n\n처리 건수: '+cnt+'건';
-            if(d.rawMaterial100!=null) msg+='\n- 원재료(100): '+d.rawMaterial100+'건';
-            if(d.rawMaterial101!=null) msg+='\n- 부재료(101): '+d.rawMaterial101+'건';
-            if(d.deleted!=null&&d.deleted>0) msg+='\n- 기존 삭제: '+d.deleted+'건';
-            if(d.priceCount!=null) msg+='\n- 단가: '+d.priceCount+'건';
-            if(d.unitRateCount!=null) msg+='\n- 원단위: '+d.unitRateCount+'건';
-            if(histId) msg+='\n\n이력 #'+histId;
-            if(d.rfcName) msg+=' ('+d.rfcName+')';
-            await loadEnergyRefData();
-        }
-        alert(msg);
-        loadItfSchedules();loadItfHistories();
-    }catch(e){alert('❌ 실행 에러\n\n'+e.message+'\n\n네트워크 오류 또는 서버 미응답');}
+    _runItfId=interfaceId;_runSchedId=schedId;
+    // 실행 모달 표시
+    let h='<h3 style="margin:0 0 16px;font-size:15px;"><i class="fas fa-play-circle text-green-500"></i> 인터페이스 수동 실행</h3>';
+    h+='<div style="background:#f0f4ff;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:12px;">';
+    h+='<b>'+interfaceId+'</b> — '+(itf?itf.name:'')+'<br>';
+    h+='<span style="color:#7c3aed;font-family:monospace;font-size:11px;">'+(itf?itf.rfcName:'')+'</span>';
+    if(itf&&itf.table) h+=' → <span style="color:#0f766e;font-family:monospace;font-size:11px;">'+itf.table+'</span>';
+    h+='</div>';
+    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">대상 년월 (YYYYMM)</label>';
+    h+='<input id="runCmonth" value="'+getYm()+'" placeholder="202610" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">실행 모드</label>';
+    h+='<select id="runMode" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    ['replace','append','dry-run'].forEach(m=>{h+='<option value="'+m+'"'+(m===(itf?itf.mode.toLowerCase():'replace')?' selected':'')+'>'+MODE_LABELS[m]+'</option>';});
+    h+='</select>';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">';
+    h+='<button class="btn-g" onclick="closeModal()">취소</button>';
+    h+='<button style="padding:6px 16px;background:#059669;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;" onclick="doRunItf()"><i class="fas fa-play mr-1"></i>실행</button>';
+    h+='</div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
 }
 
-// ── 에너지팀 전체 수신 (단가+원단위 통합) — 인터페이스 관리 외부에서도 호출 가능 ──
-async function runEnergySyncAll(){
-    if(!confirm('에너지팀 데이터(단가+원단위)를 수신하시겠습니까?')) return;
-    const yr=parseInt(getYm().substring(0,4));const div=getDiv();
+async function doRunItf(){
+    const cmonth=document.getElementById('runCmonth').value.trim();
+    const mode=document.getElementById('runMode').value;
+    if(!/^\d{6}$/.test(cmonth)){alert('년월은 YYYYMM 6자리로 입력하세요.');return;}
+    const itf=ITF_MASTERS.find(i=>i.id===_runItfId);
+    if(!confirm(cmonth.substring(0,4)+'년 '+cmonth.substring(4)+'월 데이터를 동기화합니다.\n\n실행 모드: '+MODE_LABELS[mode]+'\n\n계속하시겠습니까?')) return;
+    closeModal();
     try{
-        const r=await fetch(API+'/energy-sync/all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({year:yr,division:div,executedBy:window.CURRENT_USER||'admin'})});
+        // ★ 동적 실행 API — 마스터의 rfc_func_or_url 기반으로 서버에서 라우팅
+        const r=await fetch(API+'/itf-histories/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interfaceId:_runItfId,cmonth:cmonth,mode:mode,executedBy:window.CURRENT_USER||'admin'})});
         const j=await r.json();
-        if(j.data?.error){alert('에러: '+j.data.error);return;}
-        alert('에너지팀 데이터 수신 완료!\n단가: '+(j.data?.priceCount||0)+'건\n원단위: '+(j.data?.unitRateCount||0)+'건');
-        await loadEnergyRefData();
-    }catch(e){alert('수신 에러: '+e.message);}
+        const d=j.data||{};
+        const err=d.error;
+        if(err){
+            alert('❌ 실행 에러\n\n'+err+(d.historyId?'\n\n이력 #'+d.historyId+' 에서 상세 확인 가능':''));
+        } else {
+            let msg='✅ 실행 완료!';
+            if(d.insertedRows!=null) msg+='\n\nINSERT: '+d.insertedRows+'건';
+            if(d.priceCount!=null) msg+='\n단가: '+d.priceCount+'건';
+            if(d.unitRateCount!=null) msg+='\n원단위: '+d.unitRateCount+'건';
+            if(d.totalCount!=null) msg+='\n합계: '+d.totalCount+'건';
+            if(d.message) msg+='\n\n'+d.message;
+            if(d.historyId) msg+='\n\n이력 #'+d.historyId;
+            if(d.rfcName) msg+=' ('+d.rfcName+')';
+            alert(msg);
+            await loadEnergyRefData();
+        }
+        loadItfSchedules();loadItfHistories();
+    }catch(e){alert('❌ 실행 에러\n\n'+e.message);}
+}
+
+// ── 이력관리 — 상세 로그 모달 + 재수행 ──
+async function openItfHistDetail(histId){
+    try{
+        const r=await fetch(API+'/itf-histories/'+histId);const j=await r.json();const d=j.data;
+        if(!d){alert('이력을 찾을 수 없습니다.');return;}
+        const fmtDT=v=>v?v.replace('T',' ').substring(0,19):'-';
+        const statusMap={success:'✅ 성공',failed:'❌ 실패',running:'🔄 실행중',pending:'⏳ 대기'};
+        let h='<h3 style="margin:0 0 12px;font-size:15px;"><i class="fas fa-file-alt text-blue-500"></i> 이력 상세 #'+histId+'</h3>';
+        h+='<div style="background:#f8fafc;padding:12px 14px;border-radius:8px;font-size:11px;line-height:1.8;">';
+        h+='<b>인터페이스:</b> '+d.interfaceId+(d.interfaceName?' ('+d.interfaceName+')':'')+'<br>';
+        if(d.rfcName) h+='<b>RFC 함수:</b> <span style="color:#7c3aed;font-weight:600;">'+d.rfcName+'</span>';
+        if(d.cmonth) h+=' &nbsp;|&nbsp; <b>입력값:</b> I_CMONTH='+d.cmonth;
+        if(d.targetTable) h+=' &nbsp;|&nbsp; <b>적재 테이블:</b> <span style="color:#059669;font-weight:600;">'+d.targetTable+'</span>';
+        if(d.rfcName||d.cmonth||d.targetTable) h+='<br>';
+        h+='<b>구분:</b> '+(d.jobType||'-')+' &nbsp;|&nbsp; <b>모드:</b> '+(d.execMode||'-')+' &nbsp;|&nbsp; <b>상태:</b> '+(statusMap[d.status]||d.status)+'<br>';
+        h+='<b>시작:</b> '+fmtDT(d.startedAt)+' &nbsp;|&nbsp; <b>종료:</b> '+fmtDT(d.completedAt);
+        if(d.durationMs) h+=' &nbsp;|&nbsp; <b>소요:</b> '+(d.durationMs/1000).toFixed(1)+'초';
+        h+='<br><b>처리행수:</b> '+(d.insertedRows||d.processCount||0)+' &nbsp;|&nbsp; <b>실행자:</b> '+(d.executedBy||'-');
+        h+='</div>';
+        // 오류 메시지
+        h+='<label style="font-size:11px;font-weight:600;color:#dc2626;display:block;margin-top:10px;">오류 메시지</label>';
+        h+='<div style="background:#fef2f2;padding:8px 12px;border-radius:6px;font-size:11px;color:#991b1b;white-space:pre-wrap;max-height:120px;overflow-y:auto;">'+(d.errorMessage||'(오류 메시지 없음)')+'</div>';
+        // 상세 로그
+        h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:10px;">상세 실행 로그</label>';
+        h+='<div style="background:#1e293b;color:#e2e8f0;padding:10px 12px;border-radius:6px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:200px;overflow-y:auto;">'+(d.logText||'(상세 로그 없음)')+'</div>';
+        h+='<div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">';
+        if(d.status==='failed') h+='<button style="padding:5px 12px;background:#f59e0b;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;" onclick="rerunItfHist('+histId+')"><i class="fas fa-redo mr-1"></i>재수행</button>';
+        h+='<button class="btn-g" onclick="closeModal()">닫기</button></div>';
+        document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+    }catch(e){alert('이력 조회 에러: '+e.message);}
+}
+
+async function rerunItfHist(histId){
+    if(!confirm('해당 실패 작업을 재수행하시겠습니까?')) return;
+    closeModal();
+    try{
+        const r=await fetch(API+'/itf-histories/'+histId+'/rerun',{method:'POST'});
+        const j=await r.json();const d=j.data||{};
+        if(d.error){alert('재수행 에러: '+d.error);}
+        else{alert('재수행 시작! 이력 #'+(d.historyId||''));loadItfHistories();}
+    }catch(e){alert('재수행 에러: '+e.message);}
 }
 
 // ── SAP BW 엑셀 파싱 (ZOHPP100/101) ──
