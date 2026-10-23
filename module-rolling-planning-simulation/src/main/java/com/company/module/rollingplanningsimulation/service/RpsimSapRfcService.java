@@ -124,8 +124,12 @@ public class RpsimSapRfcService {
     // ================================================================
 
     /**
-     * Z_BI_WEB_EX_BL_2 실행: 원재료(/BIC/OHZOHPP100) + 부재료(/BIC/OHZOHPP101)
-     * → rpsim_raw_material 에 DATA_TYPE='100'/'101'로 INSERT
+     * Z_BI_WEB_EX_BL_2 실행: T_DATA 테이블에서 원재료+부재료 수신
+     * → rpsim_raw_material 에 DATA_TYPE 구분하여 INSERT
+     *
+     * <p>SAP RFC는 1번 호출, T_DATA에 원재료+부재료가 함께 들어옴.
+     * DATA_TYPE은 SAP 개발자가 T_DATA에 구분 컬럼을 넣어줬으면 그걸 사용하고,
+     * 없으면 모두 '100'(원재료)으로 저장.</p>
      */
     public Map<String, Object> executeRawMaterial(String cmonth, String mode, String executedBy) {
         log.info("[RPSIM RFC] Z_BI_WEB_EX_BL_2 실행 — cmonth={}, mode={}", cmonth, mode);
@@ -140,39 +144,30 @@ public class RpsimSapRfcService {
                 log.info("[RPSIM RFC] rpsim_raw_material CALMONTH={} 기존 {}건 삭제", cmonth, deleted);
             }
 
-            // SAP RFC 호출 (JCo 리플렉션)
-            int totalInserted = 0;
-
-            // 테이블 1: /BIC/OHZOHPP100 (원재료)
-            int cnt100 = callRfcAndInsertMaterial("Z_BI_WEB_EX_BL_2", "/BIC/OHZOHPP100", cmonth, "100");
-            totalInserted += cnt100;
-            log.info("[RPSIM RFC] OHZOHPP100 (원재료): {}건 INSERT", cnt100);
-
-            // 테이블 2: /BIC/OHZOHPP101 (부재료)
-            int cnt101 = callRfcAndInsertMaterial("Z_BI_WEB_EX_BL_2", "/BIC/OHZOHPP101", cmonth, "101");
-            totalInserted += cnt101;
-            log.info("[RPSIM RFC] OHZOHPP101 (부재료): {}건 INSERT", cnt101);
+            // SAP RFC 1번 호출 → T_DATA 테이블에서 데이터 수신
+            int totalInserted = callRfcAndInsertMaterial("Z_BI_WEB_EX_BL_2", "T_DATA", cmonth, "100");
+            log.info("[RPSIM RFC] T_DATA: 총 {}건 INSERT", totalInserted);
 
             completeHistory(hist, "success", totalInserted, null);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("rfcName", "Z_BI_WEB_EX_BL_2");
             result.put("cmonth", cmonth);
-            result.put("rawMaterial100", cnt100);
-            result.put("rawMaterial101", cnt101);
             result.put("totalInserted", totalInserted);
             result.put("deleted", deleted);
             result.put("historyId", hist.getHistoryId());
             return result;
 
         } catch (Exception e) {
-            completeHistory(hist, "failed", 0, e.getMessage());
-            throw new RuntimeException("RFC 실행 실패: " + e.getMessage(), e);
+            String detail = e.getMessage();
+            if (e.getCause() != null) detail += " | Cause: " + e.getCause().getMessage();
+            completeHistory(hist, "failed", 0, detail);
+            throw new RuntimeException("RFC 실행 실패: " + detail, e);
         }
     }
 
     /**
-     * Z_BI_WEB_EX_BL_3 실행: 원부자재 수불부(/BIC/OHZOHCO008)
+     * Z_BI_WEB_EX_BL_3 실행: T_DATA 테이블에서 원부자재 수불부 수신
      * → rpsim_raw_inventory 에 INSERT
      */
     public Map<String, Object> executeRawInventory(String cmonth, String mode, String executedBy) {
@@ -187,8 +182,8 @@ public class RpsimSapRfcService {
                 log.info("[RPSIM RFC] rpsim_raw_inventory CALMONTH={} 기존 {}건 삭제", cmonth, deleted);
             }
 
-            int totalInserted = callRfcAndInsertInventory("Z_BI_WEB_EX_BL_3", "/BIC/OHZOHCO008", cmonth);
-            log.info("[RPSIM RFC] OHZOHCO008 (수불부): {}건 INSERT", totalInserted);
+            int totalInserted = callRfcAndInsertInventory("Z_BI_WEB_EX_BL_3", "T_DATA", cmonth);
+            log.info("[RPSIM RFC] T_DATA (수불부): {}건 INSERT", totalInserted);
 
             completeHistory(hist, "success", totalInserted, null);
 
@@ -201,8 +196,10 @@ public class RpsimSapRfcService {
             return result;
 
         } catch (Exception e) {
-            completeHistory(hist, "failed", 0, e.getMessage());
-            throw new RuntimeException("RFC 실행 실패: " + e.getMessage(), e);
+            String detail = e.getMessage();
+            if (e.getCause() != null) detail += " | Cause: " + e.getCause().getMessage();
+            completeHistory(hist, "failed", 0, detail);
+            throw new RuntimeException("RFC 실행 실패: " + detail, e);
         }
     }
 
