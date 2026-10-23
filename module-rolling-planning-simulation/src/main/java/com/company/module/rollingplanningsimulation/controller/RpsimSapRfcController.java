@@ -41,7 +41,9 @@ public class RpsimSapRfcController {
             return ResponseEntity.ok(ApiResponse.success(result));
         } catch (Exception e) {
             log.error("[RPSIM RFC] raw-material 에러", e);
-            return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage())));
+            String detail = e.getMessage();
+            if (e.getCause() != null) detail += " | Cause: " + e.getCause().getMessage();
+            return ResponseEntity.ok(ApiResponse.success(Map.of("error", detail)));
         }
     }
 
@@ -59,7 +61,9 @@ public class RpsimSapRfcController {
             return ResponseEntity.ok(ApiResponse.success(result));
         } catch (Exception e) {
             log.error("[RPSIM RFC] raw-inventory 에러", e);
-            return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage())));
+            String detail = e.getMessage();
+            if (e.getCause() != null) detail += " | Cause: " + e.getCause().getMessage();
+            return ResponseEntity.ok(ApiResponse.success(Map.of("error", detail)));
         }
     }
 

@@ -3011,17 +3011,29 @@ async function runItfSchedule(schedId,interfaceId){
             result=j;
         }
 
-        const cnt=result?.data?.processCount||result?.data?.totalCount||0;
-        const err=result?.data?.error;
+        const d=result?.data||{};
+        const cnt=d.processCount||d.totalCount||d.totalInserted||0;
+        const err=d.error;
+        const histId=d.historyId;
+        // 상세 결과 메시지 구성
+        let msg='';
         if(err){
-            alert('실행 에러: '+err);
+            msg='❌ 실행 에러\n\n'+err;
+            if(histId) msg+='\n\n이력 #'+histId+' 에서 상세 확인 가능';
         } else {
-            alert('실행 완료! '+cnt+'건 처리'+(result?.data?.historyId?' (이력 #'+result.data.historyId+')':''));
-            // 에너지비 데이터 리로드
+            msg='✅ 실행 완료!\n\n처리 건수: '+cnt+'건';
+            if(d.rawMaterial100!=null) msg+='\n- 원재료(100): '+d.rawMaterial100+'건';
+            if(d.rawMaterial101!=null) msg+='\n- 부재료(101): '+d.rawMaterial101+'건';
+            if(d.deleted!=null&&d.deleted>0) msg+='\n- 기존 삭제: '+d.deleted+'건';
+            if(d.priceCount!=null) msg+='\n- 단가: '+d.priceCount+'건';
+            if(d.unitRateCount!=null) msg+='\n- 원단위: '+d.unitRateCount+'건';
+            if(histId) msg+='\n\n이력 #'+histId;
+            if(d.rfcName) msg+=' ('+d.rfcName+')';
             await loadEnergyRefData();
         }
+        alert(msg);
         loadItfSchedules();loadItfHistories();
-    }catch(e){alert('실행 에러: '+e.message);}
+    }catch(e){alert('❌ 실행 에러\n\n'+e.message+'\n\n네트워크 오류 또는 서버 미응답');}
 }
 
 // ── 에너지팀 전체 수신 (단가+원단위 통합) — 인터페이스 관리 외부에서도 호출 가능 ──
