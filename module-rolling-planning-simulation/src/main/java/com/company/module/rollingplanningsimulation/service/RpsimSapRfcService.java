@@ -41,82 +41,49 @@ public class RpsimSapRfcService {
     // 테이블 매핑 정의
     // ================================================================
 
-    /** 원부재료 (ZOHPP100/101 공통 구조) DB 컬럼 — DATA_TYPE 포함 */
+    /** 원부재료 (ZOHPP100/101 공통 구조) DB 컬럼 — SAP T_DATA 필드명과 동일 (BIC_ 접두어 포함) */
     private static final List<String> DB_COLS_RAW_MATERIAL = List.of(
             "DATA_TYPE", "CALMONTH",
-            "ZPROCESS", "ZPROCESS_NM", "ZMACHINE", "ZMACHINE_NM",
+            "BIC_ZPROCESS", "BIC_ZPROCESS_NM", "BIC_ZMACHINE", "BIC_ZMACHINE_NM",
             "PRODH1", "PRODH1_NM", "PRODH2", "PRODH2_NM",
             "PRODH3", "PRODH3_NM", "PRODH4", "PRODH4_NM",
             "MATERIAL", "MATERIAL_NM",
-            "UNIT", "ZUNIT", "ZPRD_UNIT", "ZSCR_UNIT", "CURRENCY",
+            "UNIT", "BIC_ZUNIT", "BIC_ZPRD_UNIT", "BIC_ZSCR_UNIT", "CURRENCY",
             "MATL_GROUP", "MATL_GROUP_NM",
-            "ZJPCODE", "ZJPCODE_NM", "ZMATGROUP", "ZMATGROUP_NM",
-            "ZPUNIT", "ZREQ_QTY", "ZBASEQTY", "ZTUNIT", "ZRDCD_M01",
-            "ZPDTBQTY", "ZTPQTY", "ZPRD_QTY", "ZSCR_QTY",
-            "ZLUNIT", "ZDTB_QTY", "ZTPRICE", "ZTRAWMATR",
-            "ZZLBKUM60", "ZRAMT_060", "ZTUSEDIF", "ZTPRIDIF"
+            "BIC_ZJPCODE", "BIC_ZJPCODE_NM", "BIC_ZMATGROUP", "BIC_ZMATGROUP_NM",
+            "BIC_ZPUNIT", "BIC_ZREQ_QTY", "BIC_ZBASEQTY", "BIC_ZTUNIT", "BIC_ZRDCD_M01",
+            "BIC_ZPDTBQTY", "BIC_ZTPQTY", "BIC_ZPRD_QTY", "BIC_ZSCR_QTY",
+            "BIC_ZLUNIT", "BIC_ZDTB_QTY", "BIC_ZTPRICE", "BIC_ZTRAWMATR",
+            "BIC_ZZLBKUM60", "BIC_ZRAMT_060", "BIC_ZTUSEDIF", "BIC_ZTPRIDIF"
     );
 
-    /** SAP 필드명 → DB 컬럼명 매핑 (/BIC/ 접두어 제거 후) */
-    private static final Map<String, String> SAP_TO_DB_RAW_MATERIAL;
-    static {
-        Map<String, String> m = new HashMap<>();
-        // /BIC/ 접두어 제거 후 매핑
-        m.put("ZPROCESS",    "ZPROCESS");
-        m.put("ZPROCESS_NM", "ZPROCESS_NM");
-        m.put("ZMACHINE",    "ZMACHINE");
-        m.put("ZMACHINE_NM", "ZMACHINE_NM");
-        m.put("ZUNIT",       "ZUNIT");
-        m.put("ZPRD_UNIT",   "ZPRD_UNIT");
-        m.put("ZSCR_UNIT",   "ZSCR_UNIT");
-        m.put("ZJPCODE",     "ZJPCODE");
-        m.put("ZJPCODE_NM",  "ZJPCODE_NM");
-        m.put("ZMATGROUP",   "ZMATGROUP");
-        m.put("ZMATGROUP_NM","ZMATGROUP_NM");
-        m.put("ZPUNIT",      "ZPUNIT");
-        m.put("ZREQ_QTY",    "ZREQ_QTY");
-        m.put("ZBASEQTY",    "ZBASEQTY");
-        m.put("ZTUNIT",      "ZTUNIT");
-        m.put("ZRDCD_M01",   "ZRDCD_M01");
-        m.put("ZPDTBQTY",    "ZPDTBQTY");
-        m.put("ZTPQTY",      "ZTPQTY");
-        m.put("ZPRD_QTY",    "ZPRD_QTY");
-        m.put("ZSCR_QTY",    "ZSCR_QTY");
-        m.put("ZLUNIT",      "ZLUNIT");
-        m.put("ZDTB_QTY",    "ZDTB_QTY");
-        m.put("ZTPRICE",     "ZTPRICE");
-        m.put("ZTRAWMATR",   "ZTRAWMATR");
-        m.put("ZZLBKUM60",   "ZZLBKUM60");
-        m.put("ZRAMT_060",   "ZRAMT_060");
-        m.put("ZTUSEDIF",    "ZTUSEDIF");
-        m.put("ZTPRIDIF",    "ZTPRIDIF");
-        SAP_TO_DB_RAW_MATERIAL = Collections.unmodifiableMap(m);
-    }
+    /** SAP 필드명 → DB 컬럼명 매핑 — DB가 BIC_ 접두어 포함이므로 매핑 불필요 (빈 맵) */
+    private static final Map<String, String> SAP_TO_DB_RAW_MATERIAL = Collections.emptyMap();
 
-    /** 숫자형 컬럼 (QUAN/CURR → DECIMAL 또는 BIGINT) */
+    /** 숫자형 컬럼 (QUAN/CURR → DECIMAL 또는 BIGINT) — BIC_ 접두어 포함 */
     private static final Set<String> DECIMAL_COLS_RAW_MATERIAL = Set.of(
-            "ZPUNIT", "ZREQ_QTY", "ZBASEQTY", "ZTUNIT", "ZPDTBQTY",
-            "ZTPQTY", "ZPRD_QTY", "ZSCR_QTY", "ZLUNIT", "ZDTB_QTY", "ZZLBKUM60"
+            "BIC_ZPUNIT", "BIC_ZREQ_QTY", "BIC_ZBASEQTY", "BIC_ZTUNIT", "BIC_ZPDTBQTY",
+            "BIC_ZTPQTY", "BIC_ZPRD_QTY", "BIC_ZSCR_QTY", "BIC_ZLUNIT", "BIC_ZDTB_QTY", "BIC_ZZLBKUM60"
     );
     private static final Set<String> BIGINT_COLS_RAW_MATERIAL = Set.of(
-            "ZRDCD_M01", "ZTPRICE", "ZTRAWMATR", "ZRAMT_060", "ZTUSEDIF", "ZTPRIDIF"
+            "BIC_ZRDCD_M01", "BIC_ZTPRICE", "BIC_ZTRAWMATR", "BIC_ZRAMT_060", "BIC_ZTUSEDIF", "BIC_ZTPRIDIF"
     );
 
-    /** 원부자재 수불부 DB 컬럼 */
+    /** 원부자재 수불부 DB 컬럼 — BIC_ 접두어 포함 */
     private static final List<String> DB_COLS_RAW_INVENTORY = List.of(
             "CALMONTH", "PLANT", "PLANT_NM",
-            "MATL_GROUP", "MATL_GROUP_NM", "ZMATGROUP", "ZMATGROUP_NM",
+            "MATL_GROUP", "MATL_GROUP_NM", "BIC_ZMATGROUP", "BIC_ZMATGROUP_NM",
             "MATL_TYPE", "MATL_TYPE_NM", "MATERIAL", "MATERIAL_NM",
             "CURRENCY", "BASE_UOM",
-            "ZLBKUM", "ZRNETPR", "ZLBKUM020", "ZRNETPR20",
-            "ZLBKUM60", "ZRNETPR60", "ZLBKUM101", "ZRNETP110"
+            "BIC_ZLBKUM", "BIC_ZRNETPR", "BIC_ZLBKUM020", "BIC_ZRNETPR20",
+            "BIC_ZLBKUM60", "BIC_ZRNETPR60", "BIC_ZLBKUM101", "BIC_ZRNETP110"
     );
 
     private static final Set<String> DECIMAL_COLS_RAW_INVENTORY = Set.of(
-            "ZLBKUM", "ZLBKUM020", "ZLBKUM60", "ZLBKUM101"
+            "BIC_ZLBKUM", "BIC_ZLBKUM020", "BIC_ZLBKUM60", "BIC_ZLBKUM101"
     );
     private static final Set<String> BIGINT_COLS_RAW_INVENTORY = Set.of(
-            "ZRNETPR", "ZRNETPR20", "ZRNETPR60", "ZRNETP110"
+            "BIC_ZRNETPR", "BIC_ZRNETPR20", "BIC_ZRNETPR60", "BIC_ZRNETP110"
     );
 
     // ================================================================
@@ -375,12 +342,13 @@ public class RpsimSapRfcService {
         return map;
     }
 
-    /** SAP 필드명 정규화: /BIC/ 또는 BIC_ 접두어 제거 + 매핑 테이블 적용 */
+    /** SAP 필드명 정규화: /BIC/ → BIC_ 변환 (DB 컬럼이 BIC_ 접두어 사용) + 매핑 테이블 적용 */
     private String normalizeSapField(String sapName, Map<String, String> sapToDb) {
         if (sapName == null) return null;
         String upper = sapName.toUpperCase(Locale.ROOT);
-        if (upper.startsWith("/BIC/")) upper = upper.substring(5);       // /BIC/ZPROCESS → ZPROCESS
-        else if (upper.startsWith("BIC_")) upper = upper.substring(4);   // BIC_ZPROCESS → ZPROCESS
+        // /BIC/ZPROCESS → BIC_ZPROCESS (DB 컬럼명과 동일하게)
+        if (upper.startsWith("/BIC/")) upper = "BIC_" + upper.substring(5);
+        // BIC_ZPROCESS → 이미 DB 컬럼명과 동일하므로 그대로
         String mapped = sapToDb.get(upper);
         return mapped != null ? mapped : upper;
     }
