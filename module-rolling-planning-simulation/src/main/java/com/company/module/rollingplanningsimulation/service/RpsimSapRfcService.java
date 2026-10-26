@@ -375,11 +375,12 @@ public class RpsimSapRfcService {
         return map;
     }
 
-    /** SAP 필드명 정규화: /BIC/ 제거 + 매핑 테이블 적용 */
+    /** SAP 필드명 정규화: /BIC/ 또는 BIC_ 접두어 제거 + 매핑 테이블 적용 */
     private String normalizeSapField(String sapName, Map<String, String> sapToDb) {
         if (sapName == null) return null;
         String upper = sapName.toUpperCase(Locale.ROOT);
-        if (upper.startsWith("/BIC/")) upper = upper.substring(5);
+        if (upper.startsWith("/BIC/")) upper = upper.substring(5);       // /BIC/ZPROCESS → ZPROCESS
+        else if (upper.startsWith("BIC_")) upper = upper.substring(4);   // BIC_ZPROCESS → ZPROCESS
         String mapped = sapToDb.get(upper);
         return mapped != null ? mapped : upper;
     }
