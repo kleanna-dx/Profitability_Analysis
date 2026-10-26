@@ -306,62 +306,30 @@ public class SapRfcSyncService {
 
     private static final List<String> DB_COLUMNS_RPSIM_RAW_MATERIAL = List.of(
             "CALMONTH",
-            "ZPROCESS", "ZPROCESS_NM", "ZMACHINE", "ZMACHINE_NM",
+            "BIC_ZPROCESS", "BIC_ZPROCESS_NM", "BIC_ZMACHINE", "BIC_ZMACHINE_NM",
             "PRODH1", "PRODH1_NM", "PRODH2", "PRODH2_NM",
             "PRODH3", "PRODH3_NM", "PRODH4", "PRODH4_NM",
             "MATERIAL", "MATERIAL_NM",
-            "UNIT", "ZUNIT", "ZPRD_UNIT", "ZSCR_UNIT", "CURRENCY",
+            "UNIT", "BIC_ZUNIT", "BIC_ZPRD_UNIT", "BIC_ZSCR_UNIT", "CURRENCY",
             "MATL_GROUP", "MATL_GROUP_NM",
-            "ZJPCODE", "ZJPCODE_NM", "ZMATGROUP", "ZMATGROUP_NM",
-            "ZPUNIT", "ZREQ_QTY", "ZBASEQTY", "ZTUNIT", "ZRDCD_M01",
-            "ZPDTBQTY", "ZTPQTY", "ZPRD_QTY", "ZSCR_QTY",
-            "ZLUNIT", "ZDTB_QTY", "ZTPRICE", "ZTRAWMATR",
-            "ZZLBKUM60", "ZRAMT_060", "ZTUSEDIF", "ZTPRIDIF"
+            "BIC_ZJPCODE", "BIC_ZJPCODE_NM", "BIC_ZMATGROUP", "BIC_ZMATGROUP_NM",
+            "BIC_ZPUNIT", "BIC_ZREQ_QTY", "BIC_ZBASEQTY", "BIC_ZTUNIT", "BIC_ZRDCD_M01",
+            "BIC_ZPDTBQTY", "BIC_ZTPQTY", "BIC_ZPRD_QTY", "BIC_ZSCR_QTY",
+            "BIC_ZLUNIT", "BIC_ZDTB_QTY", "BIC_ZTPRICE", "BIC_ZTRAWMATR",
+            "BIC_ZZLBKUM60", "BIC_ZRAMT_060", "BIC_ZTUSEDIF", "BIC_ZTPRIDIF"
     );
 
-    /** SAP /BIC/ 접두어 제거 후 매핑 */
-    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_RPSIM_RAW;
-    static {
-        Map<String, String> m = new HashMap<>();
-        m.put("ZPROCESS",    "ZPROCESS");
-        m.put("ZPROCESS_NM", "ZPROCESS_NM");
-        m.put("ZMACHINE",    "ZMACHINE");
-        m.put("ZMACHINE_NM", "ZMACHINE_NM");
-        m.put("ZUNIT",       "ZUNIT");
-        m.put("ZPRD_UNIT",   "ZPRD_UNIT");
-        m.put("ZSCR_UNIT",   "ZSCR_UNIT");
-        m.put("ZJPCODE",     "ZJPCODE");
-        m.put("ZJPCODE_NM",  "ZJPCODE_NM");
-        m.put("ZMATGROUP",   "ZMATGROUP");
-        m.put("ZMATGROUP_NM","ZMATGROUP_NM");
-        m.put("ZPUNIT",      "ZPUNIT");
-        m.put("ZREQ_QTY",    "ZREQ_QTY");
-        m.put("ZBASEQTY",    "ZBASEQTY");
-        m.put("ZTUNIT",      "ZTUNIT");
-        m.put("ZRDCD_M01",   "ZRDCD_M01");
-        m.put("ZPDTBQTY",    "ZPDTBQTY");
-        m.put("ZTPQTY",      "ZTPQTY");
-        m.put("ZPRD_QTY",    "ZPRD_QTY");
-        m.put("ZSCR_QTY",    "ZSCR_QTY");
-        m.put("ZLUNIT",      "ZLUNIT");
-        m.put("ZDTB_QTY",    "ZDTB_QTY");
-        m.put("ZTPRICE",     "ZTPRICE");
-        m.put("ZTRAWMATR",   "ZTRAWMATR");
-        m.put("ZZLBKUM60",   "ZZLBKUM60");
-        m.put("ZRAMT_060",   "ZRAMT_060");
-        m.put("ZTUSEDIF",    "ZTUSEDIF");
-        m.put("ZTPRIDIF",    "ZTPRIDIF");
-        SAP_FIELD_TO_DB_COLUMN_RPSIM_RAW = Collections.unmodifiableMap(m);
-    }
+    /** SAP → DB 매핑 — DB가 BIC_ 접두어 포함이므로 별도 매핑 불필요 (빈 맵) */
+    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_RPSIM_RAW = Collections.emptyMap();
 
     private static final Set<String> DECIMAL_COLUMNS_RPSIM_RAW = Set.of(
-            "ZPUNIT", "ZREQ_QTY", "ZBASEQTY", "ZTUNIT", "ZPDTBQTY",
-            "ZTPQTY", "ZPRD_QTY", "ZSCR_QTY", "ZLUNIT", "ZDTB_QTY", "ZZLBKUM60"
+            "BIC_ZPUNIT", "BIC_ZREQ_QTY", "BIC_ZBASEQTY", "BIC_ZTUNIT", "BIC_ZPDTBQTY",
+            "BIC_ZTPQTY", "BIC_ZPRD_QTY", "BIC_ZSCR_QTY", "BIC_ZLUNIT", "BIC_ZDTB_QTY", "BIC_ZZLBKUM60"
     );
     private static final Set<String> NUMERIC_COLUMNS_RPSIM_RAW;
     static {
         Set<String> nums = new HashSet<>(DECIMAL_COLUMNS_RPSIM_RAW);
-        nums.addAll(Set.of("ZRDCD_M01", "ZTPRICE", "ZTRAWMATR", "ZRAMT_060", "ZTUSEDIF", "ZTPRIDIF"));
+        nums.addAll(Set.of("BIC_ZRDCD_M01", "BIC_ZTPRICE", "BIC_ZTRAWMATR", "BIC_ZRAMT_060", "BIC_ZTUSEDIF", "BIC_ZTPRIDIF"));
         NUMERIC_COLUMNS_RPSIM_RAW = Collections.unmodifiableSet(nums);
     }
 
@@ -380,36 +348,23 @@ public class SapRfcSyncService {
 
     private static final List<String> DB_COLUMNS_RPSIM_RAW_INVENTORY = List.of(
             "CALMONTH", "PLANT", "PLANT_NM",
-            "MATL_GROUP", "MATL_GROUP_NM", "ZMATGROUP", "ZMATGROUP_NM",
+            "MATL_GROUP", "MATL_GROUP_NM", "BIC_ZMATGROUP", "BIC_ZMATGROUP_NM",
             "MATL_TYPE", "MATL_TYPE_NM", "MATERIAL", "MATERIAL_NM",
             "CURRENCY", "BASE_UOM",
-            "ZLBKUM", "ZRNETPR", "ZLBKUM020", "ZRNETPR20",
-            "ZLBKUM60", "ZRNETPR60", "ZLBKUM101", "ZRNETP110"
+            "BIC_ZLBKUM", "BIC_ZRNETPR", "BIC_ZLBKUM020", "BIC_ZRNETPR20",
+            "BIC_ZLBKUM60", "BIC_ZRNETPR60", "BIC_ZLBKUM101", "BIC_ZRNETP110"
     );
 
-    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_RPSIM_INV;
-    static {
-        Map<String, String> m = new HashMap<>();
-        m.put("ZMATGROUP",    "ZMATGROUP");
-        m.put("ZMATGROUP_NM", "ZMATGROUP_NM");
-        m.put("ZLBKUM",       "ZLBKUM");
-        m.put("ZRNETPR",      "ZRNETPR");
-        m.put("ZLBKUM020",    "ZLBKUM020");
-        m.put("ZRNETPR20",    "ZRNETPR20");
-        m.put("ZLBKUM60",     "ZLBKUM60");
-        m.put("ZRNETPR60",    "ZRNETPR60");
-        m.put("ZLBKUM101",    "ZLBKUM101");
-        m.put("ZRNETP110",    "ZRNETP110");
-        SAP_FIELD_TO_DB_COLUMN_RPSIM_INV = Collections.unmodifiableMap(m);
-    }
+    /** SAP → DB 매핑 — DB가 BIC_ 접두어 포함이므로 별도 매핑 불필요 (빈 맵) */
+    private static final Map<String, String> SAP_FIELD_TO_DB_COLUMN_RPSIM_INV = Collections.emptyMap();
 
     private static final Set<String> DECIMAL_COLUMNS_RPSIM_INV = Set.of(
-            "ZLBKUM", "ZLBKUM020", "ZLBKUM60", "ZLBKUM101"
+            "BIC_ZLBKUM", "BIC_ZLBKUM020", "BIC_ZLBKUM60", "BIC_ZLBKUM101"
     );
     private static final Set<String> NUMERIC_COLUMNS_RPSIM_INV;
     static {
         Set<String> nums = new HashSet<>(DECIMAL_COLUMNS_RPSIM_INV);
-        nums.addAll(Set.of("ZRNETPR", "ZRNETPR20", "ZRNETPR60", "ZRNETP110"));
+        nums.addAll(Set.of("BIC_ZRNETPR", "BIC_ZRNETPR20", "BIC_ZRNETPR60", "BIC_ZRNETP110"));
         NUMERIC_COLUMNS_RPSIM_INV = Collections.unmodifiableSet(nums);
     }
 
@@ -462,7 +417,9 @@ public class SapRfcSyncService {
         // 옛 이름 그대로 매핑 확인 (수익성 매핑은 옛 이름 → BIC_ 프리픽스)
         String mapped2 = mapping.sapFieldToDbColumn.get(sapName);
         if (mapped2 != null) return mapped2;
-        if (upper.startsWith("/BIC/")) return upper.substring(5);
+        // /BIC/ZPROCESS → BIC_ZPROCESS (DB 컬럼명과 동일하게)
+        if (upper.startsWith("/BIC/")) return "BIC_" + upper.substring(5);
+        // BIC_ZPROCESS → 이미 DB 컬럼명과 동일하므로 그대로
         return upper;
     }
 
