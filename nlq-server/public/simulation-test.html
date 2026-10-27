@@ -1410,7 +1410,7 @@ async function loadEnergyRefData(){
     try{const r=await fetch(API+'/burner-lng-rates?year='+yr+'&division='+div);const j=await r.json();BURNER_LNG_RATES=j.data||j.content||[];if(!Array.isArray(BURNER_LNG_RATES))BURNER_LNG_RATES=BURNER_LNG_RATES.content||[];}catch(_){BURNER_LNG_RATES=[];}
     try{const mo_=parseInt(getYm().substring(4,6));const r=await fetch(API+'/boiler-cost-rates?year='+yr+'&month='+mo_+'&division='+div);const j=await r.json();BOILER_COST_RATES=j.data||j.content||[];if(!Array.isArray(BOILER_COST_RATES))BOILER_COST_RATES=BOILER_COST_RATES.content||[];}catch(_){BOILER_COST_RATES=[];}
     try{const ym=getYm();const month=parseInt(ym.substring(4,6));const r=await fetch(API+'/boiler-maintenances?year='+yr+'&division='+div);const j=await r.json();const all=j.data||j.content||[];BOILER_MAINTENANCES=Array.isArray(all)?all.filter(m=>m.month===month||!m.month):[];}catch(_){BOILER_MAINTENANCES=[];}
-    try{const r=await fetch(API+'/boiler-masters?division='+div);const j=await r.json();BOILER_MASTERS_LIST=j.data||j.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=BOILER_MASTERS_LIST.content||[];}catch(_){BOILER_MASTERS_LIST=[];}
+    try{const mo_bm=parseInt(getYm().substring(4,6));const r=await fetch(API+'/boiler-masters?year='+yr+'&month='+mo_bm+'&division='+div);const j=await r.json();BOILER_MASTERS_LIST=j.data||j.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=BOILER_MASTERS_LIST.content||[];}catch(_){BOILER_MASTERS_LIST=[];}
     // boiler-plans 제거됨 — 일별 가동시간(DAILY_OPS)으로 대체
     try{const mo=parseInt(getYm().substring(4,6));const r=await fetch(API+'/cogen-deductions?year='+yr+'&month='+mo+'&division='+div);const j=await r.json();COGEN_DEDUCTIONS=j.data||j.content||[];if(!Array.isArray(COGEN_DEDUCTIONS))COGEN_DEDUCTIONS=COGEN_DEDUCTIONS.content||[];}catch(_){COGEN_DEDUCTIONS=[];}
     try{const mo=parseInt(getYm().substring(4,6));const r=await fetch(API+'/daily-operations?year='+yr+'&month='+mo+'&division='+div);const j=await r.json();DAILY_OPS=j.data||j.content||[];if(!Array.isArray(DAILY_OPS))DAILY_OPS=DAILY_OPS.content||[];}catch(_){DAILY_OPS=[];}
@@ -2531,7 +2531,7 @@ async function loadRef(){const d=REFS[cRef];const div=document.getElementById('s
     if(d.monthFilter||d.k==='daily-operations')url+='&month='+parseInt(ymVal.substring(4,6));
     // boilerCode 컬럼이 있는 탭은 보일러 마스터 로드 (보일러명 표시용)
     if(d.cols.includes('boilerCode')&&!BOILER_MASTERS_LIST.length){
-        try{const br=await fetch(API+'/boiler-masters?division='+div);const bj=await br.json();BOILER_MASTERS_LIST=bj.data||bj.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=[];}catch(_){}
+        try{const br=await fetch(API+'/boiler-masters?year='+yr+'&month='+parseInt(ymVal.substring(4,6))+'&division='+div);const bj=await br.json();BOILER_MASTERS_LIST=bj.data||bj.content||[];if(!Array.isArray(BOILER_MASTERS_LIST))BOILER_MASTERS_LIST=[];}catch(_){}
     }
     refDataPrev=[];
     try{const r=await fetch(url);const j=await r.json();console.log('[loadRef] '+d.l+' response:',JSON.stringify(j).substring(0,500));
