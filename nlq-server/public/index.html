@@ -1812,6 +1812,59 @@ function syncCostBasisFromResponse(appliedCostBasis) {
 }
 
 // ============================================================
+// [2026-10-22] 저장된 _sessionCostBasis 를 UI 렌더 포맷(appliedCostBasis)으로 재조립
+// ------------------------------------------------------------
+// 배경:
+//   이력 재진입(restoreSession) 시, DB 에 저장된 chart_config._sessionCostBasis 는
+//   { value, zcgubunD, source } 3개 필드만 저장됨 (saveHistory 라인 15061 참조).
+//   하지만 결과표 뱃지(buildAnalysisDetailTable) 는 { value, zcgubunD, source, label,
+//   showDropdown, options } 6개 필드를 요구함.
+//
+// 해결:
+//   서버의 buildAppliedCostBasisResponse(server.mjs 라인 14912) 와 동일한 로직을
+//   프론트에 재구현. 저장값 → UI 포맷으로 "재조립".
+//
+// 사용처:
+//   restoreSession() 안의 appendBotMessage / appendAnalysisOnlyMessage 호출 직전
+//
+// COST_BASIS_OPTIONS 와 label/showDropdown 규칙은 서버 상수와 1:1 매칭 유지 필수
+// (서버 쪽 상수가 바뀌면 여기도 함께 갱신 — 동기화 의무).
+// ============================================================
+const FRONTEND_COST_BASIS_OPTIONS = [
+    { value: '실제원가', zcgubunD: null,       label: '실제원가'              },
+    { value: '매출원가', zcgubunD: null,       label: '매출원가'              },
+    { value: '표준원가', zcgubunD: '입고-생산', label: '실제원가의 표준원가'  },
+    { value: '표준원가', zcgubunD: '소비-소비', label: '매출원가의 표준원가'  },
+];
+
+function rehydrateAppliedCostBasisForHistory(saved) {
+    if (!saved || typeof saved.value !== 'string') return null;
+    const value = saved.value;
+    const zcgubunD = (typeof saved.zcgubunD === 'string' && saved.zcgubunD) ? saved.zcgubunD : null;
+    // whitelist 검증 — 저장값이 손상/구버전이면 복원 안 함 (사용자 요구: 거짓 정보 X)
+    const opt = FRONTEND_COST_BASIS_OPTIONS.find(o => o.value === value && o.zcgubunD === zcgubunD);
+    if (!opt) {
+        console.warn('[CostBasis:Rehydrate] whitelist 미매칭 — 복원 건너뜀:', saved);
+        return null;
+    }
+    // source — 서버 whitelist 와 동일
+    const SOURCE_WL = new Set(['default_fallback', 'dropdown_change', 'clarification_ui',
+                               'clarification_ui_subtype', 'explicit_in_query']);
+    const source = (typeof saved.source === 'string' && SOURCE_WL.has(saved.source))
+        ? saved.source : 'default_fallback';
+    // showDropdown 규칙 — 서버 buildAppliedCostBasisResponse 와 동일
+    const showDropdown = (source === 'default_fallback' || source === 'dropdown_change');
+    return {
+        value,
+        zcgubunD,
+        label: opt.label,
+        source,
+        showDropdown,
+        options: FRONTEND_COST_BASIS_OPTIONS.map(o => ({ value: o.value, zcgubunD: o.zcgubunD, label: o.label })),
+    };
+}
+
+// ============================================================
 // [2026-10-22 B-3] 결과표 toolbar 원가 기준 드롭다운 변경 핸들러
 // ------------------------------------------------------------
 // 설계 전환 (방식 A → 방식 B-3):
@@ -7882,6 +7935,12 @@ async function restoreSession(sessionKey, hintDomain) {
                         : '이 분석 답변은 이전 채팅에서 생성되었습니다. 동일한 질문을 다시 입력하시면 최신 데이터로 새로 분석해드립니다.';
                     const cfg = item.chart_config || {};
                     const rows = Array.isArray(item.result_data) ? item.result_data : null;
+                    // [2026-10-22] 이력 복원 시에도 당시 원가 기준 뱃지를 동일하게 표시.
+                    //   DB 저장값 chart_config._sessionCostBasis = { value, zcgubunD, source } (3필드)
+                    //   → rehydrateAppliedCostBasisForHistory 가 label/showDropdown/options 를
+                    //      재조립해서 신규 질의와 100% 동일한 appliedCostBasis 포맷으로 반환.
+                    //   저장값이 없는 구 이력(cot015 외/PR #525 이전) → null → 뱃지 안 뜸(기존 동작).
+                    const _historyAppliedCb = rehydrateAppliedCostBasisForHistory(cfg._sessionCostBasis);
                     // rows 가 있으면 객체 폴리모피즘 경로로, 없으면 문자열 경로로 (역호환)
                     if (rows && rows.length > 0) {
                         appendAnalysisOnlyMessage({
@@ -7900,12 +7959,17 @@ async function restoreSession(sessionKey, hintDomain) {
                             // [2026-07-31] 이력 재열람에서도 실제 조회 기간 동일 표시.
                             //   서버 /api/history/session/:id 가 generated_sql 로부터 재산출해 period_info 로 반환.
                             periodInfo: item.period_info || null,
+                            // [2026-10-22] 이력 복원 시에도 뱃지 표시 (DB 저장값 → UI 포맷 재조립)
+                            appliedCostBasis: _historyAppliedCb,
                         });
                     } else {
                         appendAnalysisOnlyMessage(analysisBody);
                     }
                     conversationContext.push({ query: item.query_text, sql: null });
                 } else {
+                    // [2026-10-22] aggregate(현황집계) 이력도 동일하게 복원
+                    const cfg = item.chart_config || {};
+                    const _historyAppliedCb = rehydrateAppliedCostBasisForHistory(cfg._sessionCostBasis);
                     appendBotMessage({
                         query: item.query_text,
                         sql: item.generated_sql,
@@ -7923,6 +7987,8 @@ async function restoreSession(sessionKey, hintDomain) {
                         // [2026-07-31] 이력 재열람에서도 실제 조회 기간 동일 표시.
                         //   서버 /api/history/session/:id 가 generated_sql 로부터 재산출해 period_info 로 반환.
                         periodInfo: item.period_info || null,
+                        // [2026-10-22] 이력 복원 시에도 뱃지 표시 (DB 저장값 → UI 포맷 재조립)
+                        appliedCostBasis: _historyAppliedCb,
                     });
                     conversationContext.push({ query: item.query_text, sql: item.generated_sql });
                 }
@@ -7945,6 +8011,9 @@ async function restoreSession(sessionKey, hintDomain) {
         });
 
         if (conversationContext.length > 5) conversationContext = conversationContext.slice(-5);
+
+        // [2026-10-22] 세션 메모리(currentCostBasis) 복원은 이 함수 상단(items.forEach 전)
+        //   의 [CostBasis:Restore] 블록에서 이미 수행됨. 여기서 추가 작업 불필요.
 
         closeSidebar();
         scrollToBottom();

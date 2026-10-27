@@ -892,6 +892,110 @@ assertMatch(serverSrc,
     'V-8: self-fetch body — forcedCostBasis: job.forcedCostBasis || null (source 포함 전달)');
 
 // ============================================================
+// W. FRONTEND — 이력 복원 시 원가 기준 뱃지 재조립 (2026-10-22)
+// ------------------------------------------------------------
+// 사용자 신고: 신규 질의 시엔 '실제원가 기준 (기본값)' 뱃지가 표 상단에 표시되는데,
+//   이력에서 이전 질문을 다시 불러오면 뱃지가 사라짐.
+//
+// 원인:
+//   DB (nl_query_history.chart_config._sessionCostBasis) 에 저장은 되어 있지만,
+//   프론트 restoreSession() 이 꺼내서 appendBotMessage/appendAnalysisOnlyMessage 에
+//   appliedCostBasis 로 넘기는 로직이 없었음.
+//
+// 수정:
+//   1) 신규 헬퍼 rehydrateAppliedCostBasisForHistory() — DB 저장값(3필드) →
+//      UI 포맷(6필드) 재조립. 서버 buildAppliedCostBasisResponse 와 동일 규칙.
+//   2) restoreSession 안의 2곳 호출부(analysis / aggregate) 에 _historyAppliedCb 전달.
+//   3) 중복 복원 로직 제거 — currentCostBasis 메모리 복원은 기존 코드가 처리 중.
+// ============================================================
+
+// W-1: FRONTEND_COST_BASIS_OPTIONS 상수 정의 (서버 상수와 1:1 매칭)
+assertMatch(htmlSrc,
+    /const\s+FRONTEND_COST_BASIS_OPTIONS\s*=\s*\[[\s\S]{0,500}['"]실제원가['"][\s\S]{0,200}['"]매출원가['"][\s\S]{0,200}['"]실제원가의\s*표준원가['"][\s\S]{0,200}['"]매출원가의\s*표준원가['"]/,
+    'W-1: FRONTEND_COST_BASIS_OPTIONS — 4개 옵션 정의 (실제/매출/표준-입고생산/표준-소비소비)');
+
+// W-2: rehydrateAppliedCostBasisForHistory 함수 정의
+assertMatch(htmlSrc,
+    /function\s+rehydrateAppliedCostBasisForHistory\s*\(\s*saved\s*\)/,
+    'W-2: rehydrateAppliedCostBasisForHistory(saved) 함수 정의');
+
+// W-3: whitelist 미매칭 시 null 반환 (사용자 요구: 거짓 정보 X)
+{
+    const fn = htmlSrc.match(/function\s+rehydrateAppliedCostBasisForHistory[\s\S]*?\n\}/);
+    assert(fn && /if\s*\(!opt\)[\s\S]{0,300}return\s+null/.test(fn[0]),
+        'W-3: whitelist 미매칭 시 null 반환 (구 이력/손상된 데이터 거짓 표시 방지)');
+}
+
+// W-4: showDropdown 규칙 — default_fallback / dropdown_change 만 true (서버 규칙과 동일)
+{
+    const fn = htmlSrc.match(/function\s+rehydrateAppliedCostBasisForHistory[\s\S]*?\n\}/);
+    assert(fn && /showDropdown\s*=\s*\(\s*source\s*===\s*['"]default_fallback['"]\s*\|\|\s*source\s*===\s*['"]dropdown_change['"]\s*\)/.test(fn[0]),
+        'W-4: showDropdown = (source === default_fallback || source === dropdown_change) — 서버 로직과 동일');
+}
+
+// W-5: source whitelist 5개 (서버 appliedSources 와 일관)
+{
+    const fn = htmlSrc.match(/function\s+rehydrateAppliedCostBasisForHistory[\s\S]*?\n\}/);
+    assert(fn
+        && /SOURCE_WL\s*=\s*new\s+Set/.test(fn[0])
+        && /default_fallback/.test(fn[0]) && /dropdown_change/.test(fn[0])
+        && /clarification_ui/.test(fn[0]) && /clarification_ui_subtype/.test(fn[0])
+        && /explicit_in_query/.test(fn[0]),
+        'W-5: rehydrate 안 SOURCE_WL — 5개 source 전부 포함');
+}
+
+// W-6: label 재조립 — COST_BASIS_OPTIONS.find 로 매칭된 opt.label 사용
+{
+    const fn = htmlSrc.match(/function\s+rehydrateAppliedCostBasisForHistory[\s\S]*?\n\}/);
+    assert(fn && /FRONTEND_COST_BASIS_OPTIONS\.find\s*\(\s*o\s*=>\s*o\.value\s*===\s*value\s*&&\s*o\.zcgubunD\s*===\s*zcgubunD\s*\)/.test(fn[0]),
+        'W-6: whitelist 매칭 — value + zcgubunD 조합으로 lookup (표준원가 서브타입 라벨 복원)');
+}
+
+// W-7: options 배열 재조립 (서버와 동일 포맷)
+{
+    const fn = htmlSrc.match(/function\s+rehydrateAppliedCostBasisForHistory[\s\S]*?\n\}/);
+    assert(fn && /options:\s*FRONTEND_COST_BASIS_OPTIONS\.map\s*\(\s*o\s*=>\s*\(\s*\{\s*value:\s*o\.value,\s*zcgubunD:\s*o\.zcgubunD,\s*label:\s*o\.label\s*\}\s*\)\s*\)/.test(fn[0]),
+        'W-7: options 재조립 — FRONTEND_COST_BASIS_OPTIONS.map 로 4개 옵션 포함');
+}
+
+// W-8: restoreSession 안 analysis 분기(chart_type==='analysis') 호출부에 appliedCostBasis 전달
+assertMatch(htmlSrc,
+    /if\s*\(item\.chart_type\s*===\s*['"]analysis['"]\)[\s\S]{0,2000}appendAnalysisOnlyMessage\s*\(\s*\{[\s\S]{0,2000}appliedCostBasis:\s*_historyAppliedCb/,
+    'W-8: restoreSession analysis 분기 → appendAnalysisOnlyMessage 에 appliedCostBasis 전달');
+
+// W-9: restoreSession 안 aggregate 분기(else) 호출부에 appliedCostBasis 전달
+assertMatch(htmlSrc,
+    /appendBotMessage\s*\(\s*\{[\s\S]{0,2000}appliedCostBasis:\s*_historyAppliedCb/,
+    'W-9: restoreSession aggregate 분기 → appendBotMessage 에 appliedCostBasis 전달');
+
+// W-10: 두 분기 모두에서 rehydrateAppliedCostBasisForHistory 호출 (cfg._sessionCostBasis 입력)
+{
+    const calls = (htmlSrc.match(/rehydrateAppliedCostBasisForHistory\s*\(\s*cfg\._sessionCostBasis\s*\)/g) || []).length;
+    assert(calls >= 2,
+        `W-10: rehydrateAppliedCostBasisForHistory(cfg._sessionCostBasis) 호출 — 발견 ${calls} 회 (analysis + aggregate)`);
+}
+
+// W-11: 서버 저장 포맷 — chart_config._sessionCostBasis 는 {value, zcgubunD, source} 만 저장
+//       (label/showDropdown/options 는 저장 안 함 — 복원 시 재조립)
+{
+    const saveBlock = serverSrc.match(/_sessionCostBasis:\s*\{[\s\S]{0,300}\}/);
+    assert(saveBlock
+        && /value:\s*_scb\.value/.test(saveBlock[0])
+        && /zcgubunD:\s*_scb\.zcgubunD/.test(saveBlock[0])
+        && /source:\s*_scb\.source/.test(saveBlock[0])
+        && !/showDropdown/.test(saveBlock[0])
+        && !/options:/.test(saveBlock[0])
+        && !/label:/.test(saveBlock[0]),
+        'W-11: 서버 저장 포맷 — _sessionCostBasis 는 {value, zcgubunD, source} 3필드만 (label/showDropdown/options 는 저장 안 함)');
+}
+
+// W-12: 이력 응답 조립 — /api/history/session/:sessionId 가 chart_config 를 JSON.parse 해서 반환
+//       (추가 쿼리/스키마 변경 없이 그대로 복원 가능)
+assertMatch(serverSrc,
+    /chart_config:\s*r\.chart_config\s*\?\s*JSON\.parse\s*\(\s*r\.chart_config\s*\)\s*:\s*null/,
+    'W-12: /api/history/session/:sessionId — chart_config JSON parse 해서 응답 (복원 데이터 전달)');
+
+// ============================================================
 // 결과 요약
 // ============================================================
 console.log('\n=== TEST RESULT ===');
