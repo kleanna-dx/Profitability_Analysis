@@ -192,7 +192,13 @@ public class EnergyDataSyncService {
         int repMonth = allMonths.stream().min(Integer::compareTo).orElse(1);
         BigDecimal repBsc = bscData != null ? bscData.getOrDefault(repMonth, BigDecimal.ZERO) : BigDecimal.ZERO;
         BigDecimal repAsc = ascData != null ? ascData.getOrDefault(repMonth, BigDecimal.ZERO) : BigDecimal.ZERO;
-        BigDecimal repGuarantee = guaranteeData != null ? guaranteeData.getOrDefault(repMonth, BigDecimal.ZERO) : BigDecimal.ZERO;
+        // 보증량: 어느 월이든 0이 아닌 값이 있으면 사용 (에너지팀 DB에서 특정 월에만 값이 올 수 있음)
+        BigDecimal repGuarantee = BigDecimal.ZERO;
+        if (guaranteeData != null) {
+            repGuarantee = guaranteeData.values().stream()
+                    .filter(v -> v != null && v.compareTo(BigDecimal.ZERO) > 0)
+                    .findFirst().orElse(BigDecimal.ZERO);
+        }
 
         if (repBsc.compareTo(BigDecimal.ZERO) > 0) {
             SteamPriceInterval bscInterval = SteamPriceInterval.builder()
