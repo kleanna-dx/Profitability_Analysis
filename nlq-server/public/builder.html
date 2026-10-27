@@ -1098,7 +1098,16 @@
     <!-- 최근 이력 / 즐겨찾기 / 보관함 -->
     <div class="sidebar-history-section">
         <div class="history-header">
-            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider"><i class="fas fa-history mr-1"></i>쿼리 이력</p>
+            <p class="text-xs text-indigo-300 font-semibold uppercase tracking-wider">
+                <i class="fas fa-history mr-1"></i>쿼리 이력<!--
+                [2026-10-16] 쿼리 이력 건수 안내 뱃지 — "(현재/50)" 형식.
+                  - 자연어 질의 쪽은 보관주기(31일) 안내를 쓰지만, VQB 는 시간 기준이 없고 50건 캡만 있어서
+                    "현재 저장된 개수 / 최대 50건" 을 괄호로 간단 표시하여 공간을 최소화.
+                  - 숫자는 loadBuilderHistory() 가 recent 탭 응답 길이로 캡처해 채움 (initial '-/50').
+                  - 50건 초과 저장 시 서버가 가장 오래된 비(非)즐겨찾기부터 자동 삭제하므로
+                    recent 탭 길이가 곧 전체 저장 건수와 일치 (즐겨찾기 포함).
+            --><span id="builderHistoryCount" style="font-size:10px;font-weight:500;color:#a5b4fc;margin-left:4px;letter-spacing:0;text-transform:none;">(-/50)</span>
+            </p>
             <span id="historyClearBtn" class="history-clear-btn" onclick="clearAllBuilderHistory()" title="전체 삭제"><i class="fas fa-trash-alt mr-1"></i>전체 삭제</span>
         </div>
         <button class="new-builder-btn" onclick="newQueryBuilder()" title="현재 쿼리빌더를 초기화하고 새로 시작합니다">
@@ -4535,8 +4544,36 @@ async function loadBuilderHistory() {
         renderBuilderHistory(data);
         // 안읽은 공유 개수 뱃지 업데이트
         loadUnreadSharedCount();
+        // [2026-10-16] 사이드바 쿼리 이력 건수 뱃지 — 현재 활성 탭 응답 길이를 즉시 반영.
+        //   추가 네트워크 요청 없이 방금 받은 data 로 바로 갱신.
+        updateBuilderHistoryCount(data);
     } catch(e) {
         console.error('빌더 이력 로드 실패:', e);
+    }
+}
+
+// [2026-10-16] 사이드바 쿼리 이력 건수 뱃지 업데이트.
+//   현재 활성 탭(currentHistoryTab)에 맞춰 다른 포맷으로 표기:
+//     - recent     → "(건수/50)"  (서버가 50건 캡으로 유지 — 상한 안내 유용)
+//     - bookmarked → "(건수)"     (PR #521로 즐겨찾기는 50 캡에서 제외되는 보호 대상 — /50 쓰면 오해 유발)
+//     - shared     → "(건수)"     (shared_queries 테이블이라 builder 50 캡과 무관)
+//   왜 탭마다 포맷이 다른가:
+//     recent 는 저장 상한이 중요한 정보지만, bookmarked/shared 는 상한이 다르거나 없음.
+//     사용자 지적 — "즐겨찾기 탭에 맞는 cnt" — 를 반영하여 각 탭의 실제 보관 정책에 맞춤.
+//   data: loadBuilderHistory() 가 방금 받은 응답 배열 (추가 fetch 불필요).
+function updateBuilderHistoryCount(data) {
+    try {
+        const el = document.getElementById('builderHistoryCount');
+        if (!el || !Array.isArray(data)) return;
+        const n = data.length;
+        if (currentHistoryTab === 'recent') {
+            el.textContent = `(${n}/50)`;
+        } else {
+            // bookmarked / shared — 상한 없이 현재 건수만
+            el.textContent = `(${n})`;
+        }
+    } catch(_) {
+        // 조용히 무시 — 뱃지 미표시가 핵심 기능을 막지 않도록
     }
 }
 

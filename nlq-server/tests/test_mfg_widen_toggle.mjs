@@ -92,16 +92,19 @@ const buildSigMatch = html.match(/function\s+buildAnalysisDetailTable\s*\(\s*([^
 assert(buildSigMatch, 'buildAnalysisDetailTable 함수 정의 존재');
 if (buildSigMatch) {
   const params = buildSigMatch[1].split(',').map(s => s.trim()).filter(Boolean);
-  assertEqual(params.length, 9, 'buildAnalysisDetailTable 파라미터 개수는 9개');
-  assertEqual(params[0], 'tableId',         'param[0] = tableId');
-  assertEqual(params[1], 'rows',            'param[1] = rows');
-  assertEqual(params[2], 'columnOrder',     'param[2] = columnOrder');
-  assertEqual(params[3], 'columnLabels',    'param[3] = columnLabels');
-  assertEqual(params[4], 'rowCount',        'param[4] = rowCount');
-  assertEqual(params[5], 'sql',             'param[5] = sql');
-  assertEqual(params[6], 'fromHistory',     'param[6] = fromHistory');
-  assertEqual(params[7], 'periodInfo',      'param[7] = periodInfo');
-  assertEqual(params[8], 'showWidenButton', 'param[8] = showWidenButton (신규 옵션)');
+  // [2026-10-16] 10번째 파라미터 appliedCostBasis 신규 추가 (제조원가 세션 원가 기준 뱃지/드롭다운용).
+  //   widen toggle 자체는 그대로 유지 — 아래 9번째 파라미터 showWidenButton 검증은 변함없음.
+  assertEqual(params.length, 10, 'buildAnalysisDetailTable 파라미터 개수는 10개 (appliedCostBasis 신규 추가)');
+  assertEqual(params[0], 'tableId',          'param[0] = tableId');
+  assertEqual(params[1], 'rows',             'param[1] = rows');
+  assertEqual(params[2], 'columnOrder',      'param[2] = columnOrder');
+  assertEqual(params[3], 'columnLabels',     'param[3] = columnLabels');
+  assertEqual(params[4], 'rowCount',         'param[4] = rowCount');
+  assertEqual(params[5], 'sql',              'param[5] = sql');
+  assertEqual(params[6], 'fromHistory',      'param[6] = fromHistory');
+  assertEqual(params[7], 'periodInfo',       'param[7] = periodInfo');
+  assertEqual(params[8], 'showWidenButton',  'param[8] = showWidenButton (widen toggle)');
+  assertEqual(params[9], 'appliedCostBasis', 'param[9] = appliedCostBasis (제조원가 세션 원가 기준)');
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -113,13 +116,18 @@ const initSigMatch = html.match(/function\s+initAnalysisDetailTable\s*\(\s*([^)]
 assert(initSigMatch, 'initAnalysisDetailTable 함수 정의 존재');
 if (initSigMatch) {
   const params = initSigMatch[1].split(',').map(s => s.trim()).filter(Boolean);
-  assertEqual(params.length, 6, 'initAnalysisDetailTable 파라미터 개수는 6개');
-  assertEqual(params[0], 'tableId',      'param[0] = tableId');
-  assertEqual(params[1], 'rows',         'param[1] = rows');
-  assertEqual(params[2], 'columnOrder',  'param[2] = columnOrder');
-  assertEqual(params[3], 'columnLabels', 'param[3] = columnLabels');
-  assertEqual(params[4], 'fromHistory',  'param[4] = fromHistory');
-  assertEqual(params[5], 'widenable',    'param[5] = widenable (신규 옵션)');
+  // [2026-10-22 B-3] 7~9번째 파라미터 (sql / initialAppliedCostBasis / chartCanvasId) 신규 추가
+  //   → widen toggle 6개 + B-3 재조회 3개 = 9개. widen toggle 보호 의도는 그대로 유지 (param[5] = widenable).
+  assertEqual(params.length, 9, 'initAnalysisDetailTable 파라미터 개수는 9개 (B-3 재조회 3개 추가)');
+  assertEqual(params[0], 'tableId',                'param[0] = tableId');
+  assertEqual(params[1], 'rows',                   'param[1] = rows');
+  assertEqual(params[2], 'columnOrder',            'param[2] = columnOrder');
+  assertEqual(params[3], 'columnLabels',           'param[3] = columnLabels');
+  assertEqual(params[4], 'fromHistory',            'param[4] = fromHistory');
+  assertEqual(params[5], 'widenable',              'param[5] = widenable (widen toggle)');
+  assertEqual(params[6], 'sql',                    'param[6] = sql (B-3 드롭다운 재조회용)');
+  assertEqual(params[7], 'initialAppliedCostBasis','param[7] = initialAppliedCostBasis (원래값 복귀 판정)');
+  assertEqual(params[8], 'chartCanvasId',          'param[8] = chartCanvasId (차트 재렌더용)');
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -347,8 +355,10 @@ assert(
   "area === 'manufacturing-cost' 정확 비교"
 );
 assert(
-  /buildAnalysisDetailTable\([^)]*_mfgShowWidenBtn\s*\)/.test(html),
-  'buildAnalysisDetailTable 호출 시 _mfgShowWidenBtn 을 9번째 인자로 전달'
+  // [2026-10-22] aggregate 호출부에 _mfgShowWidenBtn 가 9번째 인자로 전달되어야 함.
+  //   10번째 인자(appliedCostBasis) 가 추가되었으므로 `_mfgShowWidenBtn` 뒤에 `)` 또는 `,` 둘 다 허용.
+  /buildAnalysisDetailTable\([^)]*_mfgShowWidenBtn\s*[,)]/.test(html),
+  'buildAnalysisDetailTable 호출 시 _mfgShowWidenBtn 을 9번째 인자로 전달 (10번째 appliedCostBasis 뒤따를 수 있음)'
 );
 assert(
   /_aggDetailInitCtx\.widenable/.test(html),
@@ -360,7 +370,11 @@ assert(
 // ─────────────────────────────────────────────────────────────────
 console.log('[9] analysis 호출부 미변경 확인');
 
-// buildAnalysisDetailTable 호출: aggregate 는 9-인자, analysis 는 8-인자
+// [2026-10-16] 10번째 파라미터 appliedCostBasis 추가 이후:
+//   - aggregate 호출: 10-인자 (showWidenButton=_mfgShowWidenBtn, appliedCostBasis=data.appliedCostBasis)
+//   - analysis 호출: 10-인자 (showWidenButton=false(명시), appliedCostBasis=dataOrText.appliedCostBasis)
+//   핵심은 "analysis 경로는 showWidenButton 을 명시적으로 false 로 전달해 widen toggle 비활성 유지".
+//   호출 인자 개수가 아니라 "analysis 호출의 showWidenButton 자리가 false 인지" 로 검증.
 const buildCallRe = /buildAnalysisDetailTable\s*\(([^)]*)\)/g;
 const buildCallCounts = [];
 let bm;
@@ -369,10 +383,18 @@ while ((bm = buildCallRe.exec(html)) !== null) {
   buildCallCounts.push(args.length);
 }
 console.log('  buildAnalysisDetailTable 호출 인자 개수:', buildCallCounts);
-assert(buildCallCounts.some(n => n === 9), '9-인자 호출(aggregate) 존재');
-assert(buildCallCounts.some(n => n === 8), '8-인자 호출(analysis, showWidenButton undefined) 존재');
+assert(buildCallCounts.some(n => n === 10 || n === 9), '현황집계 경로 호출(≥9-인자) 존재');
+// analysis 호출부 — showWidenButton 자리가 명시적으로 false 인지 확인
+//   패턴: 'buildAnalysisDetailTable(... , false, (typeof dataOrText ...)'  →  false, (
+assert(
+  /buildAnalysisDetailTable\s*\([^)]*,\s*false\s*,\s*\(typeof\s+dataOrText/.test(html),
+  'analysis 호출부에서 showWidenButton 자리가 명시적 false (widen toggle 비활성 유지)'
+);
 
-// initAnalysisDetailTable 호출: aggregate 는 6-인자, analysis 는 5-인자
+// [2026-10-22 B-3] initAnalysisDetailTable 호출 인자 개수
+//   aggregate 호출: 9-인자 (tableId, rows, cols, labels, fromHistory, widenable, sql, initCb, chartId)
+//   analysis 호출: 9-인자 (tableId, rows, cols, labels, fromHistory, false, _sqlForRequery, _initCbForRequery, null)
+//   둘 다 9-인자지만, analysis 쪽은 widenable 자리에 명시적 false 전달으로 widen toggle 비활성 유지.
 const initCallRe = /initAnalysisDetailTable\s*\(/g;
 const initCallCounts = [];
 let im;
@@ -394,8 +416,16 @@ while ((im = initCallRe.exec(html)) !== null) {
   initCallCounts.push(args.length);
 }
 console.log('  initAnalysisDetailTable 호출 인자 개수:', initCallCounts);
-assert(initCallCounts.some(n => n === 6), '6-인자 호출(aggregate, widenable=true) 존재');
-assert(initCallCounts.some(n => n === 5), '5-인자 호출(analysis, widenable undefined) 존재');
+// [2026-10-22 B-3] 주석 안의 initAnalysisDetailTable(..., widenable=true) 같은 설명 문구도
+//   정규식이 호출로 인식할 수 있으므로 "every" 가 아니라 "9-인자 호출이 2개 이상 존재" 로 완화.
+//   실제 호출은 aggregate(appendBotMessage) + analysis(appendAnalysisOnlyMessage) 2개.
+const nineArgCalls = initCallCounts.filter(n => n === 9).length;
+assert(nineArgCalls >= 2, `9-인자 호출 (B-3 재조회 지원) 이 2개 이상 존재 — 실제=${JSON.stringify(initCallCounts)}, 9-인자 수=${nineArgCalls}`);
+// analysis 호출부에서 widenable 자리가 false 명시적으로 들어가서 widen toggle 비활성화 보장
+assert(
+  /initAnalysisDetailTable\s*\(\s*tableId\s*,\s*rows\s*,\s*columnOrder\s*,\s*columnLabels\s*,\s*fromHistory\s*,\s*false\s*,/.test(html),
+  'analysis 호출부에서 widenable 자리가 명시적 false (widen toggle 비활성화 유지)'
+);
 
 // ─────────────────────────────────────────────────────────────────
 // 10. 기존 기능 보존
