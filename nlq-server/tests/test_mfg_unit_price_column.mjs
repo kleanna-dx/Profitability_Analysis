@@ -371,12 +371,15 @@ assert(
 // ─────────────────────────────────────────────────────────────────
 console.log('[9] 수익성분석/기타 area 미적용 확인');
 
-// buildAnalysisDetailTable 호출부 (analysis route L~5049) 에는 9번째 인자 없음
+// buildAnalysisDetailTable 호출부 (analysis route L~5049) 에서 showWidenButton 자리가 명시적 false
+//   [2026-10-16] 10번째 인자 appliedCostBasis 추가 이후:
+//     - analysis 호출 형태: buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo, false, (typeof dataOrText === 'object' && dataOrText) ? dataOrText.appliedCostBasis : null)
+//     - 핵심 보호 의도: showWidenButton = false (명시) → _mfgUnitPriceHighlight = !!false = false → 강조 비활성 유지
 {
-  // "buildAnalysisDetailTable(tableId, rows, columnOrder, columnLabels, rowCount, sql, fromHistory, periodInfo)"
-  //   ← 8-인자 호출 (analysis route) 이 여전히 존재해야 함
   const has8ArgCall = /buildAnalysisDetailTable\(tableId,\s*rows,\s*columnOrder,\s*columnLabels,\s*rowCount,\s*sql,\s*fromHistory,\s*periodInfo\)/.test(indexHtml);
-  assert(has8ArgCall, '분석질문 route (appendAnalysisOnlyMessage) 는 8-인자 호출 유지 → showWidenButton undefined → 강조 비활성');
+  const hasExplicitFalseCall = /buildAnalysisDetailTable\(tableId,\s*rows,\s*columnOrder,\s*columnLabels,\s*rowCount,\s*sql,\s*fromHistory,\s*periodInfo,\s*false\s*,/.test(indexHtml);
+  assert(has8ArgCall || hasExplicitFalseCall,
+    '분석질문 route (appendAnalysisOnlyMessage) 는 showWidenButton 자리가 undefined(8-인자) 또는 명시적 false → 강조 비활성 유지');
 }
 
 // aggregate route (제조원가) 에서만 _mfgShowWidenBtn 이 area 로 결정
