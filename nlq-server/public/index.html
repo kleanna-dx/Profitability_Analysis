@@ -2550,15 +2550,40 @@ async function loadGlossary() {
     const body = document.getElementById('glossaryBody');
     const ctx  = document.getElementById('glossaryContext');
     if (body) body.innerHTML = '<div class="glossary-empty">로딩 중...</div>';
-    // 컨텍스트 배지: 현재 도메인 표시 (제조원가 등 업무영역은 향후 백엔드 지원 시 확장)
+
+    // [2026-10-22] 현재 선택된 업무영역(area) 조회
+    //   - AreaTabs.snapshot() 이 { area, areaLabel, ... } 반환
+    //   - area 는 'profitability' / 'manufacturing-cost' 중 하나
+    //   - AreaTabs 로드 실패 시 'profitability' 로 fallback (서버 기본값과 동일)
+    //   - areaLabel 미제공 시 하드코딩 라벨로 fallback
+    let _area = 'profitability';
+    let _areaLabel = '수익성분석';
+    try {
+        const _snap = (window.AreaTabs && typeof window.AreaTabs.snapshot === 'function')
+            ? window.AreaTabs.snapshot() : null;
+        if (_snap && typeof _snap.area === 'string' && _snap.area) {
+            _area = _snap.area;
+        }
+        if (_snap && typeof _snap.areaLabel === 'string' && _snap.areaLabel) {
+            _areaLabel = _snap.areaLabel;
+        } else {
+            _areaLabel = (_area === 'manufacturing-cost') ? '제조원가' : '수익성분석';
+        }
+    } catch (_) { /* fallback 값 유지 */ }
+
+    // 컨텍스트 배지: 현재 도메인 + 영역 함께 표시
+    //   - 도메인(PS/HL/MGMT): 사이드 데이터 범위
+    //   - 영역(수익성분석/제조원가): 어느 테이블 소속 컬럼인지
     if (ctx) {
         const dLabel = (domainsList.find(d => d.domain_code === currentDomain) || {}).domain_name || currentDomain;
         // [2026-07-30] currentDomain 배지 표기에도 표시명 헬퍼 적용 (MGMT → '통합')
         const _curDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(currentDomain) : currentDomain);
-        ctx.textContent = `${dLabel} (${_curDisp}) 기준 · 활성 필드`;
+        ctx.textContent = `${dLabel} (${_curDisp}) · ${_areaLabel} 기준 · 활성 필드`;
     }
     try {
-        const r = await fetch('/api/builder/columns?_t=' + Date.now());
+        // [2026-10-22] area 파라미터 전달 — 서버가 영역별 테이블 whitelist 로 필터링
+        //   (server.mjs:16820 — 2026-09-17 이미 서버 지원 완료, 프론트만 쓰면 됨)
+        const r = await fetch(`/api/builder/columns?area=${encodeURIComponent(_area)}&_t=${Date.now()}`);
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
         // system 카테고리 제외 (학습관리 UI 정책과 동일)
@@ -8927,10 +8952,15 @@ window.addEventListener('load', () => {
     //   1) 하위 탭바 즉시 리프레시 (제조원가↔수익성분석 전환 반영)
     //   2) 예시 질문 칩도 함께 재렌더 (area 별 예시 목록 반영)
     //   3) [2026-09-04] 메인화면 안내 문구도 즉시 동기화
+    //   4) [2026-10-22] 용어집이 열려 있으면 새 영역 기준으로 재조회
+    //      - switchDomain 패턴(라인 2344)과 동일: 도메인 전환 시 재조회하던 걸
+    //        영역 전환에도 적용. 서버 /api/builder/columns?area=... 가 영역별로
+    //        격리된 컬럼 응답을 돌려줌.
     window.addEventListener('areachange', () => {
         try { window.AreaTabs && window.AreaTabs.refreshSubAreaBar && window.AreaTabs.refreshSubAreaBar(); } catch (_) {}
         try { if (typeof renderSuggestionChips === 'function') renderSuggestionChips(); } catch (_) {}
         try { toggleAreaSpecificText(); } catch (_) {}
+        try { if (typeof glossaryOpen !== 'undefined' && glossaryOpen && typeof loadGlossary === 'function') loadGlossary(); } catch (_) {}
     });
 
     // [2026-08-24] 세부업무영역 변경 이벤트에 반응해 예시 질문 칩 재렌더.
