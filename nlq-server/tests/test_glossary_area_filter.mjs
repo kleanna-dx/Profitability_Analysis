@@ -118,11 +118,14 @@ assertMatch(serverSrc,
         'Z-2: _areaLabel = _snap.areaLabel 우선, 없으면 _area 보고 매핑 (제조원가/수익성분석)');
 }
 
-// Z-3: 컨텍스트 배지 포맷 — "도메인 (코드) · 영역 기준 · 활성 필드"
+// Z-3: [2026-10-22 디자인 변경으로 CC-6/CC-7 로 대체됨 — 영역은 h3 로 올라가고
+//       subtitle 에서 '기준' 단어 제거. 호환성을 위해 Z-3 는 신규 포맷 검증으로 교체]
+//       (실제 신규 포맷 검증은 CC-6/CC-7/CC-8 에서 수행 — 여기서는 subtitle 이 _areaLabel 을
+//        더 이상 사용하지 않는지 재확인하는 역할만 담당)
 {
     const fn = htmlSrc.match(/async\s+function\s+loadGlossary\s*\([\s\S]*?\n\}/);
-    assert(fn && /ctx\.textContent\s*=\s*`\$\{dLabel\}\s*\(\$\{_curDisp\}\)\s*·\s*\$\{_areaLabel\}\s*기준\s*·\s*활성\s*필드`/.test(fn[0]),
-        'Z-3: ctx.textContent 포맷 — "도메인 (코드) · {영역} 기준 · 활성 필드"');
+    assert(fn && !/ctx\.textContent[\s\S]{0,200}_areaLabel/.test(fn[0]),
+        'Z-3: subtitle(ctx) 포맷에서 _areaLabel 변수 참조 제거됨 (영역 라벨은 h3 로 이동)');
 }
 
 // ============================================================
@@ -161,6 +164,71 @@ assertMatch(htmlSrc,
 assertMatch(htmlSrc,
     /AreaTabs\.snapshot\(\)[\s\S]{0,500}\{\s*area[\s\S]{0,200}areaLabel/,
     'BB-2: AreaTabs.snapshot() 반환 포맷 { area, areaLabel, ... } 주석 유지');
+
+// ============================================================
+// CC. 디자인 개선 — 영역 라벨을 '용어집' 옆으로 (2026-10-22)
+// ------------------------------------------------------------
+// 사용자 신고:
+//   "'제조원가 기준' 이 subtitle 에 작게 들어가서 눈에 안 들어옴.
+//    용어집쪽 옆으로 옮기고, '기준' 이라는 단어는 빼고,
+//    글씨 크기는 [용어집] 과 똑같게 해줘."
+//
+// 디자인 변경:
+//   - h3 안에 .glossary-area-label span 신설 (id: glossaryAreaLabel)
+//   - '용어집' 과 같은 15px 로 표시, '·' 구분자로 가로 배치
+//   - subtitle 에서 영역 + '기준' 제거 → 도메인 + '활성 필드' 만 남김
+// ============================================================
+
+// CC-1: .glossary-area-label CSS 정의 — 15px (= h3 와 동일), 500 weight
+assertMatch(htmlSrc,
+    /\.glossary-header-title\s+\.glossary-area-label\s*\{[\s\S]{0,300}font-size:\s*15px[\s\S]{0,300}\}/,
+    'CC-1: .glossary-area-label CSS — font-size:15px (용어집과 동일 크기)');
+
+// CC-2: 영역 라벨 구분자(·) — ::before 가상요소로 자동 삽입
+assertMatch(htmlSrc,
+    /\.glossary-area-label::before\s*\{[\s\S]{0,200}content:\s*["']·["']/,
+    'CC-2: ::before ::content "·" 구분자 — "용어집 · 제조원가" 형태');
+
+// CC-3: 빈 라벨 방어적 숨김 (:empty 시 display:none)
+assertMatch(htmlSrc,
+    /\.glossary-area-label:empty\s*\{\s*display:\s*none/,
+    'CC-3: :empty 선택자로 빈 라벨 숨김 (방어적 CSS)');
+
+// CC-4: HTML — h3 안에 glossaryAreaLabel span 포함
+assertMatch(htmlSrc,
+    /<h3>[\s\S]{0,300}<span>용어집<\/span>[\s\S]{0,200}<span\s+class="glossary-area-label"\s+id="glossaryAreaLabel">\s*<\/span>[\s\S]{0,100}<\/h3>/,
+    'CC-4: HTML — h3 안에 <span id="glossaryAreaLabel"> 신설 (용어집 옆 가로 배치)');
+
+// CC-5: loadGlossary 안에서 glossaryAreaLabel.textContent = _areaLabel 로 영역만 세팅
+{
+    const fn = htmlSrc.match(/async\s+function\s+loadGlossary\s*\([\s\S]*?\n\}/);
+    assert(fn
+        && /document\.getElementById\s*\(\s*['"]glossaryAreaLabel['"]\s*\)/.test(fn[0])
+        && /areaLabelEl\.textContent\s*=\s*_areaLabel/.test(fn[0]),
+        'CC-5: loadGlossary — glossaryAreaLabel.textContent = _areaLabel 로 영역 라벨 세팅');
+}
+
+// CC-6: subtitle(ctx) 포맷에 "기준" 단어 완전 제거 — 사용자 명시 요구
+{
+    const fn = htmlSrc.match(/async\s+function\s+loadGlossary\s*\([\s\S]*?\n\}/);
+    assert(fn
+        && /ctx\.textContent\s*=\s*`\$\{dLabel\}\s*\(\$\{_curDisp\}\)\s*·\s*활성\s*필드`/.test(fn[0]),
+        'CC-6: subtitle 포맷 = "도메인 (코드) · 활성 필드" ("기준" 단어 제거)');
+}
+
+// CC-7: subtitle 에 "기준" 단어가 없음 (loadGlossary 함수 내부 범위)
+{
+    const fn = htmlSrc.match(/async\s+function\s+loadGlossary\s*\([\s\S]*?\n\}/);
+    assert(fn && !/ctx\.textContent[\s\S]{0,500}기준`/.test(fn[0]),
+        'CC-7: loadGlossary 안의 ctx.textContent 템플릿에 "기준" 단어 미포함');
+}
+
+// CC-8: 구 Z-3 (옛 포맷) 완전 제거 — 영역 + "기준" 이 subtitle 에 들어가던 포맷
+{
+    const fn = htmlSrc.match(/async\s+function\s+loadGlossary\s*\([\s\S]*?\n\}/);
+    assert(fn && !/ctx\.textContent\s*=\s*`\$\{dLabel\}\s*\(\$\{_curDisp\}\)\s*·\s*\$\{_areaLabel\}\s*기준/.test(fn[0]),
+        'CC-8: 옛 subtitle 포맷 ("{영역} 기준 · 활성 필드") 완전 제거됨');
+}
 
 // ============================================================
 // 결과 요약

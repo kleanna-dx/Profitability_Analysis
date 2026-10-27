@@ -460,6 +460,19 @@
             margin:0;font-size:15px;font-weight:700;letter-spacing:-0.2px;
             display:flex;align-items:center;gap:8px;
         }
+        /* [2026-10-22] 영역 라벨 — '용어집' 옆에 가로 배치, 같은 크기(15px) 로 눈에 띄게.
+           사용자 요구: '제조원가' 는 '용어집' 과 같은 큰 글씨로 옆에 표시. */
+        .glossary-header-title .glossary-area-label{
+            font-size:15px;font-weight:500;color:rgba(255,255,255,.92);
+            letter-spacing:-0.2px;
+            display:inline-flex;align-items:center;gap:8px;
+        }
+        /* '용어집' 과 영역 라벨 사이 구분자 (•) — 라벨이 있을 때만 표시 */
+        .glossary-header-title .glossary-area-label::before{
+            content:"·";opacity:.75;font-weight:400;
+        }
+        /* 영역 라벨이 비어 있으면 구분자 숨김 (방어적 CSS) */
+        .glossary-header-title .glossary-area-label:empty{display:none;}
         .glossary-header-title .subtitle{
             font-size:11px;color:rgba(255,255,255,.85);font-weight:500;
         }
@@ -1436,7 +1449,14 @@
     <div id="glossaryPanel" class="glossary-panel" role="dialog" aria-label="용어집">
         <div class="glossary-header" id="glossaryHeader">
             <div class="glossary-header-title">
-                <h3><span>📖</span><span>용어집</span></h3>
+                <!-- [2026-10-22] '용어집' 옆에 현재 영역 라벨(수익성분석/제조원가) 가로 배치.
+                     기존엔 subtitle 에 '…제조원가 기준 · 활성 필드' 로 작게 들어가 눈에 안 띔.
+                     사용자 요구: 영역을 '용어집' 과 같은 크기로 옆에 노출, '기준' 단어 제거. -->
+                <h3>
+                    <span>📖</span>
+                    <span>용어집</span>
+                    <span class="glossary-area-label" id="glossaryAreaLabel"></span>
+                </h3>
                 <span class="subtitle" id="glossaryContext">현재 도메인 기준</span>
             </div>
             <button class="glossary-close-btn" onclick="closeGlossaryPanel()" title="닫기" aria-label="닫기">
@@ -2571,14 +2591,22 @@ async function loadGlossary() {
         }
     } catch (_) { /* fallback 값 유지 */ }
 
-    // 컨텍스트 배지: 현재 도메인 + 영역 함께 표시
+    // [2026-10-22] 영역 라벨은 '용어집' 옆 h3 안의 glossaryAreaLabel 로 분리.
+    //   사용자 요구: '제조원가' 가 subtitle 에 작게 들어가 눈에 안 띄는 문제 해결.
+    //   - 영역 라벨: '용어집' 과 같은 15px 로 h3 안에 가로 배치 (큰 글씨)
+    //   - subtitle: 도메인 + '활성 필드' 만 남김 ('기준' 단어 제거)
+    const areaLabelEl = document.getElementById('glossaryAreaLabel');
+    if (areaLabelEl) {
+        areaLabelEl.textContent = _areaLabel;
+    }
+    // 컨텍스트 배지(subtitle): 도메인 정보 + 활성 필드 (영역은 위로 올라감, '기준' 단어 제거)
     //   - 도메인(PS/HL/MGMT): 사이드 데이터 범위
-    //   - 영역(수익성분석/제조원가): 어느 테이블 소속 컬럼인지
+    //   - '활성 필드': 학습관리에서 is_active=1 인 컬럼만 표시한다는 안내
     if (ctx) {
         const dLabel = (domainsList.find(d => d.domain_code === currentDomain) || {}).domain_name || currentDomain;
         // [2026-07-30] currentDomain 배지 표기에도 표시명 헬퍼 적용 (MGMT → '통합')
         const _curDisp = (window.__domainDisplayCode ? window.__domainDisplayCode(currentDomain) : currentDomain);
-        ctx.textContent = `${dLabel} (${_curDisp}) · ${_areaLabel} 기준 · 활성 필드`;
+        ctx.textContent = `${dLabel} (${_curDisp}) · 활성 필드`;
     }
     try {
         // [2026-10-22] area 파라미터 전달 — 서버가 영역별 테이블 whitelist 로 필터링
