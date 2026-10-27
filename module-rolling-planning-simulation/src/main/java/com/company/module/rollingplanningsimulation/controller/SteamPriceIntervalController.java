@@ -12,7 +12,13 @@ import java.util.Map;
 @RestController @RequestMapping("/rolling-planning-simulation-api/steam-price-intervals") @RequiredArgsConstructor
 public class SteamPriceIntervalController {
     private final SteamPriceIntervalRepository repo;
-    @GetMapping public ResponseEntity<ApiResponse<List<SteamPriceInterval>>> list(@RequestParam(defaultValue="PS") String division) {
+    @GetMapping public ResponseEntity<ApiResponse<List<SteamPriceInterval>>> list(
+            @RequestParam(defaultValue="PS") String division,
+            @RequestParam(required=false) Integer year,
+            @RequestParam(required=false) Integer month) {
+        if (year != null) {
+            return ResponseEntity.ok(ApiResponse.success(repo.findByContractYearAndDivision(String.valueOf(year), division)));
+        }
         return ResponseEntity.ok(ApiResponse.success(repo.findByDivisionOrderByContractYearAscIntervalSeqAsc(division)));
     }
     @PostMapping public ResponseEntity<ApiResponse<SteamPriceInterval>> save(@RequestBody Map<String,Object> body) {
