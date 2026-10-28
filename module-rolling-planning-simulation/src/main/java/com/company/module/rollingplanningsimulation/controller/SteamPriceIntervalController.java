@@ -15,7 +15,7 @@ public class SteamPriceIntervalController {
 
     /**
      * 구간단가 조회.
-     * - year + month : 해당 월 구간단가. 해당 월이 없으면 연간 공통(MONTH=0)으로 대체
+     * - year + month : 해당 월 구간단가만
      * - year 만      : 해당 연도 전체(월별 포함)
      * - 없음          : 사업부 전체
      */
@@ -25,10 +25,8 @@ public class SteamPriceIntervalController {
             @RequestParam(required=false) Integer month) {
         if (year != null && month != null && month > 0) {
             String yr = String.valueOf(year);
+            // 해당 월 데이터만 (월 0 기본값은 사용하지 않음)
             List<SteamPriceInterval> monthly = repo.findByContractYearAndMonthAndDivisionOrderByIntervalSeqAsc(yr, month, division);
-            if (monthly.isEmpty()) {
-                monthly = repo.findByContractYearAndMonthAndDivisionOrderByIntervalSeqAsc(yr, 0, division);
-            }
             return ResponseEntity.ok(ApiResponse.success(monthly));
         }
         if (year != null) {

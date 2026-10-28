@@ -19,17 +19,8 @@ public class BoilerMasterController {
             @RequestParam(required=false) Integer year,
             @RequestParam(required=false) Integer month) {
         if (year != null && month != null) {
-            // 월별 조회: 해당 월 데이터 우선, 없으면 기본(0,0)
-            List<BoilerMaster> all = repo.findByDivisionAndYearMonth(division, year, month);
-            // 같은 boilerCode에 월별 데이터와 기본 데이터가 모두 있으면 월별 우선
-            Map<String, BoilerMaster> merged = new LinkedHashMap<>();
-            // 기본(0,0) 먼저 넣고
-            all.stream().filter(b -> (b.getYear() == null || b.getYear() == 0))
-                .forEach(b -> merged.put(b.getBoilerCode(), b));
-            // 월별 데이터로 덮어쓰기
-            all.stream().filter(b -> b.getYear() != null && b.getYear() > 0)
-                .forEach(b -> merged.put(b.getBoilerCode(), b));
-            List<BoilerMaster> result = new ArrayList<>(merged.values());
+            // 월별 조회: 해당 연/월 데이터만 (연도 0 / 월 0 기본값은 표시하지 않음)
+            List<BoilerMaster> result = new ArrayList<>(repo.findByDivisionAndYearMonth(division, year, month));
             result.sort(Comparator.comparingInt(b -> b.getPriority() != null ? b.getPriority() : 99));
             return ResponseEntity.ok(ApiResponse.success(result));
         }
