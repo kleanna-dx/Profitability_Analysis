@@ -43,8 +43,8 @@ public class EnergyDataSyncService {
     static {
         // row_key → [boilerCode, rateType, rateName, rateUnit]
         PRICE_MAPPING.put("lng_unit",          new String[]{"BLR-LNG",    "FUEL_RATE",  "LNG 단가",           "원/㎥"});
-        PRICE_MAPPING.put("waste2_steam",      new String[]{"E_INCIN_2",  "STEAM_RATE", "폐합성2호 스팀단가",   "원/톤"});
-        PRICE_MAPPING.put("waste2_fixed_hr",   new String[]{"E_INCIN_2",  "FIXED_HR",   "폐합성2호 고정단가",   "원/HR"});
+        PRICE_MAPPING.put("waste2_steam",      new String[]{"BLR-INCIN",  "STEAM_RATE", "폐합성2호 스팀단가",   "원/톤"});
+        PRICE_MAPPING.put("waste2_fixed_hr",   new String[]{"BLR-INCIN",  "FIXED_HR",   "폐합성2호 고정단가",   "원/HR"});
         PRICE_MAPPING.put("fluid_steam",       new String[]{"BLR-FLUID",  "STEAM_RATE", "유동상 스팀단가",      "원/톤"});
         PRICE_MAPPING.put("fluid_fixed_hr",    new String[]{"BLR-FLUID",  "FIXED_HR",   "유동상 고정단가",      "원/HR"});
     }
@@ -142,7 +142,7 @@ public class EnergyDataSyncService {
 
         if (bscData == null && ascData == null) return 0;
 
-        // 기존 구간단가 삭제 (해당 연도)
+        // 기존 복합보일러 구간단가 삭제 (해당 연도 전체 월 — 아래에서 월별로 다시 저장)
         String yearStr = String.valueOf(year);
         List<SteamPriceInterval> existing = steamPriceIntervalRepo.findByContractYearAndDivision(yearStr, division);
         List<SteamPriceInterval> cogenExisting = existing.stream()
@@ -151,10 +151,7 @@ public class EnergyDataSyncService {
         steamPriceIntervalRepo.deleteAll(cogenExisting);
 
         int count = 0;
-        // 월별 구간단가가 변동하므로, 대표값(1월 기준 또는 전체 중 가장 최근)을 사용
-        // → 실제로는 월별로 다를 수 있으나 steam_price_interval은 연간 구조이므로
-        //   에너지비 계산 시 boiler_cost_rate의 월별 INTERVAL+FACTOR로 보정
-        // 여기서는 각 월의 BSC/ASC 단가를 boiler_cost_rate에 INTERVAL 타입으로 저장
+        // 각 월의 BSC/ASC 단가·FACTOR·보증량을 boiler_cost_rate(월별)와 steam_price_interval(월별)에 저장
 
         Set<Integer> allMonths = new HashSet<>();
         if (bscData != null) allMonths.addAll(bscData.keySet());
@@ -187,41 +184,46 @@ public class EnergyDataSyncService {
             }
         }
 
-        // steam_price_interval에도 대표값 저장 (에너지비 계산 calcEnergyCost에서 사용)
-        // 1월 데이터를 대표값으로 사용 (없으면 가장 빠른 월)
-        int repMonth = allMonths.stream().min(Integer::compareTo).orElse(1);
-        BigDecimal repBsc = bscData != null ? bscData.getOrDefault(repMonth, BigDecimal.ZERO) : BigDecimal.ZERO;
-        BigDecimal repAsc = ascData != null ? ascData.getOrDefault(repMonth, BigDecimal.ZERO) : BigDecimal.ZERO;
-        // 보증량: 어느 월이든 0이 아닌 값이 있으면 사용 (에너지팀 DB에서 특정 월에만 값이 올 수 있음)
-        BigDecimal repGuarantee = BigDecimal.ZERO;
+        // steam_price_interval 월별 저장 (BSC/ASC 단가·보증량이 매월 다를 수 있음)
+        // 보증량이 해당 월에 없으면, 연중 처음 발견되는 보증량으로 대체
+        BigDecimal fallbackGuarantee = BigDecimal.ZERO;
         if (guaranteeData != null) {
-            repGuarantee = guaranteeData.values().stream()
+            fallbackGuarantee = guaranteeData.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .map(Map.Entry::getValue)
                     .filter(v -> v != null && v.compareTo(BigDecimal.ZERO) > 0)
                     .findFirst().orElse(BigDecimal.ZERO);
         }
 
-        if (repBsc.compareTo(BigDecimal.ZERO) > 0) {
-            SteamPriceInterval bscInterval = SteamPriceInterval.builder()
-                    .contractYear(yearStr).boilerCode("BLR-COGEN").intervalSeq(1)
-                    .intervalName("기본구간 (BSC)")
-                    .minUsageTon(BigDecimal.ZERO).maxUsageTon(repGuarantee.compareTo(BigDecimal.ZERO) > 0 ? repGuarantee : null)
-                    .pricePerTon(repBsc).division(division).memo("에너지팀 자동수신")
-                    .build();
-            bscInterval.setCreatedBy("ENERGY_SYNC");
-            steamPriceIntervalRepo.save(bscInterval);
-            count++;
-        }
-        if (repAsc.compareTo(BigDecimal.ZERO) > 0) {
-            SteamPriceInterval ascInterval = SteamPriceInterval.builder()
-                    .contractYear(yearStr).boilerCode("BLR-COGEN").intervalSeq(2)
-                    .intervalName("초과구간 (ASC)")
-                    .minUsageTon(repGuarantee.compareTo(BigDecimal.ZERO) > 0 ? repGuarantee : BigDecimal.ZERO)
-                    .maxUsageTon(null)
-                    .pricePerTon(repAsc).division(division).memo("에너지팀 자동수신")
-                    .build();
-            ascInterval.setCreatedBy("ENERGY_SYNC");
-            steamPriceIntervalRepo.save(ascInterval);
-            count++;
+        for (int mon : new TreeSet<>(allMonths)) {
+            BigDecimal bsc = bscData != null ? bscData.getOrDefault(mon, BigDecimal.ZERO) : BigDecimal.ZERO;
+            BigDecimal asc = ascData != null ? ascData.getOrDefault(mon, BigDecimal.ZERO) : BigDecimal.ZERO;
+            BigDecimal g = guaranteeData != null ? guaranteeData.getOrDefault(mon, BigDecimal.ZERO) : BigDecimal.ZERO;
+            if (g == null || g.compareTo(BigDecimal.ZERO) <= 0) g = fallbackGuarantee;
+            boolean hasG = g.compareTo(BigDecimal.ZERO) > 0;
+
+            if (bsc.compareTo(BigDecimal.ZERO) > 0) {
+                SteamPriceInterval bscInterval = SteamPriceInterval.builder()
+                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(1)
+                        .intervalName("기본구간 (BSC)")
+                        .minUsageTon(BigDecimal.ZERO).maxUsageTon(hasG ? g : null)
+                        .pricePerTon(bsc).division(division).memo("에너지팀 자동수신")
+                        .build();
+                bscInterval.setCreatedBy("ENERGY_SYNC");
+                steamPriceIntervalRepo.save(bscInterval);
+                count++;
+            }
+            if (asc.compareTo(BigDecimal.ZERO) > 0) {
+                SteamPriceInterval ascInterval = SteamPriceInterval.builder()
+                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(2)
+                        .intervalName("초과구간 (ASC)")
+                        .minUsageTon(hasG ? g : BigDecimal.ZERO).maxUsageTon(null)
+                        .pricePerTon(asc).division(division).memo("에너지팀 자동수신")
+                        .build();
+                ascInterval.setCreatedBy("ENERGY_SYNC");
+                steamPriceIntervalRepo.save(ascInterval);
+                count++;
+            }
         }
 
         return count;
