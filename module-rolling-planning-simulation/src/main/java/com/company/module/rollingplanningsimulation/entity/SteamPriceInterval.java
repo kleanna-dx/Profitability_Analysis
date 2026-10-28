@@ -5,6 +5,8 @@ import lombok.*; import java.math.BigDecimal; import java.time.LocalDateTime;
 public class SteamPriceInterval {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="PRICE_ID") private Long priceId;
     @Column(name="CONTRACT_YEAR",nullable=false,length=10) private String contractYear;
+    /** 월 (0=연간 공통, 1~12=월별) */
+    @Column(name="MONTH",nullable=false) private Integer month;
     @Column(name="BOILER_CODE",length=30) private String boilerCode;
     @Column(name="INTERVAL_SEQ",nullable=false) private Integer intervalSeq;
     @Column(name="INTERVAL_NAME",nullable=false,length=100) private String intervalName;
@@ -16,6 +18,6 @@ public class SteamPriceInterval {
     @Column(name="CREATED_BY") private String createdBy;
     @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
     public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
-    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
-    @Builder public SteamPriceInterval(String contractYear,String boilerCode,Integer intervalSeq,String intervalName,BigDecimal minUsageTon,BigDecimal maxUsageTon,BigDecimal pricePerTon,String division,String memo){this.contractYear=contractYear;this.boilerCode=boilerCode;this.intervalSeq=intervalSeq;this.intervalName=intervalName;this.minUsageTon=minUsageTon;this.maxUsageTon=maxUsageTon;this.pricePerTon=pricePerTon!=null?pricePerTon:BigDecimal.ZERO;this.division=division!=null?division:"PS";this.memo=memo;this.createdBy=createdBy;}
+    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(month==null)month=0;}
+    @Builder public SteamPriceInterval(String contractYear,Integer month,String boilerCode,Integer intervalSeq,String intervalName,BigDecimal minUsageTon,BigDecimal maxUsageTon,BigDecimal pricePerTon,String division,String memo){this.contractYear=contractYear;this.month=month!=null?month:0;this.boilerCode=boilerCode;this.intervalSeq=intervalSeq;this.intervalName=intervalName;this.minUsageTon=minUsageTon;this.maxUsageTon=maxUsageTon;this.pricePerTon=pricePerTon!=null?pricePerTon:BigDecimal.ZERO;this.division=division!=null?division:"PS";this.memo=memo;}
 }
