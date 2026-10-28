@@ -1474,6 +1474,21 @@ async function fillFromCapa(){
 }
 
 // ── 경량 에너지비 톤당 단가 계산 (P/L 슬라이더 연동용, DOM 조작 없음) ──
+// ── 보일러 코드 그룹: BLR-COGEN-1, BLR-COGEN-2 → BLR-COGEN ──
+//    단가(boiler-cost-rates)·구간단가·BSC 보증량은 그룹 코드(BLR-COGEN)로 등록되어 두 대가 함께 사용
+function boilerGroupCode(code){return String(code||'').replace(/[-_]\d+$/,'');}
+function findBoilerRate(code,type){return BOILER_COST_RATES.find(r=>r.boilerCode===code&&r.rateType===type)||BOILER_COST_RATES.find(r=>r.boilerCode===boilerGroupCode(code)&&r.rateType===type);}
+function getBoilerIntervals(code){let ivs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===code);if(!ivs.length)ivs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===boilerGroupCode(code));if(!ivs.length)ivs=STEAM_PRICE_INTERVALS.filter(iv=>!iv.boilerCode);return ivs.slice().sort((a,b)=>(a.intervalSeq||0)-(b.intervalSeq||0));}
+// 구간단가 적용 단위: 보일러 전용 구간단가가 있으면 보일러, 없으면 그룹 전체(합산 적용)
+function intervalKey(code){return STEAM_PRICE_INTERVALS.some(iv=>iv.boilerCode===code)?code:boilerGroupCode(code);}
+function usesIntervalPrice(code){const fr=findBoilerRate(code,'FUEL_RATE'),sr=findBoilerRate(code,'STEAM_RATE'),ir=findBoilerRate(code,'INTERVAL');return !!(ir||(getBoilerIntervals(code).length&&!fr&&!sr));}
+// 구간(BSC→ASC) 순서대로 물량을 채워 비용 계산
+function tierCost(ton,ivs,factor){let rem=ton,cost=0;const rows=[];ivs.forEach(iv=>{const mn=parseFloat(iv.minUsageTon)||0;const mx=iv.maxUsageTon?parseFloat(iv.maxUsageTon):Infinity;const price=(parseFloat(iv.pricePerTon)||0)*factor;const cap=mx===Infinity?Math.max(rem,0):(mx-mn);const ap=rem>0?Math.min(rem,cap):0;cost+=ap*price;rem-=ap;rows.push({name:iv.intervalName||'구간',range:fmtI(Math.round(mn))+'~'+(mx===Infinity?'∞':fmtI(Math.round(mx))),price,qty:ap,cost:ap*price});});return {cost,rows};}
+// 그룹별 합산 배분량 → 구간단가 비용
+function calcIntervalGroups(boilers,allocMap){const alloc={};boilers.forEach(b=>{if(!usesIntervalPrice(b.boilerCode))return;const k=intervalKey(b.boilerCode);alloc[k]=(alloc[k]||0)+(allocMap[b.boilerCode]||0);});const cost={};Object.keys(alloc).forEach(k=>{const ir=findBoilerRate(k,'INTERVAL');cost[k]=tierCost(alloc[k],getBoilerIntervals(k),ir?parseFloat(ir.factor)||1:1);});return {alloc,cost};}
+// 기준정보 보일러 선택 옵션 (단가 테이블은 그룹 코드 포함)
+function boilerCodeOptions(selected,withGroups){const seen=new Set();const opts=[];BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99)).forEach(b=>{const g=boilerGroupCode(b.boilerCode);if(withGroups&&g!==b.boilerCode&&!seen.has(g)){seen.add(g);const names=[...new Set(BOILER_MASTERS_LIST.filter(x=>boilerGroupCode(x.boilerCode)===g&&x.boilerCode!==g).map(x=>x.boilerName||x.boilerCode))];opts.push([g,names.join('·')+' 공통']);}if(!seen.has(b.boilerCode)){seen.add(b.boilerCode);opts.push([b.boilerCode,b.boilerName||b.boilerCode]);}});if(selected&&!seen.has(selected))opts.push([selected,'현재값']);return opts.map(([v,l])=>'<option value="'+v+'"'+(v===selected?' selected':'')+'>'+v+' ('+l+')</option>').join('');}
+
 function calcEnergyPerTon(totalProdTon){
     if(!totalProdTon||totalProdTon<=0)return 0;
     const units=STEAM_UNIT_RATES.map(r=>r.machineCode);
@@ -1512,10 +1527,12 @@ function calcEnergyPerTon(totalProdTon){
     const bAlloc={};sorted.forEach(b=>{bAlloc[b.boilerCode]=0;});
     for(let d=0;d<dim2;d++){if(dc2[d]<=0)continue;let rem=dd2[d];sorted.forEach(b=>{const mt=mm2[b.boilerCode];const isM=mt&&(d+1)>=mt.s&&(d+1)<=mt.e;const cr=isM?(100-mt.c)/100:1;const dop=dm2[d+1];const opH=dop?dop.h:24;const cap=(parseFloat(b.steamPerHour)||0)*opH*cr;const a=Math.min(rem,cap);bAlloc[b.boilerCode]+=a;rem=Math.max(0,rem-a);});}
     let boilerCost=0;
-    sorted.forEach(b=>{const alloc=bAlloc[b.boilerCode]||0;const fr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='FUEL_RATE');const sr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='STEAM_RATE');const ir=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='INTERVAL');const fhr=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='FIXED_HR');const bIvs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===b.boilerCode||!iv.boilerCode);
+    // 구간단가 그룹(복합 1·2호기 등): 합산 배분량에 BSC/ASC 구간 적용
+    const ivG2=calcIntervalGroups(sorted,bAlloc);Object.keys(ivG2.cost).forEach(k=>{boilerCost+=ivG2.cost[k].cost;});
+    sorted.forEach(b=>{const alloc=bAlloc[b.boilerCode]||0;const fr=findBoilerRate(b.boilerCode,'FUEL_RATE');const sr=findBoilerRate(b.boilerCode,'STEAM_RATE');const ir=findBoilerRate(b.boilerCode,'INTERVAL');const fhr=findBoilerRate(b.boilerCode,'FIXED_HR');const bIvs=getBoilerIntervals(b.boilerCode);
     // FIXED_HR 운휴 비용: Σ(24-opHrs) × 원/HR × factor
     let fhCost=0;if(fhr){const hRate=(parseFloat(fhr.rateValue)||0)*(parseFloat(fhr.factor)||1);let sdH=0;for(let d=1;d<=dim2;d++){const dop=dm2[d];const opH=dop?dop.h:24;const isSD=dop?dop.sd:false;if(isSD||opH<24)sdH+=(24-opH);}fhCost=hRate*sdH;}
-    if(ir||(bIvs.length&&!fr&&!sr)){const ivF=ir?parseFloat(ir.factor)||1:1;const sivs=bIvs.slice().sort((a,c)=>(a.intervalSeq||0)-(c.intervalSeq||0));let rem2=alloc,c2=0;sivs.forEach(iv=>{if(rem2<=0)return;const mn=parseFloat(iv.minUsageTon)||0;const mx=iv.maxUsageTon?parseFloat(iv.maxUsageTon):Infinity;const cap=mx===Infinity?rem2:(mx-mn);const ap=Math.min(rem2,cap);c2+=ap*(parseFloat(iv.pricePerTon)||0)*ivF;rem2-=ap;});boilerCost+=c2+fhCost;}else if(fhr&&!fr&&!sr&&!ir){boilerCost+=fhCost;}else if(fr&&sr){const fp=(parseFloat(fr.rateValue)||0)*(parseFloat(fr.factor)||1);const se=parseFloat(sr.rateValue)||0;boilerCost+=se>0?alloc/se*fp:alloc*fp;boilerCost+=fhCost;}else if(sr){boilerCost+=alloc*(parseFloat(sr.rateValue)||0)*(parseFloat(sr.factor)||1);boilerCost+=fhCost;}else{boilerCost+=fhCost;}});
+    if(ir||(bIvs.length&&!fr&&!sr)){boilerCost+=fhCost;}else if(fhr&&!fr&&!sr&&!ir){boilerCost+=fhCost;}else if(fr&&sr){const fp=(parseFloat(fr.rateValue)||0)*(parseFloat(fr.factor)||1);const se=parseFloat(sr.rateValue)||0;boilerCost+=se>0?alloc/se*fp:alloc*fp;boilerCost+=fhCost;}else if(sr){boilerCost+=alloc*(parseFloat(sr.rateValue)||0)*(parseFloat(sr.factor)||1);boilerCost+=fhCost;}else{boilerCost+=fhCost;}});
     // LNG 버너 (FACTOR 반영)
     const lngFR2=BOILER_COST_RATES.find(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG'));
     const lngPrice=lngFR2?(parseFloat(lngFR2.rateValue)||0)*(parseFloat(lngFR2.factor)||1):0;
@@ -1686,6 +1703,9 @@ function calcEnergyCost(){
         steamRemainingTotal+=rem;
     }
 
+    // ★ 구간단가 그룹(복합보일러 1·2호기 → BLR-COGEN): 두 대 배분량 합계에 BSC(보증량까지)/ASC 적용 후 배분량 비율로 나눔
+    const ivGroups=calcIntervalGroups(boilersSorted,boilerMonthAlloc);
+
     // boilerAllocRows 구성
     let boilerAllocRows=[];
     let steamRemaining=steamRemainingTotal;
@@ -1702,11 +1722,11 @@ function calcEnergyCost(){
         let boilerCost=0;
         let costNote='';
         let fixedHrCost=0; // 고정단가(FIXED_HR) 운휴 비용 별도 합산
-        const fuelRate=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='FUEL_RATE');
-        const steamRate=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='STEAM_RATE');
-        const intervalRate=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='INTERVAL');
-        const fixedHrRate=BOILER_COST_RATES.find(r=>r.boilerCode===b.boilerCode&&r.rateType==='FIXED_HR');
-        const boilerIntervals=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===b.boilerCode||!iv.boilerCode);
+        const fuelRate=findBoilerRate(b.boilerCode,'FUEL_RATE');
+        const steamRate=findBoilerRate(b.boilerCode,'STEAM_RATE');
+        const intervalRate=findBoilerRate(b.boilerCode,'INTERVAL');
+        const fixedHrRate=findBoilerRate(b.boilerCode,'FIXED_HR');
+        const boilerIntervals=getBoilerIntervals(b.boilerCode);
 
         // ★ FIXED_HR 고정단가: 운휴시간 = Σ(24 - operationHours) × 원/HR
         if(fixedHrRate){
@@ -1726,12 +1746,11 @@ function calcEnergyCost(){
         }
 
         if(intervalRate||(boilerIntervals.length&&!fuelRate&&!steamRate)){
-            const ivs=boilerIntervals.slice().sort((a,b)=>(a.intervalSeq||0)-(b.intervalSeq||0));
-            let rem=allocated,cost=0;
-            // FACTOR 반영: 각 구간단가의 factor 또는 intervalRate의 factor
-            const ivFactor=intervalRate?parseFloat(intervalRate.factor)||1:1;
-            ivs.forEach(iv=>{if(rem<=0)return;const mn=parseFloat(iv.minUsageTon)||0;const mx=iv.maxUsageTon?parseFloat(iv.maxUsageTon):Infinity;const cap=mx===Infinity?rem:(mx-mn);const ap=Math.min(rem,cap);cost+=ap*(parseFloat(iv.pricePerTon)||0)*ivFactor;rem-=ap;});
-            boilerCost=cost;
+            // 그룹 합산 구간단가 비용 × (이 보일러 배분량 / 그룹 배분량)  — FACTOR는 tierCost에서 반영
+            const k=intervalKey(b.boilerCode);
+            const gAlloc=ivGroups.alloc[k]||0;
+            const gCost=ivGroups.cost[k]?ivGroups.cost[k].cost:0;
+            boilerCost=gAlloc>0?gCost*(allocated/gAlloc):0;
             costNote='구간단가';
         } else if(fixedHrRate&&!fuelRate&&!steamRate&&!intervalRate){
             // FIXED_HR만 있는 보일러: 가동일→스팀단가 없음, 운휴일→고정단가만
@@ -1768,20 +1787,21 @@ function calcEnergyCost(){
     // 3-3) 구간단가 상세 테이블용 — 보일러별 분리 표시
     const intervalBoilers=boilerAllocRows.filter(r=>r.costNote&&r.costNote.includes('구간단가'));
     let intervalRows=[];
+    const ivKeysShown=[];
     intervalBoilers.forEach(br=>{
-        const bIvs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===br.code||(!iv.boilerCode&&intervalBoilers.length===1)).slice().sort((a,b)=>(a.intervalSeq||0)-(b.intervalSeq||0));
-        // FACTOR 반영: intervalRate의 factor
-        const brIR=BOILER_COST_RATES.find(r=>r.boilerCode===br.code&&r.rateType==='INTERVAL');
-        const brFactor=brIR?parseFloat(brIR.factor)||1:1;
-        let rem=br.allocated;
-        bIvs.forEach(iv=>{
-            const min=parseFloat(iv.minUsageTon)||0;const max=iv.maxUsageTon?parseFloat(iv.maxUsageTon):Infinity;
-            const price=(parseFloat(iv.pricePerTon)||0)*brFactor;const cap=max===Infinity?rem:(max-min);
-            const applied=rem>0?Math.min(rem,cap):0;const cost=applied*price;rem-=applied;
-            intervalRows.push({boiler:br.name,name:iv.intervalName||'구간',range:fmtI(Math.round(min))+'~'+(max===Infinity?'∞':fmtI(Math.round(max))),price,qty:applied,cost});
-        });
+        const k=intervalKey(br.code);
+        if(ivKeysShown.includes(k))return;ivKeysShown.push(k);
+        const members=intervalBoilers.filter(x=>intervalKey(x.code)===k);
+        const label=members.length>1?members.map(m=>m.name).join(' + '):br.name;
+        const gc=ivGroups.cost[k]||{rows:[]};
+        gc.rows.forEach(r=>intervalRows.push(Object.assign({boiler:label},r)));
+        // 두 대 이상이 구간단가를 공유하면 배분량 비율로 분담 표시
+        if(members.length>1){
+            const gA=ivGroups.alloc[k]||0;
+            members.forEach(m=>{const share=gA>0?m.allocated/gA:0;intervalRows.push({boiler:label,name:'└ '+m.name+' 분담 '+(share*100).toFixed(1)+'%',range:'배분량 비율',price:0,qty:m.allocated,cost:m.boilerCost-m.fixedHrCost});});
+        }
         // 고정단가(FIXED_HR) 운휴비가 있으면 별도 행
-        if(br.fixedHrCost>0) intervalRows.push({boiler:br.name,name:'고정단가(운휴)',range:'운휴시간×원/HR',price:0,qty:0,cost:br.fixedHrCost});
+        members.forEach(m=>{if(m.fixedHrCost>0)intervalRows.push({boiler:label,name:'고정단가(운휴)'+(members.length>1?' — '+m.name:''),range:'운휴시간×원/HR',price:0,qty:0,cost:m.fixedHrCost});});
     });
     const intervalAllocated=intervalBoilers.reduce((s,r)=>s+r.allocated,0);
     const totalAllocated=boilerAllocRows.reduce((s,r)=>s+r.allocated,0);
@@ -2489,7 +2509,7 @@ function renderRef(){const d=REFS[cRef];
     const prevYr=parseInt(getYm().substring(0,4))-1;
     let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';
     if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}
-    else{refData.forEach((row,ri)=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr id="refRow_'+ri+'">'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);v=v+(bm?' <span style="font-size:10px;color:#94a3b8;">('+bm.boilerName+')</span>':'');}else if(c==='isShutdown'){const _opH=parseFloat(row.operationHours)||0;const _isSD=(v===true||v==='true'||v===1)||_opH<=0;v=_isSD?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(c==='factor'&&v!=null){v=parseFloat(v).toFixed(2);}else if(c==='steamRatio'&&v!=null){v=parseFloat(v).toFixed(1)+'%';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td style="white-space:nowrap;"><button onclick="editRef('+ri+')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;margin-right:4px;" title="편집"><i class="fas fa-edit"></i></button><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;" title="삭제"><i class="fas fa-trash"></i></button></td></tr>';});}
+    else{refData.forEach((row,ri)=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr id="refRow_'+ri+'">'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);let bn=bm?bm.boilerName:'';if(!bm){const gm=[...new Set(BOILER_MASTERS_LIST.filter(b=>b.boilerCode!==v&&boilerGroupCode(b.boilerCode)===v).map(b=>b.boilerName||b.boilerCode))];if(gm.length)bn=gm.join('·')+' 공통';}v=v+(bn?' <span style="font-size:10px;color:#94a3b8;">('+bn+')</span>':'');}else if(c==='isShutdown'){const _opH=parseFloat(row.operationHours)||0;const _isSD=(v===true||v==='true'||v===1)||_opH<=0;v=_isSD?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(c==='factor'&&v!=null){v=parseFloat(v).toFixed(2);}else if(c==='steamRatio'&&v!=null){v=parseFloat(v).toFixed(1)+'%';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td style="white-space:nowrap;"><button onclick="editRef('+ri+')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;margin-right:4px;" title="편집"><i class="fas fa-edit"></i></button><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;" title="삭제"><i class="fas fa-trash"></i></button></td></tr>';});}
     h+='</tbody></table>';
     // boiler-cost-rates: 단가유형 설명 가이드
     if(d.k==='boiler-cost-rates'){
@@ -2497,15 +2517,15 @@ function renderRef(){const d=REFS[cRef];
         h+='<div style="font-size:11px;font-weight:700;color:#4338ca;margin-bottom:8px;"><i class="fas fa-info-circle mr-1"></i>단가유형(RATE_TYPE) 설명</div>';
         h+='<table style="width:100%;font-size:10px;border-collapse:collapse;">';
         h+='<tr style="background:#e0e7ff;"><th style="padding:4px 8px;text-align:left;border:1px solid #c7d2fe;">단가유형</th><th style="padding:4px 8px;text-align:left;border:1px solid #c7d2fe;">대상 보일러</th><th style="padding:4px 8px;text-align:left;border:1px solid #c7d2fe;">계산 방식</th></tr>';
-        [['INTERVAL','복합보일러 (BLR-COGEN)','BSC 기본구간 단가 × FACTOR'],
-         ['INTERVAL_ASC','복합보일러 (BLR-COGEN)','ASC 초과구간 단가 × FACTOR'],
-         ['BSC_GUARANTEE','복합보일러 (BLR-COGEN)','BSC 보증량 (기본↔초과 구간 경계, 톤)'],
+        [['INTERVAL','복합보일러 1·2호기 공통 (BLR-COGEN)','BSC 기본구간 단가 × FACTOR'],
+         ['INTERVAL_ASC','복합보일러 1·2호기 공통 (BLR-COGEN)','ASC 초과구간 단가 × FACTOR'],
+         ['BSC_GUARANTEE','복합보일러 1·2호기 공통 (BLR-COGEN)','BSC 보증량 (기본↔초과 구간 경계, 톤) — 두 대 합산 기준'],
          ['FUEL_RATE','LNG보일러 (BLR-LNG)','LNG 연료단가 (원/㎥)'],
          ['STEAM_RATE','폐합성·유동상·LNG','스팀단가 (원/톤) 또는 스팀효율 (톤/㎥)'],
          ['FIXED_HR','폐합성·유동상','운휴시간 × 고정단가(원/HR) × FACTOR']
         ].forEach(r=>{h+='<tr><td style="padding:3px 8px;border:1px solid #e2e8f0;font-weight:600;color:#4338ca;">'+r[0]+'</td><td style="padding:3px 8px;border:1px solid #e2e8f0;">'+r[1]+'</td><td style="padding:3px 8px;border:1px solid #e2e8f0;color:#475569;">'+r[2]+'</td></tr>';});
         h+='</table>';
-        h+='<div style="margin-top:6px;font-size:9px;color:#94a3b8;"><i class="fas fa-lightbulb" style="color:#f59e0b;margin-right:3px;"></i>FACTOR: 복합보일러(BSC/ASC)만 적용, 나머지는 1.00 고정 | 에너지팀 DB에서 자동 수신됩니다</div>';
+        h+='<div style="margin-top:6px;font-size:9px;color:#94a3b8;"><i class="fas fa-lightbulb" style="color:#f59e0b;margin-right:3px;"></i>FACTOR: 복합보일러(BSC/ASC)만 적용, 나머지는 1.00 고정 | 에너지팀 DB에서 자동 수신됩니다<br><i class="fas fa-link" style="color:#6366f1;margin-right:3px;"></i>복합보일러 1·2호기(BLR-COGEN-1, BLR-COGEN-2)는 BLR-COGEN 단가·보증량을 함께 사용 — 두 대 배분량 합계에 BSC(보증량까지)·ASC를 적용한 뒤 배분량 비율로 나눕니다</div>';
         h+='</div>';
     }
     // 전년도 참고 테이블
@@ -2649,7 +2669,7 @@ async function openRefModal(){
             h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+PRODUCT_OPTIONS.map(p=>'<option value="'+p.productCode+'">'+p.productCode+(p.productName?' ('+p.productName+')':'')+'</option>').join('')+'</select>';
         }else if(c==='boilerCode'&&d.k!=='boiler-masters'&&BOILER_MASTERS_LIST.length){
             const emptyOpt=d.k==='steam-price-intervals'?'<option value="">(공통 - 전체 보일러)</option>':'';
-            h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+emptyOpt+BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).map(b=>'<option value="'+b.boilerCode+'">'+b.boilerCode+' ('+b.boilerName+')</option>').join('')+'</select>';
+            h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+emptyOpt+boilerCodeOptions('',['steam-price-intervals','boiler-cost-rates'].includes(d.k))+'</select>';
         }else if(c==='boilerCode'){
             h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';
         }else{
@@ -2687,7 +2707,7 @@ function editRef(rowIdx){
             h+='<label>'+d.h[i]+'</label><select name="'+c+'">'+UNIT_OPTIONS.map(u=>'<option value="'+u.unitCode+'"'+(u.unitCode===val?' selected':'')+'>'+u.unitCode+' ('+u.unitName+')</option>').join('')+'</select>';
         }else if(c==='boilerCode'&&d.k!=='boiler-masters'&&BOILER_MASTERS_LIST.length){
             const emptyOpt=d.k==='steam-price-intervals'?'<option value=""'+(val===''?' selected':'')+'>(공통)</option>':'';
-            h+='<label>'+d.h[i]+'</label><select name="'+c+'">'+emptyOpt+BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).map(b=>'<option value="'+b.boilerCode+'"'+(b.boilerCode===val?' selected':'')+'>'+b.boilerCode+' ('+b.boilerName+')</option>').join('')+'</select>';
+            h+='<label>'+d.h[i]+'</label><select name="'+c+'">'+emptyOpt+boilerCodeOptions(val,['steam-price-intervals','boiler-cost-rates'].includes(d.k))+'</select>';
         }else{
             h+='<label>'+d.h[i]+'</label><input name="'+c+'" value="'+val+'">';
         }
