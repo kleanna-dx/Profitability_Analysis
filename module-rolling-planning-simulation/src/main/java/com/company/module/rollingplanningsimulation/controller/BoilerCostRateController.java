@@ -18,17 +18,8 @@ public class BoilerCostRateController {
             @RequestParam(required=false) Integer month,
             @RequestParam(defaultValue="PS") String division) {
         if (month != null && month > 0) {
-            // 월별 조회: 해당 월 데이터 우선, 없으면 기본(month=0) 사용
-            List<BoilerCostRate> all = repo.findByYearMonthAndDivision(year, month, division);
-            // 같은 boilerCode+rateType에 대해 월별(month>0) 우선
-            Map<String, BoilerCostRate> merged = new LinkedHashMap<>();
-            // 기본(month=0) 먼저
-            all.stream().filter(b -> b.getMonth() == null || b.getMonth() == 0)
-                .forEach(b -> merged.put(b.getBoilerCode() + "|" + b.getRateType(), b));
-            // 월별 데이터로 덮어쓰기
-            all.stream().filter(b -> b.getMonth() != null && b.getMonth() > 0)
-                .forEach(b -> merged.put(b.getBoilerCode() + "|" + b.getRateType(), b));
-            return ResponseEntity.ok(ApiResponse.success(new ArrayList<>(merged.values())));
+            // 월별 조회: 해당 월 데이터만 (월 0 기본값은 표시하지 않음)
+            return ResponseEntity.ok(ApiResponse.success(repo.findByYearMonthAndDivision(year, month, division)));
         }
         return ResponseEntity.ok(ApiResponse.success(repo.findByYearAndDivision(year, division)));
     }
