@@ -165,13 +165,13 @@ public class EnergyDataSyncService {
 
             // boiler_cost_rate에 INTERVAL 타입으로 BSC/ASC 월별 저장
             if (bscPrice.compareTo(BigDecimal.ZERO) > 0) {
-                saveOrUpdateCostRate(year, mon, "BLR-COGEN", "INTERVAL", "복합보일러 BSC 단가",
+                saveOrUpdateCostRate(year, mon, "BLR-COGEN", "INTERVAL", "복합보일러 BSC 단가(초과구간)",
                         bscPrice, "원/톤", bscFactor, division);
                 count++;
             }
             // ASC 단가도 별도 rateType으로 저장 (INTERVAL_ASC)
             if (ascPrice.compareTo(BigDecimal.ZERO) > 0) {
-                saveOrUpdateCostRate(year, mon, "BLR-COGEN", "INTERVAL_ASC", "복합보일러 ASC 단가",
+                saveOrUpdateCostRate(year, mon, "BLR-COGEN", "INTERVAL_ASC", "복합보일러 ASC 단가(기본구간)",
                         ascPrice, "원/톤", ascFactor, division);
                 count++;
             }
@@ -183,44 +183,35 @@ public class EnergyDataSyncService {
             }
         }
 
-        // steam_price_interval 월별 저장 (BSC/ASC 단가·보증량이 매월 다를 수 있음)
-        // 보증량이 해당 월에 없으면, 연중 처음 발견되는 보증량으로 대체
-        BigDecimal fallbackGuarantee = BigDecimal.ZERO;
-        if (guaranteeData != null) {
-            fallbackGuarantee = guaranteeData.entrySet().stream()
-                    .sorted(Map.Entry.comparingByKey())
-                    .map(Map.Entry::getValue)
-                    .filter(v -> v != null && v.compareTo(BigDecimal.ZERO) > 0)
-                    .findFirst().orElse(BigDecimal.ZERO);
-        }
+        // steam_price_interval 월별 저장 — 보증량은 해당 월 값만 사용 (다른 월 값으로 대체하지 않음)
 
         for (int mon : new TreeSet<>(allMonths)) {
             BigDecimal bsc = bscData != null ? bscData.getOrDefault(mon, BigDecimal.ZERO) : BigDecimal.ZERO;
             BigDecimal asc = ascData != null ? ascData.getOrDefault(mon, BigDecimal.ZERO) : BigDecimal.ZERO;
             BigDecimal g = guaranteeData != null ? guaranteeData.getOrDefault(mon, BigDecimal.ZERO) : BigDecimal.ZERO;
-            if (g == null || g.compareTo(BigDecimal.ZERO) <= 0) g = fallbackGuarantee;
-            boolean hasG = g.compareTo(BigDecimal.ZERO) > 0;
+            boolean hasG = g != null && g.compareTo(BigDecimal.ZERO) > 0;
 
-            if (bsc.compareTo(BigDecimal.ZERO) > 0) {
-                SteamPriceInterval bscInterval = SteamPriceInterval.builder()
-                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(1)
-                        .intervalName("기본구간 (BSC)")
-                        .minUsageTon(BigDecimal.ZERO).maxUsageTon(hasG ? g : null)
-                        .pricePerTon(bsc).division(division).memo("에너지팀 자동수신")
-                        .build();
-                bscInterval.setCreatedBy("ENERGY_SYNC");
-                auditSupport.upsert(steamPriceIntervalRepo, bscInterval, INTERVAL_UK);
-                count++;
-            }
+            // 기본구간(0~보증량) = ASC 단가 / 초과구간(보증량 초과) = BSC 단가
             if (asc.compareTo(BigDecimal.ZERO) > 0) {
                 SteamPriceInterval ascInterval = SteamPriceInterval.builder()
-                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(2)
-                        .intervalName("초과구간 (ASC)")
-                        .minUsageTon(hasG ? g : BigDecimal.ZERO).maxUsageTon(null)
+                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(1)
+                        .intervalName("기본구간 (ASC)")
+                        .minUsageTon(BigDecimal.ZERO).maxUsageTon(hasG ? g : null)
                         .pricePerTon(asc).division(division).memo("에너지팀 자동수신")
                         .build();
                 ascInterval.setCreatedBy("ENERGY_SYNC");
                 auditSupport.upsert(steamPriceIntervalRepo, ascInterval, INTERVAL_UK);
+                count++;
+            }
+            if (bsc.compareTo(BigDecimal.ZERO) > 0 && hasG) {
+                SteamPriceInterval bscInterval = SteamPriceInterval.builder()
+                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(2)
+                        .intervalName("초과구간 (BSC)")
+                        .minUsageTon(g).maxUsageTon(null)
+                        .pricePerTon(bsc).division(division).memo("에너지팀 자동수신")
+                        .build();
+                bscInterval.setCreatedBy("ENERGY_SYNC");
+                auditSupport.upsert(steamPriceIntervalRepo, bscInterval, INTERVAL_UK);
                 count++;
             }
         }
