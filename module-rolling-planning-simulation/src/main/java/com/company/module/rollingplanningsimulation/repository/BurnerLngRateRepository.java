@@ -6,4 +6,5 @@ import java.util.Optional;
 
 public interface BurnerLngRateRepository extends JpaRepository<BurnerLngRate, Long> {
     List<BurnerLngRate> findByYearAndDivision(Integer year,String division);
+    List<BurnerLngRate> findByYearAndMonthAndDivisionOrderByMachineCodeAsc(Integer year,Integer month,String division);
 }

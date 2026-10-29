@@ -8,9 +8,9 @@ import java.util.List;
 public interface CogenDeductionRepository extends JpaRepository<CogenDeduction, Long> {
     List<CogenDeduction> findByYearAndDivision(Integer year, String division);
 
-    // 월별 조회: 해당 월 데이터 + 월 구분 없는 데이터(month=0) 모두 반환
+    // 월별 조회: 해당 월 데이터만 (월0 값으로 대체하지 않음)
     @Query("SELECT c FROM CogenDeduction c WHERE c.year = :year AND c.division = :division " +
-           "AND (c.month = :month OR c.month = 0 OR c.month IS NULL) " +
+           "AND c.month = :month " +
            "ORDER BY c.itemType ASC")
     List<CogenDeduction> findByYearMonthAndDivision(@Param("year") int year,
                                                      @Param("month") int month,

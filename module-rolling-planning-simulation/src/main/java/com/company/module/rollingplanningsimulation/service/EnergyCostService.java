@@ -127,9 +127,9 @@ public class EnergyCostService {
     /**
      * 버너 LNG 비용 = Σ(호기별 생산톤 × LNG원단위(㎥/톤)) × LNG단가(원/㎥)
      */
-    public BigDecimal calcBurnerLngCost(String division, int year,
+    public BigDecimal calcBurnerLngCost(String division, int year, int month,
                                         Map<String, BigDecimal> productionByMachine) {
-        List<BurnerLngRate> rates = burnerLngRateRepository.findByYearAndDivision(year, division);
+        List<BurnerLngRate> rates = burnerLngRateRepository.findByYearAndMonthAndDivisionOrderByMachineCodeAsc(year, month, division);
         // LNG 단가: boiler_cost_rate에서 LNG 보일러의 FUEL_RATE 사용
         BigDecimal lngPrice = boilerCostRateRepository.findByYearAndDivision(year, division).stream()
                 .filter(r -> "FUEL_RATE".equals(r.getRateType()) && r.getBoilerCode().contains("LNG"))
@@ -194,21 +194,18 @@ public class EnergyCostService {
             }
         }
 
-        // 복합보일러: 유틸리티 공급 차감 적용
-        BigDecimal utilityDeduct = getDeductionAmount(year, division, "UTILITY");
-        cogenCost = cogenCost.add(utilityDeduct); // utilityDeduct는 음수
 
         // STEP 3: 버너 LNG (보일러와 별개)
-        BigDecimal burnerLngCost = calcBurnerLngCost(division, year, productionByMachine);
+        BigDecimal burnerLngCost = calcBurnerLngCost(division, year, month, productionByMachine);
 
-        // STEP 4: 고정 차감 (감가상각/처분수익/지상권)
-        BigDecimal deductTotal = getDeductionAmount(year, division, "DEPRECIATION")
-                .add(getDeductionAmount(year, division, "DISPOSAL_GAIN"))
-                .add(getDeductionAmount(year, division, "LAND_RENT"));
+        // STEP 4: 연료비 고정차감 — 기준월 등록 항목 전부 차감 (LNG사용량·처분부담금 / 감가상각 / 처분수익 / 지상권 지료)
+        BigDecimal deductTotal = cogenDeductionRepository.findByYearMonthAndDivision(year, month, division).stream()
+                .map(d -> d.getMonthlyAmount() != null ? d.getMonthlyAmount().abs() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         // 최종 에너지비
         BigDecimal energyTotal = cogenCost.add(lngBoilerCost).add(incinCost)
-                .add(externalCost).add(burnerLngCost).add(deductTotal);
+                .add(externalCost).add(burnerLngCost).subtract(deductTotal);
 
         // 원단위 계산
         BigDecimal totalProd = productionByMachine.values().stream()
@@ -310,11 +307,4 @@ public class EnergyCostService {
                 .orElse(BigDecimal.ZERO);
     }
 
-    private BigDecimal getDeductionAmount(int year, String division, String itemType) {
-        return cogenDeductionRepository.findByYearAndDivision(year, division).stream()
-                .filter(d -> itemType.equals(d.getItemType()))
-                .findFirst()
-                .map(CogenDeduction::getMonthlyAmount)
-                .orElse(BigDecimal.ZERO);
-    }
 }
