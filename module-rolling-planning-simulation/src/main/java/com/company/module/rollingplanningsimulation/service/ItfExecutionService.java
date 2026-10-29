@@ -8,6 +8,7 @@ import com.company.module.rollingplanningsimulation.repository.RpsimItfMasterRep
 import com.company.module.rollingplanningsimulation.repository.RpsimItfScheduleRepository;
 import com.company.module.rollingplanningsimulation.entity.RpsimItfSchedule;
 import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +36,7 @@ public class ItfExecutionService {
     private final RpsimItfHistoryRepository histRepo;
     private final SapRfcSyncService sapRfcSyncService;
     private final EnergyDataSyncService energySyncService;
+    private final JdbcTemplate jdbcTemplate;
 
     /**
      * 인터페이스 실행 (마스터 정보 기반 동적 라우팅)
@@ -132,6 +134,12 @@ public class ItfExecutionService {
         SapRfcSyncService.TableMapping mapping = SapRfcSyncService.resolveMapping(targetTable);
         sapRfcSyncService.execute(batch.getId(), cmonth, mode, rfcName, mapping);
 
+        // 원부재료: 자재그룹(MATL_GROUP) 첫 자리로 원재료/부재료 구분 (1*=원재료 '100', 2*=부재료 '101')
+        if ("rpsim_raw_material".equalsIgnoreCase(targetTable)) {
+            int classified = classifyRawMaterialDataType(cmonth);
+            hist.appendLog("[SAP RFC] 원재료/부재료 구분(DATA_TYPE) 갱신: " + classified + "건");
+        }
+
         // 결과 확인
         long insertedCount = sapRfcSyncService.countExistingData(cmonth, targetTable);
         hist.appendLog("[SAP RFC] 완료 — insertedCount=" + insertedCount + ", batchId=" + batch.getId());
@@ -193,6 +201,13 @@ public class ItfExecutionService {
     // ================================================================
     // 헬퍼
     // ================================================================
+
+    /** 자재그룹 1* → '100'(원재료), 2* → '101'(부재료). 그 외는 '100' 유지 */
+    private int classifyRawMaterialDataType(String cmonth) {
+        return jdbcTemplate.update(
+            "UPDATE rpsim_raw_material SET DATA_TYPE = CASE WHEN TRIM(MATL_GROUP) LIKE '2%' THEN '101' ELSE '100' END WHERE CALMONTH = ?",
+            cmonth);
+    }
 
     private String determineJobType(String rfcFuncOrUrl) {
         if (rfcFuncOrUrl == null) return "MANUAL";

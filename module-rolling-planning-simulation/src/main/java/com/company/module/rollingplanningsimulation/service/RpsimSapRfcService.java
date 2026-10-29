@@ -95,13 +95,12 @@ public class RpsimSapRfcService {
      * → rpsim_raw_material 에 DATA_TYPE 구분하여 INSERT
      *
      * <p>SAP RFC는 1번 호출, T_DATA에 원재료+부재료가 함께 들어옴.
-     * DATA_TYPE은 SAP 개발자가 T_DATA에 구분 컬럼을 넣어줬으면 그걸 사용하고,
-     * 없으면 모두 '100'(원재료)으로 저장.</p>
+     * DATA_TYPE은 자재그룹(MATL_GROUP) 첫 자리로 구분: 1* = '100'(원재료), 2* = '101'(부재료).</p>
      */
     public Map<String, Object> executeRawMaterial(String cmonth, String mode, String executedBy) {
         log.info("[RPSIM RFC] Z_BI_WEB_EX_BL_2 실행 — cmonth={}, mode={}", cmonth, mode);
 
-        RpsimItfHistory hist = createHistory("RPSIM_ITF_011", "원부재료 사용현황 (RFC)", executedBy);
+        RpsimItfHistory hist = createHistory("RPSIM_ITF_001", "원부재료 사용현황 (RFC)", executedBy);
 
         try {
             // replace 모드: 기존 데이터 삭제
@@ -140,7 +139,7 @@ public class RpsimSapRfcService {
     public Map<String, Object> executeRawInventory(String cmonth, String mode, String executedBy) {
         log.info("[RPSIM RFC] Z_BI_WEB_EX_BL_3 실행 — cmonth={}, mode={}", cmonth, mode);
 
-        RpsimItfHistory hist = createHistory("RPSIM_ITF_012", "원부자재 수불부 (RFC)", executedBy);
+        RpsimItfHistory hist = createHistory("RPSIM_ITF_002", "원부자재 수불부 (RFC)", executedBy);
 
         try {
             int deleted = 0;
@@ -216,6 +215,10 @@ public class RpsimSapRfcService {
                     String raw = (String) getStr.invoke(tDataTable, idx);
                     values[c] = parseValue(raw, col, DECIMAL_COLS_RAW_MATERIAL, BIGINT_COLS_RAW_MATERIAL);
                 }
+                // 자재그룹 첫 자리로 원재료/부재료 구분 (1*=원재료 '100', 2*=부재료 '101')
+                Object mg = values[DB_COLS_RAW_MATERIAL.indexOf("MATL_GROUP")];
+                values[DB_COLS_RAW_MATERIAL.indexOf("DATA_TYPE")] =
+                        (mg != null && mg.toString().trim().startsWith("2")) ? "101" : "100";
                 batch.add(values);
 
                 if (batch.size() >= 1000 || i == rowCount - 1) {
