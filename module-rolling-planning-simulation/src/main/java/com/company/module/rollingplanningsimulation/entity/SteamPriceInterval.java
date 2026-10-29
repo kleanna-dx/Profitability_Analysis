@@ -1,8 +1,10 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 import jakarta.persistence.*;
 import lombok.*; import java.math.BigDecimal; import java.time.LocalDateTime;
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity @Table(name="rpsim_steam_price_interval") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
-public class SteamPriceInterval {
+public class SteamPriceInterval extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="PRICE_ID") private Long priceId;
     @Column(name="CONTRACT_YEAR",nullable=false,length=10) private String contractYear;
     /** 월 (0=연간 공통, 1~12=월별) */
@@ -15,9 +17,6 @@ public class SteamPriceInterval {
     @Column(name="PRICE_PER_TON",precision=12,scale=2) private BigDecimal pricePerTon;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="MEMO",length=200) private String memo;
-    @Column(name="CREATED_BY") private String createdBy;
-    @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
-    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(month==null)month=0;}
+    @PrePersist protected void onCreate(){if(division==null)division="PS";if(month==null)month=0;}
     @Builder public SteamPriceInterval(String contractYear,Integer month,String boilerCode,Integer intervalSeq,String intervalName,BigDecimal minUsageTon,BigDecimal maxUsageTon,BigDecimal pricePerTon,String division,String memo){this.contractYear=contractYear;this.month=month!=null?month:0;this.boilerCode=boilerCode;this.intervalSeq=intervalSeq;this.intervalName=intervalName;this.minUsageTon=minUsageTon;this.maxUsageTon=maxUsageTon;this.pricePerTon=pricePerTon!=null?pricePerTon:BigDecimal.ZERO;this.division=division!=null?division:"PS";this.memo=memo;}
 }

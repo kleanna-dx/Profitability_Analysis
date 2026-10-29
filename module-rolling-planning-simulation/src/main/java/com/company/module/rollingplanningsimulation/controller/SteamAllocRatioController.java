@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.controller;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.SteamAllocRatio;
 import com.company.module.rollingplanningsimulation.repository.SteamAllocRatioRepository;
@@ -12,6 +13,7 @@ import java.util.Map;
 @RestController @RequestMapping("/rolling-planning-simulation-api/steam-alloc-ratios") @RequiredArgsConstructor
 public class SteamAllocRatioController {
     private final SteamAllocRatioRepository repo;
+    private final AuditSupport auditSupport;
     @GetMapping public ResponseEntity<ApiResponse<List<SteamAllocRatio>>> list(@RequestParam Integer year, @RequestParam(defaultValue="PS") String division) {
         return ResponseEntity.ok(ApiResponse.success(repo.findByYearAndDivision(year, division)));
     }
@@ -21,7 +23,15 @@ public class SteamAllocRatioController {
             .allocRatio(body.get("allocRatio")!=null?new BigDecimal(body.get("allocRatio").toString()):BigDecimal.ZERO)
             .memo((String)body.get("memo")).build();
         if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
-        return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
+        return ResponseEntity.ok(ApiResponse.success(persist(e, body)));
     }
-    @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }
+    @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { auditSupport.softDelete(repo, id); return ResponseEntity.ok(ApiResponse.success(null)); }
+
+    // 등록: UK가 같은 행이 있으면 덮어씀(삭제된 행이면 되살림) / 수정: 지정 행만, 키 중복 시 오류
+    private static final String UPDATE_ID = "__updateId";
+    private static final String[] UK = {"year", "machineCode", "division"};
+    private SteamAllocRatio persist(SteamAllocRatio e, Map<String,Object> body) {
+        Object uid = body.remove(UPDATE_ID);
+        return uid != null ? auditSupport.updateById(repo, (Long) uid, e, UK) : auditSupport.upsert(repo, e, UK);
+    }
 }

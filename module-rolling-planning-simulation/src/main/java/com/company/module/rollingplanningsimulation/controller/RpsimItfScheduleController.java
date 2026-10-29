@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.controller;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.RpsimItfSchedule;
 import com.company.module.rollingplanningsimulation.repository.RpsimItfScheduleRepository;
@@ -12,6 +13,7 @@ import java.util.*;
 @RestController @RequestMapping("/rolling-planning-simulation-api/itf-schedules") @RequiredArgsConstructor
 public class RpsimItfScheduleController {
     private final RpsimItfScheduleRepository repo;
+    private final AuditSupport auditSupport;
 
     /* 전체 목록 or 인터페이스별 */
     @GetMapping
@@ -86,7 +88,7 @@ public class RpsimItfScheduleController {
     /* 삭제 */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
-        repo.deleteById(id);
+        auditSupport.softDelete(repo, id);
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 

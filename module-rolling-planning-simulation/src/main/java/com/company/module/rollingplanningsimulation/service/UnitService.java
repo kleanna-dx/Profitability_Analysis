@@ -1,5 +1,8 @@
 package com.company.module.rollingplanningsimulation.service;
 
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
+import com.company.module.rollingplanningsimulation.support.CurrentUser;
+
 import com.company.module.rollingplanningsimulation.dto.request.UnitSaveRequest;
 import com.company.module.rollingplanningsimulation.dto.response.UnitResponse;
 import com.company.module.rollingplanningsimulation.entity.Unit;
@@ -12,6 +15,7 @@ import java.util.List;
 @Service @RequiredArgsConstructor @Transactional(readOnly = true)
 public class UnitService {
     private final UnitRepository unitRepository;
+    private final AuditSupport auditSupport;
 
     public List<UnitResponse> getList(String division) {
         if (division != null && !division.isEmpty()) {
@@ -25,20 +29,20 @@ public class UnitService {
         Unit entity = Unit.builder()
                 .unitCode(request.getUnitCode()).unitName(request.getUnitName())
                 .division(request.getDivision()).description(request.getDescription())
-                .isActive(request.getIsActive()).createdBy(currentUserId).build();
-        return UnitResponse.from(unitRepository.save(entity));
+                .isActive(request.getIsActive()).build();
+        return UnitResponse.from(auditSupport.upsert(unitRepository, entity, "unitCode"));
     }
 
     @Transactional
     public UnitResponse update(Long id, UnitSaveRequest request, Long currentUserId) {
         Unit entity = unitRepository.findById(id).orElseThrow(() -> new IllegalArgumentException("호기를 찾을 수 없습니다: " + id));
-        entity.update(request.getUnitName(), request.getDivision(), request.getDescription(), request.getIsActive(), currentUserId);
+        entity.update(request.getUnitName(), request.getDivision(), request.getDescription(), request.getIsActive());
         return UnitResponse.from(entity);
     }
 
     @Transactional
     public void delete(Long id, Long currentUserId) {
         Unit entity = unitRepository.findById(id).orElseThrow(() -> new IllegalArgumentException("호기를 찾을 수 없습니다: " + id));
-        entity.delete(currentUserId);
+        entity.softDelete(CurrentUser.get());
     }
 }

@@ -1,5 +1,8 @@
 package com.company.module.rollingplanningsimulation.service;
 
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
+import com.company.module.rollingplanningsimulation.support.CurrentUser;
+
 import com.company.module.rollingplanningsimulation.dto.request.MachineCapacitySaveRequest;
 import com.company.module.rollingplanningsimulation.dto.response.MachineCapacityResponse;
 import com.company.module.rollingplanningsimulation.entity.MachineCapacity;
@@ -12,6 +15,7 @@ import java.util.List;
 @Service @RequiredArgsConstructor @Transactional(readOnly = true)
 public class MachineCapacityService {
     private final MachineCapacityRepository repo;
+    private final AuditSupport auditSupport;
 
     public List<MachineCapacityResponse> getList(String division) {
         return repo.findByDivisionAndDeletedYnOrderByMachineCode(division != null ? division : "PS", "N").stream().map(MachineCapacityResponse::from).toList();
@@ -23,20 +27,20 @@ public class MachineCapacityService {
                 .division(request.getDivision()).machineCode(request.getMachineCode())
                 .hourlyCapacity(request.getHourlyCapacity()).basisWeightRef(request.getBasisWeightRef())
                 .note(request.getNote()).validFrom(request.getValidFrom()).validTo(request.getValidTo())
-                .createdBy(currentUserId).build();
-        return MachineCapacityResponse.from(repo.save(entity));
+                .build();
+        return MachineCapacityResponse.from(auditSupport.upsert(repo, entity, "division", "machineCode", "validFrom"));
     }
 
     @Transactional
     public MachineCapacityResponse update(Long id, MachineCapacitySaveRequest request, Long currentUserId) {
         MachineCapacity entity = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("생산능력 데이터를 찾을 수 없습니다: " + id));
-        entity.update(request.getHourlyCapacity(), request.getBasisWeightRef(), request.getNote(), request.getValidFrom(), request.getValidTo(), currentUserId);
+        entity.update(request.getHourlyCapacity(), request.getBasisWeightRef(), request.getNote(), request.getValidFrom(), request.getValidTo());
         return MachineCapacityResponse.from(entity);
     }
 
     @Transactional
     public void delete(Long id, Long currentUserId) {
         MachineCapacity entity = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("생산능력 데이터를 찾을 수 없습니다: " + id));
-        entity.delete(currentUserId);
+        entity.softDelete(CurrentUser.get());
     }
 }

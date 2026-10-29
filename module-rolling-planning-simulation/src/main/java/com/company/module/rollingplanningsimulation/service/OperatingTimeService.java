@@ -1,5 +1,8 @@
 package com.company.module.rollingplanningsimulation.service;
 
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
+import com.company.module.rollingplanningsimulation.support.CurrentUser;
+
 import com.company.module.rollingplanningsimulation.dto.request.OperatingTimeSaveRequest;
 import com.company.module.rollingplanningsimulation.dto.response.OperatingTimeResponse;
 import com.company.module.rollingplanningsimulation.entity.OperatingTime;
@@ -16,6 +19,7 @@ import java.util.List;
 public class OperatingTimeService {
 
     private final OperatingTimeRepository operatingTimeRepository;
+    private final AuditSupport auditSupport;
 
     /**
      * 특정 호기의 연간 가동시간 조회
@@ -60,8 +64,7 @@ public class OperatingTimeService {
                     request.getOperationTrimmingDays(),
                     request.getDowntimeRepairDays(),
                     request.getDowntimeCleaningDays(),
-                    request.getDowntimeAccidentDays(),
-                    currentUserId);
+                    request.getDowntimeAccidentDays());
         } else {
             entity = OperatingTime.builder()
                     .division(request.getDivision())
@@ -77,11 +80,11 @@ public class OperatingTimeService {
                     .downtimeRepairDays(request.getDowntimeRepairDays())
                     .downtimeCleaningDays(request.getDowntimeCleaningDays())
                     .downtimeAccidentDays(request.getDowntimeAccidentDays())
-                    .createdBy(currentUserId)
+                    
                     .build();
         }
 
-        OperatingTime saved = operatingTimeRepository.save(entity);
+        OperatingTime saved = auditSupport.upsert(operatingTimeRepository, entity, "division", "machineCode", "ym");
         return OperatingTimeResponse.from(saved);
     }
 }

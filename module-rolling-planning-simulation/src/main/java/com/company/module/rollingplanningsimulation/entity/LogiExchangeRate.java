@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -13,11 +14,12 @@ import java.time.LocalDateTime;
  * 월별 적용 환율 엔티티
  * - 연도/월/사업부/통화별 환율(원/통화)
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_logi_exchange_rate")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class LogiExchangeRate {
+public class LogiExchangeRate extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -42,25 +44,14 @@ public class LogiExchangeRate {
     @Column(name = "MEMO", length = 500)
     private String memo;
 
-    @Column(name = "CREATED_BY") private String createdBy;
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
         if (this.division == null) this.division = "PS";
         if (this.currency == null) this.currency = "USD";
     }
 
-    @PreUpdate
-    protected void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
-    }
 
     @Builder
     public LogiExchangeRate(Integer year, Integer month, String division,

@@ -1,8 +1,10 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 import jakarta.persistence.*;
 import lombok.*; import java.time.LocalDateTime;
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity @Table(name="rpsim_itf_history") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
-public class RpsimItfHistory {
+public class RpsimItfHistory extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="HISTORY_ID") private Long historyId;
     @Column(name="INTERFACE_ID",nullable=false,length=50) private String interfaceId;
     @Column(name="INTERFACE_NAME",length=200) private String interfaceName;
@@ -21,9 +23,8 @@ public class RpsimItfHistory {
     @Column(name="ERROR_MESSAGE",columnDefinition="TEXT") private String errorMessage;
     @Column(name="LOG_TEXT",columnDefinition="LONGTEXT") private String logText;
     @Column(name="EXECUTED_BY",length=50) private String executedBy;
-    @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
-    public void setCreatedBy(String executedBy){this.executedBy=executedBy;}
-    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(status==null)status="pending";if(jobType==null)jobType="MANUAL_SYNC";}
+    @Override public void setCreatedBy(String executedBy){super.setCreatedBy(executedBy);this.executedBy=executedBy;}
+    @PrePersist protected void onCreate(){if(status==null)status="pending";if(jobType==null)jobType="MANUAL_SYNC";}
     @Builder public RpsimItfHistory(String interfaceId,String interfaceName,String jobType,String rfcName,String targetTable,String cmonth,String execMode,String status,LocalDateTime startedAt,LocalDateTime completedAt,Integer durationMs,Integer processCount,Integer insertedRows,Integer deletedRows,String errorMessage,String logText,String executedBy){
         this.interfaceId=interfaceId;this.interfaceName=interfaceName;
         this.jobType=jobType!=null?jobType:"MANUAL_SYNC";this.rfcName=rfcName;this.targetTable=targetTable;this.cmonth=cmonth;
@@ -31,7 +32,7 @@ public class RpsimItfHistory {
         this.startedAt=startedAt;this.completedAt=completedAt;
         this.durationMs=durationMs!=null?durationMs:0;this.processCount=processCount!=null?processCount:0;
         this.insertedRows=insertedRows!=null?insertedRows:0;this.deletedRows=deletedRows!=null?deletedRows:0;
-        this.errorMessage=errorMessage;this.logText=logText;this.executedBy=executedBy;
+        this.errorMessage=errorMessage;this.logText=logText;this.executedBy=executedBy;super.setCreatedBy(executedBy);
     }
     public void complete(String status,LocalDateTime completedAt,int durationMs,int processCount,String errorMessage){
         this.status=status;this.completedAt=completedAt;this.durationMs=durationMs;this.processCount=processCount;this.errorMessage=errorMessage;

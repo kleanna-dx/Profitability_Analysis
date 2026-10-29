@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 import jakarta.persistence.*;
 import lombok.*; import java.math.BigDecimal; import java.math.RoundingMode; import java.time.LocalDateTime;
 
@@ -6,8 +7,9 @@ import lombok.*; import java.math.BigDecimal; import java.math.RoundingMode; imp
  * 제지 생산 선속 (호기별/지종별 초지기 선속)
  * 이론 생산량(톤/일) = 평량(g/m²) × 0.001 × 0.001 × 지폭(mm) × 0.001 × 선속(m/min) × 1440
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity @Table(name="rpsim_machine_speed") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
-public class MachineSpeed {
+public class MachineSpeed extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="SPEED_ID") private Long speedId;
     @Column(name="YEAR",nullable=false) private Integer year;
     @Column(name="MACHINE_CODE",nullable=false,length=20) private String machineCode;
@@ -18,18 +20,12 @@ public class MachineSpeed {
     @Column(name="THEORY_PROD_TPD",precision=12,scale=4) private BigDecimal theoryProdTpd;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="NOTE",length=200) private String note;
-    @Column(name="CREATED_BY") private String createdBy;
-    @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
-    @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
 
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist protected void onCreate(){
-        createdAt=LocalDateTime.now();
         if(division==null)division="PS";
         calcTheoryProd();
     }
     @PreUpdate protected void onUpdate(){
-        updatedAt=LocalDateTime.now();
         calcTheoryProd();
     }
 

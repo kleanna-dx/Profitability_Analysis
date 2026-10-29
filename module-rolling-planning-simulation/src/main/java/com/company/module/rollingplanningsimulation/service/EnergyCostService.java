@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.service;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 
 import com.company.module.rollingplanningsimulation.entity.*;
 import com.company.module.rollingplanningsimulation.repository.*;
@@ -37,6 +38,7 @@ public class EnergyCostService {
     private final BurnerLngRateRepository burnerLngRateRepository;
     private final SteamAllocRatioRepository steamAllocRatioRepository;
     private final EnergyMonthlyRepository energyMonthlyRepository;
+    private final AuditSupport auditSupport;
 
     // ─────────────────────────────────────────────
     // STEP 1: 전체 스팀 필요량
@@ -234,7 +236,7 @@ public class EnergyCostService {
                 energyTotal.setScale(2, RoundingMode.HALF_UP),
                 costPerTonSteam, costPerTonProd, "CALCULATED"
         );
-        return energyMonthlyRepository.save(summary);
+        return auditSupport.upsert(energyMonthlyRepository, summary, "ym", "division");
     }
 
     // ── 조회 ──

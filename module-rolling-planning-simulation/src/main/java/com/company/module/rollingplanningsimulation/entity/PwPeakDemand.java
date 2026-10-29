@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -14,11 +15,12 @@ import java.time.LocalDateTime;
  * - 월 측정 최대수요가 현재 유효값보다 크면 교체 → 12개월간 유지
  * - 기본요금 = effectiveKw × 8,190원
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_pw_peak_demand")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class PwPeakDemand {
+public class PwPeakDemand extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -46,22 +48,13 @@ public class PwPeakDemand {
     @Column(name = "MEMO", length = 200)
     private String memo;
 
-    @Column(name = "CREATED_BY") private String createdBy;
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
         if (this.division == null) this.division = "PS";
     }
 
-    @PreUpdate
-    protected void onUpdate() { this.updatedAt = LocalDateTime.now(); }
 
     @Builder
     public PwPeakDemand(String ym, String division, BigDecimal measuredKw,

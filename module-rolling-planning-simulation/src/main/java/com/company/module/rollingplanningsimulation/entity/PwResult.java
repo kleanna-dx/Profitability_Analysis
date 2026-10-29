@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -13,11 +14,12 @@ import java.time.LocalDateTime;
  * 전력비 계산 결과 엔티티
  * - 월별/호기별 가동시간·전력량·전력비 계산 결과
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_pw_result")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class PwResult {
+public class PwResult extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -51,24 +53,13 @@ public class PwResult {
     @Column(name = "TOTAL_COST_KRW", precision = 18, scale = 2)
     private BigDecimal totalCostKrw;
 
-    @Column(name = "CREATED_BY") private String createdBy;
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
         if (this.division == null) this.division = "PS";
     }
 
-    @PreUpdate
-    protected void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
-    }
 
     @Builder
     public PwResult(String ym, String lineCode, String division,

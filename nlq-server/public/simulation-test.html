@@ -630,6 +630,12 @@
 
 <script>
 const API='/rolling-planning-simulation-api';
+// 모든 경영시뮬레이션 API 요청에 사용자 ID(X-User-Id) 첨부 → 서버가 생성자/수정자/삭제자로 기록
+(function(){const _f=window.fetch.bind(window);window.fetch=function(u,o){try{const url=typeof u==='string'?u:(u&&u.url)||'';if(url.indexOf(API)===0||url.indexOf(location.origin+API)===0){o=Object.assign({},o||{});const h=new Headers(o.headers||{});if(window.CURRENT_USER&&!h.has('X-User-Id'))h.set('X-User-Id',encodeURIComponent(window.CURRENT_USER));o.headers=h;}}catch(_){}return _f(u,o);};})();
+// 공통 감사 필드는 행 ID 판별에서 제외 (응답 JSON에서 감사 필드가 먼저 올 수 있음)
+const AUDIT_KEYS=['createdBy','createdAt','updatedBy','updatedAt','deletedYn','deletedBy','deletedAt','upserted'];
+function rowIdOf(row){if(!row)return null;if(row.id!=null)return row.id;const k=Object.keys(row).find(x=>!AUDIT_KEYS.includes(x));return k?row[k]:null;}
+async function apiErrMsg(r){try{const t=await r.text();try{const j=JSON.parse(t);return j.message||j.error||t;}catch(_){return t;}}catch(_){return 'HTTP '+r.status;}}
 let BP=8368; // 기준 생산량 (API에서 갱신)
 let costChart=null,matChart=null,trendChart=null,compChart=null;
 function fmt(n){return n.toLocaleString('ko-KR',{maximumFractionDigits:1});}
@@ -1486,7 +1492,7 @@ async function fillFromCapa(){
 //    단가(boiler-cost-rates)·구간단가·BSC 보증량은 그룹 코드(BLR-COGEN)로 등록되어 두 대가 함께 사용
 function boilerGroupCode(code){return String(code||'').replace(/[-_]\d+$/,'');}
 function findBoilerRate(code,type){return BOILER_COST_RATES.find(r=>r.boilerCode===code&&r.rateType===type)||BOILER_COST_RATES.find(r=>r.boilerCode===boilerGroupCode(code)&&r.rateType===type);}
-function getBoilerIntervals(code){let ivs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===code);if(!ivs.length)ivs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===boilerGroupCode(code));if(!ivs.length)ivs=STEAM_PRICE_INTERVALS.filter(iv=>!iv.boilerCode);return ivs.slice().sort((a,b)=>(a.intervalSeq||0)-(b.intervalSeq||0));}
+function getBoilerIntervals(code){let ivs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===code);if(!ivs.length)ivs=STEAM_PRICE_INTERVALS.filter(iv=>iv.boilerCode===boilerGroupCode(code));return ivs.slice().sort((a,b)=>(a.intervalSeq||0)-(b.intervalSeq||0));}
 // 구간단가 적용 단위: 보일러 전용 구간단가가 있으면 보일러, 없으면 그룹 전체(합산 적용)
 function intervalKey(code){return STEAM_PRICE_INTERVALS.some(iv=>iv.boilerCode===code)?code:boilerGroupCode(code);}
 function usesIntervalPrice(code){const fr=findBoilerRate(code,'FUEL_RATE'),sr=findBoilerRate(code,'STEAM_RATE'),ir=findBoilerRate(code,'INTERVAL');return !!(ir||(getBoilerIntervals(code).length&&!fr&&!sr));}
@@ -2518,7 +2524,7 @@ function renderRef(){const d=REFS[cRef];if(d.pivotMonths){renderBoilerPivot();re
     const prevYr=parseInt(getYm().substring(0,4))-1;
     let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';
     if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}
-    else{refData.forEach((row,ri)=>{const rowId=row.id||row[Object.keys(row)[0]];h+='<tr id="refRow_'+ri+'">'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);let bn=bm?bm.boilerName:'';if(!bm){const gm=[...new Set(BOILER_MASTERS_LIST.filter(b=>b.boilerCode!==v&&boilerGroupCode(b.boilerCode)===v).map(b=>b.boilerName||b.boilerCode))];if(gm.length)bn=gm.join('·')+' 공통';}v=v+(bn?' <span style="font-size:10px;color:#94a3b8;">('+bn+')</span>':'');}else if(c==='isShutdown'){const _opH=parseFloat(row.operationHours)||0;const _isSD=(v===true||v==='true'||v===1)||_opH<=0;v=_isSD?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(c==='factor'&&v!=null){v=parseFloat(v).toFixed(2);}else if(c==='steamRatio'&&v!=null){v=parseFloat(v).toFixed(1)+'%';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td style="white-space:nowrap;"><button onclick="editRef('+ri+')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;margin-right:4px;" title="편집"><i class="fas fa-edit"></i></button><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;" title="삭제"><i class="fas fa-trash"></i></button></td></tr>';});}
+    else{refData.forEach((row,ri)=>{const rowId=rowIdOf(row);h+='<tr id="refRow_'+ri+'">'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);let bn=bm?bm.boilerName:'';if(!bm){const gm=[...new Set(BOILER_MASTERS_LIST.filter(b=>b.boilerCode!==v&&boilerGroupCode(b.boilerCode)===v).map(b=>b.boilerName||b.boilerCode))];if(gm.length)bn=gm.join('·')+' 공통';}v=v+(bn?' <span style="font-size:10px;color:#94a3b8;">('+bn+')</span>':'');}else if(c==='isShutdown'){const _opH=parseFloat(row.operationHours)||0;const _isSD=(v===true||v==='true'||v===1)||_opH<=0;v=_isSD?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(c==='factor'&&v!=null){v=parseFloat(v).toFixed(2);}else if(c==='steamRatio'&&v!=null){v=parseFloat(v).toFixed(1)+'%';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td style="white-space:nowrap;"><button onclick="editRef('+ri+')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;margin-right:4px;" title="편집"><i class="fas fa-edit"></i></button><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;" title="삭제"><i class="fas fa-trash"></i></button></td></tr>';});}
     h+='</tbody></table>';
     // boiler-cost-rates: 단가유형 설명 가이드
     if(d.k==='boiler-cost-rates'){
@@ -2771,7 +2777,7 @@ async function uploadRefExcel(input){
         // 헤더 매핑: 한글 헤더 → API 필드명
         const headerMap={};
         d.h.forEach((h,i)=>{headerMap[h]=d.cols[i];});
-        let ok=0,fail=0;
+        let ok=0,ow=0,fail=0;
         const failDetails=[];
         for(let ri=0;ri<jsonRows.length;ri++){
             const row=jsonRows[ri];
@@ -2792,7 +2798,8 @@ async function uploadRefExcel(input){
             try{
                 const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
                 if(r.ok){
-                    ok++;
+                    let up=false;try{const j=await r.clone().json();up=!!(j&&j.data&&j.data.upserted);}catch(_){}
+                    if(up)ow++;else ok++;
                     uploadLogs.push({uploadBatchId:batchId,refType:d.k,rowIndex:ri+2,rowData:JSON.stringify(body),status:'SUCCESS',division:div});
                 }else{
                     fail++;
@@ -2810,7 +2817,7 @@ async function uploadRefExcel(input){
         // 로그 일괄 저장 (비동기, 실패해도 무시)
         try{await fetch(API+'/upload-logs/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(uploadLogs)});}catch(_){}
         // 결과 표시
-        let msg=d.l+' 업로드 완료\n성공: '+ok+'건, 실패: '+fail+'건';
+        let msg=d.l+' 업로드 완료\n신규: '+ok+'건, 덮어씀: '+ow+'건, 실패: '+fail+'건';
         if(failDetails.length){
             msg+='\n\n─── 실패 상세 ───\n'+failDetails.slice(0,10).join('\n');
             if(failDetails.length>10)msg+='\n... 외 '+(failDetails.length-10)+'건';
@@ -2843,7 +2850,7 @@ async function openRefModal(){
         }else if(c==='product'&&PRODUCT_OPTIONS.length){
             h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+PRODUCT_OPTIONS.map(p=>'<option value="'+p.productCode+'">'+p.productCode+(p.productName?' ('+p.productName+')':'')+'</option>').join('')+'</select>';
         }else if(c==='boilerCode'&&d.k!=='boiler-masters'&&BOILER_MASTERS_LIST.length){
-            const emptyOpt=d.k==='steam-price-intervals'?'<option value="">(공통 - 전체 보일러)</option>':'';
+            const emptyOpt='';
             h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+emptyOpt+boilerCodeOptions('',['steam-price-intervals','boiler-cost-rates'].includes(d.k))+'</select>';
         }else if(c==='boilerCode'){
             h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';
@@ -2860,7 +2867,7 @@ async function openRefModal(){
 }
 // 연도/월 필수 검증 (0 또는 빈 값 저장 금지)
 function validateYearMonth(d,body){const yk=d.cols.includes('contractYear')?'contractYear':(d.cols.includes('year')?'year':null);if(yk){const y=parseInt(body[yk]);if(!y||y<2000||y>2100)return '연도를 입력하세요 (예: 2026)';}if(d.cols.includes('month')){const m=parseInt(body.month);if(!m||m<1||m>12)return '월을 1~12로 입력하세요';}return null;}
-async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate','steamRatio'].includes(c))v=parseFloat(v)||0;else if(c==='year')v=parseInt(v)||0;else if(c==='month'){v=v.trim()===''?null:parseInt(v);if(v!==null&&(isNaN(v)||v<1||v>12))v=null;}else if(c==='isActive')v=(v==='true');body[c]=v;}});if(!body.division)body.division=document.getElementById('selDiv')?.value||'PS';if(window.CURRENT_USER)body.createdBy=window.CURRENT_USER;{const ve=validateYearMonth(d,body);if(ve){alert('저장 실패: '+ve);return;}}try{const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const err=await r.text();console.warn('[saveRef] 실패:',err);alert('저장 실패: '+err);return;}}catch(e){alert('저장 실패: '+e.message);}closeModal();loadRef();}
+async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate','steamRatio'].includes(c))v=parseFloat(v)||0;else if(c==='year')v=parseInt(v)||0;else if(c==='month'){v=v.trim()===''?null:parseInt(v);if(v!==null&&(isNaN(v)||v<1||v>12))v=null;}else if(c==='isActive')v=(v==='true');body[c]=v;}});if(!body.division)body.division=document.getElementById('selDiv')?.value||'PS';if(window.CURRENT_USER)body.createdBy=window.CURRENT_USER;{const ve=validateYearMonth(d,body);if(ve){alert('저장 실패: '+ve);return;}}try{const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const err=await apiErrMsg(r);console.warn('[saveRef] 실패:',err);alert('저장 실패: '+err);return;}try{const j=await r.clone().json();if(j&&j.data&&j.data.upserted)alert('같은 기준의 데이터가 있어 기존 행을 덮어썼습니다.');}catch(_){}}catch(e){alert('저장 실패: '+e.message);return;}closeModal();loadRef();}
 async function delRef(id){if(id==null||id==='undefined'||id===''){alert('삭제 실패: 행 ID를 찾지 못했습니다.');return;}if(!confirm('삭제하시겠습니까?'))return;try{const r=await fetch(API+'/'+REFS[cRef].k+'/'+id,{method:'DELETE'});if(!r.ok){const t=await r.text().catch(()=>'');console.warn('[delRef] 실패',r.status,t);alert('삭제 실패 (HTTP '+r.status+')\n'+t.substring(0,300));return;}}catch(e){alert('삭제 실패: '+e.message);return;}loadRef();}
 
 // ── 기준정보 인라인 편집 ──
@@ -2868,7 +2875,7 @@ function editRef(rowIdx){
     const d=REFS[cRef];
     const row=refData[rowIdx];
     if(!row)return;
-    const rowId=row.id||row[Object.keys(row)[0]];
+    const rowId=rowIdOf(row);
     const autoFields=d.auto||[];
     let h='<h3><i class="fas '+d.i+' text-indigo-500"></i> '+d.l+' 편집</h3>';
     d.cols.forEach((c,i)=>{
@@ -2913,14 +2920,8 @@ async function saveRefEdit(id){
     {const ve=validateYearMonth(d,body);if(ve){alert('수정 실패: '+ve);return;}}
     try{
         const r=await fetch(API+'/'+d.k+'/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-        if(!r.ok){
-            // PUT 미지원 시 delete+re-post 폴백
-            console.warn('[saveRefEdit] PUT 실패, delete+post 폴백 시도');
-            const dr=await fetch(API+'/'+d.k+'/'+id,{method:'DELETE'});
-            const pr=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-            if(!pr.ok){const err=await pr.text();alert('수정 실패: '+err);return;}
-        }
-    }catch(e){alert('수정 실패: '+e.message);}
+        if(!r.ok){alert('수정 실패: '+(await apiErrMsg(r)));return;}
+    }catch(e){alert('수정 실패: '+e.message);return;}
     closeModal();loadRef();
 }
 function openOptModal(){let h='<h3><i class="fas fa-clock text-cyan-500"></i> 가동시간 등록 <span style="font-size:10px;color:#94a3b8;font-weight:400;">입력 단위: 분(min/월)</span></h3>';[['division','사업부'],['machineCode','호기코드'],['ym','연월(YYYYMM)'],['totalDays','총계(분)'],['plannedShutdownDays','계획운휴(분)'],['operationNormalDays','정상가동(분)'],['operationWasteDays','폐품(분)'],['operationStartupDays','초출(분)'],['operationTrimmingDays','절지(분)'],['downtimeRepairDays','정비(분)'],['downtimeCleaningDays','펠트세척(분)'],['downtimeAccidentDays','사고(분)']].forEach(([n,l])=>{h+='<label>'+l+'</label><input name="'+n+'" placeholder="'+l+'">';});h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveOpt()">저장</button></div>';document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';}

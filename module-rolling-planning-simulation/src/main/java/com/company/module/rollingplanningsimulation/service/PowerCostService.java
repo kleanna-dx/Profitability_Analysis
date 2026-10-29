@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.service;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 
 import com.company.module.rollingplanningsimulation.entity.*;
 import com.company.module.rollingplanningsimulation.repository.*;
@@ -45,6 +46,7 @@ public class PowerCostService {
     private final PwFixedItemRepository fixedItemRepository;
     private final PwMonthlySummaryRepository monthlySummaryRepository;
     private final PwResultRepository pwResultRepository;
+    private final AuditSupport auditSupport;
     private final OperatingTimeRepository operatingTimeRepository;
 
     /** 기본요금 단가 (원/kW) — 산업용(을) 고압A 기준 */
@@ -237,7 +239,7 @@ public class PowerCostService {
                 null, // costPerTonKrw — 생산량 확정 후 별도 세팅
                 "CALCULATED"
         );
-        return monthlySummaryRepository.save(summary);
+        return auditSupport.upsert(monthlySummaryRepository, summary, "ym", "division");
     }
 
     // ─────────────────────────────────────────────
@@ -265,7 +267,7 @@ public class PowerCostService {
                     .ym(ym).lineCode(ratio.getLineCode()).division(division)
                     .totalCostKrw(machineCost)
                     .build();
-            pwResultRepository.save(result);
+            auditSupport.upsert(pwResultRepository, result, "ym", "lineCode", "division");
         }
     }
 

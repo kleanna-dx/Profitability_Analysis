@@ -1,5 +1,8 @@
 package com.company.module.rollingplanningsimulation.service;
 
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
+import com.company.module.rollingplanningsimulation.support.CurrentUser;
+
 import com.company.module.rollingplanningsimulation.dto.request.LogiRateSaveRequest;
 import com.company.module.rollingplanningsimulation.dto.response.LogiRateResponse;
 import com.company.module.rollingplanningsimulation.entity.LogiRate;
@@ -12,6 +15,7 @@ import java.util.List;
 @Service @RequiredArgsConstructor @Transactional(readOnly = true)
 public class LogiRateService {
     private final LogiRateRepository repo;
+    private final AuditSupport auditSupport;
 
     public List<LogiRateResponse> getByQuarter(String yearQuarter) {
         if (yearQuarter != null && !yearQuarter.isEmpty()) {
@@ -26,20 +30,20 @@ public class LogiRateService {
                 .yearQuarter(request.getYearQuarter()).region(request.getRegion()).country(request.getCountry())
                 .port(request.getPort()).containerUnit(request.getContainerUnit())
                 .volumePerMonth(request.getVolumePerMonth()).rateUsd(request.getRateUsd())
-                .memo(request.getMemo()).sortOrder(request.getSortOrder()).createdBy(currentUserId).build();
-        return LogiRateResponse.from(repo.save(entity));
+                .memo(request.getMemo()).sortOrder(request.getSortOrder()).build();
+        return LogiRateResponse.from(auditSupport.upsert(repo, entity, "yearQuarter", "region", "port", "containerUnit"));
     }
 
     @Transactional
     public LogiRateResponse update(Long id, LogiRateSaveRequest request, Long currentUserId) {
         LogiRate entity = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("운임 데이터를 찾을 수 없습니다: " + id));
-        entity.update(request.getRegion(), request.getCountry(), request.getPort(), request.getContainerUnit(), request.getVolumePerMonth(), request.getRateUsd(), request.getMemo(), request.getSortOrder(), currentUserId);
+        entity.update(request.getRegion(), request.getCountry(), request.getPort(), request.getContainerUnit(), request.getVolumePerMonth(), request.getRateUsd(), request.getMemo(), request.getSortOrder());
         return LogiRateResponse.from(entity);
     }
 
     @Transactional
     public void delete(Long id, Long currentUserId) {
         LogiRate entity = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("운임 데이터를 찾을 수 없습니다: " + id));
-        entity.delete(currentUserId);
+        entity.softDelete(CurrentUser.get());
     }
 }

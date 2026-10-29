@@ -187,7 +187,7 @@ public class RpsimSapRfcService {
             // INSERT SQL
             String cols = String.join(", ", DB_COLS_RAW_MATERIAL);
             String ph = String.join(", ", Collections.nCopies(DB_COLS_RAW_MATERIAL.size(), "?"));
-            String insertSql = "INSERT INTO rpsim_raw_material (" + cols + ") VALUES (" + ph + ")";
+            String insertSql = "INSERT INTO rpsim_raw_material (" + cols + ", CREATED_BY, CREATED_AT, DELETED_YN) VALUES (" + ph + ", 'SAP_RFC', NOW(), 'N')";
 
             java.lang.reflect.Method getStr = tDataTable.getClass().getMethod("getString", int.class);
             java.lang.reflect.Method setRow = tDataTable.getClass().getMethod("setRow", int.class);
@@ -247,7 +247,7 @@ public class RpsimSapRfcService {
 
             String cols = String.join(", ", DB_COLS_RAW_INVENTORY);
             String ph = String.join(", ", Collections.nCopies(DB_COLS_RAW_INVENTORY.size(), "?"));
-            String insertSql = "INSERT INTO rpsim_raw_inventory (" + cols + ") VALUES (" + ph + ")";
+            String insertSql = "INSERT INTO rpsim_raw_inventory (" + cols + ", CREATED_BY, CREATED_AT, DELETED_YN) VALUES (" + ph + ", 'SAP_RFC', NOW(), 'N')";
 
             java.lang.reflect.Method getStr = tDataTable.getClass().getMethod("getString", int.class);
             java.lang.reflect.Method setRow = tDataTable.getClass().getMethod("setRow", int.class);
