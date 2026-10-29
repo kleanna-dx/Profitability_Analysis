@@ -33,6 +33,8 @@ public class CostUnitRateResponse {
     public static class Rates {
         private BigDecimal revenuePerTon;
         private BigDecimal materialPerTon;
+        /** 부재료비 원단위 (천원/톤) */
+        private BigDecimal subMaterialPerTon;
         private BigDecimal energyPerTon;
         private BigDecimal logisticsPerTon;
     }
@@ -41,6 +43,8 @@ public class CostUnitRateResponse {
     @Builder
     public static class Totals {
         private BigDecimal materialCost;
+        /** 부재료비 (원) */
+        private BigDecimal subMaterialCost;
         private BigDecimal energyCost;
         private BigDecimal logisticsCost;
         private BigDecimal productionKg;
@@ -51,6 +55,7 @@ public class CostUnitRateResponse {
     @Builder
     public static class CostBehavior {
         private String material;
+        private String subMaterial;
         private String energy;
         private String logistics;
         private String labor;
@@ -62,6 +67,7 @@ public class CostUnitRateResponse {
     @Builder
     public static class FromDB {
         private boolean material;
+        private boolean subMaterial;
         private boolean energy;
         private boolean logistics;
         private boolean revenue;

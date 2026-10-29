@@ -19,7 +19,6 @@
 |----------|------|--------|
 | `rpsim_unit` | 호기(생산설비) 마스터 | rpsim_ |
 | `rpsim_material` | 원부자재 마스터 | rpsim_ |
-| `rpsim_raw_record` | SAP BW 원본 데이터 (핵심) | rpsim_ |
 | `rpsim_machine_capacity` | 호기별 시간당 생산능력 | rpsim_ |
 | `rpsim_operating_time` | 월별 가동시간 | rpsim_ |
 | `rpsim_pw_line` | 전력비 호기 마스터 | rpsim_ |
@@ -87,10 +86,8 @@ module-rolling-planning-simulation/
     │       ├── DataReadinessResponse.java   -- 데이터 준비 현황
     │       └── OperatingTimeResponse.java
     ├── entity/
-    │   ├── RawRecord.java                   -- SAP BW 원본 데이터
     │   └── OperatingTime.java               -- 가동시간
     ├── repository/
-    │   ├── RawRecordRepository.java
     │   └── OperatingTimeRepository.java
     └── service/
         ├── SimulationService.java           -- 핵심 비즈니스 로직
