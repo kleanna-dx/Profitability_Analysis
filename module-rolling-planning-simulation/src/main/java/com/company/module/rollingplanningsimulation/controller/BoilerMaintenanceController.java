@@ -32,6 +32,16 @@ public class BoilerMaintenanceController {
     }
 
     @PostMapping public ResponseEntity<ApiResponse<BoilerMaintenance>> save(@RequestBody Map<String,Object> body) {
+        LocalDate start = parseYmd(body.get("startDate"), "시작일");
+        LocalDate end = parseYmd(body.get("endDate"), "종료일");
+        if (end.isBefore(start)) throw new IllegalArgumentException("종료일(" + end + ")이 시작일(" + start + ")보다 빠릅니다");
+        Integer y = parseIntSafe(body.get("year")), m = parseIntSafe(body.get("month"));
+        if (y == null || m == null || y != start.getYear() || m != start.getMonthValue())
+            throw new IllegalArgumentException("연도/월(" + y + "." + m + ")이 시작일(" + start + ")과 다릅니다 — 연도/월은 시작일 기준으로 입력하세요");
+        BigDecimal hours = parseBD(body.get("maintHours"), null);
+        long maxHours = (java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1) * 24;
+        if (hours != null && (hours.signum() < 0 || hours.compareTo(BigDecimal.valueOf(maxHours)) > 0))
+            throw new IllegalArgumentException("정비시간(" + hours.stripTrailingZeros().toPlainString() + "hr)은 0 ~ " + maxHours + "hr (정비기간 " + start + "~" + end + ") 이어야 합니다");
         BoilerMaintenance e = BoilerMaintenance.builder()
             .year(parseIntSafe(body.get("year")))
             .month(parseIntSafe(body.get("month")))
@@ -39,8 +49,8 @@ public class BoilerMaintenanceController {
             .division(str(body.getOrDefault("division","PS")))
             .maintType(str(body.getOrDefault("maintType","REGULAR")))
             .maintName(str(body.get("maintName")))
-            .startDate(parseDateSafe(body.get("startDate")))
-            .endDate(parseDateSafe(body.get("endDate")))
+            .startDate(start)
+            .endDate(end)
             .maintHours(parseBD(body.get("maintHours"), BigDecimal.ZERO))
             .memo(str(body.get("memo")))
             .build();
@@ -60,13 +70,13 @@ public class BoilerMaintenanceController {
         if (s.isEmpty()) return def;
         try { return new BigDecimal(s); } catch (NumberFormatException e) { return def; }
     }
-    private LocalDate parseDateSafe(Object v) {
-        if (v == null) return null;
-        String s = v.toString().trim();
-        if (s.isEmpty()) return null;
-        // 2026.07.21 → 2026-07-21 / 2026/07/21 → 2026-07-21
-        s = s.replace('.', '-').replace('/', '-');
-        try { return LocalDate.parse(s); } catch (Exception e) { return null; }
+    /** 시작일·종료일: yyyy-mm-dd 형식만 허용 (필수) */
+    private static final java.util.regex.Pattern YMD = java.util.regex.Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
+    private LocalDate parseYmd(Object v, String label) {
+        String s = v == null ? "" : v.toString().trim();
+        if (s.isEmpty()) throw new IllegalArgumentException(label + "을 입력하세요 (yyyy-mm-dd)");
+        if (!YMD.matcher(s).matches()) throw new IllegalArgumentException(label + " 형식이 올바르지 않습니다: " + s + " → yyyy-mm-dd (예: 2026-01-01)");
+        try { return LocalDate.parse(s); } catch (Exception e) { throw new IllegalArgumentException(label + "이 올바른 날짜가 아닙니다: " + s); }
     }
     private String str(Object v) { return v != null ? v.toString() : null; }
 
