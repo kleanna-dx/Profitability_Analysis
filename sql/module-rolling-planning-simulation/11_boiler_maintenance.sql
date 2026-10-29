@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS rpsim_boiler_maintenance (
     START_DATE          DATE          NULL                    COMMENT '정비 시작일',
     END_DATE            DATE          NULL                    COMMENT '정비 종료일',
     MAINT_HOURS         DECIMAL(8,2)  NOT NULL DEFAULT 0      COMMENT '정비시간 (hr) — 해당 월 사용불가 시간',
-    CAPACITY_REDUCTION  DECIMAL(5,2)  NOT NULL DEFAULT 100    COMMENT '용량감소율 (%) — 100=완전정지, 50=절반가동',
     MEMO                VARCHAR(500)  NULL                    COMMENT '비고 (정비내용, 외주업체 등)',
     CREATED_AT          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UPDATED_AT          DATETIME      NULL,

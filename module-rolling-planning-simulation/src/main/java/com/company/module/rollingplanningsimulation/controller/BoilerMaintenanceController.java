@@ -40,7 +40,6 @@ public class BoilerMaintenanceController {
             .startDate(parseDateSafe(body.get("startDate")))
             .endDate(parseDateSafe(body.get("endDate")))
             .maintHours(parseBD(body.get("maintHours"), BigDecimal.ZERO))
-            .capacityReduction(parseBD(body.get("capacityReduction"), new BigDecimal("100")))
             .memo(str(body.get("memo")))
             .build();
         if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
