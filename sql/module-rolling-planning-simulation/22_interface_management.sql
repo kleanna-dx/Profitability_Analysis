@@ -38,8 +38,6 @@ VALUES
     ('RPSIM_ITF_008', '일별 가동시간',           '생산관리',  'RPSIM', NULL,       'rpsim_daily_operation',     'REPLACE', 1, 'admin'),
     ('RPSIM_ITF_009', '제지 생산 선속',          '생산관리',  'RPSIM', NULL,       'rpsim_machine_speed',       'REPLACE', 1, 'admin'),
     ('RPSIM_ITF_010', '폐품률 마스터',           '품질팀',    'RPSIM', NULL,       'rpsim_waste_rate',          'REPLACE', 1, 'admin'),
-    ('RPSIM_ITF_011', '원재료비 (ZOHPP100)',     'SAP BW',    'RPSIM', 'ZOHPP100', 'rpsim_raw_record',         'REPLACE', 1, 'admin'),
-    ('RPSIM_ITF_012', '부재료비 (ZOHPP101)',     'SAP BW',    'RPSIM', 'ZOHPP101', 'rpsim_raw_record',         'REPLACE', 1, 'admin'),
     ('RPSIM_ITF_013', '전력비 계산 결과',        '전력비모듈','RPSIM', NULL,       'rpsim_pw_monthly_summary',  'MERGE',   1, 'admin')
 ON DUPLICATE KEY UPDATE
     INTERFACE_NAME = VALUES(INTERFACE_NAME),
