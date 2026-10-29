@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.controller;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.BoilerMaintenance;
 import com.company.module.rollingplanningsimulation.repository.BoilerMaintenanceRepository;
@@ -13,6 +14,7 @@ import java.util.Map;
 @RestController @RequestMapping("/rolling-planning-simulation-api/boiler-maintenances") @RequiredArgsConstructor
 public class BoilerMaintenanceController {
     private final BoilerMaintenanceRepository repo;
+    private final AuditSupport auditSupport;
 
     @GetMapping public ResponseEntity<ApiResponse<List<BoilerMaintenance>>> list(
             @RequestParam(defaultValue="PS") String division,
@@ -43,7 +45,7 @@ public class BoilerMaintenanceController {
             .memo(str(body.get("memo")))
             .build();
         if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
-        return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
+        return ResponseEntity.ok(ApiResponse.success(persist(e, body)));
     }
 
     private Integer parseIntSafe(Object v) {
@@ -68,9 +70,17 @@ public class BoilerMaintenanceController {
     }
     private String str(Object v) { return v != null ? v.toString() : null; }
 
-    @SuppressWarnings("unchecked") @PutMapping("/{id}") public ResponseEntity update(@PathVariable Long id, @RequestBody Map<String,Object> body) { repo.deleteById(id); body.remove("id"); try { return save(body); } catch(Exception e) { return ResponseEntity.ok(ApiResponse.success("update failed: "+e.getMessage())); } }
+    @PutMapping("/{id}") public ResponseEntity<?> update(@PathVariable Long id, @RequestBody Map<String,Object> body) { body.remove("id"); body.put(UPDATE_ID, id); return save(body); }
     @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
-        repo.deleteById(id);
+        auditSupport.softDelete(repo, id);
         return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    // 등록: UK가 같은 행이 있으면 덮어씀(삭제된 행이면 되살림) / 수정: 지정 행만, 키 중복 시 오류
+    private static final String UPDATE_ID = "__updateId";
+    private static final String[] UK = {};
+    private BoilerMaintenance persist(BoilerMaintenance e, Map<String,Object> body) {
+        Object uid = body.remove(UPDATE_ID);
+        return uid != null ? auditSupport.updateById(repo, (Long) uid, e, UK) : auditSupport.upsert(repo, e, UK);
     }
 }

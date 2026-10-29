@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.service;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.module.rollingplanningsimulation.dto.request.PwMachineUsageRatioSaveRequest;
 import com.company.module.rollingplanningsimulation.dto.response.PwMachineUsageRatioResponse;
 import com.company.module.rollingplanningsimulation.entity.PwMachineUsageRatio;
@@ -11,6 +12,7 @@ import java.util.List;
 @Service @RequiredArgsConstructor @Transactional(readOnly = true)
 public class PwMachineUsageRatioService {
     private final PwMachineUsageRatioRepository repository;
+    private final AuditSupport auditSupport;
     public List<PwMachineUsageRatioResponse> getList(String ym, String division) {
         return repository.findByYmAndDivision(ym, division).stream().map(PwMachineUsageRatioResponse::from).toList();
     }
@@ -18,8 +20,8 @@ public class PwMachineUsageRatioService {
     public PwMachineUsageRatioResponse save(PwMachineUsageRatioSaveRequest req) {
         PwMachineUsageRatio e = PwMachineUsageRatio.builder().ym(req.getYm()).division(req.getDivision())
             .lineCode(req.getLineCode()).usageRatio(req.getUsageRatio()).memo(req.getMemo()).build();
-        return PwMachineUsageRatioResponse.from(repository.save(e));
+        return PwMachineUsageRatioResponse.from(auditSupport.upsert(repository, e, "ym", "division", "lineCode"));
     }
     @Transactional
-    public void delete(Long id) { repository.deleteById(id); }
+    public void delete(Long id) { auditSupport.softDelete(repository, id); }
 }

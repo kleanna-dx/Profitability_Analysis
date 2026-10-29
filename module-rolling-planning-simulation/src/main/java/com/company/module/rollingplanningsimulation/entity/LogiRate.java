@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -13,11 +14,12 @@ import java.time.LocalDateTime;
  * 분기별 해상 운임 단가 엔티티
  * - 분기(2026-Q1)/지역/국가/항구/컨테이너/운임(USD)
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_logi_rate")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class LogiRate {
+public class LogiRate extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -51,44 +53,24 @@ public class LogiRate {
     @Column(name = "SORT_ORDER", nullable = false)
     private Integer sortOrder;
 
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "CREATED_BY")
-    private Long createdBy;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    @Column(name = "UPDATED_BY")
-    private Long updatedBy;
 
-    @Column(name = "DELETED_YN", nullable = false, length = 1)
-    private String deletedYn;
 
-    @Column(name = "DELETED_AT")
-    private LocalDateTime deletedAt;
 
-    @Column(name = "DELETED_BY")
-    private Long deletedBy;
 
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
-        if (this.deletedYn == null) this.deletedYn = "N";
         if (this.containerUnit == null) this.containerUnit = "40";
         if (this.sortOrder == null) this.sortOrder = 0;
     }
 
-    @PreUpdate
-    protected void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
-    }
 
     @Builder
     public LogiRate(String yearQuarter, String region, String country, String port,
                     String containerUnit, BigDecimal volumePerMonth, BigDecimal rateUsd,
-                    String memo, Integer sortOrder, Long createdBy) {
+                    String memo, Integer sortOrder) {
         this.yearQuarter = yearQuarter;
         this.region = region != null ? region : "";
         this.country = country != null ? country : "";
@@ -98,13 +80,11 @@ public class LogiRate {
         this.rateUsd = rateUsd != null ? rateUsd : BigDecimal.ZERO;
         this.memo = memo;
         this.sortOrder = sortOrder != null ? sortOrder : 0;
-        this.createdBy = createdBy;
-        this.deletedYn = "N";
     }
 
     public void update(String region, String country, String port,
                        String containerUnit, BigDecimal volumePerMonth, BigDecimal rateUsd,
-                       String memo, Integer sortOrder, Long updatedBy) {
+                       String memo, Integer sortOrder) {
         this.region = region;
         this.country = country;
         this.port = port;
@@ -113,19 +93,7 @@ public class LogiRate {
         this.rateUsd = rateUsd;
         this.memo = memo;
         this.sortOrder = sortOrder;
-        this.updatedBy = updatedBy;
     }
 
-    public void delete(Long deletedBy) {
-        this.deletedYn = "Y";
-        this.deletedBy = deletedBy;
-        this.deletedAt = LocalDateTime.now();
-    }
 
-    public void restore(Long updatedBy) {
-        this.deletedYn = "N";
-        this.deletedBy = null;
-        this.deletedAt = null;
-        this.updatedBy = updatedBy;
-    }
 }

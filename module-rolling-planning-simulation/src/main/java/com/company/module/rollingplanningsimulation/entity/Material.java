@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -13,11 +14,12 @@ import java.time.LocalDateTime;
  * - SAP BW ZOHPP100/101 기준 필드 매핑
  * - 자재코드, 자재명, 구분(RAW/SUB), 단위, 자재그룹, 대분류
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_material")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class Material {
+public class Material extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -54,46 +56,26 @@ public class Material {
     @Column(name = "IS_ACTIVE", nullable = false)
     private Boolean isActive;
 
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "CREATED_BY")
-    private Long createdBy;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    @Column(name = "UPDATED_BY")
-    private Long updatedBy;
 
-    @Column(name = "DELETED_YN", nullable = false, length = 1)
-    private String deletedYn;
 
-    @Column(name = "DELETED_AT")
-    private LocalDateTime deletedAt;
 
-    @Column(name = "DELETED_BY")
-    private Long deletedBy;
 
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
-        if (this.deletedYn == null) this.deletedYn = "N";
         if (this.isActive == null) this.isActive = true;
         if (this.category == null) this.category = "RAW";
         if (this.unitOfMeasure == null) this.unitOfMeasure = "kg";
     }
 
-    @PreUpdate
-    protected void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
-    }
 
     @Builder
     public Material(String materialCode, String materialName, String category,
                     String unitOfMeasure, String materialGroup, String materialGroupName,
                     String materialGroupLarge, String materialGroupLargeName,
-                    String description, Boolean isActive, Long createdBy) {
+                    String description, Boolean isActive) {
         this.materialCode = materialCode;
         this.materialName = materialName;
         this.category = category != null ? category : "RAW";
@@ -104,14 +86,12 @@ public class Material {
         this.materialGroupLargeName = materialGroupLargeName;
         this.description = description;
         this.isActive = isActive != null ? isActive : true;
-        this.createdBy = createdBy;
-        this.deletedYn = "N";
     }
 
     public void update(String materialName, String category, String unitOfMeasure,
                        String materialGroup, String materialGroupName,
                        String materialGroupLarge, String materialGroupLargeName,
-                       String description, Boolean isActive, Long updatedBy) {
+                       String description, Boolean isActive) {
         this.materialName = materialName;
         this.category = category;
         this.unitOfMeasure = unitOfMeasure;
@@ -121,19 +101,7 @@ public class Material {
         this.materialGroupLargeName = materialGroupLargeName;
         this.description = description;
         this.isActive = isActive;
-        this.updatedBy = updatedBy;
     }
 
-    public void delete(Long deletedBy) {
-        this.deletedYn = "Y";
-        this.deletedBy = deletedBy;
-        this.deletedAt = LocalDateTime.now();
-    }
 
-    public void restore(Long updatedBy) {
-        this.deletedYn = "N";
-        this.deletedBy = null;
-        this.deletedAt = null;
-        this.updatedBy = updatedBy;
-    }
 }

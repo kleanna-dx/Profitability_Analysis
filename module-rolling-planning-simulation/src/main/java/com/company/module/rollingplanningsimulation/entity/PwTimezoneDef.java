@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -14,11 +15,12 @@ import java.time.LocalDateTime;
  * - 계절별·요일구분별 경부하/중부하/최대부하 시간 구간
  * - 코드 하드코딩 금지, 이 테이블 데이터로만 관리
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_pw_timezone_def")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class PwTimezoneDef {
+public class PwTimezoneDef extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -55,14 +57,9 @@ public class PwTimezoneDef {
     @Column(name = "DIVISION", nullable = false, length = 20)
     private String division;
 
-    @Column(name = "CREATED_BY") private String createdBy;
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
         if (this.division == null) this.division = "PS";
         if (this.discountRate == null) this.discountRate = BigDecimal.ZERO;
     }

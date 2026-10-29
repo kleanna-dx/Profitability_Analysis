@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -14,11 +15,12 @@ import java.time.LocalDateTime;
  * - 부호 규칙: 지출 +, 환급/차감 −
  * - ITEM_CODE: DR_REFUND, LOAD_CUT, BOILER_DEDUCT, ESS_PAYMENT, POWER_FIXED
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_pw_fixed_item")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class PwFixedItem {
+public class PwFixedItem extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -46,22 +48,13 @@ public class PwFixedItem {
     @Column(name = "MEMO", length = 500)
     private String memo;
 
-    @Column(name = "CREATED_BY") private String createdBy;
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
         if (this.division == null) this.division = "PS";
     }
 
-    @PreUpdate
-    protected void onUpdate() { this.updatedAt = LocalDateTime.now(); }
 
     @Builder
     public PwFixedItem(String ym, String division, String itemCode, String itemName,

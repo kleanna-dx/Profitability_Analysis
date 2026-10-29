@@ -2,6 +2,8 @@ package com.company.module.rollingplanningsimulation.controller;
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.ProductionPlan;
 import com.company.module.rollingplanningsimulation.repository.ProductionPlanRepository;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
+import com.company.module.rollingplanningsimulation.support.CurrentUser;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -12,6 +14,7 @@ import java.util.*;
 @RestController @RequestMapping("/rolling-planning-simulation-api/production-plans") @RequiredArgsConstructor
 public class ProductionPlanController {
     private final ProductionPlanRepository repo;
+    private final AuditSupport auditSupport;
 
     /** 조회: 호기/월 기준 */
     @GetMapping
@@ -46,8 +49,10 @@ public class ProductionPlanController {
             return ResponseEntity.badRequest().body(ApiResponse.success(Map.of("error", "LOCKED", "message", "계획이 확정(잠금)되어 수정할 수 없습니다.")));
         }
 
-        // 기존 데이터 삭제 후 재등록
-        repo.deleteAll(existing);
+        // 기존 데이터는 삭제표시(삭제자/삭제일자 기록) 후 재등록 — 같은 지종·평량은 UK 기준으로 되살려 덮어씀
+        String deleter = CurrentUser.get();
+        existing.forEach(p -> p.softDelete(deleter));
+        repo.saveAll(existing);
         repo.flush();
 
         int saved = 0;
@@ -64,7 +69,7 @@ public class ProductionPlanController {
                     .operationDays(opDays)
                     .createdBy(userId)
                     .build();
-                repo.save(e);
+                auditSupport.upsert(repo, e, "division", "machineCode", "year", "month", "product", "basisWeight");
                 saved++;
             }
         }

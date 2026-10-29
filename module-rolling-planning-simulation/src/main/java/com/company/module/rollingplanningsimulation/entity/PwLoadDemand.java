@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -14,11 +15,12 @@ import java.time.LocalDateTime;
  * - 경부하/중부하/최대부하 시간당 사용량(kW)
  * - 보정 규칙: 세 부하 합계 ≠ 총 전력사용량이면 비례 배분
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_pw_load_demand")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class PwLoadDemand {
+public class PwLoadDemand extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -40,22 +42,13 @@ public class PwLoadDemand {
     @Column(name = "MEMO", length = 200)
     private String memo;
 
-    @Column(name = "CREATED_BY") private String createdBy;
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
         if (this.division == null) this.division = "PS";
     }
 
-    @PreUpdate
-    protected void onUpdate() { this.updatedAt = LocalDateTime.now(); }
 
     @Builder
     public PwLoadDemand(String ym, String division, String loadClass,

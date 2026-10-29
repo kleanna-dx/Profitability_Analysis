@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.controller;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.RpsimItfMaster;
 import com.company.module.rollingplanningsimulation.repository.RpsimItfMasterRepository;
@@ -10,6 +11,7 @@ import java.util.*;
 @RestController @RequestMapping("/rolling-planning-simulation-api/itf-masters") @RequiredArgsConstructor
 public class RpsimItfMasterController {
     private final RpsimItfMasterRepository repo;
+    private final AuditSupport auditSupport;
 
     /* 전체 목록 (activeOnly 옵션) */
     @GetMapping
@@ -49,7 +51,7 @@ public class RpsimItfMasterController {
             .remark((String)body.get("remark"))
             .build();
         if(body.get("createdBy")!=null) e.setCreatedBy(body.get("createdBy").toString());
-        return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
+        return ResponseEntity.ok(ApiResponse.success(auditSupport.upsert(repo, e, "interfaceId")));
     }
 
     /* 수정 (update 방식) */
@@ -76,7 +78,7 @@ public class RpsimItfMasterController {
     /* 삭제 */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable String id) {
-        repo.deleteById(id);
+        auditSupport.softDelete(repo, id);
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 }

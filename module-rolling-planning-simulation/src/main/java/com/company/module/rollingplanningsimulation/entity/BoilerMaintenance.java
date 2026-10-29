@@ -1,8 +1,10 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 import jakarta.persistence.*;
 import lombok.*; import java.math.BigDecimal; import java.time.LocalDate; import java.time.LocalDateTime;
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity @Table(name="rpsim_boiler_maintenance") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
-public class BoilerMaintenance {
+public class BoilerMaintenance extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="MAINT_ID") private Long maintId;
     @Column(name="YEAR",nullable=false) private Integer year;
     @Column(name="MONTH",nullable=false) private Integer month;
@@ -14,12 +16,7 @@ public class BoilerMaintenance {
     @Column(name="END_DATE") private LocalDate endDate;
     @Column(name="MAINT_HOURS",precision=8,scale=2) private BigDecimal maintHours;
     @Column(name="MEMO",length=500) private String memo;
-    @Column(name="CREATED_BY") private String createdBy;
-    @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
-    @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
-    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(maintType==null)maintType="REGULAR";if(maintHours==null)maintHours=BigDecimal.ZERO;}
-    @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
-    @Builder public BoilerMaintenance(Integer year,Integer month,String boilerCode,String division,String maintType,String maintName,LocalDate startDate,LocalDate endDate,BigDecimal maintHours,String memo){this.year=year;this.month=month;this.boilerCode=boilerCode;this.division=division!=null?division:"PS";this.maintType=maintType!=null?maintType:"REGULAR";this.maintName=maintName;this.startDate=startDate;this.endDate=endDate;this.maintHours=maintHours!=null?maintHours:BigDecimal.ZERO;this.memo=memo;this.createdBy=createdBy;}
-    public void update(Integer year,Integer month,String boilerCode,String maintType,String maintName,LocalDate startDate,LocalDate endDate,BigDecimal maintHours,String memo){this.year=year;this.month=month;this.boilerCode=boilerCode;this.maintType=maintType;this.maintName=maintName;this.startDate=startDate;this.endDate=endDate;this.maintHours=maintHours;this.memo=memo;this.createdBy=createdBy;}
+    @PrePersist protected void onCreate(){if(division==null)division="PS";if(maintType==null)maintType="REGULAR";if(maintHours==null)maintHours=BigDecimal.ZERO;}
+    @Builder public BoilerMaintenance(Integer year,Integer month,String boilerCode,String division,String maintType,String maintName,LocalDate startDate,LocalDate endDate,BigDecimal maintHours,String memo){this.year=year;this.month=month;this.boilerCode=boilerCode;this.division=division!=null?division:"PS";this.maintType=maintType!=null?maintType:"REGULAR";this.maintName=maintName;this.startDate=startDate;this.endDate=endDate;this.maintHours=maintHours!=null?maintHours:BigDecimal.ZERO;this.memo=memo;}
+    public void update(Integer year,Integer month,String boilerCode,String maintType,String maintName,LocalDate startDate,LocalDate endDate,BigDecimal maintHours,String memo){this.year=year;this.month=month;this.boilerCode=boilerCode;this.maintType=maintType;this.maintName=maintName;this.startDate=startDate;this.endDate=endDate;this.maintHours=maintHours;this.memo=memo;}
 }

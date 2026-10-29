@@ -1,8 +1,10 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 import jakarta.persistence.*;
 import lombok.*; import java.math.BigDecimal; import java.time.LocalDateTime;
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity @Table(name="rpsim_boiler_cost_rate") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
-public class BoilerCostRate {
+public class BoilerCostRate extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="COST_RATE_ID") private Long costRateId;
     @Column(name="YEAR",nullable=false) private Integer year;
     @Column(name="MONTH") private Integer month;
@@ -14,12 +16,7 @@ public class BoilerCostRate {
     @Column(name="FACTOR",precision=10,scale=4) private BigDecimal factor;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="MEMO",length=200) private String memo;
-    @Column(name="CREATED_BY") private String createdBy;
-    @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
-    @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
-    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";}
-    @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
+    @PrePersist protected void onCreate(){if(division==null)division="PS";}
     @Builder public BoilerCostRate(Integer year,Integer month,String boilerCode,String rateType,String rateName,BigDecimal rateValue,String rateUnit,BigDecimal factor,String division,String memo){
         this.year=year;this.month=month!=null?month:0;this.boilerCode=boilerCode;this.rateType=rateType;this.rateName=rateName;
         this.rateValue=rateValue!=null?rateValue:BigDecimal.ZERO;this.rateUnit=rateUnit;

@@ -1,5 +1,8 @@
 package com.company.module.rollingplanningsimulation.service;
 
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
+import com.company.module.rollingplanningsimulation.support.CurrentUser;
+
 import com.company.module.rollingplanningsimulation.dto.request.PwLineSaveRequest;
 import com.company.module.rollingplanningsimulation.dto.response.PwLineResponse;
 import com.company.module.rollingplanningsimulation.entity.PwLine;
@@ -12,6 +15,7 @@ import java.util.List;
 @Service @RequiredArgsConstructor @Transactional(readOnly = true)
 public class PwLineService {
     private final PwLineRepository repo;
+    private final AuditSupport auditSupport;
 
     public List<PwLineResponse> getList(String division) {
         return repo.findByDivisionAndDeletedYnOrderByDisplayOrder(division != null ? division : "PS", "N").stream().map(PwLineResponse::from).toList();
@@ -23,20 +27,20 @@ public class PwLineService {
                 .lineCode(request.getLineCode()).lineName(request.getLineName()).lineGroup(request.getLineGroup())
                 .unitType(request.getUnitType()).kwhPerHourRun(request.getKwhPerHourRun())
                 .kwhPerHourStby(request.getKwhPerHourStby()).displayOrder(request.getDisplayOrder())
-                .isActive(request.getIsActive()).division(request.getDivision()).createdBy(currentUserId).build();
-        return PwLineResponse.from(repo.save(entity));
+                .isActive(request.getIsActive()).division(request.getDivision()).build();
+        return PwLineResponse.from(auditSupport.upsert(repo, entity, "lineCode"));
     }
 
     @Transactional
     public PwLineResponse update(Long id, PwLineSaveRequest request, Long currentUserId) {
         PwLine entity = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("전력 라인을 찾을 수 없습니다: " + id));
-        entity.update(request.getLineName(), request.getLineGroup(), request.getUnitType(), request.getKwhPerHourRun(), request.getKwhPerHourStby(), request.getDisplayOrder(), request.getIsActive(), currentUserId);
+        entity.update(request.getLineName(), request.getLineGroup(), request.getUnitType(), request.getKwhPerHourRun(), request.getKwhPerHourStby(), request.getDisplayOrder(), request.getIsActive());
         return PwLineResponse.from(entity);
     }
 
     @Transactional
     public void delete(Long id, Long currentUserId) {
         PwLine entity = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("전력 라인을 찾을 수 없습니다: " + id));
-        entity.delete(currentUserId);
+        entity.softDelete(CurrentUser.get());
     }
 }

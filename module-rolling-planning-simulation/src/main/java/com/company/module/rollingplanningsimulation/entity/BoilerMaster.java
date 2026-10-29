@@ -1,8 +1,10 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 import jakarta.persistence.*;
 import lombok.*; import java.math.BigDecimal; import java.time.LocalDateTime;
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity @Table(name="rpsim_boiler_master") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
-public class BoilerMaster {
+public class BoilerMaster extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="BOILER_ID") private Long boilerId;
     @Column(name="BOILER_CODE",nullable=false,length=30) private String boilerCode;
     @Column(name="BOILER_NAME",nullable=false,length=100) private String boilerName;
@@ -15,12 +17,7 @@ public class BoilerMaster {
     @Column(name="YEAR") private Integer year;
     @Column(name="MONTH") private Integer month;
     @Column(name="DISPLAY_ORDER") private Integer displayOrder;
-    @Column(name="CREATED_BY") private String createdBy;
-    @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
-    @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
-    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(isActive==null)isActive=true;}
-    @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
+    @PrePersist protected void onCreate(){if(division==null)division="PS";if(isActive==null)isActive=true;}
     @Builder public BoilerMaster(String boilerCode,String boilerName,String boilerType,BigDecimal steamPerHour,Integer priority,String capacityNote,Boolean isActive,String division,Integer year,Integer month,Integer displayOrder){this.boilerCode=boilerCode;this.boilerName=boilerName;this.boilerType=boilerType;this.steamPerHour=steamPerHour!=null?steamPerHour:BigDecimal.ZERO;this.priority=priority!=null?priority:99;this.capacityNote=capacityNote;this.isActive=isActive!=null?isActive:true;this.division=division!=null?division:"PS";this.year=year!=null?year:0;this.month=month!=null?month:0;this.displayOrder=displayOrder!=null?displayOrder:0;}
     public void update(String boilerName,String boilerType,BigDecimal steamPerHour,Integer priority,String capacityNote,Boolean isActive,Integer year,Integer month){this.boilerName=boilerName;this.boilerType=boilerType;this.steamPerHour=steamPerHour;this.priority=priority;this.capacityNote=capacityNote;this.isActive=isActive;if(year!=null)this.year=year;if(month!=null)this.month=month;}
 }

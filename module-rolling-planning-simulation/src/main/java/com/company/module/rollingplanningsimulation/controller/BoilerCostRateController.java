@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.controller;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.BoilerCostRate;
 import com.company.module.rollingplanningsimulation.repository.BoilerCostRateRepository;
@@ -11,6 +12,7 @@ import java.util.*;
 @RestController @RequestMapping("/rolling-planning-simulation-api/boiler-cost-rates") @RequiredArgsConstructor
 public class BoilerCostRateController {
     private final BoilerCostRateRepository repo;
+    private final AuditSupport auditSupport;
 
     @GetMapping
     public ResponseEntity<ApiResponse<List<BoilerCostRate>>> list(
@@ -39,7 +41,7 @@ public class BoilerCostRateController {
             .memo((String)body.get("memo"))
             .build();
         if(body.get("createdBy")!=null) e.setCreatedBy(body.get("createdBy").toString());
-        return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
+        return ResponseEntity.ok(ApiResponse.success(persist(e, body)));
     }
 
     @PutMapping("/{id}")
@@ -56,12 +58,13 @@ public class BoilerCostRateController {
             body.containsKey("month") ? parseI(body.get("month"), 0) : null
         );
         if(body.get("createdBy")!=null) e.setCreatedBy(body.get("createdBy").toString());
+        auditSupport.assertUkFree(e, id, UK);
         return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
-        repo.deleteById(id);
+        auditSupport.softDelete(repo, id);
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 
@@ -80,5 +83,13 @@ public class BoilerCostRateController {
     private int parseI(Object v, int def) {
         if (v == null) return def;
         try { return Integer.parseInt(v.toString().trim()); } catch (Exception e) { return def; }
+    }
+
+    // 등록: UK가 같은 행이 있으면 덮어씀(삭제된 행이면 되살림) / 수정: 지정 행만, 키 중복 시 오류
+    private static final String UPDATE_ID = "__updateId";
+    private static final String[] UK = {"year", "month", "boilerCode", "rateType", "division"};
+    private BoilerCostRate persist(BoilerCostRate e, Map<String,Object> body) {
+        Object uid = body.remove(UPDATE_ID);
+        return uid != null ? auditSupport.updateById(repo, (Long) uid, e, UK) : auditSupport.upsert(repo, e, UK);
     }
 }

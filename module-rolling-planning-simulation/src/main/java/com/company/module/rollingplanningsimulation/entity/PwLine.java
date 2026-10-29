@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -13,11 +14,12 @@ import java.time.LocalDateTime;
  * 전력비 호기(라인) 마스터 엔티티
  * - 호기코드, 라인그룹, 가동/운휴 시 시간당 kWh
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_pw_line")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class PwLine {
+public class PwLine extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -51,46 +53,26 @@ public class PwLine {
     @Column(name = "DIVISION", nullable = false, length = 20)
     private String division;
 
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "CREATED_BY")
-    private Long createdBy;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    @Column(name = "UPDATED_BY")
-    private Long updatedBy;
 
-    @Column(name = "DELETED_YN", nullable = false, length = 1)
-    private String deletedYn;
 
-    @Column(name = "DELETED_AT")
-    private LocalDateTime deletedAt;
 
-    @Column(name = "DELETED_BY")
-    private Long deletedBy;
 
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
-        if (this.deletedYn == null) this.deletedYn = "N";
         if (this.isActive == null) this.isActive = true;
         if (this.division == null) this.division = "PS";
         if (this.unitType == null) this.unitType = "kg";
         if (this.displayOrder == null) this.displayOrder = 0;
     }
 
-    @PreUpdate
-    protected void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
-    }
 
     @Builder
     public PwLine(String lineCode, String lineName, String lineGroup, String unitType,
                   BigDecimal kwhPerHourRun, BigDecimal kwhPerHourStby,
-                  Integer displayOrder, Boolean isActive, String division, Long createdBy) {
+                  Integer displayOrder, Boolean isActive, String division) {
         this.lineCode = lineCode;
         this.lineName = lineName;
         this.lineGroup = lineGroup;
@@ -100,13 +82,11 @@ public class PwLine {
         this.displayOrder = displayOrder != null ? displayOrder : 0;
         this.isActive = isActive != null ? isActive : true;
         this.division = division != null ? division : "PS";
-        this.createdBy = createdBy;
-        this.deletedYn = "N";
     }
 
     public void update(String lineName, String lineGroup, String unitType,
                        BigDecimal kwhPerHourRun, BigDecimal kwhPerHourStby,
-                       Integer displayOrder, Boolean isActive, Long updatedBy) {
+                       Integer displayOrder, Boolean isActive) {
         this.lineName = lineName;
         this.lineGroup = lineGroup;
         this.unitType = unitType;
@@ -114,19 +94,7 @@ public class PwLine {
         this.kwhPerHourStby = kwhPerHourStby;
         this.displayOrder = displayOrder;
         this.isActive = isActive;
-        this.updatedBy = updatedBy;
     }
 
-    public void delete(Long deletedBy) {
-        this.deletedYn = "Y";
-        this.deletedBy = deletedBy;
-        this.deletedAt = LocalDateTime.now();
-    }
 
-    public void restore(Long updatedBy) {
-        this.deletedYn = "N";
-        this.deletedBy = null;
-        this.deletedAt = null;
-        this.updatedBy = updatedBy;
-    }
 }

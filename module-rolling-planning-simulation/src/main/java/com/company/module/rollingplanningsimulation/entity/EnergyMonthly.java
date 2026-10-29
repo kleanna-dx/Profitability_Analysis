@@ -1,8 +1,10 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 import jakarta.persistence.*;
 import lombok.*; import java.math.BigDecimal; import java.time.LocalDateTime;
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity @Table(name="rpsim_energy_monthly") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
-public class EnergyMonthly {
+public class EnergyMonthly extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="ENERGY_ID") private Long energyId;
     @Column(name="YM",nullable=false,length=6) private String ym;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
@@ -19,12 +21,7 @@ public class EnergyMonthly {
     @Column(name="COST_PER_TON_STEAM",precision=12,scale=2) private BigDecimal costPerTonSteam;
     @Column(name="COST_PER_TON_PROD",precision=12,scale=2) private BigDecimal costPerTonProd;
     @Column(name="CALC_STATUS",nullable=false,length=20) private String calcStatus;
-    @Column(name="CREATED_BY") private String createdBy;
-    @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
-    @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
-    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(calcStatus==null)calcStatus="DRAFT";}
-    @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
+    @PrePersist protected void onCreate(){if(division==null)division="PS";if(calcStatus==null)calcStatus="DRAFT";}
     @Builder public EnergyMonthly(String ym,String division,String calcStatus){this.ym=ym;this.division=division!=null?division:"PS";this.calcStatus=calcStatus!=null?calcStatus:"DRAFT";}
     public void updateCalc(BigDecimal steamRequiredTon,BigDecimal steamProducedTon,BigDecimal steamSurplusTon,BigDecimal cogenCostKrw,BigDecimal lngBoilerCostKrw,BigDecimal incinCostKrw,BigDecimal externalCostKrw,BigDecimal burnerLngCostKrw,BigDecimal deductionTotalKrw,BigDecimal energyTotalKrw,BigDecimal costPerTonSteam,BigDecimal costPerTonProd,String calcStatus){this.steamRequiredTon=steamRequiredTon;this.steamProducedTon=steamProducedTon;this.steamSurplusTon=steamSurplusTon;this.cogenCostKrw=cogenCostKrw;this.lngBoilerCostKrw=lngBoilerCostKrw;this.incinCostKrw=incinCostKrw;this.externalCostKrw=externalCostKrw;this.burnerLngCostKrw=burnerLngCostKrw;this.deductionTotalKrw=deductionTotalKrw;this.energyTotalKrw=energyTotalKrw;this.costPerTonSteam=costPerTonSteam;this.costPerTonProd=costPerTonProd;this.calcStatus=calcStatus;}
 }

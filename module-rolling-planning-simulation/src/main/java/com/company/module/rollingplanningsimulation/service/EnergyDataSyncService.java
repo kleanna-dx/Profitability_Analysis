@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.service;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 
 import com.company.module.rollingplanningsimulation.entity.BoilerCostRate;
 import com.company.module.rollingplanningsimulation.entity.SteamPriceInterval;
@@ -33,10 +34,13 @@ public class EnergyDataSyncService {
     private final BoilerCostRateRepository boilerCostRateRepo;
     private final SteamPriceIntervalRepository steamPriceIntervalRepo;
     private final SteamUnitRateRepository steamUnitRateRepo;
+    private final AuditSupport auditSupport;
 
     // ================================================================
     // row_key → RPSIM 매핑 정의
     // ================================================================
+
+    private static final String[] INTERVAL_UK = {"contractYear", "month", "boilerCode", "intervalSeq", "division"};
 
     /** 단가 row_key → {boilerCode, rateType, rateName, rateUnit} */
     private static final Map<String, String[]> PRICE_MAPPING = new LinkedHashMap<>();
@@ -142,13 +146,8 @@ public class EnergyDataSyncService {
 
         if (bscData == null && ascData == null) return 0;
 
-        // 기존 복합보일러 구간단가 삭제 (해당 연도 전체 월 — 아래에서 월별로 다시 저장)
+        // 기존 행은 지우지 않고 UK(계약연도+월+보일러+순번+사업부) 기준으로 덮어씀 (삭제된 행이면 되살림)
         String yearStr = String.valueOf(year);
-        List<SteamPriceInterval> existing = steamPriceIntervalRepo.findByContractYearAndDivision(yearStr, division);
-        List<SteamPriceInterval> cogenExisting = existing.stream()
-                .filter(e -> "BLR-COGEN".equals(e.getBoilerCode()))
-                .toList();
-        steamPriceIntervalRepo.deleteAll(cogenExisting);
 
         int count = 0;
         // 각 월의 BSC/ASC 단가·FACTOR·보증량을 boiler_cost_rate(월별)와 steam_price_interval(월별)에 저장
@@ -210,7 +209,7 @@ public class EnergyDataSyncService {
                         .pricePerTon(bsc).division(division).memo("에너지팀 자동수신")
                         .build();
                 bscInterval.setCreatedBy("ENERGY_SYNC");
-                steamPriceIntervalRepo.save(bscInterval);
+                auditSupport.upsert(steamPriceIntervalRepo, bscInterval, INTERVAL_UK);
                 count++;
             }
             if (asc.compareTo(BigDecimal.ZERO) > 0) {
@@ -221,7 +220,7 @@ public class EnergyDataSyncService {
                         .pricePerTon(asc).division(division).memo("에너지팀 자동수신")
                         .build();
                 ascInterval.setCreatedBy("ENERGY_SYNC");
-                steamPriceIntervalRepo.save(ascInterval);
+                auditSupport.upsert(steamPriceIntervalRepo, ascInterval, INTERVAL_UK);
                 count++;
             }
         }
@@ -291,7 +290,7 @@ public class EnergyDataSyncService {
                         .memo("에너지팀 자동수신")
                         .build();
                 newRate.setCreatedBy("ENERGY_SYNC");
-                steamUnitRateRepo.save(newRate);
+                auditSupport.upsert(steamUnitRateRepo, newRate, "year", "month", "machineCode", "division");
             }
             count++;
         }
@@ -309,11 +308,12 @@ public class EnergyDataSyncService {
                                       BigDecimal factor, String division) {
         // JPA로는 UK 기반 upsert가 번거로우므로 JdbcTemplate으로 REPLACE
         String sql = "INSERT INTO rpsim_boiler_cost_rate " +
-                     "(YEAR, MONTH, BOILER_CODE, RATE_TYPE, RATE_NAME, RATE_VALUE, RATE_UNIT, FACTOR, DIVISION, MEMO, CREATED_BY, CREATED_AT) " +
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '에너지팀 자동수신', 'ENERGY_SYNC', NOW()) " +
+                     "(YEAR, MONTH, BOILER_CODE, RATE_TYPE, RATE_NAME, RATE_VALUE, RATE_UNIT, FACTOR, DIVISION, MEMO, CREATED_BY, CREATED_AT, DELETED_YN) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '에너지팀 자동수신', 'ENERGY_SYNC', NOW(), 'N') " +
                      "ON DUPLICATE KEY UPDATE RATE_NAME=VALUES(RATE_NAME), RATE_VALUE=VALUES(RATE_VALUE), " +
                      "RATE_UNIT=VALUES(RATE_UNIT), FACTOR=COALESCE(VALUES(FACTOR), FACTOR), " +
-                     "MEMO='에너지팀 자동수신', UPDATED_AT=NOW()";
+                     "MEMO='에너지팀 자동수신', UPDATED_BY='ENERGY_SYNC', UPDATED_AT=NOW(), " +
+                     "DELETED_YN='N', DELETED_BY=NULL, DELETED_AT=NULL";
         jdbcTemplate.update(sql, year, month, boilerCode, rateType, rateName, rateValue, rateUnit,
                 factor != null ? factor : BigDecimal.ONE, division);
     }

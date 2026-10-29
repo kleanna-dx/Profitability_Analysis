@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.controller;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.DailyOperation;
 import com.company.module.rollingplanningsimulation.repository.DailyOperationRepository;
@@ -11,6 +12,7 @@ import java.util.*;
 @RestController @RequestMapping("/rolling-planning-simulation-api/daily-operations") @RequiredArgsConstructor
 public class DailyOperationController {
     private final DailyOperationRepository repo;
+    private final AuditSupport auditSupport;
 
     @GetMapping
     public ResponseEntity<ApiResponse<List<DailyOperation>>> list(
@@ -32,24 +34,15 @@ public class DailyOperationController {
         String mc = str(body.get("machineCode"));
         String div = str(body.getOrDefault("division", "PS"));
 
-        Optional<DailyOperation> existing = repo.findByYearAndMonthAndDayAndMachineCodeAndDivision(year, month, day, mc, div);
-        DailyOperation e;
-        if (existing.isPresent()) {
-            e = existing.get();
-            e.update(parseBD(body.get("operationHours"), new BigDecimal("24")),
-                     body.get("isShutdown") != null ? Boolean.parseBoolean(body.get("isShutdown").toString()) : false,
-                     str(body.get("shutdownReason")), str(body.get("memo")));
-        } else {
-            e = DailyOperation.builder()
+        DailyOperation e = DailyOperation.builder()
                 .division(div).machineCode(mc).year(year).month(month).day(day)
                 .operationHours(parseBD(body.get("operationHours"), new BigDecimal("24")))
                 .isShutdown(body.get("isShutdown") != null ? Boolean.parseBoolean(body.get("isShutdown").toString()) : false)
                 .shutdownReason(str(body.get("shutdownReason")))
                 .memo(str(body.get("memo")))
                 .build();
-        }
         if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
-        return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
+        return ResponseEntity.ok(ApiResponse.success(persist(e, body)));
     }
 
     /** 월간 일괄 저장 (배열) */
@@ -63,23 +56,14 @@ public class DailyOperationController {
             String mc = str(body.get("machineCode"));
             String div = str(body.getOrDefault("division", "PS"));
 
-            Optional<DailyOperation> existing = repo.findByYearAndMonthAndDayAndMachineCodeAndDivision(year, month, day, mc, div);
-            DailyOperation e;
-            if (existing.isPresent()) {
-                e = existing.get();
-                e.update(parseBD(body.get("operationHours"), new BigDecimal("24")),
-                         body.get("isShutdown") != null ? Boolean.parseBoolean(body.get("isShutdown").toString()) : false,
-                         str(body.get("shutdownReason")), str(body.get("memo")));
-            } else {
-                e = DailyOperation.builder()
+            DailyOperation e = DailyOperation.builder()
                     .division(div).machineCode(mc).year(year).month(month).day(day)
                     .operationHours(parseBD(body.get("operationHours"), new BigDecimal("24")))
                     .isShutdown(body.get("isShutdown") != null ? Boolean.parseBoolean(body.get("isShutdown").toString()) : false)
                     .shutdownReason(str(body.get("shutdownReason")))
                     .memo(str(body.get("memo")))
                     .build();
-            }
-            repo.save(e);
+            auditSupport.upsert(repo, e, UK);
             saved++;
         }
         Map<String, Object> result = new LinkedHashMap<>();
@@ -87,14 +71,21 @@ public class DailyOperationController {
         return ResponseEntity.ok(ApiResponse.success(result));
     }
 
-    @SuppressWarnings("unchecked") @PutMapping("/{id}") public ResponseEntity update(@PathVariable Long id, @RequestBody Map<String,Object> body) { repo.deleteById(id); body.remove("id"); try { return save(body); } catch(Exception e) { return ResponseEntity.ok(ApiResponse.success("update failed: "+e.getMessage())); } }
+    @PutMapping("/{id}") public ResponseEntity<?> update(@PathVariable Long id, @RequestBody Map<String,Object> body) { body.remove("id"); body.put(UPDATE_ID, id); return save(body); }
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
-        repo.deleteById(id);
+        auditSupport.softDelete(repo, id);
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 
     private Integer parseIntSafe(Object v) { if (v == null) return null; String s = v.toString().trim(); if (s.isEmpty()) return null; try { return Integer.parseInt(s); } catch (NumberFormatException e) { return null; } }
     private BigDecimal parseBD(Object v, BigDecimal def) { if (v == null) return def; String s = v.toString().trim(); if (s.isEmpty()) return def; try { return new BigDecimal(s); } catch (NumberFormatException e) { return def; } }
     private String str(Object v) { return v != null ? v.toString() : null; }
+
+    private static final String UPDATE_ID = "__updateId";
+    private static final String[] UK = {"division", "machineCode", "year", "month", "day"};
+    private DailyOperation persist(DailyOperation e, Map<String,Object> body) {
+        Object uid = body.remove(UPDATE_ID);
+        return uid != null ? auditSupport.updateById(repo, (Long) uid, e, UK) : auditSupport.upsert(repo, e, UK);
+    }
 }

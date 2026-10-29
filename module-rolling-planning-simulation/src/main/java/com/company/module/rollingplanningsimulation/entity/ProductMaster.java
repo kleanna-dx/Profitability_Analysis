@@ -1,9 +1,11 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 import jakarta.persistence.*;
 import lombok.*; import java.time.LocalDateTime;
 
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity @Table(name="rpsim_product_master") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
-public class ProductMaster {
+public class ProductMaster extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="PRODUCT_ID") private Long productId;
     @Column(name="PRODUCT_CODE",nullable=false,length=30) private String productCode;
     @Column(name="PRODUCT_NAME",nullable=false,length=100) private String productName;
@@ -11,12 +13,7 @@ public class ProductMaster {
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="DISPLAY_ORDER") private Integer displayOrder;
     @Column(name="IS_ACTIVE") private Boolean isActive;
-    @Column(name="CREATED_BY") private String createdBy;
-    @Column(name="CREATED_AT",updatable=false) private LocalDateTime createdAt;
-    @Column(name="UPDATED_AT") private LocalDateTime updatedAt;
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
-    @PrePersist protected void onCreate(){createdAt=LocalDateTime.now();if(division==null)division="PS";if(isActive==null)isActive=true;}
-    @PreUpdate protected void onUpdate(){updatedAt=LocalDateTime.now();}
+    @PrePersist protected void onCreate(){if(division==null)division="PS";if(isActive==null)isActive=true;}
     @Builder
     public ProductMaster(String productCode,String productName,String productGroup,String division,Integer displayOrder,Boolean isActive){
         this.productCode=productCode;this.productName=productName;this.productGroup=productGroup;

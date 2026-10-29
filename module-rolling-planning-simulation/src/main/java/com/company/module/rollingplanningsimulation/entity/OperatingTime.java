@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -14,11 +15,12 @@ import java.time.LocalDateTime;
  * - 계획운휴 + 가동일수(정상/폐품/비계획/초출/절지) + 비가동일수(정비/세척/사고)
  * - 총일수 = 계획운휴 + 가동소계 + 비가동소계
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_operating_time")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class OperatingTime {
+public class OperatingTime extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -64,37 +66,14 @@ public class OperatingTime {
     @Column(name = "DOWNTIME_ACCIDENT_DAYS", nullable = false, precision = 6, scale = 2)
     private BigDecimal downtimeAccidentDays;
 
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "CREATED_BY")
-    private Long createdBy;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    @Column(name = "UPDATED_BY")
-    private Long updatedBy;
 
-    @Column(name = "DELETED_YN", nullable = false, length = 1)
-    private String deletedYn;
 
-    @Column(name = "DELETED_AT")
-    private LocalDateTime deletedAt;
 
-    @Column(name = "DELETED_BY")
-    private Long deletedBy;
 
-    @PrePersist
-    protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
-        if (this.deletedYn == null) this.deletedYn = "N";
-    }
 
-    @PreUpdate
-    protected void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
-    }
 
     @Builder
     public OperatingTime(String division, String machineCode, String ym,
@@ -103,7 +82,7 @@ public class OperatingTime {
                          BigDecimal operationUnplannedDays, BigDecimal operationStartupDays,
                          BigDecimal operationTrimmingDays,
                          BigDecimal downtimeRepairDays, BigDecimal downtimeCleaningDays,
-                         BigDecimal downtimeAccidentDays, Long createdBy) {
+                         BigDecimal downtimeAccidentDays) {
         this.division = division;
         this.machineCode = machineCode;
         this.ym = ym;
@@ -117,8 +96,6 @@ public class OperatingTime {
         this.downtimeRepairDays = downtimeRepairDays != null ? downtimeRepairDays : BigDecimal.ZERO;
         this.downtimeCleaningDays = downtimeCleaningDays != null ? downtimeCleaningDays : BigDecimal.ZERO;
         this.downtimeAccidentDays = downtimeAccidentDays != null ? downtimeAccidentDays : BigDecimal.ZERO;
-        this.createdBy = createdBy;
-        this.deletedYn = "N";
     }
 
     public void update(BigDecimal totalDays, BigDecimal plannedShutdownDays,
@@ -126,7 +103,7 @@ public class OperatingTime {
                        BigDecimal operationUnplannedDays, BigDecimal operationStartupDays,
                        BigDecimal operationTrimmingDays,
                        BigDecimal downtimeRepairDays, BigDecimal downtimeCleaningDays,
-                       BigDecimal downtimeAccidentDays, Long updatedBy) {
+                       BigDecimal downtimeAccidentDays) {
         this.totalDays = totalDays;
         this.plannedShutdownDays = plannedShutdownDays;
         this.operationNormalDays = operationNormalDays;
@@ -137,19 +114,7 @@ public class OperatingTime {
         this.downtimeRepairDays = downtimeRepairDays;
         this.downtimeCleaningDays = downtimeCleaningDays;
         this.downtimeAccidentDays = downtimeAccidentDays;
-        this.updatedBy = updatedBy;
     }
 
-    public void delete(Long deletedBy) {
-        this.deletedYn = "Y";
-        this.deletedBy = deletedBy;
-        this.deletedAt = LocalDateTime.now();
-    }
 
-    public void restore(Long updatedBy) {
-        this.deletedYn = "N";
-        this.deletedBy = null;
-        this.deletedAt = null;
-        this.updatedBy = updatedBy;
-    }
 }

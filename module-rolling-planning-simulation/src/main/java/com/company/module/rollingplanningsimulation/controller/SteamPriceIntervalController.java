@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.controller;
+import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.SteamPriceInterval;
 import com.company.module.rollingplanningsimulation.repository.SteamPriceIntervalRepository;
@@ -12,6 +13,7 @@ import java.util.Map;
 @RestController @RequestMapping("/rolling-planning-simulation-api/steam-price-intervals") @RequiredArgsConstructor
 public class SteamPriceIntervalController {
     private final SteamPriceIntervalRepository repo;
+    private final AuditSupport auditSupport;
 
     /**
      * 구간단가 조회.
@@ -46,11 +48,20 @@ public class SteamPriceIntervalController {
             .pricePerTon(parseBD(body.get("pricePerTon")))
             .division((String)body.getOrDefault("division","PS")).memo((String)body.get("memo")).build();
         if(body.get("createdBy")!=null)e.setCreatedBy(body.get("createdBy").toString());
-        return ResponseEntity.ok(ApiResponse.success(repo.save(e)));
+        if (e.getBoilerCode() == null || e.getBoilerCode().isBlank()) throw new IllegalArgumentException("보일러를 선택하세요. (구간단가는 구간단가를 쓰는 보일러별로 등록)");
+        return ResponseEntity.ok(ApiResponse.success(persist(e, body)));
     }
-    @SuppressWarnings("unchecked") @PutMapping("/{id}") public ResponseEntity update(@PathVariable Long id, @RequestBody Map<String,Object> body) { repo.deleteById(id); body.remove("id"); try { return save(body); } catch(Exception e) { return ResponseEntity.ok(ApiResponse.success("update failed: "+e.getMessage())); } }
-    @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { repo.deleteById(id); return ResponseEntity.ok(ApiResponse.success(null)); }
+    @PutMapping("/{id}") public ResponseEntity<?> update(@PathVariable Long id, @RequestBody Map<String,Object> body) { body.remove("id"); body.put(UPDATE_ID, id); return save(body); }
+    @DeleteMapping("/{id}") public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) { auditSupport.softDelete(repo, id); return ResponseEntity.ok(ApiResponse.success(null)); }
     private BigDecimal parseBD(Object v){if(v==null)return BigDecimal.ZERO;String s=v.toString().trim();if(s.isEmpty())return BigDecimal.ZERO;try{return new BigDecimal(s);}catch(Exception e){return BigDecimal.ZERO;}}
     private BigDecimal parseBDnull(Object v){if(v==null)return null;String s=v.toString().trim();if(s.isEmpty())return null;try{return new BigDecimal(s);}catch(Exception e){return null;}}
     private int parseI(Object v,int def){if(v==null)return def;try{return (int)Double.parseDouble(v.toString().trim());}catch(Exception e){return def;}}
+
+    // 등록: UK가 같은 행이 있으면 덮어씀(삭제된 행이면 되살림) / 수정: 지정 행만, 키 중복 시 오류
+    private static final String UPDATE_ID = "__updateId";
+    private static final String[] UK = {"contractYear", "month", "boilerCode", "intervalSeq", "division"};
+    private SteamPriceInterval persist(SteamPriceInterval e, Map<String,Object> body) {
+        Object uid = body.remove(UPDATE_ID);
+        return uid != null ? auditSupport.updateById(repo, (Long) uid, e, UK) : auditSupport.upsert(repo, e, UK);
+    }
 }

@@ -1,4 +1,5 @@
 package com.company.module.rollingplanningsimulation.entity;
+import org.hibernate.annotations.SQLRestriction;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -14,11 +15,12 @@ import java.time.LocalDateTime;
  * - 총 전기요금 × 설비별 비율 → 설비별 전력비
  * - 전 설비 합계 = 1.0
  */
+@SQLRestriction("DELETED_YN = \'N\'")
 @Entity
 @Table(name = "rpsim_pw_machine_usage_ratio")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class PwMachineUsageRatio {
+public class PwMachineUsageRatio extends BaseAuditEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -40,22 +42,13 @@ public class PwMachineUsageRatio {
     @Column(name = "MEMO", length = 200)
     private String memo;
 
-    @Column(name = "CREATED_BY") private String createdBy;
-    @Column(name = "CREATED_AT", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
 
-    @Column(name = "UPDATED_AT")
-    private LocalDateTime updatedAt;
 
-    public void setCreatedBy(String createdBy){this.createdBy=createdBy;}
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
         if (this.division == null) this.division = "PS";
     }
 
-    @PreUpdate
-    protected void onUpdate() { this.updatedAt = LocalDateTime.now(); }
 
     @Builder
     public PwMachineUsageRatio(String ym, String division, String lineCode,
