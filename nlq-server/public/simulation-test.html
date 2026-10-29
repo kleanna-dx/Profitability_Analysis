@@ -1155,9 +1155,7 @@ function getBoilerOpHours(){
         Object.values(byDay).forEach(h=>{totalHrs+=h;});
         return totalHrs;
     }
-    // 폴백: OD 월합산 → 없으면 해당월 일수×24 (미등록일 = 24시간 가동)
-    let opMin=0;OD.forEach(o=>{opMin+=parseFloat(o.ndM||0);});
-    if(opMin>0)return opMin/60;
+    // 일별 가동시간 미등록 → 해당월 일수×24 (미등록일 = 24시간 가동 규칙, 추정값 사용 안 함)
     const _y=parseInt(getYm().substring(0,4)),_m=parseInt(getYm().substring(4,6));return new Date(_y,_m,0).getDate()*24;
 }
 
@@ -1631,14 +1629,7 @@ function calcEnergyCost(){
             if(mc){if(!dailyLineOps_[d])dailyLineOps_[d]={};dailyLineOps_[d][mc]={isSD,hrs};}
         }
     });
-    // 폴백 OD
-    if(!Object.keys(dailyOpMap_).length){
-        let shutdownDays=0;OD.forEach(o=>{shutdownDays+=parseFloat(o.psM||0)/1440;});
-        shutdownDays=Math.round(shutdownDays);
-        for(let i=0;i<shutdownDays&&i<daysInMonth_;i++){
-            dailyOpMap_[daysInMonth_-i]={isShutdown:true,hours:0};
-        }
-    }
+    // 일별 가동시간 미등록 → 추정하지 않음 (전 일자 24시간 가동 규칙 + 미등록 경고)
 
     // ★ 라인 비중 스케일 — LINE_STEAM_RATIOS 기반 일별 수요 축소
     const totalLineRatio_=LINE_STEAM_RATIOS.reduce((s,r)=>s+(parseFloat(r.steamRatio)||0),0)||100;
@@ -1840,7 +1831,7 @@ function calcEnergyCost(){
         if(!BURNER_LNG_RATES.length)miss.push('LNG 버너 원단위 (LNG 버너비 0원)');
         if(BURNER_LNG_RATES.length&&!lngFuelRate)miss.push('LNG 단가 — 보일러 연료단가의 LNG FUEL_RATE (LNG 버너비 0원)');
         if(!LINE_STEAM_RATIOS.length)miss.push('라인 스팀비중 (호기 운휴일에도 수요 축소 없이 계산)');
-        if(!DAILY_OPS.length)miss.push('일별 가동시간 (전 일자 24시간 가동으로 계산)');
+        if(!DAILY_OPS.length)miss.push('일별 가동시간 미등록 — 운휴 없이 전 일자 24시간 가동으로 계산 (기준정보 > 일별 가동시간 등록 필요)');
         if(!COGEN_DEDUCTIONS.length)miss.push('연료비 고정차감 항목 (차감 0원)');
         {const noResp=BOILER_MAINTENANCES.filter(m=>!normResp(m.responsibility));if(noResp.length)miss.push('보일러 정비계획 귀책구분 미입력 '+noResp.length+'건 — 스팀 공급에서는 정지로 반영, 고정단가 운휴에서는 제외 (당사/협력사 입력 필요)');}
         if(BOILER_MAINT_NODATE.length)miss.push('보일러 정비계획 시작일/종료일 미입력 '+BOILER_MAINT_NODATE.length+'건 — 계산에서 제외됨 (기준정보에서 날짜 입력 필요)');
@@ -2221,7 +2212,7 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
             dailyLineStatus[d].push({mc,isSD,hrs,reason});
         }
     });
-    if(!Object.keys(dailyOpMap).length){let sd=0;OD.forEach(o=>{sd+=parseFloat(o.psM||0)/1440;});sd=Math.round(sd);for(let i=0;i<sd&&i<daysInMonth;i++)dailyOpMap[daysInMonth-i]={isShutdown:true,hours:0,reason:'계획운휴'};}
+    // 일별 가동시간 미등록 → 추정하지 않음 (전 일자 24시간 가동 규칙 + 미등록 경고)
 
     // ★ 라인 비중 스케일 — LINE_STEAM_RATIOS 기반 일별 수요 축소
     // 호기별 일별 가동/운휴 → 가동 라인 비중 합 / 전체 비중 합 = 스케일
