@@ -1459,8 +1459,14 @@ async function fillFromCapa(){
 //   시작일 00시부터 '정비시간'만큼 연속 정지 (예: 1/1~1/2, 30hr → 1일 24hr + 2일 6hr 정지)
 //   정비시간 미입력(0)이면 기간 전체(일수×24hr) 정지 / 같은 날 여러 건이면 합산(최대 24hr)
 function maintDailyStops(m){const ym=getYm();const y=parseInt(ym.substring(0,4)),mo=parseInt(ym.substring(4,6));const out={};const s=toYmd(m.startDate),e=toYmd(m.endDate);if(!isYmd(s)||!isYmd(e)||s>e)return out;const periodH=ymdDays(s,e)*24;const mh=parseFloat(m.maintHours);let remain=(!isNaN(mh)&&mh>0)?Math.min(mh,periodH):periodH;const [sy,sm,sd]=s.split('-').map(Number);let t=Date.UTC(sy,sm-1,sd);while(remain>0){const dt=new Date(t);const h=Math.min(24,remain);if(dt.getUTCFullYear()===y&&dt.getUTCMonth()===mo-1){const d=dt.getUTCDate();out[d]=(out[d]||0)+h;}remain-=h;t+=86400000;}return out;}
-function getMaintStopHours(){const map={};BOILER_MAINTENANCES.forEach(m=>{const st=maintDailyStops(m);Object.keys(st).forEach(d=>{if(!map[m.boilerCode])map[m.boilerCode]={};map[m.boilerCode][d]=Math.min(24,(map[m.boilerCode][d]||0)+st[d]);});});return map;}
+function getMaintStopHours(resp){const map={};BOILER_MAINTENANCES.filter(m=>!resp||normResp(m.responsibility)===resp).forEach(m=>{const st=maintDailyStops(m);Object.keys(st).forEach(d=>{if(!map[m.boilerCode])map[m.boilerCode]={};map[m.boilerCode][d]=Math.min(24,(map[m.boilerCode][d]||0)+st[d]);});});return map;}
 function maintStopH(map,code,d){const a=map[code];return a?(a[d]||0):0;}
+// ── 고정단가(FIXED_HR) 운휴시간 — 보일러별 일 단위 ──
+//   A) 생산라인 미가동     = 24 - 그날 가동시간 (일별 가동시간 기준, 라인 중 최대)
+//   B) 당사 귀책 정비 정지 = 가동시간 안의 당사 귀책 정비시간 (협력사 귀책은 제외)
+//   C) 스팀 미생산         = (가동시간 - 정비 정지) - 실제 배분량 ÷ 시간당 최대 스팀
+//   운휴시간 = A + B + C  (협력사 귀책 정비시간은 어디에도 넣지 않음)
+function fixedHrIdle(code,steamPerHr,dim,opHOf,dailyAlloc,maintAll,maintOurs){const r={a:0,b:0,c:0,total:0};for(let d=1;d<=dim;d++){const opH=Math.max(0,Math.min(24,opHOf(d)));r.a+=24-opH;const all=Math.min(opH,maintStopH(maintAll,code,d));const ours=Math.min(all,maintStopH(maintOurs,code,d));r.b+=ours;const avail=opH-all;const used=steamPerHr>0?Math.min(avail,((dailyAlloc&&dailyAlloc[d])||0)/steamPerHr):0;r.c+=Math.max(0,avail-used);}r.total=r.a+r.b+r.c;return r;}
 // ── 라인 스팀비중 일별 스케일 ──
 //   그날 비율 = Σ(라인 비중 × 그날 가동시간/24) ÷ Σ(라인 비중)
 //   가동시간은 기준정보 > 일별 가동시간 값 (운휴 = 0시간, 그날 그 호기 미등록 = 24시간 가동)
@@ -1511,7 +1517,8 @@ function calcEnergyPerTon(totalProdTon){
     const sorted=BOILER_MASTERS_LIST.filter(b=>b.isActive!==false).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));
     const dm2={};const dlOps2={};
     DAILY_OPS.forEach(op=>{const d=parseInt(op.day)||0;if(d>=1&&d<=dim2){const isSDf=op.isShutdown===true||op.isShutdown==='true'||op.isShutdown===1;const rawH=parseFloat(op.operationHours)||0;const isSD=isSDf||rawH<=0;const hrs=isSD?0:rawH;const mc=op.machineCode||'';if(!dm2[d])dm2[d]={sd:isSD,h:hrs};else{dm2[d].h=Math.max(dm2[d].h,hrs);if(!isSD)dm2[d].sd=false;}if(mc){if(!dlOps2[d])dlOps2[d]={};dlOps2[d][mc]={isSD,hrs};}}});
-    const mm2=getMaintStopHours(); // 보일러별 일별 정비 정지시간
+    const mm2=getMaintStopHours(); // 보일러별 일별 정비 정지시간 (전체)
+    const mmOurs2=getMaintStopHours('OURS'); // 당사 귀책만
     // 라인 비중 스케일 (calcEnergyPerTon 경량)
     const tLR2=LINE_STEAM_RATIOS.reduce((s,r)=>s+(parseFloat(r.steamRatio)||0),0)||100;
     function gDLS2(day){return lineHourScale(dlOps2[day]);}
@@ -1522,14 +1529,14 @@ function calcEnergyPerTon(totalProdTon){
     const dc2=[];const dd2=new Array(dim2).fill(0);
     for(let d=1;d<=dim2;d++){const dop=dm2[d];const isSD=dop?dop.sd:false;const opH=dop?dop.h:(isSD?0:24);if(isSD||opH<=0){dc2.push(0);continue;}let mx=0;sorted.forEach(b=>{mx+=(parseFloat(b.steamPerHour)||0)*Math.max(0,opH-maintStopH(mm2,b.boilerCode,d));});dc2.push(mx);dd2[d-1]=tWS2>0?totalSteam*(gDLS2(d)/tWS2):totalSteam/opD2;}
     for(let it=0;it<10;it++){let ts=0,tm=0;const sh2=[],mg2=[];for(let i=0;i<dim2;i++){if(dc2[i]<=0){sh2.push(0);mg2.push(0);continue;}const df=dd2[i]-dc2[i];if(df>0){sh2.push(df);mg2.push(0);ts+=df;}else{sh2.push(0);mg2.push(-df);tm+=(-df);}}if(ts<1)break;if(tm<1)break;const rd=Math.min(ts,tm);for(let i=0;i<dim2;i++){if(sh2[i]>0)dd2[i]-=sh2[i];if(mg2[i]>0&&tm>0)dd2[i]+=rd*(mg2[i]/tm);}}
-    const bAlloc={};sorted.forEach(b=>{bAlloc[b.boilerCode]=0;});
-    for(let d=0;d<dim2;d++){if(dc2[d]<=0)continue;let rem=dd2[d];sorted.forEach(b=>{const dop=dm2[d+1];const opH=dop?dop.h:24;const cap=(parseFloat(b.steamPerHour)||0)*Math.max(0,opH-maintStopH(mm2,b.boilerCode,d+1));const a=Math.min(rem,cap);bAlloc[b.boilerCode]+=a;rem=Math.max(0,rem-a);});}
+    const bAlloc={};const bDay2={};sorted.forEach(b=>{bAlloc[b.boilerCode]=0;bDay2[b.boilerCode]={};});
+    for(let d=0;d<dim2;d++){if(dc2[d]<=0)continue;let rem=dd2[d];sorted.forEach(b=>{const dop=dm2[d+1];const opH=dop?dop.h:24;const cap=(parseFloat(b.steamPerHour)||0)*Math.max(0,opH-maintStopH(mm2,b.boilerCode,d+1));const a=Math.min(rem,cap);bAlloc[b.boilerCode]+=a;bDay2[b.boilerCode][d+1]=a;rem=Math.max(0,rem-a);});}
     let boilerCost=0;
     // 구간단가 그룹(복합 1·2호기 등): 합산 배분량에 BSC/ASC 구간 적용
     const ivG2=calcIntervalGroups(sorted,bAlloc);Object.keys(ivG2.cost).forEach(k=>{boilerCost+=ivG2.cost[k].cost;});
     sorted.forEach(b=>{const alloc=bAlloc[b.boilerCode]||0;const fr=findBoilerRate(b.boilerCode,'FUEL_RATE');const sr=findBoilerRate(b.boilerCode,'STEAM_RATE');const ir=findBoilerRate(b.boilerCode,'INTERVAL')||findBoilerRate(b.boilerCode,'INTERVAL_ASC');const fhr=findBoilerRate(b.boilerCode,'FIXED_HR');const bIvs=getBoilerIntervals(b.boilerCode);
-    // FIXED_HR 운휴 비용: Σ(24-opHrs) × 원/HR × factor
-    let fhCost=0;if(fhr){const hRate=(parseFloat(fhr.rateValue)||0)*(parseFloat(fhr.factor)||1);let sdH=0;for(let d=1;d<=dim2;d++){const dop=dm2[d];const opH=dop?dop.h:24;const isSD=dop?dop.sd:false;if(isSD||opH<24)sdH+=(24-opH);}fhCost=hRate*sdH;}
+    // FIXED_HR 운휴 비용: 운휴시간(A 라인미가동 + B 당사귀책정비 + C 스팀미생산) × 원/HR × factor
+    let fhCost=0;if(fhr){const hRate=(parseFloat(fhr.rateValue)||0)*(parseFloat(fhr.factor)||1);const idle=fixedHrIdle(b.boilerCode,parseFloat(b.steamPerHour)||0,dim2,d=>{const dop=dm2[d];return dop?(dop.sd?0:dop.h):24;},bDay2[b.boilerCode],mm2,mmOurs2);fhCost=hRate*idle.total;}
     if(ir||(bIvs.length&&!fr&&!sr)){boilerCost+=fhCost;}else if(fhr&&!fr&&!sr&&!ir){boilerCost+=fhCost;}else if(fr&&sr){const fp=(parseFloat(fr.rateValue)||0)*(parseFloat(fr.factor)||1);const se=parseFloat(sr.rateValue)||0;boilerCost+=se>0?alloc/se*fp:alloc*fp;boilerCost+=fhCost;}else if(sr){boilerCost+=alloc*(parseFloat(sr.rateValue)||0)*(parseFloat(sr.factor)||1);boilerCost+=fhCost;}else{boilerCost+=fhCost;}});
     // LNG 버너 (FACTOR 반영)
     const lngFR2=BOILER_COST_RATES.find(r=>r.rateType==='FUEL_RATE'&&(r.boilerCode||'').includes('LNG'));
@@ -1638,7 +1645,9 @@ function calcEnergyCost(){
     function getDayLineScale_(day){return lineHourScale(dailyLineOps_[day]);}
 
     // 보일러별 정비일 맵
-    const maintDayMap_=getMaintStopHours(); // {보일러:{일:정지시간}}
+    const maintDayMap_=getMaintStopHours(); // {보일러:{일:정지시간}} — 전체(스팀 공급능력 차감용)
+    const maintOursMap_=getMaintStopHours('OURS'); // 당사 귀책만 (고정단가 운휴 산정용)
+    const boilerDayAlloc_={};
 
     // ★ 일별 가중 배분 → 보일러별 합산 (renderDailyAlloc과 동일 로직)
     // 가동일수 산출 + 라인 비중 가중 수요 합계
@@ -1681,6 +1690,7 @@ function calcEnergyCost(){
         let rem=dd_[d];
         boilersSorted.forEach(b=>{
             const cap=dCaps_[d].caps[b.boilerCode]||0;const a=Math.min(rem,cap);
+            if(!boilerDayAlloc_[b.boilerCode])boilerDayAlloc_[b.boilerCode]={};boilerDayAlloc_[b.boilerCode][d+1]=a;
             boilerMonthAlloc[b.boilerCode]+=a;totalMaxSup[b.boilerCode]+=cap;rem=Math.max(0,rem-a);
         });
         steamRemainingTotal+=rem;
@@ -1711,21 +1721,13 @@ function calcEnergyCost(){
         const fixedHrRate=findBoilerRate(b.boilerCode,'FIXED_HR');
         const boilerIntervals=getBoilerIntervals(b.boilerCode);
 
-        // ★ FIXED_HR 고정단가: 운휴시간 = Σ(24 - operationHours) × 원/HR
+        // ★ FIXED_HR 고정단가: 운휴시간(A 라인미가동 + B 당사귀책정비 + C 스팀미생산) × 원/HR × FACTOR
+        let idleHrs=null;
         if(fixedHrRate){
             const hrRate=parseFloat(fixedHrRate.rateValue)||0;
             const hrFactor=parseFloat(fixedHrRate.factor)||1;
-            // B안: (24 - 가동시간) 합산 — 반일 가동 고려
-            let shutdownHrs=0;
-            for(let d=1;d<=daysInMonth_;d++){
-                const dop=dailyOpMap_[d];
-                const opH=dop?dop.hours:24;
-                const isSD=dop?dop.isShutdown:false;
-                if(isSD||opH<24){
-                    shutdownHrs+=(24-opH);
-                }
-            }
-            fixedHrCost=hrRate*hrFactor*shutdownHrs;
+            idleHrs=fixedHrIdle(b.boilerCode,steamPerHr,daysInMonth_,d=>{const dop=dailyOpMap_[d];return dop?(dop.isShutdown?0:dop.hours):24;},boilerDayAlloc_[b.boilerCode],maintDayMap_,maintOursMap_);
+            fixedHrCost=hrRate*hrFactor*idleHrs.total;
         }
 
         if(intervalRate||(boilerIntervals.length&&!fuelRate&&!steamRate)){
@@ -1761,7 +1763,7 @@ function calcEnergyCost(){
         boilerAllocRows.push({
             priority:b.priority||99,code:b.boilerCode,name:b.boilerName||b.boilerCode,
             steamPerHr,planHours:totalPlanHAll,maintDeductHrs,actualHours:Math.round(totalPlanHAll-maintDeductHrs),
-            maxSupply,allocated,boilerCost,fixedHrCost,costNote,status
+            maxSupply,allocated,boilerCost,fixedHrCost,idleHrs,costNote,status
         });
     });
     const steamShortage=steamRemaining;
@@ -1814,7 +1816,7 @@ function calcEnergyCost(){
         const maintHrs=Object.values(maintDailyStops(m)).reduce((s_,h)=>s_+h,0);
         const steamLost=steamPerHour*maintHrs;
         const typeLabel={'REGULAR':'정기정비','OVERHAUL':'대정비','EMERGENCY':'긴급정비','INSPECTION':'법정검사'}[m.maintType]||m.maintType;
-        maintRows.push({code:m.boilerCode,name:boiler?boiler.boilerName:m.boilerCode,type:typeLabel,hrs:maintHrs,steamLost,memo:toYmd(m.startDate)+' ~ '+toYmd(m.endDate)+(parseFloat(m.maintHours)>0?' ('+fmt(parseFloat(m.maintHours))+'hr)':' (기간 전체)')+((m.memo||m.maintName)?' · '+(m.memo||m.maintName):'')});
+        maintRows.push({code:m.boilerCode,name:boiler?boiler.boilerName:m.boilerCode,type:typeLabel+(RESP_LABEL[normResp(m.responsibility)]?' · '+RESP_LABEL[normResp(m.responsibility)]:' · 귀책 미입력'),hrs:maintHrs,steamLost,memo:toYmd(m.startDate)+' ~ '+toYmd(m.endDate)+(parseFloat(m.maintHours)>0?' ('+fmt(parseFloat(m.maintHours))+'hr)':' (기간 전체)')+((m.memo||m.maintName)?' · '+(m.memo||m.maintName):'')});
     });
 
     // 6) 고정차감 합계 — 등록 항목 전부 차감 (LNG사용량·처분부담금 / 감가상각 / 처분수익 / 지상권 지료)
@@ -1840,6 +1842,7 @@ function calcEnergyCost(){
         if(!LINE_STEAM_RATIOS.length)miss.push('라인 스팀비중 (호기 운휴일에도 수요 축소 없이 계산)');
         if(!DAILY_OPS.length)miss.push('일별 가동시간 (전 일자 24시간 가동으로 계산)');
         if(!COGEN_DEDUCTIONS.length)miss.push('연료비 고정차감 항목 (차감 0원)');
+        {const noResp=BOILER_MAINTENANCES.filter(m=>!normResp(m.responsibility));if(noResp.length)miss.push('보일러 정비계획 귀책구분 미입력 '+noResp.length+'건 — 스팀 공급에서는 정지로 반영, 고정단가 운휴에서는 제외 (당사/협력사 입력 필요)');}
         if(BOILER_MAINT_NODATE.length)miss.push('보일러 정비계획 시작일/종료일 미입력 '+BOILER_MAINT_NODATE.length+'건 — 계산에서 제외됨 (기준정보에서 날짜 입력 필요)');
         missEl.style.display=miss.length?'':'none';
         missEl.innerHTML=miss.length?'<div style="font-weight:700;margin-bottom:4px;"><i class="fas fa-exclamation-triangle mr-1"></i>'+getYm().slice(0,4)+'.'+getYm().slice(4)+' 미등록 기준정보 — 해당 항목은 0(또는 기본 규칙)으로 계산됩니다</div><ul style="margin:0;padding-left:18px;line-height:1.7;">'+miss.map(m=>'<li>'+m+'</li>').join('')+'</ul>':'';
@@ -1928,7 +1931,8 @@ function calcEnergyCost(){
             '<td class="r mn">'+fmtI(Math.round(r.maxSupply))+'</td>'+
             '<td class="r mn" style="font-weight:700;color:'+(r.allocated>0?'#1e293b':'#94a3b8')+';">'+fmtI(Math.round(r.allocated))+'</td>'+
             '<td class="r mn" style="font-weight:700;'+(r.boilerCost>0?'color:#d97706;':'')+'">'+
-                (r.boilerCost>0?fmtI(Math.round(r.boilerCost/1000000)):r.allocated>0?'0 <span style=\"font-size:9px;color:#16a34a;\">('+r.costNote+')</span>':'-')+'</td>'+
+                (r.boilerCost>0?fmtI(Math.round(r.boilerCost/1000000)):r.allocated>0?'0 <span style=\"font-size:9px;color:#16a34a;\">('+r.costNote+')</span>':'-')+
+                (r.idleHrs?'<div style=\"font-size:9px;color:#94a3b8;font-weight:400;white-space:nowrap;\" title=\"고정단가 운휴시간 = A 라인미가동 + B 당사귀책 정비 + C 스팀미생산 (협력사 귀책 정비 제외)\">고정단가 운휴 '+fmtI(Math.round(r.idleHrs.total))+'h = 라인 '+fmtI(Math.round(r.idleHrs.a))+' + 당사정비 '+fmtI(Math.round(r.idleHrs.b))+' + 미생산 '+fmtI(Math.round(r.idleHrs.c))+' · '+fmtI(Math.round(r.fixedHrCost/1000000))+'백만</div>':'')+'</td>'+
             '<td class="r"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;'+statusColor+'">'+statusText+'</span></td>'+
             '</tr>';
     }).join('')+
@@ -1957,7 +1961,7 @@ function calcEnergyCost(){
         document.getElementById('engMaintTb').innerHTML=maintRows.map(r=>
             '<tr><td style="font-weight:600;">'+r.name+'</td>'+
             '<td class="r"><span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;'+
-                (r.type==='대정비'?'background:#fee2e2;color:#991b1b;':r.type==='긴급정비'?'background:#fef3c7;color:#92400e;':'background:#f1f5f9;color:#475569;')+'">'+r.type+'</span></td>'+
+                (r.type.startsWith('대정비')?'background:#fee2e2;color:#991b1b;':r.type.startsWith('긴급정비')?'background:#fef3c7;color:#92400e;':'background:#f1f5f9;color:#475569;')+'">'+r.type+'</span></td>'+
             '<td class="r mn">'+fmt(r.hrs)+'</td>'+
             '<td class="r mn" style="font-weight:700;color:#ef4444;">'+fmtI(Math.round(r.steamLost))+'</td>'+
             '<td style="font-size:11px;color:#64748b;">'+r.memo+'</td></tr>'
@@ -2457,7 +2461,7 @@ function recalcProdSim(){
 }
 
 // ── Ref Management ──
-const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true,pivotMonths:true},{k:'boiler-maintenances',l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','maintName','startDate','endDate','maintHours','memo'],h:['연도','월','보일러','정비유형','정비명','시작일','종료일','정비시간(hr)','비고'],yearFilter:true,monthFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true,source:'에너지팀 DB'},{k:'steam-price-intervals',l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','month','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','월','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'cogen-deductions',l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','month','boilerCode','rateType','rateName','rateValue','rateUnit','factor'],h:['연도','월','보일러','단가유형','단가명','값','단위','FACTOR'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','month','machineCode','lngPerTon','memo'],h:['연도','월','호기','원단위(㎥/톤)','비고'],yearFilter:true,monthFilter:true},{k:'line-steam-ratios',l:'라인 스팀비중',i:'fa-chart-pie',cols:['year','machineCode','steamRatio','memo'],h:['연도','호기','스팀비중(%)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
+const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true,pivotMonths:true},{k:'boiler-maintenances',l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','responsibility','maintName','startDate','endDate','maintHours','memo'],h:['연도','월','보일러','정비유형','귀책구분','정비명','시작일','종료일','정비시간(hr)','비고'],yearFilter:true,monthFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true,source:'에너지팀 DB'},{k:'steam-price-intervals',l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','month','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','월','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'cogen-deductions',l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','month','boilerCode','rateType','rateName','rateValue','rateUnit','factor'],h:['연도','월','보일러','단가유형','단가명','값','단위','FACTOR'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','month','machineCode','lngPerTon','memo'],h:['연도','월','호기','원단위(㎥/톤)','비고'],yearFilter:true,monthFilter:true},{k:'line-steam-ratios',l:'라인 스팀비중',i:'fa-chart-pie',cols:['year','machineCode','steamRatio','memo'],h:['연도','호기','스팀비중(%)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
 let cRef=0,refData=[],refDataPrev=[];
 function renderRefTabs(){document.getElementById('refTabs').innerHTML=REFS.map((d,i)=>{const isActive=i===cRef;const badgeStyle=isActive?'background:rgba(255,255,255,.25);color:#fff;':'background:rgba(16,185,129,.15);color:#059669;';return '<div class="ref-tab'+(isActive?' active':'')+'" onclick="switchRef('+i+')"><i class="fas '+d.i+' mr-1"></i>'+d.l+(d.source?' <span style="font-size:8px;padding:1px 5px;border-radius:4px;'+badgeStyle+'font-weight:700;vertical-align:middle;">연동</span>':'')+'</div>';}).join('');}
 function switchRef(i){cRef=i;renderRefTabs();
@@ -2496,7 +2500,7 @@ function renderRef(){const d=REFS[cRef];if(d.pivotMonths){renderBoilerPivot();re
     const prevYr=parseInt(getYm().substring(0,4))-1;
     let h='<table class="st"><thead><tr>'+d.h.map(x=>'<th>'+x+'</th>').join('')+'<th style="width:60px;">관리</th></tr></thead><tbody>';
     if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}
-    else{refData.forEach((row,ri)=>{const rowId=rowIdOf(row);h+='<tr id="refRow_'+ri+'">'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);let bn=bm?bm.boilerName:'';if(!bm){const gm=[...new Set(BOILER_MASTERS_LIST.filter(b=>b.boilerCode!==v&&boilerGroupCode(b.boilerCode)===v).map(b=>b.boilerName||b.boilerCode))];if(gm.length)bn=gm.join('·')+' 공통';}v=v+(bn?' <span style="font-size:10px;color:#94a3b8;">('+bn+')</span>':'');}else if(c==='isShutdown'){const _opH=parseFloat(row.operationHours)||0;const _isSD=(v===true||v==='true'||v===1)||_opH<=0;v=_isSD?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(DATE_COLS.includes(c)){v=toYmd(v)||'-';}else if(c==='factor'&&v!=null){v=parseFloat(v).toFixed(2);}else if(c==='steamRatio'&&v!=null){v=parseFloat(v).toFixed(1)+'%';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td style="white-space:nowrap;"><button onclick="editRef('+ri+')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;margin-right:4px;" title="편집"><i class="fas fa-edit"></i></button><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;" title="삭제"><i class="fas fa-trash"></i></button></td></tr>';});}
+    else{refData.forEach((row,ri)=>{const rowId=rowIdOf(row);h+='<tr id="refRow_'+ri+'">'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);let bn=bm?bm.boilerName:'';if(!bm){const gm=[...new Set(BOILER_MASTERS_LIST.filter(b=>b.boilerCode!==v&&boilerGroupCode(b.boilerCode)===v).map(b=>b.boilerName||b.boilerCode))];if(gm.length)bn=gm.join('·')+' 공통';}v=v+(bn?' <span style="font-size:10px;color:#94a3b8;">('+bn+')</span>':'');}else if(c==='isShutdown'){const _opH=parseFloat(row.operationHours)||0;const _isSD=(v===true||v==='true'||v===1)||_opH<=0;v=_isSD?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(DATE_COLS.includes(c)){v=toYmd(v)||'-';}else if(c==='responsibility'){v=RESP_LABEL[normResp(v)]?('<span style="font-weight:600;color:'+(normResp(v)==='OURS'?'#dc2626':'#64748b')+';">'+RESP_LABEL[normResp(v)]+'</span>'):'<span style="color:#dc2626;">미입력</span>';}else if(c==='factor'&&v!=null){v=parseFloat(v).toFixed(2);}else if(c==='steamRatio'&&v!=null){v=parseFloat(v).toFixed(1)+'%';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td style="white-space:nowrap;"><button onclick="editRef('+ri+')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;margin-right:4px;" title="편집"><i class="fas fa-edit"></i></button><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;" title="삭제"><i class="fas fa-trash"></i></button></td></tr>';});}
     h+='</tbody></table>';
     // boiler-cost-rates: 단가유형 설명 가이드
     if(d.k==='boiler-cost-rates'){
@@ -2704,7 +2708,7 @@ function downloadRefTemplate(){
     const autoFields=d.auto||[];
     const headers=d.h.filter((_,i)=>!autoFields.includes(d.cols[i]));
     const aoa=[headers];
-    if(d.cols.includes('startDate'))aoa.push(headers.map(h=>{const c=d.cols[d.h.indexOf(h)];return DATE_COLS.includes(c)?'yyyy-mm-dd (예: 2026-01-01)':'';}));
+    if(d.cols.includes('startDate'))aoa.push(headers.map(h=>{const c=d.cols[d.h.indexOf(h)];return DATE_COLS.includes(c)?'yyyy-mm-dd (예: 2026-01-01)':c==='responsibility'?'당사 귀책 / 협력사 귀책':'';}));
     const ws=XLSX.utils.aoa_to_sheet(aoa);
     ws['!cols']=headers.map(h=>({wch:Math.max(h.length*2+4,14)}));
     const wb=XLSX.utils.book_new();
@@ -2721,6 +2725,7 @@ function downloadRefData(){
         rows.push(d.cols.map(c=>{
             let v=row[c];
             if(DATE_COLS.includes(c))return toYmd(v);
+            if(c==='responsibility')return RESP_LABEL[normResp(v)]||'';
             if(v===true)return 'Y';
             if(v===false)return 'N';
             if(v==null)return '';
@@ -2830,6 +2835,8 @@ async function openRefModal(){
             h+='<label>'+d.h[i]+'</label><select name="'+c+'" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;">'+emptyOpt+boilerCodeOptions('',['steam-price-intervals','boiler-cost-rates'].includes(d.k))+'</select>';
         }else if(c==='boilerCode'){
             h+='<label>'+d.h[i]+'</label><input name="'+c+'" placeholder="'+d.h[i]+'">';
+        }else if(c==='responsibility'){
+            h+='<label>'+d.h[i]+' <span style="font-size:10px;color:#94a3b8;">(당사 귀책만 고정단가 운휴 산정)</span></label>'+respSelectHtml('','width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;');
         }else if(DATE_COLS.includes(c)){
             h+='<label>'+d.h[i]+' <span style="font-size:10px;color:#94a3b8;">(yyyy-mm-dd)</span></label>'+dateInputHtml(c,'','width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;');
         }else{
@@ -2852,10 +2859,14 @@ function excelDateToYmd(v){if(typeof v==='number'&&v>0&&window.XLSX&&XLSX.SSF){c
 function isYmd(v){if(!/^\d{4}-\d{2}-\d{2}$/.test(v||''))return false;const [y,m,d]=v.split('-').map(Number);const dt=new Date(Date.UTC(y,m-1,d));return dt.getUTCFullYear()===y&&dt.getUTCMonth()===m-1&&dt.getUTCDate()===d;}
 function ymdDays(a,b){const [y1,m1,d1]=a.split('-').map(Number),[y2,m2,d2]=b.split('-').map(Number);return Math.round((Date.UTC(y2,m2-1,d2)-Date.UTC(y1,m1-1,d1))/86400000)+1;}
 // 시작일·종료일 필수 + yyyy-mm-dd + 시작일≤종료일 + 정비시간≤기간
-function validateDates(d,body){if(!d.cols.includes('startDate'))return null;for(const c of DATE_COLS){const label=c==='startDate'?'시작일':'종료일';if(!body[c])return label+'을 입력하세요 (yyyy-mm-dd)';if(!isYmd(body[c]))return label+' 형식이 올바르지 않습니다: '+body[c]+' → yyyy-mm-dd (예: 2026-01-01)';}if(body.startDate>body.endDate)return '종료일('+body.endDate+')이 시작일('+body.startDate+')보다 빠릅니다';if(body.year&&body.month){const [sy,sm]=body.startDate.split('-').map(Number);if(parseInt(body.year)!==sy||parseInt(body.month)!==sm)return '연도/월('+body.year+'.'+body.month+')이 시작일('+body.startDate+')과 다릅니다 — 연도/월은 시작일 기준으로 입력하세요';}const h=parseFloat(body.maintHours);if(!isNaN(h)){const maxH=ymdDays(body.startDate,body.endDate)*24;if(h<0)return '정비시간은 0 이상이어야 합니다';if(h>maxH)return '정비시간('+h+'hr)이 정비기간('+body.startDate+'~'+body.endDate+', 최대 '+maxH+'hr)보다 깁니다';}return null;}
+function validateDates(d,body){if(!d.cols.includes('startDate'))return null;if(d.cols.includes('responsibility')){body.responsibility=normResp(body.responsibility);if(!body.responsibility)return '귀책구분을 선택하세요 (당사 귀책 / 협력사 귀책)';}for(const c of DATE_COLS){const label=c==='startDate'?'시작일':'종료일';if(!body[c])return label+'을 입력하세요 (yyyy-mm-dd)';if(!isYmd(body[c]))return label+' 형식이 올바르지 않습니다: '+body[c]+' → yyyy-mm-dd (예: 2026-01-01)';}if(body.startDate>body.endDate)return '종료일('+body.endDate+')이 시작일('+body.startDate+')보다 빠릅니다';if(body.year&&body.month){const [sy,sm]=body.startDate.split('-').map(Number);if(parseInt(body.year)!==sy||parseInt(body.month)!==sm)return '연도/월('+body.year+'.'+body.month+')이 시작일('+body.startDate+')과 다릅니다 — 연도/월은 시작일 기준으로 입력하세요';}const h=parseFloat(body.maintHours);if(!isNaN(h)){const maxH=ymdDays(body.startDate,body.endDate)*24;if(h<0)return '정비시간은 0 이상이어야 합니다';if(h>maxH)return '정비시간('+h+'hr)이 정비기간('+body.startDate+'~'+body.endDate+', 최대 '+maxH+'hr)보다 깁니다';}return null;}
 // yyyy-mm-dd 전용 입력칸: 숫자만 입력해도 자동으로 '-' 삽입 (브라우저 달력은 지역 형식으로 보여서 사용 안 함)
 function dateInputHtml(name,val,style){return '<input type="text" name="'+name+'" value="'+toYmd(val)+'" maxlength="10" inputmode="numeric" placeholder="yyyy-mm-dd" autocomplete="off" oninput="fmtYmdInput(this)"'+(style?' style="'+style+'"':'')+'>';}
 function fmtYmdInput(el){const d=el.value.replace(/[^0-9]/g,'').substring(0,8);el.value=d.length>6?d.substring(0,4)+'-'+d.substring(4,6)+'-'+d.substring(6):d.length>4?d.substring(0,4)+'-'+d.substring(4):d;el.style.borderColor=(el.value.length===10&&!isYmd(el.value))?'#ef4444':'';}
+// 귀책구분: OURS=당사 귀책(고정단가 운휴 산정) / PARTNER=협력사 귀책(미산정)
+const RESP_LABEL={OURS:'당사 귀책',PARTNER:'협력사 귀책'};
+function normResp(v){const s=String(v==null?'':v).trim().toUpperCase();if(s==='OURS'||s.includes('당사'))return 'OURS';if(s==='PARTNER'||s.includes('협력'))return 'PARTNER';return '';}
+function respSelectHtml(val,style){const v=normResp(val);return '<select name="responsibility"'+(style?' style="'+style+'"':'')+'><option value=""'+(!v?' selected':'')+'>(선택)</option><option value="OURS"'+(v==='OURS'?' selected':'')+'>당사 귀책</option><option value="PARTNER"'+(v==='PARTNER'?' selected':'')+'>협력사 귀책</option></select>';}
 // 연도/월 필수 검증 (0 또는 빈 값 저장 금지)
 function validateYearMonth(d,body){const yk=d.cols.includes('contractYear')?'contractYear':(d.cols.includes('year')?'year':null);if(yk){const y=parseInt(body[yk]);if(!y||y<2000||y>2100)return '연도를 입력하세요 (예: 2026)';}if(d.cols.includes('month')){const m=parseInt(body.month);if(!m||m<1||m>12)return '월을 1~12로 입력하세요';}return null;}
 async function saveRef(){const d=REFS[cRef],body={};d.cols.forEach(c=>{const el=document.querySelector('.modal-box [name="'+c+'"]');if(el){let v=el.value;if(['hourlyCapacity','basisWeightRef','kwhPerHourRun','kwhPerHourStby','demandKrw','energyKrw','rateUsd','containerFeeKrw','extraFeeKrw','rate','steamRatio'].includes(c))v=parseFloat(v)||0;else if(c==='year')v=parseInt(v)||0;else if(c==='month'){v=v.trim()===''?null:parseInt(v);if(v!==null&&(isNaN(v)||v<1||v>12))v=null;}else if(c==='isActive')v=(v==='true');body[c]=v;}});if(!body.division)body.division=document.getElementById('selDiv')?.value||'PS';if(window.CURRENT_USER)body.createdBy=window.CURRENT_USER;{const ve=validateYearMonth(d,body)||validateDates(d,body);if(ve){alert('저장 실패: '+ve);return;}}try{const r=await fetch(API+'/'+d.k,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const err=await apiErrMsg(r);console.warn('[saveRef] 실패:',err);alert('저장 실패: '+err);return;}try{const j=await r.clone().json();if(j&&j.data&&j.data.upserted)alert('같은 기준의 데이터가 있어 기존 행을 덮어썼습니다.');}catch(_){}}catch(e){alert('저장 실패: '+e.message);return;}closeModal();loadRef();}
@@ -2883,6 +2894,8 @@ function editRef(rowIdx){
         }else if(c==='boilerCode'&&d.k!=='boiler-masters'&&BOILER_MASTERS_LIST.length){
             const emptyOpt=d.k==='steam-price-intervals'?'<option value=""'+(val===''?' selected':'')+'>(공통)</option>':'';
             h+='<label>'+d.h[i]+'</label><select name="'+c+'">'+emptyOpt+boilerCodeOptions(val,['steam-price-intervals','boiler-cost-rates'].includes(d.k))+'</select>';
+        }else if(c==='responsibility'){
+            h+='<label>'+d.h[i]+' <span style="font-size:10px;color:#94a3b8;">(당사 귀책만 고정단가 운휴 산정)</span></label>'+respSelectHtml(row[c]);
         }else if(DATE_COLS.includes(c)){
             h+='<label>'+d.h[i]+' <span style="font-size:10px;color:#94a3b8;">(yyyy-mm-dd)</span></label>'+dateInputHtml(c,row[c]);
         }else{

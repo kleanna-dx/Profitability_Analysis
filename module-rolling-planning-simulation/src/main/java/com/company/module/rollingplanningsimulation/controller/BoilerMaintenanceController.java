@@ -42,12 +42,14 @@ public class BoilerMaintenanceController {
         long maxHours = (java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1) * 24;
         if (hours != null && (hours.signum() < 0 || hours.compareTo(BigDecimal.valueOf(maxHours)) > 0))
             throw new IllegalArgumentException("정비시간(" + hours.stripTrailingZeros().toPlainString() + "hr)은 0 ~ " + maxHours + "hr (정비기간 " + start + "~" + end + ") 이어야 합니다");
+        String resp = normalizeResp(body.get("responsibility"));
         BoilerMaintenance e = BoilerMaintenance.builder()
             .year(parseIntSafe(body.get("year")))
             .month(parseIntSafe(body.get("month")))
             .boilerCode(str(body.get("boilerCode")))
             .division(str(body.getOrDefault("division","PS")))
             .maintType(str(body.getOrDefault("maintType","REGULAR")))
+            .responsibility(resp)
             .maintName(str(body.get("maintName")))
             .startDate(start)
             .endDate(end)
@@ -77,6 +79,13 @@ public class BoilerMaintenanceController {
         if (s.isEmpty()) throw new IllegalArgumentException(label + "을 입력하세요 (yyyy-mm-dd)");
         if (!YMD.matcher(s).matches()) throw new IllegalArgumentException(label + " 형식이 올바르지 않습니다: " + s + " → yyyy-mm-dd (예: 2026-01-01)");
         try { return LocalDate.parse(s); } catch (Exception e) { throw new IllegalArgumentException(label + "이 올바른 날짜가 아닙니다: " + s); }
+    }
+    /** 귀책구분 필수: OURS(당사) / PARTNER(협력사) — 한글 입력도 허용 */
+    private String normalizeResp(Object v) {
+        String s = v == null ? "" : v.toString().trim().toUpperCase();
+        if (s.equals("OURS") || s.contains("당사")) return "OURS";
+        if (s.equals("PARTNER") || s.contains("협력")) return "PARTNER";
+        throw new IllegalArgumentException("귀책구분을 선택하세요 (당사 귀책 / 협력사 귀책)");
     }
     private String str(Object v) { return v != null ? v.toString() : null; }
 
