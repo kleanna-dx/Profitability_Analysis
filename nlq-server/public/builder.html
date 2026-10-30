@@ -1790,6 +1790,33 @@ function _rewriteMfgFieldLabel(colName, originalLabel) {
     return short || originalLabel;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// [2026-10-30] 제조원가 Metric → 필수 Dimension Dependency 매핑
+//   사용자 요구사항:
+//     - '개당 단가(원)' 조회 시 4가지 원가 기준(실제원가/실제원가의 표준원가/
+//       매출원가/매출원가의 표준원가)이 섞여서 한 줄로 집계되는 문제 해결.
+//     - 사용자가 사이드바에서 '개당 단가' 를 더블클릭 → 조회필드 추가하면,
+//       집계 왜곡 방지를 위해 PLANT/ZCGUBUN/ZCGUBUN_D 를 함께 자동 추가.
+//     - 자동 추가된 필드는 반드시 '개당 단가' 보다 **앞쪽** 에 위치해야 함.
+//
+//   설계 원칙:
+//     - 하드코딩 UI 가 아닌 **설정 테이블(Dependency map) 패턴** 사용.
+//       향후 다른 metric 에 dependency 가 필요하면 이 상수에만 항목을
+//       추가하면 됨 (addField() 로직은 수정 불필요).
+//     - KEY: metric_code (서버 metric.metric_code 와 1:1 일치)
+//     - VALUE: 함께 자동 추가할 DB 컬럼명 배열 (순서 = 삽입 순서)
+//     - 영역 가드: manufacturing-cost 전용 (수익성분석 완전 무영향).
+//     - 중복 체크: 이미 selectedFields 에 있으면 skip (중복 추가 금지).
+//     - 제거 UX (옵션 A, 사용자 승인): 사용자가 '개당 단가' 를 수동 제거
+//       해도 자동 추가된 PLANT/ZCGUBUN/ZCGUBUN_D 는 유지. 다른 metric
+//       조합에 재사용 가능하도록 침습 최소화.
+// ─────────────────────────────────────────────────────────────────
+const MFG_METRIC_FIELD_DEPENDENCIES = {
+    // 개당 단가(원): SUM(TOTAL)/NULLIF(SUM(LBKUM),0) 집계가 의미 있는 단가가
+    // 되려면 PLANT 별 × 4가지 원가기준(ZCGUBUN × ZCGUBUN_D) 로 반드시 분리.
+    'COST_ACTUAL_UNIT_PRICE': ['PLANT', 'ZCGUBUN', 'ZCGUBUN_D'],
+};
+
 async function loadColumns() {
     try {
         // [2026-09-17] area 파라미터 추가 - 서버가 area 별 target table 로 컬럼 조회
@@ -2411,6 +2438,67 @@ function addField(colName) {
         // ★ 카테고리 기반 기본 집계 자동 추천 (금액/수량 → SUM, 그 외 → 그룹기준)
         const defaultAgg = getDefaultAggregate(col);
         newField = { column: colName, alias: col.label, aggregate: defaultAgg, type: col.type, category: col.category };
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // [2026-10-30] 제조원가 Metric Dependency 자동 추가
+    //   - 영역이 'manufacturing-cost' 이고,
+    //   - 추가하는 필드가 metric 이며,
+    //   - 해당 metric_code 에 대한 dependency 매핑이 등록되어 있으면,
+    //   먼저 의존 dimension 필드들을 선삽입 → 마지막에 metric 을 추가.
+    //   이렇게 하면 결과 순서가 자동으로
+    //       [...이미 선택된 필드, ...자동 추가 dimension, metric] 이 되어
+    //   사용자 요구("자동 추가된 구분 필드가 앞쪽에") 를 만족.
+    //
+    //   설계: MFG_METRIC_FIELD_DEPENDENCIES 상수(라인 ~1812) 기반으로 동작.
+    //         하드코딩 UI 가 아니라 설정 테이블 패턴.
+    //   영역 가드: 수익성분석(profitability) 에서는 완전 무영향.
+    //   중복 체크: 이미 selectedFields 에 있는 컬럼은 skip (중복 추가 금지).
+    //   제거 UX (옵션 A): 사용자가 metric 을 수동 제거해도 자동 추가 필드는
+    //                     유지 (removeField 는 수정하지 않음, 침습 최소화).
+    //   기존 non-metric / DATE_FIELDS 분기는 완전 무변경.
+    // ─────────────────────────────────────────────────────────────
+    const _isMfgArea = (typeof _currentBuilderArea === 'function') &&
+                       (_currentBuilderArea() === 'manufacturing-cost');
+    if (col.is_metric && _isMfgArea && col.metric_code &&
+        Array.isArray(MFG_METRIC_FIELD_DEPENDENCIES[col.metric_code])) {
+        const _depColNames = MFG_METRIC_FIELD_DEPENDENCIES[col.metric_code];
+        let _autoAddedCount = 0;
+        for (const _depName of _depColNames) {
+            // 이미 조회필드에 있으면 skip (dimension 은 aggregate 없이 추가되므로
+            // 'aggregate 없는 동일 컬럼' 기준으로 중복 판정)
+            if (selectedFields.find(f => f.column === _depName && !f.aggregate)) continue;
+            // 메타정보 조회 (사이드바에 노출된 컬럼만 자동 추가 — 없으면 조용히 skip)
+            const _depCol = allColumns.find(c => c.name === _depName);
+            if (!_depCol) continue;
+            // dimension 필드 구성 (addField 의 non-metric 분기와 동일 포맷)
+            const _depAgg = getDefaultAggregate(_depCol);
+            const _depField = {
+                column: _depName,
+                alias: _depCol.label,
+                aggregate: _depAgg,
+                type: _depCol.type,
+                category: _depCol.category,
+            };
+            selectedFields.push(_depField);
+            _autoAddedCount++;
+        }
+        // metric 은 마지막에 push → 자동 추가된 dimension 들이 자연스럽게 앞에 위치
+        selectedFields.push(newField);
+        if(!builderDomainLocked){builderDomainLocked=true;renderDomainSelectorBar();}
+        renderSelectedFields();
+        updateOrderByOptions();
+        updateCompareDimPanel();
+        // 사용자 피드백 (snackbar 유틸이 있으면 사용, 없으면 조용히 skip)
+        if (_autoAddedCount > 0 && typeof showSnackbar === 'function') {
+            try {
+                showSnackbar(
+                    `'${col.label || col.metric_code}' 집계 왜곡 방지를 위해 ` +
+                    `플랜트/원가구분/표준원가추정 필드를 함께 추가했습니다.`
+                );
+            } catch(_e) { /* snackbar 실패는 무시 */ }
+        }
+        return;
     }
 
     // ★ 기간 필드(CALYEAR/CALMONTH/CALDAY)는 항상 결과 표 맨 앞에 오도록 selectedFields 앞쪽에 배치
