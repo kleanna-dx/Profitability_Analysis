@@ -1529,12 +1529,23 @@ const BUILDER_HIDDEN_SIDEBAR_FIELDS = new Set([
 //   - 판정은 window.AreaTabs.current 또는 body dataset (기존 _isManufacturingCostArea 와 동일 로직).
 function isHiddenInBuilderSidebar(name) {
     if (!name) return false;
-    // 제조원가 area 에서는 강제 숨김 정책 미적용 (요구사항: PLANT/MATERIAL 노출 필수)
+    const u = String(name).toUpperCase();
+    // ─────────────────────────────────────────────────────────────
+    // [2026-10-30] 제조원가 영역 전용: 묶음(Field Group)의 멤버는 사이드바에서 숨김.
+    //   - 예: '플랜트 (코드/명)' 묶음을 노출하는 대신 멤버 PLANT, PLANT_NM 은 숨김.
+    //   - MFG_FIELD_GROUPS 상수에서 자동 계산된 _MFG_FIELD_GROUP_MEMBERS 사용.
+    //   - 수익성분석 영역은 아래 기존 분기로 내려가서 영향 없음.
+    //   - 가상 묶음 컬럼 자체('__GROUP__...')는 숨기지 않음 (사이드바에 노출돼야 함).
+    // ─────────────────────────────────────────────────────────────
     try {
         const _area = (window.AreaTabs && window.AreaTabs.current) || document.body?.dataset?.area || '';
-        if (_area === 'manufacturing-cost') return false;
+        if (_area === 'manufacturing-cost') {
+            // 묶음 멤버는 숨김 (단, 가상 묶음 컬럼은 유지)
+            if (_MFG_FIELD_GROUP_MEMBERS.has(u) && !u.startsWith('__GROUP__')) return true;
+            // 기존 정책: 제조원가에서는 다른 숨김 정책 미적용 (PLANT/MATERIAL 노출 필수)
+            return false;
+        }
     } catch (e) { /* 안전 fallback: 기존 정책 유지 */ }
-    const u = String(name).toUpperCase();
     if (BUILDER_HIDDEN_SIDEBAR_FIELDS.has(u)) return true;
     // 일부 환경에서 BW 컬럼이 'BIC_Z...' prefix 로 노출되는 경우 대응
     if (u.startsWith('BIC_')) {
@@ -1824,6 +1835,54 @@ const MFG_METRIC_FIELD_DEPENDENCIES = {
     'UNIT_COST': ['PLANT', 'ZCGUBUN', 'ZCGUBUN_D'],
 };
 
+// ─────────────────────────────────────────────────────────────────
+// [2026-10-30] 제조원가 사이드바 묶음 필드 정의 (Field Group)
+//
+//   사용자 요구:
+//     사이드바에 코드/명 쌍(예: 플랜트 코드 + 플랜트명)이 2개 항목으로
+//     분리돼 있어 매번 두 번 더블클릭해야 함. 이걸 하나의 묶음 항목으로
+//     표시하고 1번 더블클릭하면 두 컬럼이 모두 조회필드에 추가되도록.
+//
+//   설계 (옵션 A, 사용자 승인):
+//     - 사이드바 전용 "가상 묶음 컬럼" 을 allColumns 에 삽입.
+//       (name 접두사 '__GROUP__' 으로 실제 컬럼과 구분)
+//     - 묶음 멤버인 실제 컬럼(PLANT, PLANT_NM 등)은 사이드바에서 숨김
+//       (isHiddenInBuilderSidebar 확장).
+//     - 더블클릭 시 묶음의 각 멤버를 순차 addField() 호출.
+//     - 중복 체크: 이미 조회필드에 있는 멤버는 skip, 없는 것만 추가
+//       (옵션 Q4-a, 사용자 승인) — addField 의 기존 중복 체크 재사용.
+//     - 영역 가드: manufacturing-cost 전용 (수익성분석 완전 무영향).
+//
+//   확장성:
+//     향후 '자재 코드/명' 등 다른 묶음도 이 상수에만 항목 추가하면 됨.
+//     renderFieldList/addFieldByClick/loadColumns 로직은 수정 불필요.
+//
+//   KEY: 가상 묶음 컬럼 name (반드시 '__GROUP__' 접두사)
+//   VALUE: {
+//     label:    사이드바 표시 라벨 (사용자 승인: "플랜트 (코드/명)")
+//     category: CATEGORY_ORDER 중 하나 ('org', 'product' 등)
+//     type:     아이콘 결정용 ('text' / 'number')
+//     members:  더블클릭 시 순차 추가할 실제 컬럼명 배열 (이 순서로 추가)
+//     synonyms: 사이드바 우측에 표시할 동의어 (검색 매칭에도 사용)
+//   }
+// ─────────────────────────────────────────────────────────────────
+const MFG_FIELD_GROUPS = {
+    '__GROUP__PLANT_PAIR': {
+        label: '플랜트 (코드/명)',
+        category: 'org',
+        type: 'text',
+        members: ['PLANT', 'PLANT_NM'],
+        synonyms: ['플랜트', '공장', 'plant', '플랜트 코드', '플랜트명'],
+    },
+};
+
+// 묶음의 멤버(실제 컬럼명) 집합 — 사이드바 숨김 판정에 사용
+// MFG_FIELD_GROUPS 가 바뀌면 자동 재계산 (상수 추가만 하면 됨)
+const _MFG_FIELD_GROUP_MEMBERS = new Set();
+Object.values(MFG_FIELD_GROUPS).forEach(g => {
+    (g.members || []).forEach(m => _MFG_FIELD_GROUP_MEMBERS.add(String(m).toUpperCase()));
+});
+
 async function loadColumns() {
     try {
         // [2026-09-17] area 파라미터 추가 - 서버가 area 별 target table 로 컬럼 조회
@@ -1838,6 +1897,40 @@ async function loadColumns() {
             return (shortLabel !== c.label) ? { ...c, label: shortLabel } : c;
         });
         allColumns = cols.filter(c => c.category !== 'system');
+
+        // ─────────────────────────────────────────────────────────
+        // [2026-10-30] 제조원가 영역: 가상 묶음 컬럼 삽입 (Field Group)
+        //   - 사이드바 전용 가상 항목 (name='__GROUP__XXX') 을 allColumns 에
+        //     추가하여 renderFieldList 가 기존 non-metric 분기로 자연스럽게
+        //     렌더링하도록 함.
+        //   - is_group:true 플래그로 addFieldByClick 분기에서 식별.
+        //   - 멤버 중 최소 1개라도 서버 응답에 존재해야 가상 항목 노출
+        //     (환경 차이로 PLANT_NM 이 없을 수 있는 안전 가드).
+        //   - 수익성분석 영역은 가드로 완전 무영향.
+        // ─────────────────────────────────────────────────────────
+        if (areaParam === 'manufacturing-cost') {
+            const existingColNames = new Set(allColumns.map(c => String(c.name).toUpperCase()));
+            Object.entries(MFG_FIELD_GROUPS).forEach(([groupName, groupDef]) => {
+                // 멤버 중 서버 응답에 실제 존재하는 것들만 유효
+                const availableMembers = (groupDef.members || []).filter(
+                    m => existingColNames.has(String(m).toUpperCase())
+                );
+                if (availableMembers.length === 0) return; // 멤버 전부 없으면 가상 항목도 skip
+                // 이미 같은 name 이 있으면 중복 삽입 금지 (loadColumns 재호출 안전)
+                if (allColumns.some(c => c.name === groupName)) return;
+                allColumns.push({
+                    name: groupName,
+                    label: groupDef.label,
+                    type: groupDef.type || 'text',
+                    category: groupDef.category || 'org',
+                    is_metric: false,
+                    is_group: true,                      // 묶음 항목 식별 플래그
+                    group_members: availableMembers,     // 실제 추가 대상 (가용 멤버만)
+                    synonyms: Array.isArray(groupDef.synonyms) ? groupDef.synonyms.slice() : [],
+                });
+            });
+        }
+
         renderFieldList(allColumns);
     } catch(e) {
         document.getElementById('fieldList').innerHTML = '<p style="color:var(--error);padding:16px;">필드 로딩 실패</p>';
@@ -2415,7 +2508,33 @@ function handleCondDrop(e) {
 }
 
 // ─── Field Management ────────────────────────
-function addFieldByClick(colName) { addField(colName); }
+function addFieldByClick(colName) {
+    // ─────────────────────────────────────────────────────────────
+    // [2026-10-30] 묶음(Field Group) 더블클릭 분기
+    //   - 가상 묶음 컬럼(name 이 '__GROUP__' 으로 시작) 을 더블클릭하면
+    //     그 묶음의 멤버(group_members)를 순차 addField() 호출.
+    //   - 중복 체크 (옵션 Q4-a, 사용자 승인): 이미 조회필드에 있는 멤버는
+    //     addField 의 기존 중복 체크로 자동 skip. 없는 것만 추가.
+    //   - 영역 가드: 가상 묶음 컬럼은 loadColumns 에서 manufacturing-cost
+    //     영역일 때만 삽입되므로, 여기서는 별도 가드 불필요
+    //     (수익성분석 영역에서는 '__GROUP__' name 자체가 존재하지 않음).
+    //   - 일반 non-group 더블클릭은 기존 그대로 addField(colName) 호출.
+    // ─────────────────────────────────────────────────────────────
+    if (typeof colName === 'string' && colName.startsWith('__GROUP__')) {
+        const col = allColumns.find(c => c.name === colName);
+        if (col && col.is_group && Array.isArray(col.group_members)) {
+            col.group_members.forEach(memberName => {
+                // addField 자체가 '이미 같은 column 이 그룹 기준으로 추가되어
+                // 있으면 무시' 하는 중복 체크를 가짐 → 재사용으로 skip 보장.
+                addField(memberName);
+            });
+            return;
+        }
+        // 가상 묶음 메타가 없거나 손상된 경우는 조용히 무시 (실제 컬럼이 아니므로 addField 호출 금지)
+        return;
+    }
+    addField(colName);
+}
 
 // 컬럼 카테고리/타입에 따라 기본 집계 추천
 //   amount/quantity → SUM (월 합계가 기본)
