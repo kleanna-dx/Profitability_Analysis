@@ -17,8 +17,12 @@
 // 설계:
 //   - 하드코딩 UI 가 아닌 설정 테이블(Dependency map) 패턴
 //     상수 MFG_METRIC_FIELD_DEPENDENCIES = { metric_code: [dep...] }
-//   - '개당 단가' metric_code = 'COST_ACTUAL_UNIT_PRICE'
-//     (서버 sql/054_seed_cost_actual_unit_price_metric.sql 에서 정의)
+//   - '개당 단가' metric_code = 'UNIT_COST'
+//     (운영 DB 실제 등록값. sql/054 seed 파일의 'COST_ACTUAL_UNIT_PRICE'
+//      는 운영에 적용되지 않은 상태 — 운영자가 'UNIT_COST' 로 수동 등록)
+//     [2026-10-30 fix] 사용자 지적 반영: 초기 PR #542 는 seed 파일만 보고
+//     COST_ACTUAL_UNIT_PRICE 로 가정했으나 운영 매칭 실패(no-op).
+//     운영 metric_code 'UNIT_COST' 로 교체.
 //   - 영역 가드: _currentBuilderArea() === 'manufacturing-cost'
 //   - 수익성분석(profitability) 영역은 완전 무영향
 //   - 중복 체크: 이미 selectedFields 에 있으면 skip
@@ -63,18 +67,23 @@ function assertNoMatch(src, re, msg) {
 }
 
 // ============================================================
-// X. 서버 사전 조건 — '개당 단가' metric 이 COST_ACTUAL_UNIT_PRICE 로 정의됨
+// X. 서버 사전 조건
+//    - 운영 DB 의 '개당 단가' metric_code 는 'UNIT_COST' (사용자 확인)
+//      → metric 은 metric 테이블에 수동 등록되는 값이라 서버 코드에
+//         하드코딩되지 않음 (이 파일로는 운영 DB 값을 직접 검증 불가).
+//    - 다만 서버가 METRIC__<metric_code> 로 프론트에 노출하는 로직은 확인
+//      → 프론트 col.metric_code 가 운영 DB 등록값 그대로 전달됨을 보장.
+//
+//    ⚠️ [2026-10-30 fix] 과거 X-1 은 'COST_ACTUAL_UNIT_PRICE' 를 서버
+//        코드에서 찾아 통과했으나(sql/054 seed 파일에만 존재), 운영 DB
+//        는 'UNIT_COST' 로 수동 등록되어 있어 제 매핑이 매칭 실패(no-op).
+//        → seed 파일 존재 여부로 운영 상태를 가정하는 assertion 삭제.
 // ============================================================
 
-// X-1: 서버에서 metric_code = COST_ACTUAL_UNIT_PRICE 로 '개당 단가' 를 노출
-assertMatch(serverSrc,
-    /COST_ACTUAL_UNIT_PRICE/,
-    'X-1: 서버에 COST_ACTUAL_UNIT_PRICE metric 이 정의되어 있음 (사전 조건)');
-
-// X-2: 서버 /api/builder/columns 가 metric_code 를 그대로 노출 (name=METRIC__xxx)
+// X-1: 서버 /api/builder/columns 가 metric_code 를 그대로 노출 (name=METRIC__xxx)
 assertMatch(serverSrc,
     /name:\s*`METRIC__\$\{m\.metric_code\}`/,
-    'X-2: 서버가 METRIC__<metric_code> 형태로 metric 컬럼 노출 (사전 조건)');
+    'X-1: 서버가 METRIC__<metric_code> 형태로 metric 컬럼 노출 (사전 조건)');
 
 // ============================================================
 // 1. 상수 MFG_METRIC_FIELD_DEPENDENCIES 신설 검증
@@ -85,16 +94,22 @@ assertMatch(htmlSrc,
     /const\s+MFG_METRIC_FIELD_DEPENDENCIES\s*=\s*\{/,
     '1-1: const MFG_METRIC_FIELD_DEPENDENCIES = { ... } 상수 선언됨');
 
-// 1-2: COST_ACTUAL_UNIT_PRICE 키가 등록되어 있어야 함
+// 1-2: UNIT_COST 키가 등록되어 있어야 함 (운영 DB 실제 metric_code)
 assertMatch(htmlSrc,
-    /MFG_METRIC_FIELD_DEPENDENCIES[\s\S]{0,500}['"]COST_ACTUAL_UNIT_PRICE['"]\s*:\s*\[/,
-    '1-2: COST_ACTUAL_UNIT_PRICE 키가 dependency 매핑에 등록됨');
+    /MFG_METRIC_FIELD_DEPENDENCIES[\s\S]{0,500}['"]UNIT_COST['"]\s*:\s*\[/,
+    '1-2: UNIT_COST 키가 dependency 매핑에 등록됨 (운영 DB 실제 metric_code)');
 
 // 1-3: PLANT / ZCGUBUN / ZCGUBUN_D 세 컬럼이 매핑되어 있어야 함
 //      (사용자 요구: 자동 추가 대상 3개)
 assertMatch(htmlSrc,
-    /['"]COST_ACTUAL_UNIT_PRICE['"]\s*:\s*\[\s*['"]PLANT['"]\s*,\s*['"]ZCGUBUN['"]\s*,\s*['"]ZCGUBUN_D['"]\s*\]/,
-    '1-3: COST_ACTUAL_UNIT_PRICE → [PLANT, ZCGUBUN, ZCGUBUN_D] 순서로 매핑');
+    /['"]UNIT_COST['"]\s*:\s*\[\s*['"]PLANT['"]\s*,\s*['"]ZCGUBUN['"]\s*,\s*['"]ZCGUBUN_D['"]\s*\]/,
+    '1-3: UNIT_COST → [PLANT, ZCGUBUN, ZCGUBUN_D] 순서로 매핑');
+
+// 1-3b: 과거 PR #542 의 잘못된 키 'COST_ACTUAL_UNIT_PRICE' 는 제거되어야 함
+//       (seed 파일만 보고 가정 → 운영 미매칭 → no-op 발생했던 코드)
+assertNoMatch(htmlSrc,
+    /MFG_METRIC_FIELD_DEPENDENCIES[\s\S]{0,500}['"]COST_ACTUAL_UNIT_PRICE['"]\s*:/,
+    '1-3b: 과거 잘못된 키 COST_ACTUAL_UNIT_PRICE 는 매핑에서 제거됨');
 
 // 1-4: 설계 원칙 주석에 "영역 가드" / "하드코딩" / "설정" 중 하나라도 언급
 assertMatch(htmlSrc,
