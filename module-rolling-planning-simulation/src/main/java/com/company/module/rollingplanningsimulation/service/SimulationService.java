@@ -48,14 +48,14 @@ public class SimulationService {
         }
 
         // 당월 집계 (rpsim_raw_material: 생산량은 제품별 1회, 원재료비=DATA_TYPE 100, 부재료비=DATA_TYPE 101)
-        Map<String, Object> curTotals = findMonthlyTotals(ym, machine);
+        Map<String, Object> curTotals = findMonthlyTotals(ym, machine, division);
         BigDecimal curProdKg = toBD(curTotals.get("prod_kg"));
         BigDecimal curMatCost = toBD(curTotals.get("mat_cost"));
         BigDecimal curSubCost = toBD(curTotals.get("sub_cost"));
         long curProdTon = curProdKg.divide(BigDecimal.valueOf(1000), 0, RoundingMode.HALF_UP).longValue();
 
         // 전월 집계
-        Map<String, Object> prevTotals = findMonthlyTotals(prevYm, machine);
+        Map<String, Object> prevTotals = findMonthlyTotals(prevYm, machine, division);
         BigDecimal prevProdKg = toBD(prevTotals.get("prod_kg"));
         BigDecimal prevMatCost = toBD(prevTotals.get("mat_cost"));
         BigDecimal prevSubCost = toBD(prevTotals.get("sub_cost"));
@@ -75,8 +75,8 @@ public class SimulationService {
         BigDecimal prevSubPerTon = perTon1000(prevSubCost, prevProdTon);
 
         // 지종별 원재료비
-        List<Object[]> curByProd = findMaterialByProduct(ym, machine);
-        List<Object[]> prevByProd = findMaterialByProduct(prevYm, machine);
+        List<Object[]> curByProd = findMaterialByProduct(ym, machine, division);
+        List<Object[]> prevByProd = findMaterialByProduct(prevYm, machine, division);
 
         List<CostUnitRateResponse.MaterialByProduct> materialByProduct = new ArrayList<>();
         for (Object[] row : curByProd) {
@@ -173,6 +173,9 @@ public class SimulationService {
                         .revenue(false)
                         .build())
                 .materialByProduct(materialByProduct)
+                .machines(findMachines(ym, prevYm, division))
+                .divisionMachines(jdbcTemplate.queryForList(
+                        "SELECT UNIT_CODE FROM rpsim_unit WHERE DIVISION = ? AND DELETED_YN = 'N' ORDER BY UNIT_CODE", String.class, division))
                 .build();
     }
 
@@ -182,7 +185,7 @@ public class SimulationService {
     public DataReadinessResponse getDataReadiness(String ym, String division) {
         // 실제 DB에서 각 모듈별 건수 조회
         Long rawCountObj = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM rpsim_raw_material WHERE CALMONTH = ?", Long.class, ym);
+                "SELECT COUNT(*) FROM rpsim_raw_material WHERE CALMONTH = ?" + RawMaterialSql.DIV_SCOPE, Long.class, ym, division);
         long rawCount = rawCountObj != null ? rawCountObj : 0L;
         long pwCount = pwResultRepository.countByYmAndDivision(ym, division);
         long logiCount = logiRateRepository.findByDeletedYnOrderByYearQuarterDescSortOrderAsc("N").size();
@@ -230,36 +233,45 @@ public class SimulationService {
     //  - 생산량·재료비·지종 규칙은 RawMaterialSql (원부재료비 탭과 동일 기준)
     //    생산량 = 총생산량 (호기, 제품레벨4)별 MAX 후 합계 / 재료비 = 실적배부수량 × 실적단가
     // ================================================================
-    private static final String MACHINE_COND = " AND (? = 'ALL' OR BIC_ZMACHINE = ?)";
+    /** 사업부(호기 마스터) + 호기 조건 — 파라미터 3개: division, machine, machine */
+    private static final String SCOPE = RawMaterialSql.DIV_SCOPE + RawMaterialSql.MACHINE_COND;
 
-    private Map<String, Object> findMonthlyTotals(String ym, String machine) {
+    private Map<String, Object> findMonthlyTotals(String ym, String machine, String division) {
         String sql =
             "SELECT " +
             " (SELECT COALESCE(SUM(p.q),0) FROM (" +
             "    SELECT MAX(" + RawMaterialSql.PROD_QTY_COL + ") AS q FROM rpsim_raw_material" +
-            "     WHERE CALMONTH = ?" + MACHINE_COND +
+            "     WHERE CALMONTH = ?" + SCOPE +
             "     GROUP BY BIC_ZMACHINE, PRODH4) p) AS prod_kg," +
             " (SELECT COALESCE(SUM(" + RawMaterialSql.COST_EXPR + "),0) FROM rpsim_raw_material" +
-            "   WHERE CALMONTH = ? AND DATA_TYPE = '100'" + MACHINE_COND + ") AS mat_cost," +
+            "   WHERE CALMONTH = ? AND DATA_TYPE = '100'" + SCOPE + ") AS mat_cost," +
             " (SELECT COALESCE(SUM(" + RawMaterialSql.COST_EXPR + "),0) FROM rpsim_raw_material" +
-            "   WHERE CALMONTH = ? AND DATA_TYPE = '101'" + MACHINE_COND + ") AS sub_cost";
-        return jdbcTemplate.queryForMap(sql, ym, machine, machine, ym, machine, machine, ym, machine, machine);
+            "   WHERE CALMONTH = ? AND DATA_TYPE = '101'" + SCOPE + ") AS sub_cost";
+        return jdbcTemplate.queryForMap(sql, ym, division, machine, machine, ym, division, machine, machine, ym, division, machine, machine);
     }
 
     /** 지종별 원재료비 (P/L 시뮬레이터) — PRODH2_NM 기준, SC는 PRODH4_NM(평량) 300 이상/미만 분리 */
-    private List<Object[]> findMaterialByProduct(String ym, String machine) {
+    private List<Object[]> findMaterialByProduct(String ym, String machine, String division) {
         String sql =
             "SELECT product, SUM(prod_kg) / 1000 AS production_ton, SUM(mat_cost) AS material_cost FROM (" +
             "  SELECT " + RawMaterialSql.PRODUCT_EXPR + " AS product," +
             "         MAX(" + RawMaterialSql.PROD_QTY_COL + ") AS prod_kg," +
             "         SUM(CASE WHEN DATA_TYPE = '100' THEN " + RawMaterialSql.COST_EXPR + " ELSE 0 END) AS mat_cost" +
             "    FROM rpsim_raw_material" +
-            "   WHERE CALMONTH = ?" + MACHINE_COND +
+            "   WHERE CALMONTH = ?" + SCOPE +
             "   GROUP BY BIC_ZMACHINE, PRODH4, PRODH2_NM" +
             ") t WHERE product IS NOT NULL GROUP BY product HAVING SUM(prod_kg) > 0 ORDER BY material_cost DESC";
         return jdbcTemplate.query(sql, (rs, i) -> new Object[]{
                 rs.getString("product"), rs.getBigDecimal("production_ton"), rs.getBigDecimal("material_cost")},
-                ym, machine, machine);
+                ym, division, machine, machine);
+    }
+
+    /** P/L 탭 호기 선택 목록 — 해당 사업부 호기 중 당월·전월 실적이 있는 호기 */
+    private List<Map<String, Object>> findMachines(String ym, String prevYm, String division) {
+        return jdbcTemplate.queryForList(
+            "SELECT BIC_ZMACHINE AS code, MAX(BIC_ZMACHINE_NM) AS name FROM rpsim_raw_material" +
+            " WHERE CALMONTH IN (?, ?)" + RawMaterialSql.DIV_SCOPE +
+            " GROUP BY BIC_ZMACHINE ORDER BY BIC_ZMACHINE", ym, prevYm, division);
     }
 
     private BigDecimal perTon1000(BigDecimal cost, long ton) {

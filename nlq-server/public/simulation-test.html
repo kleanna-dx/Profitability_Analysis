@@ -116,7 +116,6 @@
         <div style="display:flex;gap:6px;margin-left:12px;">
             <div class="sel-g"><label>기준월</label><select id="selYm" onchange="onFilterChange()"></select></div>
             <div class="sel-g"><label>사업부</label><select id="selDiv" onchange="onFilterChange()"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
-            <div class="sel-g"><label>호기</label><select id="selMc" onchange="onFilterChange()"><option value="ALL" selected>전체</option><option value="M01">1호기</option><option value="M02">2호기</option><option value="M03">3호기</option></select></div>
         </div>
         <div style="flex:1;"></div>
         <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
@@ -384,15 +383,20 @@
         <div class="sc" style="padding:16px;margin-bottom:14px;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
                 <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-sliders-h text-indigo-500 mr-2"></i>생산량 조정</h3>
+                <div style="display:flex;align-items:center;gap:6px;margin-left:auto;margin-right:12px;">
+                    <label style="font-size:11px;color:#64748b;">호기</label>
+                    <select id="plMc" onchange="loadCostUnitRates()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;"><option value="ALL">전체</option></select>
+                    <span id="plMcNote" style="font-size:10px;color:#94a3b8;"></span>
+                </div>
                 <button onclick="resetSlider()" style="font-size:10px;color:#94a3b8;cursor:pointer;background:none;border:none;"><i class="fas fa-redo mr-1"></i>초기화</button>
             </div>
             <div style="display:flex;align-items:center;gap:16px;">
                 <div style="flex:1;">
                     <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-                        <span style="font-size:11px;color:#64748b;">당월 실적: <b>8,368 톤</b></span>
-                        <span style="font-size:11px;color:#4f46e5;font-weight:700;" id="slLbl">시뮬: 8,368 톤</span>
+                        <span style="font-size:11px;color:#64748b;">당월 실적: <b id="plBaseProd">-</b></span>
+                        <span style="font-size:11px;color:#4f46e5;font-weight:700;" id="slLbl">시뮬: - 톤</span>
                     </div>
-                    <input type="range" min="5000" max="15000" value="8368" step="100" class="sim-slider" id="prodSl" oninput="calcPL()">
+                    <input type="range" min="0" max="15000" value="0" step="100" class="sim-slider" id="prodSl" oninput="calcPL()">
                 </div>
                 <div style="text-align:center;padding:10px 16px;background:#eef2ff;border-radius:10px;border:1px solid #c7d2fe;min-width:90px;">
                     <div style="font-size:9px;color:#6366f1;font-weight:700;">변동</div>
@@ -417,7 +421,7 @@
             <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 6px;"><i class="fas fa-project-diagram text-purple-500 mr-2"></i>KPI 인과관계 네트워크 맵</h3>
             <p style="font-size:11px;color:#94a3b8;margin:0 0 16px;">생산량 변동 → 비용 항목별 영향 경로</p>
             <div style="min-height:480px;display:flex;flex-direction:column;align-items:center;gap:0;">
-                <div class="kn n-bl" style="cursor:default;"><div class="lb">INPUT · 트리거</div><div class="vl" id="csProd">8,368</div><div class="sb">생산량 (톤/월)</div></div>
+                <div class="kn n-bl" style="cursor:default;"><div class="lb">INPUT · 트리거</div><div class="vl" id="csProd">-</div><div class="sb">생산량 (톤/월)</div></div>
                 <div class="ard"></div>
                 <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:24px;">
                     <div style="text-align:center;"><div class="kn n-bl"><div class="lb">매출</div><div class="vl">-</div><div class="sb">매출액</div></div><div style="font-size:9px;color:#94a3b8;margin-top:3px;">수동 입력</div></div>
@@ -662,7 +666,7 @@
         </div>
         <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #8b5cf6;">
             <div style="font-size:11px;color:#94a3b8;font-weight:600;">생산량</div>
-            <div style="font-size:24px;font-weight:800;color:#7c3aed;margin:6px 0;">8,368톤</div>
+            <div style="font-size:24px;font-weight:800;color:#7c3aed;margin:6px 0;">-</div>
             <div style="font-size:11px;color:#94a3b8;">당월 실적 기준</div>
         </div>
     </div>
@@ -697,16 +701,18 @@ const API='/rolling-planning-simulation-api';
 const AUDIT_KEYS=['createdBy','createdAt','updatedBy','updatedAt','deletedYn','deletedBy','deletedAt','upserted'];
 function rowIdOf(row){if(!row)return null;if(row.id!=null)return row.id;const k=Object.keys(row).find(x=>!AUDIT_KEYS.includes(x));return k?row[k]:null;}
 async function apiErrMsg(r){try{const t=await r.text();try{const j=JSON.parse(t);return j.message||j.error||t;}catch(_){return t;}}catch(_){return 'HTTP '+r.status;}}
-let BP=8368; // 기준 생산량 (API에서 갱신)
+let BP=0; // 기준 생산량 (API에서 갱신, 실적 없으면 0)
 let costChart=null,matChart=null,trendChart=null,compChart=null;
 function fmt(n){return n.toLocaleString('ko-KR',{maximumFractionDigits:1});}
 function fmtI(n){return Math.round(n).toLocaleString('ko-KR');}
 function getYm(){return document.getElementById('selYm')?.value||'202605';}
 function getDiv(){return document.getElementById('selDiv')?.value||'PS';}
-function getMc(){return document.getElementById('selMc')?.value||'ALL';}
+// 호기: 상단 공통 필터에서 제거 — P/L 시뮬레이터 탭 안에서 선택 (원부재료비 탭은 자체 선택)
+function getMc(){return document.getElementById('plMc')?.value||'ALL';}
 
 // ── 필터 변경 시 전체 데이터 재로드 ──
 async function onFilterChange(){
+    {const pm=document.getElementById('plMc');if(pm)pm.value='ALL';}
     MF.stale=true;MF.dirty=false;
     if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
     await loadMasterOptions();
@@ -775,8 +781,15 @@ async function loadCostUnitRates(){
         const d=j.data;
         if(!d)return;
         // 기준 생산량 갱신
-        BP=d.baseProdTon||8368;
+        BP=d.baseProdTon||0;
         document.getElementById('prodSl').value=BP;
+        {const b=document.getElementById('plBaseProd');if(b)b.textContent=BP>0?fmtI(BP)+' 톤':'실적 없음';}
+        // P/L 탭 호기 선택 — 해당 사업부(호기 마스터) 호기 중 실적 있는 호기
+        {const sel=document.getElementById('plMc'),note=document.getElementById('plMcNote');if(sel){const cur=sel.value;const ms=d.machines||[];
+            sel.innerHTML='<option value="ALL">전체</option>'+ms.map(m=>'<option value="'+m.code+'">'+m.code+(m.name?' ('+m.name+')':'')+'</option>').join('');
+            sel.value=ms.some(m=>m.code===cur)?cur:'ALL';
+            if(cur!=='ALL'&&sel.value==='ALL'){return loadCostUnitRates();}
+            if(note)note.textContent=(d.divisionMachines||[]).length?'':'호기 마스터에 '+getDiv()+' 호기 미등록 — 실적 0';}}
         // P/L 원단위 갱신
         PLK('mat').r=parseFloat(d.rates?.materialPerTon)||0;
         PLK('mat').p=parseFloat(d.prevRates?.materialPerTon)||0;
@@ -816,7 +829,7 @@ async function loadCostUnitRates(){
     updateStep5();
 }
 function calcPL(){
-    const sp=parseInt(document.getElementById('prodSl').value),ratio=sp/BP,dp=((ratio-1)*100).toFixed(1);
+    const sp=parseInt(document.getElementById('prodSl').value)||0,ratio=BP>0?sp/BP:1,dp=((ratio-1)*100).toFixed(1); // 실적 없으면(BP=0) 변동 0%
     // ── 생산량 변동 시 전력비/에너지비 자동 재계산 ──
     if(PW_LINES.length){
         const pwPerTon=calcPowerPerTon(sp);
@@ -831,7 +844,7 @@ function calcPL(){
     try{document.getElementById('csProd').textContent=fmtI(sp);}catch(_){}
     let tc=0,cardsH='',tbH='';const srs=[];
     PL.forEach(it=>{
-        let sr=it.r;if(it.b==='고정비'&&it.r>0)sr=it.r*BP/sp;srs.push(sr);if(it.k!=='rev')tc+=sr;
+        let sr=it.r;if(it.b==='고정비'&&it.r>0&&sp>0&&BP>0)sr=it.r*BP/sp;srs.push(sr);if(it.k!=='rev')tc+=sr;
         const st=sr*sp/1000,d=sr-it.r,dc=d>0?'color:#dc2626':d<0?'color:#16a34a':'color:#94a3b8';
         const bc=it.b==='변동비'?'background:#fef3c7;color:#92400e':it.b==='준변동비'?'background:#fefce8;color:#a16207':it.b==='고정비'?'background:#dcfce7;color:#166534':'background:#f1f5f9;color:#64748b';
         const db=it.db?'<span style="font-size:9px;color:#16a34a;"><i class="fas fa-check-circle mr-1"></i>DB</span>':'<span style="font-size:9px;color:#94a3b8;">'+it.n+'</span>';
@@ -3318,7 +3331,7 @@ async function doRunItf(){
     closeModal();
     try{
         // ★ 동적 실행 API — 마스터의 rfc_func_or_url 기반으로 서버에서 라우팅
-        const r=await fetch(API+'/itf-histories/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interfaceId:_runItfId,cmonth:cmonth,mode:mode,executedBy:window.CURRENT_USER||'admin'})});
+        const r=await fetch(API+'/itf-histories/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interfaceId:_runItfId,cmonth:cmonth,mode:mode,division:getDiv(),executedBy:window.CURRENT_USER||'admin'})});
         const j=await r.json();
         const d=j.data||{};
         const err=d.error;

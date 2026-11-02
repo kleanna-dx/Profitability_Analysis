@@ -74,8 +74,9 @@ public class RpsimItfHistoryController {
         String cmonth = (String) body.getOrDefault("cmonth", "");
         String mode = (String) body.getOrDefault("mode", "replace");
         String executedBy = (String) body.getOrDefault("executedBy", "");
+        String division = (String) body.getOrDefault("division", "PS");
         try {
-            Map<String,Object> result = execService.execute(interfaceId, cmonth, mode, executedBy);
+            Map<String,Object> result = execService.execute(interfaceId, cmonth, mode, executedBy, division);
             return ResponseEntity.ok(ApiResponse.success(result));
         } catch (Exception e) {
             return ResponseEntity.ok(ApiResponse.success(Map.of("error", e.getMessage())));

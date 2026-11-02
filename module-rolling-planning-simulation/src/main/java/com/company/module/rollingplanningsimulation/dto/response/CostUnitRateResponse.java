@@ -27,6 +27,10 @@ public class CostUnitRateResponse {
     private CostBehavior costBehavior;
     private FromDB fromDB;
     private List<MaterialByProduct> materialByProduct;
+    /** P/L 탭 호기 선택 목록 (해당 사업부 호기 중 실적 있는 호기) — {code, name} */
+    private List<java.util.Map<String, Object>> machines;
+    /** 호기 마스터에 등록된 해당 사업부 호기 코드 */
+    private List<String> divisionMachines;
 
     @Getter
     @Builder
