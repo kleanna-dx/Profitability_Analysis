@@ -1527,6 +1527,32 @@ const BUILDER_HIDDEN_SIDEBAR_FIELDS = new Set([
 //   - 제조원가(sys_aimd_cot015)에서는 컬럼 수가 적고 코드 컬럼(PLANT, MATERIAL)도 필수 조회 대상이므로
 //     이 숨김 정책을 적용하지 않는다.
 //   - 판정은 window.AreaTabs.current 또는 body dataset (기존 _isManufacturingCostArea 와 동일 로직).
+
+// ─────────────────────────────────────────────────────────────────
+// [PR #555, 2026-11-02] 제조원가 사이드바 전용 숨김 필드
+//
+//   사용자 요구:
+//     "표준원가추정(대구분)"(ZCGUBUN_D), "원가구분(구분)"(ZCGUBUN) 2개는
+//     제조원가 사이드바에서 숨김. 이유: 다른 금액 컬럼 더블클릭 시 자동으로
+//     추가되는 필드이므로 (PR #542~#554 흐름) 사용자가 직접 선택할 필요 없음.
+//
+//   사용자 승인 조합:
+//     Q1(a): 자동 추가는 유지 — allColumns 에서는 제거 안 하고 사이드바 UI 에서만 숨김
+//     Q2(a): 조회필드에서는 평소대로 표시 (자동 추가된 상태로)
+//     Q3(b): 필터조건 드롭다운에서는 유지 — _renderFieldComboItems() 는
+//            isHiddenInBuilderSidebar() 를 호출하지 않으므로 자동 충족.
+//
+//   설계 (설정 테이블 패턴, PR #542~#554 와 통일):
+//     - 상수 1곳에 숨김 대상 집중
+//     - isHiddenInBuilderSidebar() 의 제조원가 분기 안에서 체크
+//     - 영역 가드: _area === 'manufacturing-cost' 안에서만 적용
+//     - allColumns 자체는 변경 없음 → addField() 자동 추가 로직 100% 보존
+// ─────────────────────────────────────────────────────────────────
+const _MFG_HIDDEN_SIDEBAR_FIELDS = new Set([
+    'ZCGUBUN_D',  // 표준원가추정(대구분) — 다른 필드 더블클릭 시 자동 추가
+    'ZCGUBUN',    // 원가구분(구분)       — 다른 필드 더블클릭 시 자동 추가
+]);
+
 function isHiddenInBuilderSidebar(name) {
     if (!name) return false;
     const u = String(name).toUpperCase();
@@ -1536,12 +1562,19 @@ function isHiddenInBuilderSidebar(name) {
     //   - MFG_FIELD_GROUPS 상수에서 자동 계산된 _MFG_FIELD_GROUP_MEMBERS 사용.
     //   - 수익성분석 영역은 아래 기존 분기로 내려가서 영향 없음.
     //   - 가상 묶음 컬럼 자체('__GROUP__...')는 숨기지 않음 (사이드바에 노출돼야 함).
+    //
+    // [PR #555, 2026-11-02] 제조원가 영역 전용: ZCGUBUN_D / ZCGUBUN 사이드바 숨김
+    //   - _MFG_HIDDEN_SIDEBAR_FIELDS 참조 (상수 1곳 관리)
+    //   - 자동 추가(addField)는 유지 — allColumns 에는 그대로 존재, UI 만 숨김
+    //   - 필터조건 드롭다운(_renderFieldComboItems)은 이 함수 호출 안 함 → 유지됨 (Q3(b))
     // ─────────────────────────────────────────────────────────────
     try {
         const _area = (window.AreaTabs && window.AreaTabs.current) || document.body?.dataset?.area || '';
         if (_area === 'manufacturing-cost') {
             // 묶음 멤버는 숨김 (단, 가상 묶음 컬럼은 유지)
             if (_MFG_FIELD_GROUP_MEMBERS.has(u) && !u.startsWith('__GROUP__')) return true;
+            // [PR #555] 사이드바 숨김 필드 (ZCGUBUN_D / ZCGUBUN)
+            if (_MFG_HIDDEN_SIDEBAR_FIELDS.has(u)) return true;
             // 기존 정책: 제조원가에서는 다른 숨김 정책 미적용 (PLANT/MATERIAL 노출 필수)
             return false;
         }
@@ -2159,8 +2192,27 @@ function renderFieldList(cols) {
     //   - 검색/렌더 양쪽 모두에서 일관되게 빠지도록 여기서 필터링
     const visibleColsForSidebar = (cols || []).filter(c => !isHiddenInBuilderSidebar(c.name));
 
+    // [PR #555, 2026-11-02] 제조원가 사이드바 전용: 특정 컬럼을 맨 하단('other' 섹션)으로 재배치
+    //   사용자 요구: 통화 코드(CURRENCY) 를 필드목록 맨 하단에 위치시킴.
+    //     CATEGORY_ORDER 는 ['period','org','product',...,'amount','other'] 로 'other' 가 마지막.
+    //     → category 를 'other' 로 override 하면 자연스럽게 맨 아래 섹션으로 이동.
+    //   영역 가드: 제조원가(manufacturing-cost)에서만 적용. 다른 영역에선 서버 category 유지.
+    //   원본 객체 보존: 얕은 복사(…c)로 override — allColumns 참조는 변경 없음 → addField 자동 추가 로직 무영향.
+    const _isMfgArea = (typeof _currentBuilderArea === 'function') &&
+                       (_currentBuilderArea() === 'manufacturing-cost');
+    const _MFG_SIDEBAR_CATEGORY_OVERRIDE = { 'CURRENCY': 'other' };
+    const _overriddenCols = _isMfgArea
+        ? visibleColsForSidebar.map(c => {
+              const u = String(c.name || '').toUpperCase();
+              if (_MFG_SIDEBAR_CATEGORY_OVERRIDE[u]) {
+                  return { ...c, category: _MFG_SIDEBAR_CATEGORY_OVERRIDE[u] };
+              }
+              return c;
+          })
+        : visibleColsForSidebar;
+
     const grouped = {};
-    visibleColsForSidebar.forEach(c => {
+    _overriddenCols.forEach(c => {
         if (!grouped[c.category]) grouped[c.category] = [];
         grouped[c.category].push(c);
     });
