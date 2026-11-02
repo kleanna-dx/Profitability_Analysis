@@ -101,6 +101,41 @@ assertMatch(htmlSrc,
     /MFG_FIELD_GROUPS[\s\S]{0,1000}synonyms\s*:\s*\[[\s\S]{0,200}['"]플랜트['"]/,
     '1-6: synonyms 에 "플랜트" 포함 (검색 매칭용)');
 
+// ─────────────────────────────────────────────────────────────────
+// 1-A. 제품군 묶음 (__GROUP__DIVISION_PAIR) 등록 검증 [2026-10-30 add]
+//   운영 라벨 (sql/050_seed_cost_ontology.sql):
+//     - DIVISION    = '제품군' (SAP CHAR 2)
+//     - DIVISION_NM = '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)' (SAP CHAR 40)
+//   사용자 승인 설계:
+//     Q1. 라벨 = (a) '제품군 (코드/명)' (PLANT 묶음과 통일된 패턴)
+//     Q2. 범위 = 제품군만 (자재는 이번 턴 제외)
+// ─────────────────────────────────────────────────────────────────
+
+// 1-A-1: '__GROUP__DIVISION_PAIR' 키 등록
+assertMatch(htmlSrc,
+    /MFG_FIELD_GROUPS[\s\S]{0,2000}['"]__GROUP__DIVISION_PAIR['"]\s*:\s*\{/,
+    '1-A-1: __GROUP__DIVISION_PAIR 키가 MFG_FIELD_GROUPS 에 등록됨');
+
+// 1-A-2: label '제품군 (코드/명)' (사용자 Q1-a 승인, PLANT 묶음과 통일 패턴)
+assertMatch(htmlSrc,
+    /__GROUP__DIVISION_PAIR[\s\S]{0,500}label\s*:\s*['"]제품군\s*\(코드\/명\)['"]/,
+    '1-A-2: label 이 "제품군 (코드/명)" 로 지정됨 (사용자 Q1-a 승인, PLANT 묶음과 통일 패턴)');
+
+// 1-A-3: category 'org' (DIVISION 과 동일 카테고리, server.mjs:16886)
+assertMatch(htmlSrc,
+    /__GROUP__DIVISION_PAIR[\s\S]{0,500}category\s*:\s*['"]org['"]/,
+    '1-A-3: category 가 "org" 로 지정됨 (DIVISION 과 동일 카테고리)');
+
+// 1-A-4: members 배열에 DIVISION 와 DIVISION_NM 순서로
+assertMatch(htmlSrc,
+    /__GROUP__DIVISION_PAIR[\s\S]{0,500}members\s*:\s*\[\s*['"]DIVISION['"]\s*,\s*['"]DIVISION_NM['"]\s*\]/,
+    '1-A-4: members 가 ["DIVISION", "DIVISION_NM"] 순서로 등록됨');
+
+// 1-A-5: synonyms 에 '제품군' 포함 (검색 매칭용)
+assertMatch(htmlSrc,
+    /__GROUP__DIVISION_PAIR[\s\S]{0,600}synonyms\s*:\s*\[[\s\S]{0,200}['"]제품군['"]/,
+    '1-A-5: synonyms 에 "제품군" 포함 (검색 매칭용)');
+
 // 1-7: 설계 원칙 주석 — 설정 테이블 / 영역 가드 / 중복 체크 언급
 assertMatch(htmlSrc,
     /MFG_FIELD_GROUPS[\s\S]{0,3000}(설정 테이블|Field Group|manufacturing-cost|\uc911\ubcf5 \uccb4\ud06c)/,

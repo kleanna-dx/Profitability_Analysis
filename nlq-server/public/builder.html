@@ -1874,6 +1874,19 @@ const MFG_FIELD_GROUPS = {
         members: ['PLANT', 'PLANT_NM'],
         synonyms: ['플랜트', '공장', 'plant', '플랜트 코드', '플랜트명'],
     },
+    // [2026-10-30 add] 제품군 (코드/명) 묶음
+    //   운영 라벨 (sql/050_seed_cost_ontology.sql 기준):
+    //     - DIVISION    = '제품군' (SAP CHAR 2)
+    //     - DIVISION_NM = '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)' (SAP CHAR 40)
+    //   DIVISION_NM 라벨이 길어 사이드바 가독성이 낮았음 → 묶음으로 통합하면
+    //   한 줄로 깔끔하게 표시되고, 더블클릭 1번으로 두 컬럼 동시 추가.
+    '__GROUP__DIVISION_PAIR': {
+        label: '제품군 (코드/명)',
+        category: 'org',
+        type: 'text',
+        members: ['DIVISION', 'DIVISION_NM'],
+        synonyms: ['제품군', 'division', '제품군 코드', '제품군 명', '사업부'],
+    },
 };
 
 // 묶음의 멤버(실제 컬럼명) 집합 — 사이드바 숨김 판정에 사용
