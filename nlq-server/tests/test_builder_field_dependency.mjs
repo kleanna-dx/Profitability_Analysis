@@ -107,13 +107,14 @@ assertMatch(htmlSrc,
     /['"]UNIT_COST['"]\s*:\s*_MFG_COST_ELEMENT_DEPS/,
     '1-3: UNIT_COST → _MFG_COST_ELEMENT_DEPS 공통 상수 참조 (v3, KST 컬럼들과 통일)');
 
-// 1-3-v3a: _MFG_COST_ELEMENT_DEPS 공통 상수 선언 — 사용자 요구 순서
-//          [CALMONTH, PLANT, ZCGUBUN_D, ZCGUBUN]
+// 1-3-v4a: _MFG_COST_ELEMENT_DEPS 공통 상수 선언 — 사용자 요구 순서 (v4)
+//          [CALMONTH, PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN]
 //          - CALMONTH 가 첫 번째 (시간축 기본 분리)
+//          - MATERIAL_NM 자재명 (v4 추가 — 집계 왜곡 방지 효과 강화)
 //          - ZCGUBUN_D 가 ZCGUBUN 보다 앞 (대구분 → 구분 순서)
 assertMatch(htmlSrc,
-    /const\s+_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
-    '1-3-v3a: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, ZCGUBUN_D, ZCGUBUN] 공통 상수 선언 (사용자 요구 순서)');
+    /const\s+_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
+    '1-3-v4a: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN] 공통 상수 선언 (v4 사용자 요구 순서)');
 
 // 1-3b: 과거 PR #542 의 잘못된 키 'COST_ACTUAL_UNIT_PRICE' 는 제거되어야 함
 //       (seed 파일만 보고 가정 → 운영 미매칭 → no-op 발생했던 코드)
