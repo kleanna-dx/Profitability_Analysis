@@ -117,23 +117,27 @@ assertMatch(htmlSrc,
     '1-4: _MFG_FIXED_AGG_COLUMNS 근처에 설계 메모 주석 (22개 / manufacturing-cost / 집계 왜곡 / SUM 고정 / 드롭박스)');
 
 // ============================================================
-// 2. CSS .agg-fixed 스타일 신설 검증
+// 2. [v2] CSS .agg-fixed 스타일 완전 제거 검증 (dead code cleanup)
+//    사용자 요청 v2: 'SUM' 뱃지 제거 → .agg-fixed CSS 스타일도 더 이상
+//    사용되지 않으므로 dead code 로 제거. agg-fixed 는 HTML 파일 어디에도
+//    남아있지 않아야 함 (CSS 선언 + <span> 렌더링 전부 제거 확인).
 // ============================================================
 
-// 2-1: .agg-fixed CSS 셀렉터 존재
-assertMatch(htmlSrc,
+// 2-1 [v2]: .agg-fixed CSS 셀렉터는 더 이상 존재하지 않음 (dead code 제거)
+assertNoMatch(htmlSrc,
     /\.selected-field\s+\.agg-fixed\s*\{/,
-    '2-1: .selected-field .agg-fixed CSS 스타일 신설됨');
+    '2-1 [v2]: .selected-field .agg-fixed CSS 스타일 완전 제거됨 (dead code cleanup)');
 
-// 2-2: cursor:help 로 "변경 불가" 느낌 명시 (사용자 UX 가이드)
-assertMatch(htmlSrc,
-    /\.selected-field\s+\.agg-fixed[\s\S]{0,500}cursor\s*:\s*help/,
-    '2-2: .agg-fixed 에 cursor:help 지정 (변경 불가 시각 신호)');
+// 2-2 [v2]: 전체 HTML 파일 어디에도 'agg-fixed' 문자열이 없어야 함
+//           (CSS, <span>, 주석 포함 전부 제거)
+assertNoMatch(htmlSrc,
+    /agg-fixed/,
+    '2-2 [v2]: agg-fixed 문자열이 HTML 파일 전체에서 완전 제거됨 (CSS + <span> + 주석)');
 
-// 2-3: 회색 배경 (기존 흰색 .agg-select 와 구분)
+// 2-3 [v2]: 기존 .agg-select 는 그대로 보존 (수익성분석 + 비-22개 컬럼용)
 assertMatch(htmlSrc,
-    /\.selected-field\s+\.agg-fixed[\s\S]{0,500}background\s*:\s*#f3f4f6/,
-    '2-3: .agg-fixed 에 회색 배경(#f3f4f6) 지정 (드롭박스와 시각적 구분)');
+    /\.selected-field\s+\.agg-select\s*\{/,
+    '2-3 [v2]: .selected-field .agg-select CSS 는 그대로 보존 (수익성분석/비-22개 컬럼용)');
 
 // ============================================================
 // 3. renderSelectedFields() 분기 수정 검증
@@ -159,20 +163,24 @@ assertMatch(renderSelSrc,
     /_isFixedAgg[\s\S]{0,500}_MFG_FIXED_AGG_COLUMNS\.has/,
     '3-3: _isFixedAgg 조건 — 영역 가드 + Set.has(f.column) 결합');
 
-// 3-4: 고정 집계일 때 <span class="agg-fixed"> 렌더링
-assertMatch(renderSelSrc,
-    /_isFixedAgg[\s\S]{0,1000}<span\s+class="agg-fixed"/,
-    '3-4: _isFixedAgg 분기에서 <span class="agg-fixed"> 렌더링');
+// 3-4 [v2]: 고정 집계일 때 아무것도 렌더링하지 않음 (사용자 요청 v2: "필드명만 보이게")
+//           dimension 필드와 동일한 UX 통일 — <span class="agg-fixed"> 뱃지 제거
+//           renderSelectedFields 안에서 agg-fixed 클래스를 쓰는 지점이 없어야 함
+assertNoMatch(renderSelSrc,
+    /<span\s+class="agg-fixed"/,
+    '3-4 [v2]: _isFixedAgg 분기에서 <span class="agg-fixed"> 뱃지 미렌더링 (SUM 문구 제거)');
 
-// 3-5: 고정 집계 표시 텍스트에 'SUM' 포함 (f.aggregate || 'SUM')
-assertMatch(renderSelSrc,
-    /<span\s+class="agg-fixed"[\s\S]{0,500}f\.aggregate\s*\|\|\s*['"]SUM['"]/,
-    '3-5: 고정 집계 표시 — f.aggregate || "SUM" (기본 SUM, aggregate 값 있으면 그대로)');
+// 3-5 [v2]: SUM 문자열이 _isFixedAgg 분기 블록 안에 하드코딩되지 않음
+//           (서버 payload 는 getDefaultAggregate 가 여전히 'SUM' 반환 — 영향 없음)
+assertNoMatch(renderSelSrc,
+    /_isFixedAgg[\s\S]{0,500}f\.aggregate\s*\|\|\s*['"]SUM['"]/,
+    '3-5 [v2]: _isFixedAgg 분기에 SUM 뱃지 하드코딩 없음 (UI 완전 제거)');
 
-// 3-6: title 속성에 "SUM 고정" 안내 문구 (hover tooltip)
+// 3-6 [v2]: _isFixedAgg 가 true 일 때 if 블록 자체는 존재 (영역+컬럼 매칭 로직 유지)
+//           하지만 안쪽에 html += 가 없어서 아무것도 안 그림
 assertMatch(renderSelSrc,
-    /<span\s+class="agg-fixed"\s+title=["'][^"']{0,200}(SUM|\ud569\uacc4|\uace0\uc815)/,
-    '3-6: .agg-fixed title 속성에 "SUM/합계/고정" 안내 문구 포함 (hover tooltip)');
+    /if\s*\(\s*_isFixedAgg\s*\)\s*\{[\s\S]{0,500}\}\s*else\s*\{/,
+    '3-6 [v2]: if (_isFixedAgg) { ... } else { ... } 분기 구조 유지 (매칭되면 render skip)');
 
 // 3-7: 기존 <select class="agg-select"> 분기 보존 (수익성분석/제조원가의 다른 컬럼)
 assertMatch(renderSelSrc,

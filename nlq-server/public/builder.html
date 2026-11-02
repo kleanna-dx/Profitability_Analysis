@@ -346,14 +346,6 @@
             padding:2px 6px; border:1px solid #c7d2fe; border-radius:6px;
             font-size:0.72rem; background:white; cursor:pointer; outline:none;
         }
-        /* [2026-10-30] 제조원가 22개 고정 집계 컬럼용 — 드롭박스 대신 SUM 텍스트만 표시
-            시각적으로 "변경 불가" 느낌을 주기 위해 회색 배경 + help 커서 사용. */
-        .selected-field .agg-fixed {
-            display:inline-block;
-            padding:2px 8px; border:1px solid #e5e7eb; border-radius:6px;
-            font-size:0.72rem; background:#f3f4f6; color:#4b5563;
-            cursor:help; outline:none; user-select:none; font-weight:600;
-        }
         .selected-field .remove {
             cursor:pointer; color:var(--error); font-weight:700; font-size:0.9rem;
             padding:0 2px; line-height:1;
@@ -2949,23 +2941,32 @@ function renderSelectedFields() {
             html += `<span class="metric-formula-badge" title="${(f.formula||'').replace(/"/g,'&quot;')}"><i class="fas fa-calculator" style="font-size:9px;margin-right:2px;"></i>산식</span>`;
         } else if (isNum) {
             // ─────────────────────────────────────────────────────────
-            // [2026-10-30] 제조원가 영역 전용: 22개 고정 집계 컬럼은 드롭박스
-            // 숨김 — "SUM" 텍스트만 표시 (사용자가 AVG 등으로 실수 선택 방지).
+            // [2026-10-30] 제조원가 영역 전용: 22개 고정 집계 컬럼은
+            // 드롭박스/뱃지 자체를 완전 숨김 — 필드명만 표시
+            // (dimension 필드와 동일한 깔끔한 UX).
+            //
             //   대상: KST001~KST039 (20개) + TOTAL1 + TOTAL2 (표준가 2개)
             //   영역 가드: _currentBuilderArea() === 'manufacturing-cost' 전용
             //   수익성분석(profitability) 영역은 기존 드롭박스 그대로 유지.
             //
+            //   [2026-10-30 v2 사용자 수정 요청] 'SUM' 텍스트 뱃지도 제거.
+            //     사용자 명시: "다른 필드처럼 [필드명]만 보이게 해줘"
+            //     → T 아이콘 dimension 필드와 동일한 UX 통일.
+            //
             //   NOTE: f.aggregate 는 addField 시점에 getDefaultAggregate() 가
             //         'SUM' 으로 세팅해둠 (금액/수량 카테고리 자동 추천).
             //         여기서는 UI 만 숨기므로 SQL 생성 로직은 영향 없음.
+            //         (서버로 전송되는 payload 의 aggregate='SUM' 그대로 유지)
             // ─────────────────────────────────────────────────────────
             const _isMfgAreaForAgg = (typeof _currentBuilderArea === 'function') &&
                                      (_currentBuilderArea() === 'manufacturing-cost');
             const _isFixedAgg = _isMfgAreaForAgg && _MFG_FIXED_AGG_COLUMNS.has(String(f.column).toUpperCase());
 
             if (_isFixedAgg) {
-                // 고정 집계 표시 — 드롭박스 없이 "SUM" 텍스트만
-                html += `<span class="agg-fixed" title="이 컬럼은 월 합계(SUM)로 고정됩니다 (제조원가 분석 표준)">${f.aggregate || 'SUM'}</span>`;
+                // 고정 집계: 집계 UI(뱃지·드롭박스) 를 전혀 렌더링하지 않음.
+                // 사용자 요청: dimension 필드처럼 [필드명]만 보이게.
+                // SQL 생성 로직은 getDefaultAggregate() 가 그대로 SUM 반환하므로
+                // 서버 payload 와 집계 결과에는 영향 없음 (UI 만 숨김).
             } else {
                 // 기존 드롭박스 — 수익성분석 영역 + 제조원가의 다른 컬럼
                 const recommended = (f.category === 'amount' || f.category === 'quantity') ? 'SUM' : '';
