@@ -376,6 +376,7 @@
         <div class="sub-tab" onclick="subTab(4,'causal')">비용 인과관계</div>
         <div class="sub-tab" onclick="subTab(4,'prodsim')">지종별 손익 시뮬</div>
         <div class="sub-tab" onclick="subTab(4,'energy')">에너지비 시뮬레이션</div>
+        <div class="sub-tab" onclick="subTab(4,'matfc')">원부재료비</div>
     </div>
 
     <!-- 4-1 P/L 시뮬레이터 -->
@@ -580,6 +581,63 @@
             </div>
         </div>
     </div>
+    <!-- 4-5 원부재료비 (전월 실적 → 차월 예상) -->
+    <div id="s4-matfc" style="display:none;">
+        <div class="sc" style="padding:16px 20px;margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+                <div>
+                    <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 4px;"><i class="fas fa-cubes text-indigo-500 mr-2"></i>원부재료비 — 전월 실적 → 차월 예상</h3>
+                    <div style="font-size:11px;color:#64748b;" id="mfPeriod">-</div>
+                </div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                    <label style="font-size:11px;color:#64748b;">호기</label>
+                    <select id="mfMc" onchange="loadMaterialForecast()" style="padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;"><option value="ALL">전체</option></select>
+                    <label style="font-size:11px;color:#64748b;margin-left:6px;">지종</label>
+                    <select id="mfProdFilter" onchange="renderMf()" style="padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;"><option value="ALL">전체</option></select>
+                    <label style="font-size:11px;color:#64748b;margin-left:6px;">원/부</label>
+                    <select id="mfCatFilter" onchange="renderMf()" style="padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;"><option value="ALL">전체</option><option value="원">원재료</option><option value="부">부재료</option></select>
+                    <button onclick="loadMaterialForecast()" class="btn-g" style="font-size:11px;padding:5px 10px;"><i class="fas fa-sync-alt mr-1"></i>다시 불러오기</button>
+                    <button onclick="if(confirm('저장된 수기입력값을 무시하고 전월 실적 기준으로 다시 계산합니다.\n(저장값은 지워지지 않습니다)'))loadMaterialForecast(false)" class="btn-g" style="font-size:11px;padding:5px 10px;"><i class="fas fa-undo mr-1"></i>실적 기준 초기화</button>
+                    <button onclick="downloadMfExcel()" class="btn-g" style="font-size:11px;padding:5px 10px;"><i class="fas fa-download mr-1"></i>엑셀 다운로드</button>
+                    <label class="btn-g" style="font-size:11px;padding:5px 10px;cursor:pointer;margin:0;"><i class="fas fa-upload mr-1"></i>엑셀 업로드<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="uploadMfExcel(this)"></label>
+                    <button onclick="saveMaterialForecast()" class="btn-p" style="font-size:11px;padding:5px 12px;"><i class="fas fa-save mr-1"></i>저장</button>
+                </div>
+            </div>
+            <div id="mfStatus" style="margin-top:8px;font-size:11px;color:#64748b;"></div>
+        </div>
+        <div id="mfCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;"></div>
+        <div class="sc" style="overflow:hidden;margin-bottom:14px;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-industry text-indigo-400 mr-1"></i>지종별 생산량 (톤) <span style="font-size:10px;color:#94a3b8;font-weight:400;">차월 생산량을 바꾸면 그 지종에 쓰는 자재의 차월 사용량이 같이 움직입니다</span></h3>
+            </div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>지종</th><th class="r">전월 생산량</th><th class="r">비중</th><th class="r">차월 생산량 (입력)</th><th class="r">증감</th></tr></thead><tbody id="mfProdTb"></tbody></table></div>
+        </div>
+        <div class="sc" style="overflow:hidden;">
+            <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-list text-indigo-400 mr-1"></i>자재별 재료비 <span style="font-size:10px;color:#94a3b8;font-weight:400;">사용량·원단위 중 하나를 고치면 나머지가 다시 계산되고, 고친 행(●)은 생산량을 바꿔도 자동 계산되지 않습니다 · 입고단가/기초재고단가는 참고용(계산 미사용)</span></h3>
+            </div>
+            <div style="overflow:auto;max-height:640px;"><table class="st" style="font-size:11px;white-space:nowrap;">
+                <thead style="position:sticky;top:0;z-index:2;background:#fff;">
+                    <tr><th rowspan="2">원/부</th><th rowspan="2">자재코드</th><th rowspan="2">자재명</th>
+                        <th colspan="5" style="text-align:center;background:#f1f5f9;" id="mfHPrev">전월 실적</th>
+                        <th colspan="7" style="text-align:center;background:#eef2ff;" id="mfHNext">차월 예상</th>
+                        <th colspan="3" style="text-align:center;background:#f0fdf4;">손익효과 (억원)</th>
+                        <th rowspan="2">이슈사항</th></tr>
+                    <tr><th class="r" style="background:#f1f5f9;">사용량</th><th class="r" style="background:#f1f5f9;">원단위<br>(kg/톤)</th><th class="r" style="background:#f1f5f9;">사용단가<br>(원/kg)</th><th class="r" style="background:#f1f5f9;">비용<br>(억원)</th><th class="r" style="background:#f1f5f9;">톤당<br>(천원/톤)</th>
+                        <th class="r" style="background:#eef2ff;">사용량</th><th class="r" style="background:#eef2ff;">원단위<br>(kg/톤)</th><th class="r" style="background:#eef2ff;color:#94a3b8;">입고단가<br>(참고)</th><th class="r" style="background:#eef2ff;color:#94a3b8;">기초재고단가<br>(참고)</th><th class="r" style="background:#eef2ff;">사용단가<br>(원/kg)</th><th class="r" style="background:#eef2ff;">비용<br>(억원)</th><th class="r" style="background:#eef2ff;">톤당<br>(천원/톤)</th>
+                        <th class="r" style="background:#f0fdf4;">사용량차이</th><th class="r" style="background:#f0fdf4;">단가차이</th><th class="r" style="background:#f0fdf4;">재료비종합</th></tr>
+                </thead>
+                <tbody id="mfMatTb"></tbody>
+                <tfoot id="mfMatFoot"></tfoot>
+            </table></div>
+            <div style="padding:8px 16px;font-size:10px;color:#94a3b8;border-top:1px solid #f1f5f9;line-height:1.7;">
+                · 전월 원단위 = 사용량 ÷ 호기 전체 생산량 · 사용단가 = 비용 ÷ 사용량 (실적배부수량 × 실적단가 가중평균)<br>
+                · 차월 사용량 = Σ(지종별 원단위 × 차월 지종 생산량), 지종별 원단위가 없으면 전월 원단위 × 차월 생산량<br>
+                · 사용량차이 = (전월 사용량 − 차월 사용량) × 전월 단가 · 단가차이 = (전월 단가 − 차월 단가) × 차월 사용량 · <span style="color:#2563eb;">+ 절감</span> / <span style="color:#dc2626;">△ 증가</span> · 50만원 미만은 -
+            </div>
+        </div>
+    </div>
+
 </div>
 
 <!-- ================================================================ -->
@@ -649,6 +707,8 @@ function getMc(){return document.getElementById('selMc')?.value||'ALL';}
 
 // ── 필터 변경 시 전체 데이터 재로드 ──
 async function onFilterChange(){
+    MF.stale=true;MF.dirty=false;
+    if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
     await loadMasterOptions();
     await loadCostUnitRates();
     await renderReady();
@@ -681,12 +741,13 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','ref','itf'],2:[],4:['plsim','causal','prodsim','energy']};
+const SUB_MAP={1:['ready','ref','itf'],2:[],4:['plsim','causal','prodsim','energy','matfc']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
     const parent=document.getElementById('step-'+step);
     if(parent){parent.querySelectorAll('.sub-tab').forEach((t,i)=>{t.classList.toggle('active',subs[i]===key);});}
+    if(step===4&&key==='matfc'&&(MF.stale||!MF.data))loadMaterialForecast();
 }
 
 // ── P/L Simulator ──
@@ -3394,6 +3455,248 @@ async function loadMasterOptions(){
     const div=getDiv();
     try{const r=await fetch(API+'/units?division='+div);const j=await r.json();UNIT_OPTIONS=(Array.isArray(j.data)?j.data:j.data?.content||[]).filter(u=>u.isActive!==false);}catch(_){UNIT_OPTIONS=[];}
     try{const r=await fetch(API+'/product-masters?division='+div);const j=await r.json();PRODUCT_OPTIONS=(Array.isArray(j.data)?j.data:j.data?.content||[]).filter(p=>p.isActive!==false);}catch(_){PRODUCT_OPTIONS=[];}
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 원부재료비 — 전월 실적(SAP) → 차월 예상
+//   기준월 = 예상월, 실적 = 전월 / 사업부·호기 필터 / 가짜 값 없음(실적 없으면 빈 화면 + 안내)
+// ══════════════════════════════════════════════════════════════════
+let MF={data:null,stale:true,useSaved:true,dirty:false,prods:[],rows:[],P0:0,P1:0,rateByProd:{},prevProdTon:{},orphans:[]};
+const MF_XL_HEAD=['원/부','자재그룹','자재코드','자재명','전월 사용량','전월 원단위(kg/톤)','전월 사용단가(원/kg)','전월 비용(억원)','전월 톤당(천원/톤)','차월 사용량','차월 원단위(kg/톤)','차월 입고단가(참고)','차월 기초재고단가(참고)','차월 사용단가(원/kg)','차월 비용(억원)','차월 톤당(천원/톤)','사용량차이(억원)','단가차이(억원)','재료비종합(억원)','이슈사항'];
+const MF_XL_PROD='지종별 생산량';
+function mfEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function mfNum(v){if(v==null)return null;const s=String(v).replace(/,/g,'').trim();if(s==='')return null;const n=Number(s);return isFinite(n)?n:null;}
+function mfF(n,d){if(n==null||!isFinite(n))return '-';return Number(n).toLocaleString('ko-KR',{maximumFractionDigits:d==null?0:d});}
+function mfR(n,d){if(n==null||!isFinite(n))return null;const k=Math.pow(10,d);return Math.round(n*k)/k;}
+function mfYm(ym){return ym?String(ym).slice(0,4)+'.'+String(ym).slice(4):'-';}
+function mfCode(c){return String(c==null?'':c).trim().replace(/^0+(?=\d)/,'');}
+function mfCat(m){if(m.dataType==='100')return '원';if(m.dataType==='101')return '부';return String(m.matlGroup||'').startsWith('1')?'원':'부';}
+// 손익효과 표시: 양수=절감(파랑 +), 음수=증가(빨강 △), 50만원 미만 '-'
+function mfEff(won){if(won==null||!isFinite(won)||Math.abs(won)<500000)return '<span style="color:#cbd5e1;">-</span>';const v=Math.abs(won/1e8).toFixed(2);return won>0?'<span style="color:#2563eb;font-weight:600;">+'+v+'</span>':'<span style="color:#dc2626;font-weight:600;">△'+v+'</span>';}
+function mfEffXl(won){return (won==null||!isFinite(won)||Math.abs(won)<500000)?0:mfR(won/1e8,4);}
+
+async function loadMaterialForecast(useSaved){
+    if(useSaved===undefined)useSaved=true;
+    const sel=document.getElementById('mfMc');
+    if(MF.dirty&&!confirm('저장하지 않은 변경이 있습니다. 버리고 다시 불러올까요?')){if(sel&&MF.data)sel.value=MF.data.machine;return;}
+    const st=document.getElementById('mfStatus');if(st)st.innerHTML='<i class="fas fa-spinner fa-spin mr-1"></i>불러오는 중...';
+    const mc=sel?sel.value:'ALL';
+    try{
+        const r=await fetch(API+'/material-forecast?ym='+getYm()+'&division='+encodeURIComponent(getDiv())+'&machine='+encodeURIComponent(mc));
+        if(!r.ok)throw new Error(await apiErrMsg(r));
+        const j=await r.json();MF.data=j.data||{};
+    }catch(e){MF.data=null;MF.rows=[];MF.prods=[];renderMf();if(st)st.innerHTML='<span style="color:#dc2626;"><i class="fas fa-exclamation-circle mr-1"></i>불러오기 실패: '+mfEsc(e.message)+'</span>';return;}
+    MF.stale=false;MF.useSaved=useSaved;MF.dirty=false;
+    if(sel){const ms=MF.data.machines||[];const cur=mc;sel.innerHTML='<option value="ALL">전체</option>'+ms.map(m=>'<option value="'+mfEsc(m.code)+'">'+mfEsc(m.code)+(m.name?' ('+mfEsc(m.name)+')':'')+'</option>').join('');
+        if(cur!=='ALL'&&!ms.some(m=>m.code===cur)){sel.value='ALL';return loadMaterialForecast(useSaved);}sel.value=cur;}
+    mfBuild();renderMf();
+}
+
+function mfP1(){const s=MF.prods.reduce((a,p)=>a+(p.plan||0),0);return s>0?s:MF.P0;}
+
+function mfBuild(){
+    const d=MF.data||{};MF.P0=parseFloat(d.prodTon)||0;
+    MF.prevProdTon={};(d.products||[]).forEach(p=>{MF.prevProdTon[p.product]=parseFloat(p.prodTon)||0;});
+    const savedP={};if(MF.useSaved)(d.savedProducts||[]).forEach(p=>{if(p.prodTon!=null)savedP[p.itemCode]=parseFloat(p.prodTon);});
+    const names=Object.keys(MF.prevProdTon);Object.keys(savedP).forEach(k=>{if(!names.includes(k))names.push(k);});
+    MF.prods=names.map(n=>({product:n,prev:MF.prevProdTon[n]||0,plan:savedP[n]!=null?savedP[n]:(MF.prevProdTon[n]||0)}));
+    // 자재 × 지종 원단위 = 지종 사용량 ÷ 지종 생산량
+    MF.rateByProd={};(d.unitByProduct||[]).forEach(u=>{const pt=MF.prevProdTon[u.product]||0;if(pt<=0)return;const k=mfCode(u.materialCode);(MF.rateByProd[k]=MF.rateByProd[k]||{})[u.product]=(parseFloat(u.usageQty)||0)/pt;});
+    const savedM={};if(MF.useSaved)(d.savedMaterials||[]).forEach(m=>{savedM[mfCode(m.itemCode)]=m;});
+    MF.savedInfo={prod:Object.keys(savedP).length,mat:Object.keys(savedM).length,last:null,by:null};
+    (d.savedMaterials||[]).forEach(m=>{if(m.updatedAt&&(!MF.savedInfo.last||String(m.updatedAt)>String(MF.savedInfo.last))){MF.savedInfo.last=m.updatedAt;MF.savedInfo.by=m.updatedBy;}});
+    const P1=mfP1();
+    MF.rows=(d.materials||[]).map(m=>{
+        const U0=parseFloat(m.usageQty)||0,C0=parseFloat(m.cost)||0,p0=U0>0?C0/U0:0;
+        const row={code:mfCode(m.materialCode),name:m.materialName||'',cat:mfCat(m),groupKey:(m.largeGroup||'')+'|'+(m.matlGroup||''),groupName:m.groupName||m.largeName||'(미분류)',largeName:m.largeName||'',
+            U0,C0,p0,rate0:MF.P0>0?U0/MF.P0:0,U1:0,priceInput:null,receipt:null,opening:null,note:'',edited:false,manual:false};
+        const s=savedM[row.code];
+        if(s){row.manual=true;const su=s.usageQty==null?null:parseFloat(s.usageQty),sr=s.unitRate==null?null:parseFloat(s.unitRate);
+            if(su!=null){row.U1=su;row.edited=true;}else if(sr!=null){row.U1=sr*P1;row.edited=true;}
+            if(s.usePrice!=null)row.priceInput=parseFloat(s.usePrice);
+            if(s.receiptPrice!=null)row.receipt=parseFloat(s.receiptPrice);
+            if(s.openingPrice!=null)row.opening=parseFloat(s.openingPrice);
+            row.note=s.issueNote||'';}
+        return row;});
+    MF.orphans=Object.keys(savedM).filter(k=>!MF.rows.some(r=>r.code===k));
+    mfRecalc();
+}
+
+// 차월 사용량 자동 계산: Σ(지종별 원단위 × 차월 지종 생산량), 없거나 0이면 전월 원단위 × P1
+function mfAutoU1(r,P1){const rb=MF.rateByProd[r.code];let u=0;if(rb)MF.prods.forEach(p=>{if(rb[p.product])u+=rb[p.product]*(p.plan||0);});return u>0?u:r.rate0*P1;}
+
+function mfRecalc(){
+    const P1=mfP1();MF.P1=P1;
+    MF.rows.forEach(r=>{
+        if(!r.edited)r.U1=mfAutoU1(r,P1);
+        r.p1=r.priceInput!=null?r.priceInput:r.p0;
+        r.rate1=P1>0?r.U1/P1:0;
+        r.C1=r.U1*r.p1;
+        r.useDiff=(r.U0-r.U1)*r.p0;   // 사용량차이
+        r.priceDiff=(r.p0-r.p1)*r.U1; // 단가차이
+        r.total=r.useDiff+r.priceDiff; // = U0·p0 − U1·p1
+    });
+}
+
+function mfEditProd(i,v){const p=MF.prods[i];if(!p)return;const n=mfNum(v);p.plan=n==null?0:Math.max(0,n);MF.dirty=true;mfRecalc();mfRerender();}
+function mfEdit(i,field,v){
+    const r=MF.rows[i];if(!r)return;const n=mfNum(v);const P1=MF.P1||mfP1();
+    if(field==='U1'){r.U1=n==null?0:Math.max(0,n);r.edited=true;}
+    else if(field==='rate1'){r.U1=(n==null?0:Math.max(0,n))*P1;r.edited=true;}
+    else if(field==='price')r.priceInput=n==null?null:Math.max(0,n);
+    else if(field==='receipt')r.receipt=n;
+    else if(field==='opening')r.opening=n;
+    else if(field==='note'){r.note=String(v||'').substring(0,1000);MF.dirty=true;mfStatus();return;}
+    MF.dirty=true;mfRecalc();mfRerender();
+}
+// 입력 후 다음 칸으로 포커스가 옮겨진 뒤 다시 그려서 포커스 유지
+function mfRerender(){setTimeout(()=>{const id=document.activeElement&&document.activeElement.id;renderMf();if(id){const el=document.getElementById(id);if(el){el.focus();try{el.select();}catch(_){}}}},0);}
+
+function mfVisible(r){
+    const pf=document.getElementById('mfProdFilter')?.value||'ALL',cf=document.getElementById('mfCatFilter')?.value||'ALL';
+    if(cf!=='ALL'&&r.cat!==cf)return false;
+    if(pf!=='ALL'){const rb=MF.rateByProd[r.code];if(!rb||!rb[pf])return false;}
+    return true;
+}
+
+function mfStatus(){
+    const st=document.getElementById('mfStatus');if(!st)return;
+    if(!MF.data){st.innerHTML='';return;}
+    const d=MF.data,msgs=[];
+    if(MF.useSaved&&(MF.savedInfo.prod||MF.savedInfo.mat))msgs.push('<span style="color:#4f46e5;font-weight:600;"><i class="fas fa-pen mr-1"></i>데이터 소스: 수기입력</span> (지종 '+MF.savedInfo.prod+'건 · 자재 '+MF.savedInfo.mat+'건'+(MF.savedInfo.last?' · 최종 저장 '+mfEsc(String(MF.savedInfo.last).replace('T',' ').substring(0,16))+(MF.savedInfo.by?' '+mfEsc(MF.savedInfo.by):''):'')+')');
+    else msgs.push('<span style="color:#16a34a;font-weight:600;"><i class="fas fa-database mr-1"></i>데이터 소스: 전월 실적 기준 자동 계산</span>');
+    if(MF.dirty)msgs.push('<span style="color:#d97706;font-weight:600;"><i class="fas fa-circle mr-1" style="font-size:7px;"></i>저장하지 않은 변경 있음</span>');
+    if(!(d.materials||[]).length){
+        const dm=d.divisionMachines||[];
+        msgs.push('<span style="color:#dc2626;font-weight:600;"><i class="fas fa-exclamation-triangle mr-1"></i>'+mfYm(d.prevYm)+' SAP 원부재료 실적이 없습니다 — 인터페이스 RPSIM_ITF_001(원부재료 사용현황)을 '+mfYm(d.prevYm)+' 기준으로 수신하세요'+(dm.length?' · 호기 마스터('+mfEsc(getDiv())+': '+dm.map(mfEsc).join(', ')+')와 SAP 생산호기 코드가 같은지도 확인하세요':'')+'</span>');
+    }
+    if((d.divisionMachines||[]).length===0&&(d.materials||[]).length)msgs.push('<span style="color:#d97706;">호기 마스터에 '+mfEsc(d.division)+' 호기가 없어 전체 호기 실적을 표시합니다</span>');
+    if(MF.orphans.length)msgs.push('<span style="color:#d97706;">전월 실적에 없는 저장 자재 '+MF.orphans.length+'건은 표시하지 않습니다 ('+MF.orphans.slice(0,5).map(mfEsc).join(', ')+(MF.orphans.length>5?' 외':'')+')</span>');
+    st.innerHTML=msgs.join(' &nbsp;·&nbsp; ');
+}
+
+function renderMf(){
+    const per=document.getElementById('mfPeriod');if(!per)return;
+    const d=MF.data;
+    if(!d){per.textContent='-';['mfCards','mfProdTb','mfMatTb','mfMatFoot'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML='';});return;}
+    per.innerHTML='실적 <b>'+mfYm(d.prevYm)+'</b> → 예상 <b>'+mfYm(d.ym)+'</b> · 사업부 '+mfEsc(d.division)+' · 호기 '+(d.machine==='ALL'?'전체':mfEsc(d.machine))+' · 생산량 기준: 총생산량(폐품 포함) · 재료비: 실적배부수량 × 실적단가';
+    document.getElementById('mfHPrev').textContent='전월 실적 ('+mfYm(d.prevYm)+')';
+    document.getElementById('mfHNext').textContent='차월 예상 ('+mfYm(d.ym)+')';
+    // 지종 필터 옵션
+    const pfSel=document.getElementById('mfProdFilter');if(pfSel){const cur=pfSel.value;pfSel.innerHTML='<option value="ALL">전체</option>'+MF.prods.map(p=>'<option value="'+mfEsc(p.product)+'">'+mfEsc(p.product)+'</option>').join('');pfSel.value=MF.prods.some(p=>p.product===cur)?cur:'ALL';}
+    mfStatus();
+    const P0=MF.P0,P1=MF.P1;
+    // ── 카드 (전체 자재 기준) ──
+    const sum=(rows,k)=>rows.reduce((a,r)=>a+(r[k]||0),0);
+    const raw=MF.rows.filter(r=>r.cat==='원'),sub=MF.rows.filter(r=>r.cat==='부');
+    const C0=sum(MF.rows,'C0'),C1=sum(MF.rows,'C1'),T=sum(MF.rows,'total');
+    const pt=(c,p)=>p>0?mfF(c/p/1000,1):'-';
+    const card=(title,main,unit,sub2,color)=>'<div class="sc" style="padding:14px;text-align:center;border-left:4px solid '+color+';"><div style="font-size:10px;color:#94a3b8;font-weight:600;">'+title+'</div><div style="font-size:18px;font-weight:800;color:'+color+';margin:4px 0;">'+main+'</div><div style="font-size:10px;color:#94a3b8;">'+unit+'</div><div style="font-size:10px;color:#64748b;margin-top:4px;">'+sub2+'</div></div>';
+    document.getElementById('mfCards').innerHTML=
+        card('생산량',mfF(P0,0)+' → '+mfF(P1,0),'톤',(P0>0?((P1-P0)>=0?'+':'')+mfF((P1-P0)/P0*100,1)+'%':'-'),'#7c3aed')+
+        card('전월 재료비',mfF(C0/1e8,2),'억원 ('+pt(C0,P0)+' 천원/톤)','원 '+mfF(sum(raw,'C0')/1e8,2)+' · 부 '+mfF(sum(sub,'C0')/1e8,2),'#64748b')+
+        card('차월 예상 재료비',mfF(C1/1e8,2),'억원 ('+pt(C1,P1)+' 천원/톤)','원 '+mfF(sum(raw,'C1')/1e8,2)+' · 부 '+mfF(sum(sub,'C1')/1e8,2),'#4f46e5')+
+        card('손익효과',mfEff(T),'억원 (+ 절감 / △ 증가)','사용량 '+mfEff(sum(MF.rows,'useDiff'))+' · 단가 '+mfEff(sum(MF.rows,'priceDiff')),'#16a34a');
+    // ── 지종별 생산량 ──
+    const prodTb=document.getElementById('mfProdTb');
+    if(!MF.prods.length)prodTb.innerHTML='<tr><td colspan="5" style="text-align:center;padding:18px;color:#94a3b8;">전월 생산 실적이 없습니다.</td></tr>';
+    else{const sumPrev=MF.prods.reduce((a,p)=>a+p.prev,0),sumPlan=MF.prods.reduce((a,p)=>a+(p.plan||0),0);
+        prodTb.innerHTML=MF.prods.map((p,i)=>{const diff=(p.plan||0)-p.prev;return '<tr><td style="font-weight:600;color:#4f46e5;">'+mfEsc(p.product)+'</td><td class="r mn">'+mfF(p.prev,1)+'</td><td class="r mn" style="color:#94a3b8;">'+(sumPrev>0?mfF(p.prev/sumPrev*100,1)+'%':'-')+'</td>'+
+            '<td class="r"><input id="mfP_'+i+'" type="text" inputmode="decimal" value="'+(mfR(p.plan,1)??'')+'" onchange="mfEditProd('+i+',this.value)" style="width:100px;padding:3px 6px;border:1px solid #c7d2fe;border-radius:4px;font-size:12px;text-align:right;font-family:inherit;"></td>'+
+            '<td class="r mn" style="color:'+(diff>0?'#2563eb':diff<0?'#dc2626':'#94a3b8')+';">'+(Math.abs(diff)<0.05?'-':(diff>0?'+':'')+mfF(diff,1))+'</td></tr>';}).join('')+
+            '<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td class="r">'+mfF(sumPrev,1)+'</td><td class="r">100%</td><td class="r">'+mfF(sumPlan,1)+(sumPlan>0?'':' <span style="font-size:9px;color:#d97706;font-weight:400;">(0 → 전월 '+mfF(P0,1)+' 사용)</span>')+'</td><td class="r">'+mfF(sumPlan-sumPrev,1)+'</td></tr>';}
+    // ── 자재별 표 (대분류+자재그룹 단위) ──
+    const tb=document.getElementById('mfMatTb'),ft=document.getElementById('mfMatFoot');
+    const vis=MF.rows.map((r,i)=>({r,i})).filter(x=>mfVisible(x.r));
+    if(!vis.length){tb.innerHTML='<tr><td colspan="19" style="text-align:center;padding:24px;color:#94a3b8;">'+(MF.rows.length?'필터 조건에 맞는 자재가 없습니다.':'전월 자재 실적이 없습니다.')+'</td></tr>';ft.innerHTML='';return;}
+    const inp=(id,val,dec,on,w,ph)=>'<input id="'+id+'" type="text" inputmode="decimal" value="'+(val==null?'':mfR(val,dec))+'"'+(ph!=null?' placeholder="'+mfR(ph,dec)+'"':'')+' onchange="'+on+'" style="width:'+w+'px;padding:2px 4px;border:1px solid #c7d2fe;border-radius:4px;font-size:11px;text-align:right;font-family:inherit;">';
+    const groups=[];const gIdx={};vis.forEach(x=>{const k=x.r.groupKey;if(gIdx[k]==null){gIdx[k]=groups.length;groups.push({key:k,name:x.r.groupName,large:x.r.largeName,items:[]});}groups[gIdx[k]].items.push(x);});
+    let h='';
+    groups.forEach(g=>{
+        const cats=[...new Set(g.items.map(x=>x.r.cat))].join('/');
+        h+='<tr style="background:#f8fafc;"><td colspan="19" style="font-weight:700;color:#475569;"><span style="font-size:10px;padding:1px 6px;border-radius:8px;margin-right:6px;'+(cats==='원'?'background:#dbeafe;color:#1d4ed8;':'background:#fef3c7;color:#92400e;')+'">'+cats+'</span>'+(g.large&&g.large!==g.name?mfEsc(g.large)+' › ':'')+mfEsc(g.name)+' <span style="font-weight:400;color:#94a3b8;">('+g.items.length+')</span></td></tr>';
+        g.items.forEach(({r,i})=>{
+            h+='<tr>'+
+            '<td style="text-align:center;color:'+(r.cat==='원'?'#1d4ed8':'#92400e')+';font-weight:600;">'+r.cat+'</td>'+
+            '<td class="mn">'+mfEsc(r.code)+'</td>'+
+            '<td>'+mfEsc(r.name)+(r.edited?' <span title="수정한 행 — 생산량을 바꿔도 자동 계산하지 않음" style="color:#4f46e5;">●</span>':'')+'</td>'+
+            '<td class="r mn">'+mfF(r.U0,0)+'</td><td class="r mn">'+mfF(r.rate0,3)+'</td><td class="r mn">'+mfF(r.p0,1)+'</td><td class="r mn">'+mfF(r.C0/1e8,2)+'</td><td class="r mn">'+(P0>0?mfF(r.C0/P0/1000,1):'-')+'</td>'+
+            '<td class="r">'+inp('mfU_'+i,r.U1,0,"mfEdit("+i+",'U1',this.value)",86)+'</td>'+
+            '<td class="r">'+inp('mfRt_'+i,r.rate1,3,"mfEdit("+i+",'rate1',this.value)",66)+'</td>'+
+            '<td class="r">'+inp('mfRc_'+i,r.receipt,1,"mfEdit("+i+",'receipt',this.value)",62)+'</td>'+
+            '<td class="r">'+inp('mfOp_'+i,r.opening,1,"mfEdit("+i+",'opening',this.value)",62)+'</td>'+
+            '<td class="r">'+inp('mfPr_'+i,r.priceInput,1,"mfEdit("+i+",'price',this.value)",66,r.p0)+'</td>'+
+            '<td class="r mn" style="font-weight:600;">'+mfF(r.C1/1e8,2)+'</td><td class="r mn">'+(P1>0?mfF(r.C1/P1/1000,1):'-')+'</td>'+
+            '<td class="r mn">'+mfEff(r.useDiff)+'</td><td class="r mn">'+mfEff(r.priceDiff)+'</td><td class="r mn">'+mfEff(r.total)+'</td>'+
+            '<td><input id="mfN_'+i+'" type="text" value="'+mfEsc(r.note)+'" maxlength="1000" onchange="mfEdit('+i+',\'note\',this.value)" style="width:160px;padding:2px 4px;border:1px solid #e2e8f0;border-radius:4px;font-size:11px;font-family:inherit;"></td></tr>';
+        });
+        // 그룹 소계 — 전월 실적만
+        const gU=g.items.reduce((a,x)=>a+x.r.U0,0),gC=g.items.reduce((a,x)=>a+x.r.C0,0);
+        h+='<tr style="background:#f1f5f9;font-weight:700;font-size:11px;"><td colspan="3" style="text-align:right;color:#475569;">'+mfEsc(g.name)+' 소계</td><td class="r">'+mfF(gU,0)+'</td><td></td><td></td><td class="r">'+mfF(gC/1e8,2)+'</td><td class="r">'+(P0>0?mfF(gC/P0/1000,1):'-')+'</td><td colspan="11"></td></tr>';
+    });
+    tb.innerHTML=h;
+    // ── 합계 (원재료 / 부재료 / 전체) — 현재 표시 행 기준 ──
+    const filtered=(document.getElementById('mfProdFilter')?.value||'ALL')!=='ALL'||(document.getElementById('mfCatFilter')?.value||'ALL')!=='ALL';
+    const tot=(label,rows,bg)=>{const c0=sum(rows,'C0'),c1=sum(rows,'C1');return '<tr style="background:'+bg+';font-weight:700;"><td colspan="3">'+label+'</td><td></td><td></td><td></td><td class="r">'+mfF(c0/1e8,2)+'</td><td class="r">'+(P0>0?mfF(c0/P0/1000,1):'-')+'</td><td colspan="5"></td><td class="r">'+mfF(c1/1e8,2)+'</td><td class="r">'+(P1>0?mfF(c1/P1/1000,1):'-')+'</td><td class="r">'+mfEff(sum(rows,'useDiff'))+'</td><td class="r">'+mfEff(sum(rows,'priceDiff'))+'</td><td class="r">'+mfEff(sum(rows,'total'))+'</td><td></td></tr>';};
+    const vr=vis.map(x=>x.r);
+    ft.innerHTML=tot('원재료 계',vr.filter(r=>r.cat==='원'),'#eff6ff')+tot('부재료 계',vr.filter(r=>r.cat==='부'),'#fffbeb')+tot('전체 합계'+(filtered?' <span style="font-size:10px;font-weight:400;color:#64748b;">(필터 적용)</span>':''),vr,'#eef2ff');
+}
+
+async function saveMaterialForecast(){
+    if(!MF.data){alert('먼저 데이터를 불러오세요.');return;}
+    if(!MF.rows.length&&!MF.prods.length){alert('저장할 데이터가 없습니다.');return;}
+    const d=MF.data;
+    const body={ym:d.ym,division:d.division,machineCode:d.machine,
+        products:MF.prods.map(p=>({itemCode:p.product,prodTon:mfR(p.plan||0,3)})),
+        materials:MF.rows.map(r=>({itemCode:r.code,itemName:r.name,usageQty:mfR(r.U1,3),unitRate:mfR(r.rate1,4),receiptPrice:r.receipt,openingPrice:r.opening,usePrice:mfR(r.p1,4),issueNote:r.note||null}))};
+    try{
+        const r=await fetch(API+'/material-forecast/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(!r.ok){alert('저장 실패: '+(await apiErrMsg(r)));return;}
+        const j=await r.json();const c=j.data||{};
+        alert(mfYm(d.ym)+' 원부재료비 예상값을 저장했습니다.\n지종 생산량 '+(c.products||0)+'건 · 자재 '+(c.materials||0)+'건');
+    }catch(e){alert('저장 실패: '+e.message);return;}
+    MF.dirty=false;loadMaterialForecast(true);
+}
+
+function downloadMfExcel(){
+    if(!MF.data||!MF.rows.length){alert('다운로드할 데이터가 없습니다.');return;}
+    const d=MF.data,P0=MF.P0,P1=MF.P1;
+    const aoa=[MF_XL_HEAD];
+    MF.rows.forEach(r=>aoa.push([r.cat==='원'?'원재료':'부재료',r.groupName,r.code,r.name,
+        mfR(r.U0,3),mfR(r.rate0,4),mfR(r.p0,2),mfR(r.C0/1e8,4),P0>0?mfR(r.C0/P0/1000,2):'',
+        mfR(r.U1,3),mfR(r.rate1,4),r.receipt??'',r.opening??'',mfR(r.p1,2),mfR(r.C1/1e8,4),P1>0?mfR(r.C1/P1/1000,2):'',
+        mfEffXl(r.useDiff),mfEffXl(r.priceDiff),mfEffXl(r.total),r.note||'']));
+    const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=MF_XL_HEAD.map(h=>({wch:Math.max(10,h.length*2)}));
+    const ps=XLSX.utils.aoa_to_sheet([['지종','전월 생산량(톤)','차월 생산량(톤)']].concat(MF.prods.map(p=>[p.product,mfR(p.prev,3),mfR(p.plan,3)])));ps['!cols']=[{wch:16},{wch:18},{wch:18}];
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'자재별');XLSX.utils.book_append_sheet(wb,ps,MF_XL_PROD);
+    XLSX.writeFile(wb,'원부재료비_'+d.ym+'_'+d.division+'_'+d.machine+'.xlsx');
+}
+
+// 업로드: 자재코드로 맞춰 차월 값만 덮어씀 — 사용량/원단위가 들어온 행은 수정한 행(자동 계산 제외)
+async function uploadMfExcel(input){
+    const file=input.files[0];if(!file)return;
+    if(!MF.data){alert('먼저 데이터를 불러오세요.');input.value='';return;}
+    try{
+        const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});
+        let prodCnt=0;const ps=wb.Sheets[MF_XL_PROD];
+        if(ps)XLSX.utils.sheet_to_json(ps,{defval:''}).forEach(r=>{const name=String(r['지종']||'').trim();const v=mfNum(r['차월 생산량(톤)']);if(!name||v==null)return;let p=MF.prods.find(x=>x.product===name);if(!p){p={product:name,prev:0,plan:0};MF.prods.push(p);}p.plan=Math.max(0,v);prodCnt++;});
+        mfRecalc();const P1=MF.P1;
+        const mName=wb.SheetNames.find(n=>n!==MF_XL_PROD)||wb.SheetNames[0];
+        const rows=XLSX.utils.sheet_to_json(wb.Sheets[mName],{defval:''});
+        if(rows.length&&!('자재코드' in rows[0])){alert('자재코드 열이 없습니다. 엑셀 다운로드 양식을 사용하세요.');input.value='';return;}
+        let ok=0;const miss=[];
+        rows.forEach(r=>{const code=mfCode(r['자재코드']);if(!code)return;const row=MF.rows.find(x=>x.code===code);if(!row){miss.push(code);return;}
+            const u=mfNum(r['차월 사용량']),rt=mfNum(r['차월 원단위(kg/톤)']);
+            if(u!=null){row.U1=Math.max(0,u);row.edited=true;}else if(rt!=null){row.U1=Math.max(0,rt)*P1;row.edited=true;}
+            if('차월 사용단가(원/kg)' in r){const v=mfNum(r['차월 사용단가(원/kg)']);row.priceInput=v==null?null:Math.max(0,v);}
+            if('차월 입고단가(참고)' in r)row.receipt=mfNum(r['차월 입고단가(참고)']);
+            if('차월 기초재고단가(참고)' in r)row.opening=mfNum(r['차월 기초재고단가(참고)']);
+            if('이슈사항' in r)row.note=String(r['이슈사항']||'').substring(0,1000);
+            ok++;});
+        MF.dirty=true;mfRecalc();renderMf();
+        alert('엑셀 반영 완료 (저장 버튼을 눌러야 DB에 저장됩니다)\n지종 생산량 '+prodCnt+'건 · 자재 '+ok+'건'+(miss.length?'\n전월 실적에 없는 자재코드 '+miss.length+'건 제외: '+miss.slice(0,10).join(', ')+(miss.length>10?' 외':''):''));
+    }catch(e){alert('엑셀 읽기 실패: '+e.message);}
+    input.value='';
 }
 
 // ── Init ──
