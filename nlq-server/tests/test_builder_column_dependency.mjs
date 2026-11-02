@@ -76,10 +76,11 @@ assertMatch(htmlSrc,
     /const\s+_MFG_COST_ELEMENT_DEPS\s*=\s*\[/,
     '1-1: _MFG_COST_ELEMENT_DEPS 공통 상수 선언됨');
 
-// 1-2: 사용자 요구 순서 [CALMONTH, PLANT, ZCGUBUN_D, ZCGUBUN]
+// 1-2 [v4]: 사용자 요구 순서 [CALMONTH, PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN]
+//           v4 변경: MATERIAL_NM(자재명) 추가 — 자재별 집계 왜곡 방지
 assertMatch(htmlSrc,
-    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
-    '1-2: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, ZCGUBUN_D, ZCGUBUN] (사용자 승인 순서)');
+    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
+    '1-2 [v4]: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN] (v4 사용자 승인 순서)');
 
 // 1-3: 공통 상수에 설계 메모 주석 포함
 assertMatch(htmlSrc,

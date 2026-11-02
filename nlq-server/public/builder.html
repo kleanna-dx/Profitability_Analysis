@@ -1823,25 +1823,29 @@ function _rewriteMfgFieldLabel(colName, originalLabel) {
 //       조합에 재사용 가능하도록 침습 최소화.
 // ─────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────
-// [2026-10-30 v3] 제조원가 원가요소 공통 Dependency (DRY)
+// [2026-10-30 v4] 제조원가 원가요소 공통 Dependency (DRY)
 //
 //   사용자 요구:
 //     개당 단가 및 20개 원가요소 컬럼(KST001~KST039)을 조회필드에 추가
-//     할 때 다음 4개 dimension 을 함께 자동 추가 (집계 왜곡 방지).
+//     할 때 다음 5개 dimension 을 함께 자동 추가 (집계 왜곡 방지).
 //
-//   순서 (중요): CALMONTH → PLANT → ZCGUBUN_D → ZCGUBUN → [metric/column]
+//   순서 (중요): CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN → [metric/column]
 //     - CALMONTH 는 DATE_FIELDS 특수 삽입 로직에 의해 selectedFields
 //       맨 앞에 배치됨 (기존 addField 로직 재사용).
-//     - 나머지 3개(PLANT, ZCGUBUN_D, ZCGUBUN)는 metric/column 바로 앞에 삽입.
-//     - 결과 예시: [달력연도/월, 플랜트코드, 표준원가추정(대구분),
+//     - 나머지 4개(PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN)는 metric/column 바로 앞에 삽입.
+//     - 결과 예시: [달력연도/월, 플랜트코드, 자재명, 표준원가추정(대구분),
 //                   원가구분(구분), 재료비-펄프]
+//
+//   [v4 변경] 사용자 추가 요청: '자재명'(MATERIAL_NM) 도 자동 추가 대상에 포함.
+//     - 집계 왜곡 방지 효과 강화 (자재별 분리 분석 가능)
+//     - 자재코드(MATERIAL) 는 제외 — 사용자 명시 (자재명만)
 //
 //   확장성:
 //     향후 다른 원가요소가 추가되거나 dependency 순서/구성이 바뀌면
 //     이 공통 상수 한 곳만 수정하면 UNIT_COST + KST001~KST039 전체에
 //     일괄 반영됨.
 // ─────────────────────────────────────────────────────────────────
-const _MFG_COST_ELEMENT_DEPS = ['CALMONTH', 'PLANT', 'ZCGUBUN_D', 'ZCGUBUN'];
+const _MFG_COST_ELEMENT_DEPS = ['CALMONTH', 'PLANT', 'MATERIAL_NM', 'ZCGUBUN_D', 'ZCGUBUN'];
 
 const MFG_METRIC_FIELD_DEPENDENCIES = {
     // 개당 단가 (metric_code='UNIT_COST'): SUM(TOTAL)/NULLIF(SUM(LBKUM),0)
