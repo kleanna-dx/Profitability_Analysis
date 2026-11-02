@@ -117,6 +117,47 @@ assertMatch(htmlSrc,
     /MFG_COLUMN_FIELD_DEPENDENCIES[\s\S]{0,3000}(sys_aimd_cot015|sql\/043|\uc124\uc815 \ud14c\uc774\ube14|KST001~KST039|DRY)/,
     '2-3: MFG_COLUMN_FIELD_DEPENDENCIES 근처에 설계 메모 주석 (설정 테이블 / sys_aimd_cot015 / KST 범위)');
 
+// ────────────────────────────────────────────────────────────
+// 2-4 [PR #550, 2026-11-02]: 표준가 2개 (TOTAL1, TOTAL2) 추가 매핑
+// ────────────────────────────────────────────────────────────
+//   사용자 요청:
+//     현재월 표준가 (TOTAL1), 이전월 표준가 (TOTAL2) 더블클릭 시에도
+//     KST001~KST039 와 동일한 dependency 자동 추가 적용.
+//   순서 (사용자 명시):
+//     1. CALMONTH   (달력연도/월)       ← DATE_FIELDS 특수 삽입
+//     2. PLANT      (플랜트 코드)
+//     3. MATERIAL_NM(자재명)
+//     4. ZCGUBUN_D  (표준원가추정(대구분))
+//     5. ZCGUBUN    (원가구분(구분))
+//     6. [선택한 TOTAL1 또는 TOTAL2]
+//   = _MFG_COST_ELEMENT_DEPS 공통 상수 재사용 (DRY 원칙)
+// ────────────────────────────────────────────────────────────
+
+const TOTAL_COLS = ['TOTAL1', 'TOTAL2'];
+assert(TOTAL_COLS.length === 2, `2-4a: 표준가 컬럼이 2개 (실제: ${TOTAL_COLS.length})`);
+
+TOTAL_COLS.forEach((col, i) => {
+    // 각 TOTAL 컬럼이 MFG_COLUMN_FIELD_DEPENDENCIES 에 _MFG_COST_ELEMENT_DEPS 매핑됨
+    assertMatch(htmlSrc,
+        new RegExp(`MFG_COLUMN_FIELD_DEPENDENCIES[\\s\\S]{0,3000}['"]${col}['"]\\s*:\\s*_MFG_COST_ELEMENT_DEPS`),
+        `2-4-${String(i + 1).padStart(2, '0')}: ${col} 매핑됨 → _MFG_COST_ELEMENT_DEPS 공통 상수 참조 (PR #550)`);
+});
+
+// 2-4b: TOTAL1 라벨 주석 (현재월 표준가)
+assertMatch(htmlSrc,
+    /['"]TOTAL1['"]\s*:\s*_MFG_COST_ELEMENT_DEPS\s*,?\s*\/\/[^\n]*(\ud604\uc7ac\uc6d4|\ud45c\uc900\uac00)/,
+    '2-4b: TOTAL1 매핑에 "현재월 표준가" 주석');
+
+// 2-4c: TOTAL2 라벨 주석 (이전월 표준가)
+assertMatch(htmlSrc,
+    /['"]TOTAL2['"]\s*:\s*_MFG_COST_ELEMENT_DEPS\s*,?\s*\/\/[^\n]*(\uc774\uc804\uc6d4|\ud45c\uc900\uac00)/,
+    '2-4c: TOTAL2 매핑에 "이전월 표준가" 주석');
+
+// 2-4d: PR #550 설계 메모 주석 (사용자 요청 근거 기록)
+assertMatch(htmlSrc,
+    /MFG_COLUMN_FIELD_DEPENDENCIES[\s\S]{0,5000}(PR #550|\ud45c\uc900\uac00 2\uac1c|TOTAL1[\s\S]{0,100}TOTAL2)/,
+    '2-4d: MFG_COLUMN_FIELD_DEPENDENCIES 안에 TOTAL1/TOTAL2 추가 근거 주석 (PR #550 / 표준가 2개)');
+
 // ============================================================
 // 3. addField() 확장 — non-metric 컬럼도 dependency 처리
 // ============================================================

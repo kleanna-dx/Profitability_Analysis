@@ -1912,6 +1912,12 @@ const MFG_COLUMN_FIELD_DEPENDENCIES = {
     'KST035': _MFG_COST_ELEMENT_DEPS,  // 지급수수료
     'KST037': _MFG_COST_ELEMENT_DEPS,  // 기타경비-폐기물
     'KST039': _MFG_COST_ELEMENT_DEPS,  // 생산량 (입고용)
+    // ── 표준가 2개 (PR #550, 2026-11-02) ────────────────────────────
+    //   사용자 요청: 더블클릭 시 KST001~KST039 와 동일 dependency 자동 추가
+    //   순서: CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN
+    //   = 달력연도/월, 플랜트 코드, 자재명, 표준원가추정(대구분), 원가구분(구분)
+    'TOTAL1': _MFG_COST_ELEMENT_DEPS,  // 현재월 표준가
+    'TOTAL2': _MFG_COST_ELEMENT_DEPS,  // 이전월 표준가
 };
 
 // ─────────────────────────────────────────────────────────────────
