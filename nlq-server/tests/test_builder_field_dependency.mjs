@@ -95,15 +95,25 @@ assertMatch(htmlSrc,
     '1-1: const MFG_METRIC_FIELD_DEPENDENCIES = { ... } 상수 선언됨');
 
 // 1-2: UNIT_COST 키가 등록되어 있어야 함 (운영 DB 실제 metric_code)
+//      [v3] 값은 배열 리터럴이 아니라 공통 상수(_MFG_COST_ELEMENT_DEPS) 참조로 변경됨.
+//      주석이 길어 범위를 2000자로 확대 (v3 상수 블록 ~1100자).
 assertMatch(htmlSrc,
-    /MFG_METRIC_FIELD_DEPENDENCIES[\s\S]{0,500}['"]UNIT_COST['"]\s*:\s*\[/,
+    /MFG_METRIC_FIELD_DEPENDENCIES[\s\S]{0,2000}['"]UNIT_COST['"]\s*:\s*(_MFG_COST_ELEMENT_DEPS|\[)/,
     '1-2: UNIT_COST 키가 dependency 매핑에 등록됨 (운영 DB 실제 metric_code)');
 
-// 1-3: PLANT / ZCGUBUN / ZCGUBUN_D 세 컬럼이 매핑되어 있어야 함
-//      (사용자 요구: 자동 추가 대상 3개)
+// 1-3: UNIT_COST 가 _MFG_COST_ELEMENT_DEPS 공통 상수를 참조 (v3)
+//      공통 dependency 로 KST 컬럼들과 동일 세트 사용 → DRY
 assertMatch(htmlSrc,
-    /['"]UNIT_COST['"]\s*:\s*\[\s*['"]PLANT['"]\s*,\s*['"]ZCGUBUN['"]\s*,\s*['"]ZCGUBUN_D['"]\s*\]/,
-    '1-3: UNIT_COST → [PLANT, ZCGUBUN, ZCGUBUN_D] 순서로 매핑');
+    /['"]UNIT_COST['"]\s*:\s*_MFG_COST_ELEMENT_DEPS/,
+    '1-3: UNIT_COST → _MFG_COST_ELEMENT_DEPS 공통 상수 참조 (v3, KST 컬럼들과 통일)');
+
+// 1-3-v3a: _MFG_COST_ELEMENT_DEPS 공통 상수 선언 — 사용자 요구 순서
+//          [CALMONTH, PLANT, ZCGUBUN_D, ZCGUBUN]
+//          - CALMONTH 가 첫 번째 (시간축 기본 분리)
+//          - ZCGUBUN_D 가 ZCGUBUN 보다 앞 (대구분 → 구분 순서)
+assertMatch(htmlSrc,
+    /const\s+_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
+    '1-3-v3a: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, ZCGUBUN_D, ZCGUBUN] 공통 상수 선언 (사용자 요구 순서)');
 
 // 1-3b: 과거 PR #542 의 잘못된 키 'COST_ACTUAL_UNIT_PRICE' 는 제거되어야 함
 //       (seed 파일만 보고 가정 → 운영 미매칭 → no-op 발생했던 코드)
@@ -111,10 +121,21 @@ assertNoMatch(htmlSrc,
     /MFG_METRIC_FIELD_DEPENDENCIES[\s\S]{0,500}['"]COST_ACTUAL_UNIT_PRICE['"]\s*:/,
     '1-3b: 과거 잘못된 키 COST_ACTUAL_UNIT_PRICE 는 매핑에서 제거됨');
 
+// 1-3-v3b: 과거 PR #542 의 하드코딩 순서 [PLANT, ZCGUBUN, ZCGUBUN_D] 가 그대로
+//          UNIT_COST 에 남아있으면 안 됨 (v3 에서 공통 상수로 교체됨)
+assertNoMatch(htmlSrc,
+    /['"]UNIT_COST['"]\s*:\s*\[\s*['"]PLANT['"]\s*,\s*['"]ZCGUBUN['"]\s*,\s*['"]ZCGUBUN_D['"]\s*\]/,
+    '1-3-v3b: 과거 하드코딩 순서 [PLANT, ZCGUBUN, ZCGUBUN_D] 가 UNIT_COST 에 남아있지 않음 (v3 교체)');
+
 // 1-4: 설계 원칙 주석에 "영역 가드" / "하드코딩" / "설정" 중 하나라도 언급
 assertMatch(htmlSrc,
     /MFG_METRIC_FIELD_DEPENDENCIES[\s\S]{0,2000}(영역 가드|manufacturing-cost|설정 테이블|하드코딩|Dependency)/,
     '1-4: 상수 근처에 설계 원칙 주석 존재 (영역 가드 / 설정 테이블 패턴 등)');
+
+// 1-5: _MFG_COST_ELEMENT_DEPS 공통 상수 근처에 설계 메모(CALMONTH 특수 처리) 주석
+assertMatch(htmlSrc,
+    /_MFG_COST_ELEMENT_DEPS[\s\S]{0,2000}(CALMONTH|DATE_FIELDS|\ub9e8 \uc55e|DRY)/,
+    '1-5: _MFG_COST_ELEMENT_DEPS 근처에 설계 메모(CALMONTH 특수/DRY) 주석 존재');
 
 // ============================================================
 // 2. addField() 수정 — dependency 트리거 분기 검증
@@ -135,15 +156,26 @@ assertMatch(addFieldSrc,
     /_currentBuilderArea\s*\(\s*\)\s*===\s*['"]manufacturing-cost['"]/,
     '2-2: 영역 가드 — _currentBuilderArea() === "manufacturing-cost" 체크 존재');
 
-// 2-3: col.is_metric + col.metric_code 조건 확인 (metric 전용 분기)
+// 2-3: col.is_metric + col.metric_code 조건 확인 (metric 분기)
 assertMatch(addFieldSrc,
     /col\.is_metric[\s\S]{0,300}col\.metric_code/,
-    '2-3: dependency 분기가 col.is_metric + col.metric_code 조건으로 진입');
+    '2-3: metric dependency 분기가 col.is_metric + col.metric_code 조건으로 진입');
 
 // 2-4: Array.isArray(MFG_METRIC_FIELD_DEPENDENCIES[col.metric_code]) 체크
 assertMatch(addFieldSrc,
     /Array\.isArray\s*\(\s*MFG_METRIC_FIELD_DEPENDENCIES\s*\[\s*col\.metric_code\s*\]\s*\)/,
-    '2-4: dependency 매핑 존재 여부를 Array.isArray 로 안전 체크');
+    '2-4: metric dependency 매핑 존재 여부를 Array.isArray 로 안전 체크');
+
+// 2-4b [v3]: non-metric 컬럼용 MFG_COLUMN_FIELD_DEPENDENCIES 도 확인
+//            (KST001~KST039 컬럼의 더블클릭 시 dependency 발동 경로)
+assertMatch(addFieldSrc,
+    /Array\.isArray\s*\(\s*MFG_COLUMN_FIELD_DEPENDENCIES\s*\[\s*colName\s*\]\s*\)/,
+    '2-4b [v3]: non-metric 컬럼은 MFG_COLUMN_FIELD_DEPENDENCIES[colName] 로 매핑 조회');
+
+// 2-4c [v3]: !col.is_metric 조건으로 column 분기 분리 (metric 분기와 상호배타)
+assertMatch(addFieldSrc,
+    /!col\.is_metric[\s\S]{0,300}MFG_COLUMN_FIELD_DEPENDENCIES/,
+    '2-4c [v3]: non-metric 분기(!col.is_metric) 에서 MFG_COLUMN_FIELD_DEPENDENCIES 참조');
 
 // 2-5: 의존 필드 중복 체크 — 이미 selectedFields 에 있으면 skip
 //      (dimension 은 aggregate 없이 들어가므로 aggregate 없는 동일 column 기준)
@@ -151,16 +183,22 @@ assertMatch(addFieldSrc,
     /selectedFields\.find\s*\(\s*f\s*=>\s*f\.column\s*===\s*_depName\s*&&\s*!f\.aggregate\s*\)/,
     '2-5: 의존 필드 중복 체크 (aggregate 없는 동일 컬럼이면 skip)');
 
-// 2-6: 의존 필드를 selectedFields.push() 로 먼저 추가 (metric 보다 앞)
+// 2-6: 의존 필드를 selectedFields.push() 로 먼저 추가 (metric/column 보다 앞)
 assertMatch(addFieldSrc,
     /selectedFields\.push\s*\(\s*_depField\s*\)/,
     '2-6: 의존 dimension 필드를 selectedFields.push 로 선삽입');
 
-// 2-7: metric 필드를 마지막에 push → 자동 추가된 dimension 뒤에 위치
+// 2-6b [v3]: CALMONTH 등 DATE_FIELDS 는 addField(_depName) 재귀 호출로
+//            특수 삽입 로직(selectedFields 맨 앞) 활용
+assertMatch(addFieldSrc,
+    /DATE_FIELDS\.includes\s*\(\s*_depName\s*\)[\s\S]{0,300}addField\s*\(\s*_depName\s*\)/,
+    '2-6b [v3]: DATE_FIELDS 멤버는 addField(_depName) 재귀 호출로 맨 앞 삽입 로직 활용');
+
+// 2-7: metric/column 필드를 마지막에 push → 자동 추가된 dimension 뒤에 위치
 //      (즉, 자동 추가 필드가 "앞쪽" 에 오게 됨 — 사용자 요구)
 assertMatch(addFieldSrc,
     /selectedFields\.push\s*\(\s*_depField\s*\)[\s\S]{0,500}selectedFields\.push\s*\(\s*newField\s*\)/,
-    '2-7: 의존 필드 push 이후에 metric(newField) 을 push → 자동 추가 필드가 앞쪽에 위치');
+    '2-7: 의존 필드 push 이후에 newField 를 push → 자동 추가 필드가 앞쪽에 위치');
 
 // 2-8: dependency 분기 완료 후 return — 하단 DATE_FIELDS/일반 분기로 내려가지 않음
 //      (중복 push 방지)
@@ -172,6 +210,11 @@ assertMatch(addFieldSrc,
 assertMatch(addFieldSrc,
     /typeof\s+showSnackbar\s*===\s*['"]function['"]/,
     '2-9: showSnackbar 유틸이 있으면 사용자 알림 시도 (없으면 조용히 skip)');
+
+// 2-9b [v3]: snackbar 문구에 '달력연도/월' 포함 (CALMONTH 안내 반영)
+assertMatch(addFieldSrc,
+    /showSnackbar\s*\([\s\S]{0,500}달력연도\/월/,
+    '2-9b [v3]: snackbar 문구에 "달력연도/월" 포함 (CALMONTH 자동 추가 안내)');
 
 // 2-10: 영역 가드가 없거나 metric 이 아니면 기존 분기(DATE_FIELDS/일반) 로 내려가야 함
 //       → 기존 DATE_FIELDS 분기 코드가 그대로 보존되어야 함
@@ -227,10 +270,12 @@ assertMatch(htmlSrc,
 // 5. 사이드바 더블클릭 핸들러 (addFieldByClick) 는 수정하지 않음
 // ============================================================
 
-// 5-1: addFieldByClick 는 그대로 addField 를 호출 (단순 래퍼 유지)
+// 5-1: addFieldByClick 는 결국 addField(colName) 를 호출 (PR #544 에서 __GROUP__
+//      분기가 추가되어 다중 라인이 되었지만, 일반 non-group 더블클릭은 여전히
+//      addField(colName) 로 위임하여 PR #542 dependency 로직을 자연히 상속)
 assertMatch(htmlSrc,
-    /function\s+addFieldByClick\s*\(\s*colName\s*\)\s*\{\s*addField\s*\(\s*colName\s*\)\s*;\s*\}/,
-    '5-1: addFieldByClick 는 단순 래퍼 유지 (addField 수정으로 더블클릭도 자동 반영)');
+    /function\s+addFieldByClick\s*\(\s*colName\s*\)\s*\{[\s\S]{0,2000}addField\s*\(\s*colName\s*\)\s*;/,
+    '5-1: addFieldByClick 가 addField(colName) 를 호출 (일반 더블클릭 경로, PR #544 __GROUP__ 분기 호환)');
 
 // ============================================================
 // 6. 필수 라벨 매핑 사전 조건 — 자동 추가될 ZCGUBUN/ZCGUBUN_D 가
