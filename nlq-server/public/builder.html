@@ -1947,6 +1947,39 @@ const MFG_COLUMN_FIELD_DEPENDENCIES = {
     //   = 달력연도/월, 플랜트 코드, 자재명, 표준원가추정(대구분), 원가구분(구분)
     'TOTAL1': _MFG_COST_ELEMENT_DEPS,  // 현재월 표준가
     'TOTAL2': _MFG_COST_ELEMENT_DEPS,  // 이전월 표준가
+    // ── 생산수량 1개 (PR #553, 2026-11-02) ────────────────────────────
+    //   사용자 요청: 더블클릭 시 KST/TOTAL 과 동일 dependency 자동 추가 (앞쪽 5개)
+    //   순서: CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN → [LBKUM 자신] → BASE_UOM
+    //   앞쪽 5개는 _MFG_COST_ELEMENT_DEPS 공통 상수 재사용 (DRY),
+    //   LBKUM "뒤에" 오는 BASE_UOM 은 MFG_COLUMN_FIELD_POST_DEPENDENCIES 로 처리.
+    //   사용자 승인 Q1(a): 신규 전용 상수 참조 패턴 사용 (DRY 재사용은 공통 상수 통해 유지)
+    'LBKUM': _MFG_COST_ELEMENT_DEPS,  // 생산수량(매출수량) — DECIMAL(17,3)
+};
+
+// ─────────────────────────────────────────────────────────────────
+// [PR #553, 2026-11-02] 제조원가 후속(POST) 필드 의존성
+//
+//   사용자 요구:
+//     LBKUM(생산수량) 더블클릭 시 아래 순서로 조회필드 자동 셋팅:
+//       CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN
+//       → [LBKUM 자기 자신] → BASE_UOM(기본 단위)
+//
+//   기존 MFG_COLUMN_FIELD_DEPENDENCIES 는 "선택 필드 앞에 자동 삽입" 패턴.
+//   BASE_UOM 은 LBKUM "뒤에" 와야 하므로 별도 매커니즘 신설.
+//
+//   설계 (설정 테이블 패턴, 사용자 Q6 YES / Q1(a) 신규 전용 상수):
+//     - KEY = 선택 컬럼명 (대문자, allColumns 의 c.name 과 일치)
+//     - VALUE = 선택 컬럼 "뒤에" 자동 추가할 컬럼명 배열 (순서대로 push)
+//     - addField() 함수에서 selectedFields.push(newField) 바로 뒤에 처리
+//     - 중복 체크: 이미 selectedFields 에 있으면 skip (기존 패턴 재사용)
+//     - 영역 가드: addField 안의 _isMfgArea 체크 재사용
+//
+//   사용자 승인 Q3(a): BASE_UOM 자체 더블클릭 시엔 별도 자동 추가 없음
+//     (평범한 dimension 으로 처리 — POST_DEPENDENCIES 에 BASE_UOM 키 없음)
+//   사용자 승인 Q4: "기본 단위" 사이드바 노출 상태 그대로 유지 (별도 숨김/노출 변경 없음)
+// ─────────────────────────────────────────────────────────────────
+const MFG_COLUMN_FIELD_POST_DEPENDENCIES = {
+    'LBKUM': ['BASE_UOM'],  // 생산수량 뒤에 기본 단위 자동 추가
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -1984,6 +2017,10 @@ const _MFG_FIXED_AGG_COLUMNS = new Set([
     // 표준가 2개 — 월 금액 합계
     'TOTAL1', // 현재월 표준가
     'TOTAL2', // 이전월 표준가
+    // 생산수량 1개 (PR #553, 2026-11-02) — 사용자 승인 Q2(a)
+    //   LBKUM 도 다른 금액/수량 컬럼처럼 "SUM 고정 + 뱃지 제거 + 드롭박스 숨김" 통일.
+    //   DECIMAL(17,3) 타입이지만 분석 상 거의 100% 합계(SUM)만 사용.
+    'LBKUM',  // 생산수량(매출수량)
 ]);
 
 // ─────────────────────────────────────────────────────────────────
@@ -2799,6 +2836,38 @@ function addField(colName) {
         }
         // metric/column 은 마지막에 push → 자동 추가된 dimension 들이 자연스럽게 앞에 위치
         selectedFields.push(newField);
+
+        // ─────────────────────────────────────────────────────────
+        // [PR #553, 2026-11-02] POST dependency 처리
+        //
+        //   선택 필드 "뒤에" 자동 추가되는 dimension (예: LBKUM 뒤에 BASE_UOM).
+        //   기존 dependency 는 "앞에" 삽입이지만, 사용자가 특정 순서를 명시한
+        //   경우(LBKUM → BASE_UOM) 를 지원하려면 self push 뒤에 처리해야 함.
+        //
+        //   설계 (사용자 Q1(a) 신규 전용 상수 + Q3(a) BASE_UOM 평범 dim):
+        //     - MFG_COLUMN_FIELD_POST_DEPENDENCIES[colName] 에서 조회
+        //     - 배열 순서대로 push (dimension 만 — 재귀 호출 없음, LBKUM/BASE_UOM 둘 다 dim/metric 성격 고정)
+        //     - 중복 체크 + 메타 조회 로직은 기존 "앞쪽 dependency" 와 동일 패턴
+        //     - BASE_UOM 자체는 POST_DEPENDENCIES 에 키 없음 → 평범한 dim 으로 동작 (Q3(a))
+        // ─────────────────────────────────────────────────────────
+        if (Array.isArray(MFG_COLUMN_FIELD_POST_DEPENDENCIES[colName])) {
+            for (const _postName of MFG_COLUMN_FIELD_POST_DEPENDENCIES[colName]) {
+                // 중복 체크 (앞쪽 dependency 와 동일 패턴)
+                if (selectedFields.find(f => f.column === _postName && !f.aggregate)) continue;
+                const _postCol = allColumns.find(c => c.name === _postName);
+                if (!_postCol) continue;  // 사이드바에 없으면 조용히 skip
+                const _postAgg = getDefaultAggregate(_postCol);
+                selectedFields.push({
+                    column: _postName,
+                    alias: _postCol.label,
+                    aggregate: _postAgg,
+                    type: _postCol.type,
+                    category: _postCol.category,
+                });
+                _autoAddedCount++;
+            }
+        }
+
         if(!builderDomainLocked){builderDomainLocked=true;renderDomainSelectorBar();}
         renderSelectedFields();
         updateOrderByOptions();
