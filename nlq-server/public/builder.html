@@ -1954,6 +1954,13 @@ const MFG_COLUMN_FIELD_DEPENDENCIES = {
     //   LBKUM "뒤에" 오는 BASE_UOM 은 MFG_COLUMN_FIELD_POST_DEPENDENCIES 로 처리.
     //   사용자 승인 Q1(a): 신규 전용 상수 참조 패턴 사용 (DRY 재사용은 공통 상수 통해 유지)
     'LBKUM': _MFG_COST_ELEMENT_DEPS,  // 생산수량(매출수량) — DECIMAL(17,3)
+    // ── 합계 금액 3개 (PR #554, 2026-11-02) ────────────────────────────
+    //   사용자 요청: 더블클릭 시 KST/TOTAL1/TOTAL2/LBKUM 과 동일 dependency 자동 추가
+    //   순서: CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN → [자신]
+    //   = PR #550 (TOTAL1/TOTAL2) 와 완전 동일 패턴 (뒤쪽 dependency 없음)
+    'TOTAL':  _MFG_COST_ELEMENT_DEPS,  // 원가 합계금액 — BIGINT (CURR 17,2)
+    'KST_V':  _MFG_COST_ELEMENT_DEPS,  // 변동비 합계 — BIGINT (CURR 17,2)
+    'KST_F':  _MFG_COST_ELEMENT_DEPS,  // 고정비 합계 — BIGINT (CURR 17,2)
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -2021,6 +2028,14 @@ const _MFG_FIXED_AGG_COLUMNS = new Set([
     //   LBKUM 도 다른 금액/수량 컬럼처럼 "SUM 고정 + 뱃지 제거 + 드롭박스 숨김" 통일.
     //   DECIMAL(17,3) 타입이지만 분석 상 거의 100% 합계(SUM)만 사용.
     'LBKUM',  // 생산수량(매출수량)
+    // 합계 금액 3개 (PR #554, 2026-11-02) — 사용자 요청
+    //   원가 합계금액(TOTAL), 변동비 합계(KST_V), 고정비 합계(KST_F) 도
+    //   KST001~KST039 / TOTAL1 / TOTAL2 / LBKUM 과 동일 UX 적용:
+    //   "원본/SUM/MAX" 드롭박스 숨김 + SUM 뱃지 제거 → dim 처럼 깔끔.
+    //   BIGINT 금액 컬럼 (CURR 17,2) — 분석 상 거의 100% 합계(SUM)만 사용.
+    'TOTAL',  // 원가 합계금액
+    'KST_V',  // 변동비 합계
+    'KST_F',  // 고정비 합계
 ]);
 
 // ─────────────────────────────────────────────────────────────────
