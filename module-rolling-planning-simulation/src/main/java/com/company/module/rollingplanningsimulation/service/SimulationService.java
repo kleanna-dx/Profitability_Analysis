@@ -5,6 +5,7 @@ import com.company.module.rollingplanningsimulation.dto.response.DataReadinessRe
 import com.company.module.rollingplanningsimulation.repository.LogiRateRepository;
 import com.company.module.rollingplanningsimulation.repository.OperatingTimeRepository;
 import com.company.module.rollingplanningsimulation.repository.PwResultRepository;
+import com.company.module.rollingplanningsimulation.support.RawMaterialSql;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -226,8 +227,8 @@ public class SimulationService {
 
     // ================================================================
     // 원부재료 집계 (rpsim_raw_material)
-    //  - 생산수량(BIC_ZPRD_QTY)은 자재 행마다 반복 → 제품(호기+PRODH1~4)별 MAX로 1회만 집계
-    //  - 원재료비 = DATA_TYPE '100' 출고금액, 부재료비 = DATA_TYPE '101' 출고금액
+    //  - 생산량·재료비·지종 규칙은 RawMaterialSql (원부재료비 탭과 동일 기준)
+    //    생산량 = 총생산량 (호기, 제품레벨4)별 MAX 후 합계 / 재료비 = 실적배부수량 × 실적단가
     // ================================================================
     private static final String MACHINE_COND = " AND (? = 'ALL' OR BIC_ZMACHINE = ?)";
 
@@ -235,12 +236,12 @@ public class SimulationService {
         String sql =
             "SELECT " +
             " (SELECT COALESCE(SUM(p.q),0) FROM (" +
-            "    SELECT MAX(BIC_ZPRD_QTY) AS q FROM rpsim_raw_material" +
-            "     WHERE CALMONTH = ? AND DATA_TYPE = '100'" + MACHINE_COND +
-            "     GROUP BY BIC_ZMACHINE, PRODH1, PRODH2, PRODH3, PRODH4) p) AS prod_kg," +
-            " (SELECT COALESCE(SUM(BIC_ZRAMT_060),0) FROM rpsim_raw_material" +
+            "    SELECT MAX(" + RawMaterialSql.PROD_QTY_COL + ") AS q FROM rpsim_raw_material" +
+            "     WHERE CALMONTH = ?" + MACHINE_COND +
+            "     GROUP BY BIC_ZMACHINE, PRODH4) p) AS prod_kg," +
+            " (SELECT COALESCE(SUM(" + RawMaterialSql.COST_EXPR + "),0) FROM rpsim_raw_material" +
             "   WHERE CALMONTH = ? AND DATA_TYPE = '100'" + MACHINE_COND + ") AS mat_cost," +
-            " (SELECT COALESCE(SUM(BIC_ZRAMT_060),0) FROM rpsim_raw_material" +
+            " (SELECT COALESCE(SUM(" + RawMaterialSql.COST_EXPR + "),0) FROM rpsim_raw_material" +
             "   WHERE CALMONTH = ? AND DATA_TYPE = '101'" + MACHINE_COND + ") AS sub_cost";
         return jdbcTemplate.queryForMap(sql, ym, machine, machine, ym, machine, machine, ym, machine, machine);
     }
@@ -249,14 +250,12 @@ public class SimulationService {
     private List<Object[]> findMaterialByProduct(String ym, String machine) {
         String sql =
             "SELECT product, SUM(prod_kg) / 1000 AS production_ton, SUM(mat_cost) AS material_cost FROM (" +
-            "  SELECT CASE WHEN PRODH2_NM LIKE 'SC%' AND CAST(PRODH4_NM AS UNSIGNED) >= 300 THEN 'SC고평량'" +
-            "              WHEN PRODH2_NM LIKE 'SC%' THEN 'SC저평량'" +
-            "              ELSE PRODH2_NM END AS product," +
-            "         MAX(BIC_ZPRD_QTY) AS prod_kg," +
-            "         SUM(CASE WHEN DATA_TYPE = '100' THEN BIC_ZRAMT_060 ELSE 0 END) AS mat_cost" +
+            "  SELECT " + RawMaterialSql.PRODUCT_EXPR + " AS product," +
+            "         MAX(" + RawMaterialSql.PROD_QTY_COL + ") AS prod_kg," +
+            "         SUM(CASE WHEN DATA_TYPE = '100' THEN " + RawMaterialSql.COST_EXPR + " ELSE 0 END) AS mat_cost" +
             "    FROM rpsim_raw_material" +
             "   WHERE CALMONTH = ?" + MACHINE_COND +
-            "   GROUP BY BIC_ZMACHINE, PRODH1, PRODH2, PRODH3, PRODH4, PRODH2_NM, PRODH4_NM" +
+            "   GROUP BY BIC_ZMACHINE, PRODH4, PRODH2_NM" +
             ") t WHERE product IS NOT NULL GROUP BY product HAVING SUM(prod_kg) > 0 ORDER BY material_cost DESC";
         return jdbcTemplate.query(sql, (rs, i) -> new Object[]{
                 rs.getString("product"), rs.getBigDecimal("production_ton"), rs.getBigDecimal("material_cost")},
