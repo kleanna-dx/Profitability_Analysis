@@ -48,6 +48,12 @@ public class ItfExecutionService {
      * @return 실행 결과
      */
     public Map<String, Object> execute(String interfaceId, String cmonth, String mode, String executedBy) {
+        return execute(interfaceId, cmonth, mode, executedBy, "PS");
+    }
+
+    /** @param division 사업부 — 에너지팀 수신 데이터의 저장 사업부 (화면 상단 사업부) */
+    public Map<String, Object> execute(String interfaceId, String cmonth, String mode, String executedBy, String division) {
+        final String div = division == null || division.isBlank() ? "PS" : division;
         // 1) 마스터 조회
         RpsimItfMaster master = masterRepo.findById(interfaceId)
                 .orElseThrow(() -> new RuntimeException("인터페이스를 찾을 수 없습니다: " + interfaceId));
@@ -86,7 +92,7 @@ public class ItfExecutionService {
                 result = executeSapRfc(hist, rfcName, targetTable, cmonth, mode);
             } else if (rfcFuncOrUrl != null && rfcFuncOrUrl.contains("/energy-sync/")) {
                 // 에너지팀 DB 수신
-                result = executeEnergySync(hist, rfcFuncOrUrl, cmonth, mode);
+                result = executeEnergySync(hist, rfcFuncOrUrl, cmonth, mode, div);
             } else {
                 // 수기 입력 또는 미설정
                 hist.appendLog("자동 실행 대상이 아닙니다 (수기입력/엑셀업로드 인터페이스)");
@@ -161,11 +167,10 @@ public class ItfExecutionService {
     // ================================================================
 
     private Map<String, Object> executeEnergySync(RpsimItfHistory hist, String rfcFuncOrUrl,
-                                                   String cmonth, String mode) {
+                                                   String cmonth, String mode, String division) {
         int year = Integer.parseInt(cmonth.substring(0, 4));
-        String division = "PS";
 
-        hist.appendLog("[에너지팀] url=" + rfcFuncOrUrl + ", year=" + year);
+        hist.appendLog("[에너지팀] url=" + rfcFuncOrUrl + ", year=" + year + ", division=" + division);
 
         Map<String, Object> result = new LinkedHashMap<>();
 

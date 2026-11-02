@@ -18,7 +18,7 @@ import static com.company.module.rollingplanningsimulation.support.RawMaterialSq
  * 원부재료비 — 전월 실적(SAP rpsim_raw_material) + 차월 예상(수기입력)
  *
  * <p>기준월(ym) = 예상월, 실적 = 전월(prevYm)</p>
- * <p>사업부 필터: 호기 마스터(rpsim_unit)에 해당 사업부 호기가 등록돼 있으면 그 호기만, 없으면 전체</p>
+ * <p>사업부 필터: 호기 마스터(rpsim_unit)에 등록된 해당 사업부 호기만 (미등록이면 0건)</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -31,18 +31,15 @@ public class MaterialForecastService {
 
     private static final String[] UK = {"ym", "division", "machineCode", "rowType", "itemCode"};
 
-    /** 사업부 + 호기 조건 (파라미터 4개: div, div, machine, machine) */
-    private static final String SCOPE =
-            " AND (NOT EXISTS (SELECT 1 FROM rpsim_unit u WHERE u.DIVISION = ? AND u.DELETED_YN = 'N')" +
-            "      OR BIC_ZMACHINE IN (SELECT u.UNIT_CODE FROM rpsim_unit u WHERE u.DIVISION = ? AND u.DELETED_YN = 'N'))" +
-            " AND (? = 'ALL' OR BIC_ZMACHINE = ?)";
+    /** 사업부 + 호기 조건 (파라미터 3개: div, machine, machine) */
+    private static final String SCOPE = DIV_SCOPE + MACHINE_COND;
 
     public Map<String, Object> load(String ym, String division, String machine) {
         validateYm(ym);
         String div = division == null || division.isBlank() ? "PS" : division;
         String mc = machine == null || machine.isBlank() ? "ALL" : machine;
         String prev = prevYm(ym);
-        Object[] scope = {div, div, mc, mc};
+        Object[] scope = {div, mc, mc};
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("ym", ym);
@@ -54,16 +51,15 @@ public class MaterialForecastService {
                 "cost", "실적배부수량(BIC_ZDTB_QTY) × 실적단가(BIC_ZTPRICE)",
                 "category", "DATA_TYPE 100=원재료(자재그룹 1*) / 101=부재료(자재그룹 2*)"));
 
-        // 호기 마스터에 등록된 해당 사업부 호기 (없으면 전체 호기 대상)
+        // 호기 마스터에 등록된 해당 사업부 호기 (없으면 실적 0건)
         out.put("divisionMachines", jdbc.queryForList(
                 "SELECT UNIT_CODE FROM rpsim_unit WHERE DIVISION = ? AND DELETED_YN = 'N' ORDER BY UNIT_CODE", String.class, div));
 
         // 실적월 호기 목록 (사업부 범위)
         out.put("machines", jdbc.queryForList(
                 "SELECT BIC_ZMACHINE AS code, MAX(BIC_ZMACHINE_NM) AS name FROM rpsim_raw_material WHERE CALMONTH = ?" +
-                SCOPE.replace(" AND (? = 'ALL' OR BIC_ZMACHINE = ?)", "") +
-                " AND BIC_ZMACHINE IS NOT NULL GROUP BY BIC_ZMACHINE ORDER BY BIC_ZMACHINE",
-                prev, div, div));
+                DIV_SCOPE + " GROUP BY BIC_ZMACHINE ORDER BY BIC_ZMACHINE",
+                prev, div));
 
         // ① 지종별 생산량 (톤) — 제품(호기+레벨4)별 MAX 후 지종 합계
         out.put("products", jdbc.queryForList(

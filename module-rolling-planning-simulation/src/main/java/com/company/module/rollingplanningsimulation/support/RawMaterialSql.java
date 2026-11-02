@@ -25,6 +25,15 @@ public final class RawMaterialSql {
             "  CASE WHEN CAST(RIGHT(TRIM(PRODH4),3) AS UNSIGNED) < 300 THEN 'SC저평량' ELSE 'SC고평량' END " +
             "ELSE COALESCE(NULLIF(TRIM(PRODH2_NM),''),'(미분류)') END";
 
+    /**
+     * 사업부 범위 — rpsim_raw_material 에는 사업부 컬럼이 없어 호기 마스터(rpsim_unit)로 판단.
+     * 해당 사업부에 등록된 호기만 포함 (미등록이면 0건 — 다른 사업부 데이터가 섞이지 않게). 파라미터 1개: division
+     */
+    public static final String DIV_SCOPE =
+            " AND BIC_ZMACHINE IN (SELECT u.UNIT_CODE FROM rpsim_unit u WHERE u.DIVISION = ? AND u.DELETED_YN = 'N')";
+    /** 호기 조건 — 파라미터 2개: machine, machine ('ALL'이면 전체) */
+    public static final String MACHINE_COND = " AND (? = 'ALL' OR BIC_ZMACHINE = ?)";
+
     /** YYYYMM 전월 */
     public static String prevYm(String ym) {
         int y = Integer.parseInt(ym.substring(0, 4)), m = Integer.parseInt(ym.substring(4, 6));
