@@ -1592,6 +1592,35 @@ const CATEGORY_NAMES = {
 //   - '기타'(other) 는 마지막 - TOTAL1/TOTAL2 (표준가) 가 여기에 표시됨.
 const CATEGORY_ORDER = ['period','org','product','cost_type','quantity','unit','cost_total','metric','cost','trade','amount','other'];
 
+// ─────────────────────────────────────────────────────────────────
+// [PR #551, 2026-11-02] 제조원가 VQB — 필터조건 전용 섹션 순서
+//
+//   사용자 요구:
+//     비주얼쿼리빌더 [필터조건] 드롭다운에서
+//     "자재 코드(MATERIAL) / 자재명(MATERIAL_NM)" 을 상단으로 올려서
+//     접근성 개선 (조직/사업부 위로).
+//
+//   사용자 승인 조합 (2026-11-02):
+//     Q1(a): 필터조건 드롭다운만 (조회필드 사이드바는 CATEGORY_ORDER 유지)
+//     Q2(a): "자재/제품" 섹션을 "기간" 다음 (2번째) 로 이동
+//     Q3(a): 제조원가 영역만 (수익성분석 완전 무영향)
+//     Q4(b): 기간 섹션 유지 (CALMONTH 그대로 노출)
+//
+//   순서 (조회필드 CATEGORY_ORDER 와 비교):
+//     [공용]        period → org → product → cost_type → quantity → ...
+//     [MFG 필터]    period → product → org → cost_type → quantity → ...
+//                           ^^^^^^^^^^^^^^
+//                           product(자재/제품) 가 org(조직/사업부) 앞으로
+//
+//   설계:
+//     - CATEGORY_ORDER 와 동일 요소/길이 (누락/추가 없음) 보장
+//     - product 와 org 의 상대 순서만 반전 → 나머지 섹션 영향 0
+//     - _renderFieldComboItems() (필터조건 전용 함수) 에서만 참조
+//     - 영역 가드: _currentBuilderArea() === 'manufacturing-cost' 전용
+//     - 수익성분석 영역은 기존 CATEGORY_ORDER 그대로 사용 → 완전 무영향
+// ─────────────────────────────────────────────────────────────────
+const _MFG_FILTER_CATEGORY_ORDER = ['period','product','org','cost_type','quantity','unit','cost_total','metric','cost','trade','amount','other'];
+
 // ─── Init ────────────────────────────────────
 let currentUserRole='user', currentDomain='PS', currentUserId='';
 let userDefaultDomain=null, domainsList=[], builderDomainLocked=false;
@@ -3267,7 +3296,14 @@ function _renderFieldComboItems(qRaw) {
     const cur = conditions[filterCombo.condIdx]?.column;
     let html = '';
     let total = 0;
-    CATEGORY_ORDER.forEach(cat => {
+    // [PR #551, 2026-11-02] 제조원가 영역에서는 필터조건 전용 섹션 순서 사용
+    //   - product(자재/제품) 를 org(조직/사업부) 앞으로 이동 → "자재 코드/명" 접근성 개선
+    //   - 수익성분석(및 기타) 영역은 기존 CATEGORY_ORDER 그대로 → 완전 무영향
+    //   - 조회필드 사이드바(renderFieldList 계열) 는 CATEGORY_ORDER 참조 → 조회필드 UI 무영향
+    const _isMfgAreaForFilter = (typeof _currentBuilderArea === 'function') &&
+                                (_currentBuilderArea() === 'manufacturing-cost');
+    const _activeOrder = _isMfgAreaForFilter ? _MFG_FILTER_CATEGORY_ORDER : CATEGORY_ORDER;
+    _activeOrder.forEach(cat => {
         const cols = allColumns.filter(c => c.category === cat);
         if (cols.length === 0) return;
         const matched = cols.filter(c => {
