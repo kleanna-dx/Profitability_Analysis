@@ -17325,8 +17325,26 @@ app.post('/api/builder/query', async (req, res) => {
   //
   //   설계 (설정 테이블 패턴, PR #542/#544/#546/#549/#550/#551 과 통일):
   //     - required_columns: 3개 전부 SELECT 에 있어야 적용 (엄격 매칭)
-  //     - order_by_sql: 자동 추가될 ORDER BY 절 (ORDER BY 키워드 제외)
+  //     - order_by_sql_base: 자동 추가될 ORDER BY 절 (ORDER BY 키워드 제외)
   //     - 미래에 ZCGUBUN_D 값/순서가 바뀌면 이 상수 1곳만 수정
+  //
+  //   [2026-11-03 v2 확장] 사용자 요청:
+  //     조회필드에 MATERIAL 또는 MATERIAL_NM 중 하나라도 포함되어 있으면
+  //     ORDER BY 맨 앞에 MATERIAL 을 붙여서 자재 단위로 먼저 정렬.
+  //     (MATERIAL_NM 은 중복 가능하므로 유일키 MATERIAL 을 정렬 키로 사용.)
+  //
+  //     - material_trigger_columns: MATERIAL 또는 MATERIAL_NM 중 1개라도 매칭
+  //     - order_by_sql_with_material: MATERIAL prefix 가 붙은 ORDER BY
+  //     - 안전성: 이 조건이 활성화되려면 사전에 _MFG_COST_ELEMENT_DEPS 가
+  //       MATERIAL 을 포함하므로 KST/TOTAL/LBKUM 더블클릭 시 MATERIAL 이
+  //       fields 에 자동 삽입됨 → SELECT/GROUP BY 안전성 자동 확보.
+  //       사용자가 수동으로 MATERIAL 을 제거해도 MATERIAL_NM 하나로도
+  //       트리거되지만, 그 경우에도 PR #210 GROUP BY 자동 보정 로직이
+  //       MATERIAL_NM 을 GROUP BY 에 넣어 SELECT 에 등장시킨다.
+  //       MATERIAL 만 ORDER BY 에 참조되는 edge case 는 사용자가 명시적으로
+  //       MATERIAL 을 제거하고 집계 모드로 돌리는 극히 드문 경우로,
+  //       해당 상황에서는 MariaDB ONLY_FULL_GROUP_BY 가 꺼져 있어 "임의 1행"
+  //       반환되지만 기능적으로는 정렬 미동작 (fallback) 수준으로 degrade.
   //
   //   영역 격리:
   //     - 제조원가 (manufacturing-cost) 영역만 적용
@@ -17335,7 +17353,21 @@ app.post('/api/builder/query', async (req, res) => {
   // ─────────────────────────────────────────────────────────────────
   const _MFG_AUTO_ORDER_RULES = {
     required_columns: ['PLANT', 'ZCGUBUN_D', 'ZCGUBUN'],  // 엄격 매칭 (사용자 Q4(A) 승인)
-    order_by_sql: `PLANT, ` +
+    material_trigger_columns: ['MATERIAL', 'MATERIAL_NM'], // MATERIAL prefix 트리거 (OR 매칭)
+    order_by_sql_base: `PLANT, ` +
+      `CASE ` +
+        `WHEN ZCGUBUN_D = '입고-생산' THEN 1 ` +
+        `WHEN ZCGUBUN_D = '소비-소비' THEN 2 ` +
+        `ELSE 99 ` +
+      `END, ` +
+      `CASE ` +
+        `WHEN ZCGUBUN_D = '입고-생산' AND ZCGUBUN = '실제원가' THEN 1 ` +
+        `WHEN ZCGUBUN_D = '입고-생산' AND ZCGUBUN = '표준원가' THEN 2 ` +
+        `WHEN ZCGUBUN_D = '소비-소비' AND ZCGUBUN = '매출원가' THEN 1 ` +
+        `WHEN ZCGUBUN_D = '소비-소비' AND ZCGUBUN = '표준원가' THEN 2 ` +
+        `ELSE 99 ` +
+      `END`,
+    order_by_sql_with_material: `MATERIAL, PLANT, ` +
       `CASE ` +
         `WHEN ZCGUBUN_D = '입고-생산' THEN 1 ` +
         `WHEN ZCGUBUN_D = '소비-소비' THEN 2 ` +
@@ -17360,6 +17392,10 @@ app.post('/api/builder/query', async (req, res) => {
   //     1) isMfgArea === true (제조원가 영역)
   //     2) 사용자가 order_by 를 지정하지 않음 (빈 문자열 또는 null)
   //     3) SELECT fields 에 required_columns 3개가 모두 포함
+  //   추가 분기 (v2):
+  //     4) fields 에 material_trigger_columns 중 하나라도 있으면
+  //        → order_by_sql_with_material (MATERIAL prefix) 반환
+  //        없으면 → order_by_sql_base (기존 동작) 반환
   const _mfgAutoOrderBySql = (userOrderBy, fieldsArr) => {
     if (!isMfgArea) return null;
     const userOrderStr = (userOrderBy || '').toString().trim();
@@ -17370,7 +17406,12 @@ app.post('/api/builder/query', async (req, res) => {
     );
     const allPresent = _MFG_AUTO_ORDER_RULES.required_columns.every(c => selectedCols.has(c));
     if (!allPresent) return null;
-    return _MFG_AUTO_ORDER_RULES.order_by_sql;
+    // v2 분기: MATERIAL 또는 MATERIAL_NM 중 하나라도 있으면 MATERIAL prefix
+    const hasMaterialTrigger = _MFG_AUTO_ORDER_RULES.material_trigger_columns.some(c => selectedCols.has(c));
+    if (hasMaterialTrigger) {
+      return _MFG_AUTO_ORDER_RULES.order_by_sql_with_material;
+    }
+    return _MFG_AUTO_ORDER_RULES.order_by_sql_base;
   };
 
   // ─── [2026-06-29] 요청 단위 로거 — 11개 stage 단계별 추적 ────────────────

@@ -113,8 +113,8 @@ assertMatch(htmlSrc,
 //          - MATERIAL_NM 자재명 (v4 추가 — 집계 왜곡 방지 효과 강화)
 //          - ZCGUBUN_D 가 ZCGUBUN 보다 앞 (대구분 → 구분 순서)
 assertMatch(htmlSrc,
-    /const\s+_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
-    '1-3-v4a: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN] 공통 상수 선언 (v4 사용자 요구 순서)');
+    /const\s+_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
+    '1-3-v5a: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, MATERIAL, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN] 공통 상수 선언 (v5 사용자 요구: MATERIAL 추가)');
 
 // 1-3b: 과거 PR #542 의 잘못된 키 'COST_ACTUAL_UNIT_PRICE' 는 제거되어야 함
 //       (seed 파일만 보고 가정 → 운영 미매칭 → no-op 발생했던 코드)
@@ -203,8 +203,10 @@ assertMatch(addFieldSrc,
 
 // 2-8: dependency 분기 완료 후 return — 하단 DATE_FIELDS/일반 분기로 내려가지 않음
 //      (중복 push 방지)
+//      [v5 2026-11-03] PR #553 POST_DEPENDENCIES 블록이 push~return 사이에 삽입됨
+//      (실측 push→return 거리 ≈ 2226 chars) → window 확대 (0,800 → 0,2500)
 assertMatch(addFieldSrc,
-    /selectedFields\.push\s*\(\s*newField\s*\)[\s\S]{0,800}return\s*;/,
+    /selectedFields\.push\s*\(\s*newField\s*\)[\s\S]{0,2500}return\s*;/,
     '2-8: dependency 분기 끝에서 return 하여 일반 분기 중복 실행 방지');
 
 // 2-9: 사용자 피드백(snackbar) 시도 — 없어도 안전하게 skip
