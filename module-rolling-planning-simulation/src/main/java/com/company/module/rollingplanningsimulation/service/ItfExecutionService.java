@@ -232,8 +232,10 @@ public class ItfExecutionService {
 
     private void updateScheduleStatus(String interfaceId, String status) {
         List<RpsimItfSchedule> schedules = schedRepo.findByInterfaceIdOrderByScheduleIdAsc(interfaceId);
+        // 결과만 기록 — 다음 실행 예정(NEXT_RUN_AT)은 스케줄러가 관리하므로 지우지 않음
+        LocalDateTime now = com.company.module.rollingplanningsimulation.support.ItfScheduleRule.now();
         for (RpsimItfSchedule s : schedules) {
-            s.updateRunStatus(status, LocalDateTime.now(), null);
+            s.markResult(status, now);
             schedRepo.save(s);
         }
     }

@@ -3183,7 +3183,7 @@ function renderItfExec(){
     }
     const itfName=id=>{const m=ITF_MASTERS.find(i=>i.id===id);return m?m.name:id;};
     const statusBadge=s=>{
-        const map={success:['#dcfce7','#166534'],failed:['#fef2f2','#dc2626'],running:['#dbeafe','#2563eb'],pending:['#f1f5f9','#64748b']};
+        const map={success:['#dcfce7','#166534'],failed:['#fef2f2','#dc2626'],running:['#dbeafe','#2563eb'],pending:['#f1f5f9','#64748b'],skipped:['#fef9c3','#a16207']};
         const c=map[s]||map.pending;
         return '<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:'+c[0]+';color:'+c[1]+';">'+(s||'pending')+'</span>';
     };
@@ -3192,7 +3192,7 @@ function renderItfExec(){
         '<td class="mn" style="font-size:10px;">'+s.scheduleId+'</td>'+
         '<td style="font-weight:600;font-size:11px;">'+itfName(s.interfaceId)+'</td>'+
         '<td><span style="font-size:10px;padding:2px 8px;border-radius:10px;background:#e0e7ff;color:#3730a3;font-weight:600;">'+(s.scheduleType||'manual')+'</span></td>'+
-        '<td style="font-size:10px;color:#64748b;">'+(s.execTime||s.execDatetime||'-')+'</td>'+
+        '<td style="font-size:10px;color:#64748b;">'+itfsWhen(s)+(s.scheduleType!=='manual'?'<div style="font-size:9px;color:#94a3b8;">대상: '+itfsTarget(s.targetMonth)+'</div>':'')+'</td>'+
         '<td>'+(s.isActive!==false?'<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#dcfce7;color:#166534;">활성</span>':'<span style="font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:#f1f5f9;color:#94a3b8;">비활성</span>')+'</td>'+
         '<td style="font-size:10px;color:#64748b;">'+fmtDT(s.lastRunAt)+'</td>'+
         '<td>'+statusBadge(s.lastRunStatus)+'</td>'+
@@ -3290,33 +3290,92 @@ async function deleteItfMaster(id){
 }
 
 // ── 수행 스케줄 등록/편집 모달 ──
+// 수행 스케줄 — 대상년월 규칙: CUR=실행일 기준 당월 / PREV=실행일 기준 전월 / yyyymm=고정
+const ITFS_TM_LABEL={CUR:'당월 (실행일 기준)',PREV:'전월 (실행일 기준)'};
+function itfsTimeStr(t){return t?String(t).substring(0,5):'';}
+function itfsWhen(s){
+    const t=itfsTimeStr(s.execTime);
+    if(s.scheduleType==='daily')return t?'매일 '+t:'<span style="color:#dc2626;">실행 시각 미설정</span>';
+    if(s.scheduleType==='monthly')return (t&&s.execDayOfMonth)?'매월 '+s.execDayOfMonth+'일 '+t:'<span style="color:#dc2626;">실행일/시각 미설정</span>';
+    if(s.scheduleType==='once')return s.execDatetime?String(s.execDatetime).replace('T',' ').substring(0,16):'<span style="color:#dc2626;">실행일시 미설정</span>';
+    return '-';
+}
+function itfsTarget(v){const s=String(v||'').toUpperCase();if(ITFS_TM_LABEL[s])return ITFS_TM_LABEL[s];if(/^\d{6}$/.test(s))return s.slice(0,4)+'.'+s.slice(4)+' 고정';return '당월 (실행일 기준)';}
+function itfsToggleFields(){
+    const t=document.querySelector('[name="itfs_scheduleType"]').value;
+    const show=(id,on)=>{const el=document.getElementById(id);if(el)el.style.display=on?'':'none';};
+    show('itfsTimeRow',t==='daily'||t==='monthly');
+    show('itfsDayRow',t==='monthly');
+    show('itfsOnceRow',t==='once');
+    const tm=document.querySelector('[name="itfs_tmRule"]').value;
+    show('itfsFixedRow',tm==='FIXED');
+}
 function openItfExecModal(editData){
     const isEdit=!!editData;
     const d=editData||{};
+    const L=(txt)=>'<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">'+txt+'</label>';
+    const IS='width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;';
+    const type=d.scheduleType||'daily';
+    const tmRaw=String(d.targetMonth||'CUR').toUpperCase();
+    const tmRule=/^\d{6}$/.test(tmRaw)?'FIXED':(tmRaw==='PREV'?'PREV':'CUR');
+    const onceVal=d.execDatetime?String(d.execDatetime).substring(0,16):'';
     let h='<h3 style="margin:0 0 16px;font-size:15px;"><i class="fas fa-'+(isEdit?'edit':'plus-circle')+' text-blue-500"></i> 수행 스케줄 '+(isEdit?'편집':'등록')+'</h3>';
-    // 인터페이스 선택
-    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">인터페이스</label>';
-    h+='<select name="itfs_interfaceId" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    h+=L('인터페이스')+'<select name="itfs_interfaceId" style="'+IS+'">';
     ITF_MASTERS.forEach(itf=>{h+='<option value="'+itf.id+'"'+(d.interfaceId===itf.id?' selected':'')+'>'+itf.id+' — '+itf.name+'</option>';});
     h+='</select>';
-    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">수행 주기</label>';
-    h+='<select name="itfs_scheduleType" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
-    ['manual','daily','monthly','once'].forEach(t=>{h+='<option value="'+t+'"'+(d.scheduleType===t?' selected':'')+'>'+t+'</option>';});
+    h+=L('수행 주기')+'<select name="itfs_scheduleType" onchange="itfsToggleFields()" style="'+IS+'">';
+    [['daily','daily — 매일'],['monthly','monthly — 매월'],['once','once — 1회'],['manual','manual — 수동 실행만']].forEach(([v,l])=>{h+='<option value="'+v+'"'+(type===v?' selected':'')+'>'+l+'</option>';});
     h+='</select>';
-    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">대상년월 (YYYYMM)</label><input name="itfs_targetMonth" value="'+(d.targetMonth||getYm())+'" placeholder="202501" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
-    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">실행 모드</label><input name="itfs_execMode" value="'+(d.execMode||'replace')+'" placeholder="replace/append/merge" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
-    h+='<label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-top:8px;">비고</label><input name="itfs_remark" value="'+(d.remark||'')+'" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:inherit;">';
+    h+='<div id="itfsTimeRow">'+L('실행 시각 (HH:mm, 한국시간)')+'<input name="itfs_execTime" type="time" value="'+(itfsTimeStr(d.execTime)||'08:00')+'" style="'+IS+'"></div>';
+    h+='<div id="itfsDayRow">'+L('매월 실행일 (1~31, 그 달에 없으면 말일)')+'<input name="itfs_execDayOfMonth" type="number" min="1" max="31" value="'+(d.execDayOfMonth||'')+'" style="'+IS+'"></div>';
+    h+='<div id="itfsOnceRow">'+L('1회 실행일시')+'<input name="itfs_execDatetime" type="datetime-local" value="'+onceVal+'" style="'+IS+'"></div>';
+    h+=L('대상년월')+'<select name="itfs_tmRule" onchange="itfsToggleFields()" style="'+IS+'">';
+    [['CUR','당월 — 실행일 기준 (예: 11/3 실행 → 2026.11)'],['PREV','전월 — 실행일 기준 (예: 11/3 실행 → 2026.10)'],['FIXED','고정 년월 지정']].forEach(([v,l])=>{h+='<option value="'+v+'"'+(tmRule===v?' selected':'')+'>'+l+'</option>';});
+    h+='</select>';
+    h+='<div id="itfsFixedRow">'+L('고정 년월 (yyyy.mm)')+'<input name="itfs_tmFixed" maxlength="7" placeholder="2026.11" value="'+(tmRule==='FIXED'?tmRaw.slice(0,4)+'.'+tmRaw.slice(4):'')+'" oninput="fmtYmInput(this)" style="'+IS+'"></div>';
+    h+=L('실행 모드')+'<select name="itfs_execMode" style="'+IS+'">';
+    ['replace','append','dry-run'].forEach(m=>{h+='<option value="'+m+'"'+((d.execMode||'replace').toLowerCase()===m?' selected':'')+'>'+MODE_LABELS[m]+'</option>';});
+    h+='</select>';
+    h+=L('비고')+'<input name="itfs_remark" value="'+(d.remark||'').replace(/"/g,'&quot;')+'" style="'+IS+'">';
+    h+='<div style="margin-top:10px;font-size:10px;color:#64748b;background:#f8fafc;padding:8px 10px;border-radius:6px;"><i class="fas fa-info-circle mr-1"></i>자동 실행은 사업부 PS 기준이며, 실행 결과는 이력관리에 실행자 <b>SCHEDULER</b>로 남습니다.</div>';
     h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="saveItfSchedule('+(isEdit?d.scheduleId:'null')+')">저장</button></div>';
     document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+    itfsToggleFields();
 }
 
 async function saveItfSchedule(editId){
-    const g=n=>document.querySelector('[name="itfs_'+n+'"]').value.trim();
-    const body={interfaceId:g('interfaceId'),scheduleType:g('scheduleType'),targetMonth:g('targetMonth'),execMode:g('execMode'),remark:g('remark'),isActive:true,createdBy:window.CURRENT_USER||'admin',updatedBy:window.CURRENT_USER||'admin'};
+    const g=n=>{const el=document.querySelector('[name="itfs_'+n+'"]');return el?el.value.trim():'';};
+    const type=g('scheduleType');
+    const body={interfaceId:g('interfaceId'),scheduleType:type,execMode:g('execMode'),remark:g('remark'),isActive:true,
+        execTime:null,execDayOfMonth:null,execDatetime:null,
+        createdBy:window.CURRENT_USER||'admin',updatedBy:window.CURRENT_USER||'admin'};
+    if(type==='daily'||type==='monthly'){
+        if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(g('execTime'))){alert('실행 시각을 HH:mm 형식으로 입력하세요. (예: 08:00)');return;}
+        body.execTime=g('execTime');
+    }
+    if(type==='monthly'){
+        const dd=parseInt(g('execDayOfMonth'));
+        if(!(dd>=1&&dd<=31)){alert('매월 실행일(1~31)을 입력하세요.');return;}
+        body.execDayOfMonth=dd;
+    }
+    if(type==='once'){
+        if(!g('execDatetime')){alert('1회 실행일시를 입력하세요.');return;}
+        body.execDatetime=g('execDatetime');
+    }
+    const rule=g('tmRule');
+    if(rule==='FIXED'){
+        if(!YM_RE.test(g('tmFixed'))){alert('고정 년월은 yyyy.mm 형식으로 입력하세요. (예: 2026.11)');return;}
+        body.targetMonth=g('tmFixed').replace('.','');
+    }else body.targetMonth=rule;
+    if(editId){const cur=ITF_SCHEDULES.find(x=>x.scheduleId===editId);if(cur)body.isActive=cur.isActive!==false;}
     try{
         const url=editId?API+'/itf-schedules/'+editId:API+'/itf-schedules';
         const r=await fetch(url,{method:editId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-        const j=await r.json();if(j.data){closeModal();loadItfSchedules();}else{alert('저장 실패');}
+        if(!r.ok){alert('저장 실패\n'+await apiErrMsg(r));return;}
+        const j=await r.json();
+        if(j.data){closeModal();loadItfSchedules();
+            const nx=j.data.nextRunAt;if(nx)alert('저장했습니다.\n다음 자동 실행: '+String(nx).replace('T',' ').substring(0,16));}
+        else{alert('저장 실패');}
     }catch(e){alert('에러: '+e.message);}
 }
 
