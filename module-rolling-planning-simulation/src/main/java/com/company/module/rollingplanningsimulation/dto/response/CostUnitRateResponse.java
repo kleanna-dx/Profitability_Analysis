@@ -18,7 +18,16 @@ public class CostUnitRateResponse {
     private String prevYm;
     private String machine;
     private String division;
+    /** 기준월 생산량(톤) — STEP3 생산계획 총생산량, 없으면 기준월 실적 */
     private long baseProdTon;
+    /** 기준월 생산량 출처: PLAN(생산계획) / ACTUAL(기준월 실적) / NONE */
+    private String baseProdSource;
+    /** 생산계획 확정(잠금) 여부 */
+    private boolean planLocked;
+    /** 전월 실적에 없어 전월 전체 원단위를 적용한 지종 */
+    private List<String> unmatchedProducts;
+    /** 화면 경고 문구 */
+    private List<String> warnings;
 
     private Rates rates;
     private Rates prevRates;

@@ -393,7 +393,7 @@
             <div style="display:flex;align-items:center;gap:16px;">
                 <div style="flex:1;">
                     <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-                        <span style="font-size:11px;color:#64748b;">당월 실적: <b id="plBaseProd">-</b></span>
+                        <span style="font-size:11px;color:#64748b;"><span id="plBaseLbl">기준월 생산량</span>: <b id="plBaseProd">-</b></span>
                         <span style="font-size:11px;color:#4f46e5;font-weight:700;" id="slLbl">시뮬: - 톤</span>
                     </div>
                     <input type="range" min="0" max="15000" value="0" step="100" class="sim-slider" id="prodSl" oninput="calcPL()">
@@ -403,6 +403,7 @@
                     <div style="font-size:20px;font-weight:800;color:#4f46e5;" id="prodD">0%</div>
                 </div>
             </div>
+            <div id="plMatNote" style="margin-top:8px;font-size:10px;color:#64748b;"></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:14px;" id="plCards"></div>
         <div class="sc" style="margin-bottom:14px;overflow:hidden;">
@@ -410,7 +411,7 @@
                 <h3 style="font-size:12px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-table text-indigo-500 mr-1"></i>P/L 상세</h3>
                 <span style="font-size:10px;color:#94a3b8;">단위: 천원/톤</span>
             </div>
-            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>항목</th><th>비용성격</th><th class="r">당월</th><th class="r">전월</th><th class="r">시뮬</th><th class="r">시뮬총비용(백만)</th><th class="r">증감</th><th>데이터</th></tr></thead><tbody id="plTb"></tbody></table></div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>항목</th><th>비용성격</th><th class="r">기준월(예상)</th><th class="r">전월(실적)</th><th class="r">시뮬</th><th class="r">시뮬총비용(백만)</th><th class="r">증감</th><th>데이터</th></tr></thead><tbody id="plTb"></tbody></table></div>
         </div>
         <div class="sc" style="padding:14px;"><div style="height:220px;position:relative;"><canvas id="costChart"></canvas></div></div>
     </div>
@@ -455,13 +456,13 @@
         <div class="sc" style="padding:16px;margin-bottom:14px;">
             <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-balance-scale text-amber-500 mr-2"></i>지종별 생산량 손익 시뮬레이션</h3>
             <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
-                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #64748b;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">기준 총재료비</div><div style="font-size:18px;font-weight:800;color:#475569;" id="psBase">2,739</div><div style="font-size:10px;color:#94a3b8;">백만원 (당월 실적)</div></div>
-                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #4f46e5;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">시뮬 총재료비</div><div style="font-size:18px;font-weight:800;color:#4f46e5;" id="psSim">2,739</div><div style="font-size:10px;color:#94a3b8;">백만원 (차월 예상)</div></div>
-                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #16a34a;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">당월 대비 손익</div><div style="font-size:18px;font-weight:800;color:#16a34a;" id="psDiff">0</div><div style="font-size:10px;color:#94a3b8;">억원 (절감+ / 증가-)</div></div>
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #64748b;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">기준 총재료비</div><div style="font-size:18px;font-weight:800;color:#475569;" id="psBase">2,739</div><div style="font-size:10px;color:#94a3b8;">백만원 (기준월 예상)</div></div>
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #4f46e5;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">시뮬 총재료비</div><div style="font-size:18px;font-weight:800;color:#4f46e5;" id="psSim">2,739</div><div style="font-size:10px;color:#94a3b8;">백만원 (시뮬)</div></div>
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #16a34a;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">기준월 대비 손익</div><div style="font-size:18px;font-weight:800;color:#16a34a;" id="psDiff">0</div><div style="font-size:10px;color:#94a3b8;">억원 (절감+ / 증가-)</div></div>
             </div>
         </div>
         <div class="sc" style="overflow:hidden;">
-            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>지종</th><th class="r">당월 생산량(톤)</th><th class="r">당월 원단위</th><th class="r">차월 생산량(톤)</th><th class="r">차월 원단위</th><th class="r">손익(억원)</th></tr></thead><tbody id="psTb"></tbody></table></div>
+            <div style="overflow-x:auto;"><table class="st"><thead><tr><th>지종</th><th class="r">기준월 생산량(톤)</th><th class="r">전월 원단위</th><th class="r">시뮬 생산량(톤)</th><th class="r">시뮬 원단위</th><th class="r">손익(억원)</th></tr></thead><tbody id="psTb"></tbody></table></div>
         </div>
         <div class="sc" style="padding:14px;margin-top:14px;"><div style="height:220px;position:relative;"><canvas id="matChart"></canvas></div></div>
     </div>
@@ -667,7 +668,7 @@
         <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #8b5cf6;">
             <div style="font-size:11px;color:#94a3b8;font-weight:600;">생산량</div>
             <div style="font-size:24px;font-weight:800;color:#7c3aed;margin:6px 0;">-</div>
-            <div style="font-size:11px;color:#94a3b8;">당월 실적 기준</div>
+            <div style="font-size:11px;color:#94a3b8;">기준월 생산량 기준</div>
         </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
@@ -789,7 +790,14 @@ async function loadCostUnitRates(){
         // 기준 생산량 갱신
         BP=d.baseProdTon||0;
         document.getElementById('prodSl').value=BP;
-        {const b=document.getElementById('plBaseProd');if(b)b.textContent=BP>0?fmtI(BP)+' 톤':'실적 없음';}
+        {const b=document.getElementById('plBaseProd');const src=d.baseProdSource;
+            const srcLbl=src==='PLAN'?(d.planLocked?'생산계획(확정)':'생산계획(미확정)'):src==='ACTUAL'?'기준월 실적':'';
+            if(b)b.textContent=BP>0?fmtI(BP)+' 톤'+(srcLbl?' · '+srcLbl:''):'생산계획 없음';
+            const nt=document.getElementById('plMatNote');
+            if(nt){const pY=d.prevYm||'';const lbl=pY?pY.slice(0,4)+'.'+pY.slice(4):'전월';
+                let h='<i class="fas fa-info-circle mr-1"></i>원·부재료비 = '+lbl+' 실적 지종별 원단위 × 기준월 지종별 생산량 (총생산량 기준)';
+                (d.warnings||[]).forEach(w=>{h+='<div style="color:#d97706;margin-top:2px;"><i class="fas fa-exclamation-triangle mr-1"></i>'+w+'</div>';});
+                nt.innerHTML=h;}}
         // P/L 탭 호기 선택 — 해당 사업부(호기 마스터) 호기 중 실적 있는 호기
         {const sel=document.getElementById('plMc'),note=document.getElementById('plMcNote');if(sel){const cur=sel.value;const ms=d.machines||[];
             sel.innerHTML='<option value="ALL">전체</option>'+ms.map(m=>'<option value="'+m.code+'">'+m.code+(m.name?' ('+m.name+')':'')+'</option>').join('');
@@ -815,6 +823,7 @@ async function loadCostUnitRates(){
         PLK('log').db=d.fromDB?.logistics||false;
         PLK('log').n=PLK('log').db?'DB':'준비중';
         // 지종별 원재료비 갱신
+        MAT_API=[];
         if(d.materialByProduct&&d.materialByProduct.length){
             MAT_API=d.materialByProduct.map(m=>({
                 p:m.product,ton:m.productionTon,cost:m.materialCost,
