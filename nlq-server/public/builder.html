@@ -2198,9 +2198,16 @@ function renderFieldList(cols) {
     //     → category 를 'other' 로 override 하면 자연스럽게 맨 아래 섹션으로 이동.
     //   영역 가드: 제조원가(manufacturing-cost)에서만 적용. 다른 영역에선 서버 category 유지.
     //   원본 객체 보존: 얕은 복사(…c)로 override — allColumns 참조는 변경 없음 → addField 자동 추가 로직 무영향.
+    //
+    // [PR #556, 2026-11-02] 특정 컬럼을 섹션 안 "맨 뒤"로 밀어내기 (SECTION_END)
+    //   사용자 요구: '기타(other)' 섹션 안에서 현재월 표준가 → 이전월 표준가 → 통화 코드 순.
+    //     기존 순서는 allColumns 입력 순서대로 push 되므로 CURRENCY 가 TOTAL1/TOTAL2 앞에 왔음.
+    //     → _MFG_SIDEBAR_SECTION_END_FIELDS 에 명시된 컬럼은 grouped[cat] 배열의 맨 뒤로 재정렬.
+    //   설계: 설정 테이블 1곳에 관리, 미래에 "섹션 맨 뒤로 보낼 컬럼" 추가 요구에 대응 쉬움.
     const _isMfgArea = (typeof _currentBuilderArea === 'function') &&
                        (_currentBuilderArea() === 'manufacturing-cost');
     const _MFG_SIDEBAR_CATEGORY_OVERRIDE = { 'CURRENCY': 'other' };
+    const _MFG_SIDEBAR_SECTION_END_FIELDS = new Set(['CURRENCY']);  // 섹션 안 맨 뒤로 밀어낼 컬럼
     const _overriddenCols = _isMfgArea
         ? visibleColsForSidebar.map(c => {
               const u = String(c.name || '').toUpperCase();
@@ -2216,6 +2223,29 @@ function renderFieldList(cols) {
         if (!grouped[c.category]) grouped[c.category] = [];
         grouped[c.category].push(c);
     });
+
+    // [PR #556, 2026-11-02] 섹션 안 "맨 뒤로 밀기" — 제조원가 영역만 적용
+    //   _MFG_SIDEBAR_SECTION_END_FIELDS 에 포함된 컬럼은 해당 section 배열의 끝으로 이동.
+    //   영역 가드 재사용(_isMfgArea), 원본 참조 보존(배열 재정렬만).
+    if (_isMfgArea) {
+        Object.keys(grouped).forEach(cat => {
+            const arr = grouped[cat];
+            if (!Array.isArray(arr) || arr.length <= 1) return;
+            const endFields = [];
+            const normalFields = [];
+            arr.forEach(c => {
+                const u = String(c.name || '').toUpperCase();
+                if (_MFG_SIDEBAR_SECTION_END_FIELDS.has(u)) {
+                    endFields.push(c);
+                } else {
+                    normalFields.push(c);
+                }
+            });
+            if (endFields.length > 0) {
+                grouped[cat] = [...normalFields, ...endFields];
+            }
+        });
+    }
 
     let html = '';
     CATEGORY_ORDER.forEach(cat => {
