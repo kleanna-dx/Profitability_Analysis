@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -35,98 +36,112 @@ public class SimulationService {
 
     /**
      * 비용 원단위 조회 (P/L 시뮬레이터 초기화용)
+     *
+     * <p>기준월 = 예상월. 원부재료 실적은 결산이 끝난 전월까지만 있으므로
+     * 기준월 원·부재료비 = Σ(전월 지종별 원단위 × 기준월 지종 생산량)으로 구한다.</p>
+     * <ul>
+     *   <li>기준월 생산량: STEP3 생산계획 총생산량(양품 ÷ (1 − 손지율)) → 없으면 기준월 실적 → 없으면 0</li>
+     *   <li>전월 원단위: 지종별 (재료비 ÷ 총생산량). 전월에 없는 지종은 전월 전체 원단위 적용</li>
+     * </ul>
      */
     public CostUnitRateResponse getCostUnitRates(String ym, String machine, String division) {
-        // 전월 계산
+        RawMaterialSql.validateYm(ym);
+        String prevYm = RawMaterialSql.prevYm(ym);
         int year = Integer.parseInt(ym.substring(0, 4));
         int month = Integer.parseInt(ym.substring(4, 6));
-        String prevYm;
-        if (month == 1) {
-            prevYm = (year - 1) + "12";
-        } else {
-            prevYm = year + String.format("%02d", month - 1);
-        }
 
-        // 당월 집계 (rpsim_raw_material: 생산량은 제품별 1회, 원재료비=DATA_TYPE 100, 부재료비=DATA_TYPE 101)
-        Map<String, Object> curTotals = findMonthlyTotals(ym, machine, division);
-        BigDecimal curProdKg = toBD(curTotals.get("prod_kg"));
-        BigDecimal curMatCost = toBD(curTotals.get("mat_cost"));
-        BigDecimal curSubCost = toBD(curTotals.get("sub_cost"));
-        long curProdTon = curProdKg.divide(BigDecimal.valueOf(1000), 0, RoundingMode.HALF_UP).longValue();
-
-        // 전월 집계
+        // ── 전월 실적 (원단위 기준) ──
         Map<String, Object> prevTotals = findMonthlyTotals(prevYm, machine, division);
         BigDecimal prevProdKg = toBD(prevTotals.get("prod_kg"));
         BigDecimal prevMatCost = toBD(prevTotals.get("mat_cost"));
         BigDecimal prevSubCost = toBD(prevTotals.get("sub_cost"));
-        long prevProdTon = prevProdKg.divide(BigDecimal.valueOf(1000), 0, RoundingMode.HALF_UP).longValue();
+        long prevProdTon = prevProdKg.divide(THOUSAND, 0, RoundingMode.HALF_UP).longValue();
+        BigDecimal prevTonExact = prevProdKg.divide(THOUSAND, 6, RoundingMode.HALF_UP);
+        // 전월 전체 원단위 (원/톤) — 전월에 없는 지종에 적용
+        BigDecimal prevMatRateAll = div6(prevMatCost, prevTonExact);
+        BigDecimal prevSubRateAll = div6(prevSubCost, prevTonExact);
 
-        // 원단위 계산 (천원/톤)
-        BigDecimal matPerTon = curProdTon > 0
-                ? curMatCost.divide(BigDecimal.valueOf(curProdTon), 1, RoundingMode.HALF_UP)
-                        .divide(BigDecimal.valueOf(1000), 1, RoundingMode.HALF_UP)
-                : BigDecimal.ZERO;
-        BigDecimal prevMatPerTon = prevProdTon > 0
-                ? prevMatCost.divide(BigDecimal.valueOf(prevProdTon), 1, RoundingMode.HALF_UP)
-                        .divide(BigDecimal.valueOf(1000), 1, RoundingMode.HALF_UP)
-                : BigDecimal.ZERO;
-        // 부재료비 원단위 (천원/톤) — 원재료비와 별도 표시
-        BigDecimal subPerTon = perTon1000(curSubCost, curProdTon);
-        BigDecimal prevSubPerTon = perTon1000(prevSubCost, prevProdTon);
+        Map<String, Object[]> prevMap = new LinkedHashMap<>();
+        for (Object[] r : findMaterialByProduct(prevYm, machine, division)) prevMap.put((String) r[0], r);
 
-        // 지종별 원재료비
-        List<Object[]> curByProd = findMaterialByProduct(ym, machine, division);
-        List<Object[]> prevByProd = findMaterialByProduct(prevYm, machine, division);
+        // ── 기준월 생산량 (지종별 톤) ──
+        Map<String, BigDecimal> baseByProd = findPlanProdByProduct(year, month, machine, division);
+        String baseSource = "PLAN";
+        if (baseByProd.isEmpty()) {
+            for (Object[] r : findMaterialByProduct(ym, machine, division)) baseByProd.put((String) r[0], toBD(r, 1));
+            baseSource = baseByProd.isEmpty() ? "NONE" : "ACTUAL";
+        }
+        boolean planLocked = "PLAN".equals(baseSource) && isPlanLocked(year, month, machine, division);
+
+        // ── 지종별: 전월 원단위 × 기준월 생산량 ──
+        BigDecimal baseTon = BigDecimal.ZERO, estMat = BigDecimal.ZERO, estSub = BigDecimal.ZERO;
+        List<String> unmatched = new ArrayList<>();
+        List<Object[]> rows = new ArrayList<>(); // [지종, 톤, 원재료비, 원재료 원단위(원/톤), 전월톤, 전월원재료비]
+        for (Map.Entry<String, BigDecimal> e : baseByProd.entrySet()) {
+            String product = e.getKey();
+            BigDecimal ton = e.getValue();
+            Object[] pr = prevMap.get(product);
+            BigDecimal pTon = pr != null ? toBD(pr, 1) : BigDecimal.ZERO;
+            BigDecimal pCost = pr != null ? toBD(pr, 2) : BigDecimal.ZERO;
+            BigDecimal matRate, subRate;
+            if (pTon.signum() > 0) {
+                matRate = div6(pCost, pTon);
+                subRate = div6(toBD(pr, 3), pTon);
+            } else {
+                matRate = prevMatRateAll;
+                subRate = prevSubRateAll;
+                unmatched.add(product);
+            }
+            BigDecimal mat = matRate.multiply(ton);
+            baseTon = baseTon.add(ton);
+            estMat = estMat.add(mat);
+            estSub = estSub.add(subRate.multiply(ton));
+            rows.add(new Object[]{product, ton, mat, matRate, pTon, pCost});
+        }
 
         List<CostUnitRateResponse.MaterialByProduct> materialByProduct = new ArrayList<>();
-        for (Object[] row : curByProd) {
-            String product = (String) row[0];
-            BigDecimal prodTon = toBD(row, 1);
-            BigDecimal matCost = toBD(row, 2);
-            BigDecimal unitCost = prodTon.compareTo(BigDecimal.ZERO) > 0
-                    ? matCost.divide(prodTon, 1, RoundingMode.HALF_UP)
-                            .divide(BigDecimal.valueOf(1000), 1, RoundingMode.HALF_UP)
-                    : BigDecimal.ZERO;
-
-            // 전월 동일 지종 찾기
-            BigDecimal prevProdTonProd = BigDecimal.ZERO;
-            BigDecimal prevMatCostProd = BigDecimal.ZERO;
-            BigDecimal prevUnitCost = BigDecimal.ZERO;
-            for (Object[] prevRow : prevByProd) {
-                if (product.equals(prevRow[0])) {
-                    prevProdTonProd = toBD(prevRow, 1);
-                    prevMatCostProd = toBD(prevRow, 2);
-                    prevUnitCost = prevProdTonProd.compareTo(BigDecimal.ZERO) > 0
-                            ? prevMatCostProd.divide(prevProdTonProd, 1, RoundingMode.HALF_UP)
-                                    .divide(BigDecimal.valueOf(1000), 1, RoundingMode.HALF_UP)
-                            : BigDecimal.ZERO;
-                    break;
-                }
-            }
-
-            BigDecimal sharePct = curMatCost.compareTo(BigDecimal.ZERO) > 0
-                    ? matCost.multiply(BigDecimal.valueOf(100))
-                            .divide(curMatCost, 1, RoundingMode.HALF_UP)
-                    : BigDecimal.ZERO;
-
+        for (Object[] r : rows) {
+            BigDecimal ton = (BigDecimal) r[1], mat = (BigDecimal) r[2], rate = (BigDecimal) r[3];
+            BigDecimal pTon = (BigDecimal) r[4], pCost = (BigDecimal) r[5];
             materialByProduct.add(CostUnitRateResponse.MaterialByProduct.builder()
-                    .product(product)
-                    .productionTon(prodTon.longValue())
-                    .materialCost(matCost)
-                    .unitCost1000(unitCost)
-                    .prevProductionTon(prevProdTonProd.longValue())
-                    .prevMaterialCost(prevMatCostProd)
-                    .prevUnitCost1000(prevUnitCost)
-                    .sharePct(sharePct)
+                    .product((String) r[0])
+                    .productionTon(ton.setScale(0, RoundingMode.HALF_UP).longValue())
+                    .materialCost(mat.setScale(0, RoundingMode.HALF_UP))
+                    .unitCost1000(rate.divide(THOUSAND, 1, RoundingMode.HALF_UP))
+                    .prevProductionTon(pTon.setScale(0, RoundingMode.HALF_UP).longValue())
+                    .prevMaterialCost(pCost)
+                    .prevUnitCost1000(div6(pCost, pTon).divide(THOUSAND, 1, RoundingMode.HALF_UP))
+                    .sharePct(estMat.signum() > 0
+                            ? mat.multiply(BigDecimal.valueOf(100)).divide(estMat, 1, RoundingMode.HALF_UP)
+                            : BigDecimal.ZERO)
                     .build());
         }
+        materialByProduct.sort((a, b) -> b.getMaterialCost().compareTo(a.getMaterialCost()));
+
+        long baseProdTon = baseTon.setScale(0, RoundingMode.HALF_UP).longValue();
+        BigDecimal matPerTon = div6(estMat, baseTon).divide(THOUSAND, 1, RoundingMode.HALF_UP);
+        BigDecimal subPerTon = div6(estSub, baseTon).divide(THOUSAND, 1, RoundingMode.HALF_UP);
+        BigDecimal prevMatPerTon = div6(prevMatCost, prevTonExact).divide(THOUSAND, 1, RoundingMode.HALF_UP);
+        BigDecimal prevSubPerTon = div6(prevSubCost, prevTonExact).divide(THOUSAND, 1, RoundingMode.HALF_UP);
+
+        List<String> warnings = new ArrayList<>();
+        if (prevProdTon <= 0)
+            warnings.add("전월(" + prevYm + ") 원부재료 실적이 없어 원·부재료비를 0으로 계산했습니다.");
+        if ("NONE".equals(baseSource))
+            warnings.add("기준월(" + ym + ") 생산계획(STEP3)과 실적이 모두 없어 기준 생산량을 0으로 두었습니다.");
+        if (!unmatched.isEmpty() && prevProdTon > 0)
+            warnings.add("전월 실적에 없는 지종은 전월 전체 원단위로 계산했습니다: " + String.join(", ", unmatched));
 
         return CostUnitRateResponse.builder()
                 .ym(ym)
                 .prevYm(prevYm)
                 .machine(machine)
                 .division(division)
-                .baseProdTon(curProdTon)
+                .baseProdTon(baseProdTon)
+                .baseProdSource(baseSource)
+                .planLocked(planLocked)
+                .unmatchedProducts(unmatched)
+                .warnings(warnings)
                 .rates(CostUnitRateResponse.Rates.builder()
                         .revenuePerTon(BigDecimal.ZERO)
                         .materialPerTon(matPerTon)
@@ -141,12 +156,12 @@ public class SimulationService {
                         .logisticsPerTon(BigDecimal.ZERO)
                         .build())
                 .totals(CostUnitRateResponse.Totals.builder()
-                        .materialCost(curMatCost)
-                        .subMaterialCost(curSubCost)
+                        .materialCost(estMat.setScale(0, RoundingMode.HALF_UP))
+                        .subMaterialCost(estSub.setScale(0, RoundingMode.HALF_UP))
                         .energyCost(BigDecimal.ZERO)
                         .logisticsCost(BigDecimal.ZERO)
-                        .productionKg(curProdKg)
-                        .productionTon(curProdTon)
+                        .productionKg(baseTon.multiply(THOUSAND))
+                        .productionTon(baseProdTon)
                         .build())
                 .prevTotals(CostUnitRateResponse.Totals.builder()
                         .materialCost(prevMatCost)
@@ -166,8 +181,8 @@ public class SimulationService {
                         .sga("fixed")
                         .build())
                 .fromDB(CostUnitRateResponse.FromDB.builder()
-                        .material(curMatCost.compareTo(BigDecimal.ZERO) > 0)
-                        .subMaterial(curSubCost.compareTo(BigDecimal.ZERO) > 0)
+                        .material(estMat.signum() > 0)
+                        .subMaterial(estSub.signum() > 0)
                         .energy(false)
                         .logistics(false)
                         .revenue(false)
@@ -177,6 +192,37 @@ public class SimulationService {
                 .divisionMachines(jdbcTemplate.queryForList(
                         "SELECT UNIT_CODE FROM rpsim_unit WHERE DIVISION = ? AND DELETED_YN = 'N' ORDER BY UNIT_CODE", String.class, division))
                 .build();
+    }
+
+    private static final BigDecimal THOUSAND = BigDecimal.valueOf(1000);
+
+    private static BigDecimal div6(BigDecimal a, BigDecimal b) {
+        return (b == null || b.signum() == 0) ? BigDecimal.ZERO : a.divide(b, 6, RoundingMode.HALF_UP);
+    }
+
+    /** 기준월 생산계획(STEP3) 지종별 총생산량(톤) = 양품 ÷ (1 − 손지율) — 전월 원단위 분모(총생산량)와 같은 기준 */
+    private Map<String, BigDecimal> findPlanProdByProduct(int year, int month, String machine, String division) {
+        Map<String, BigDecimal> map = new LinkedHashMap<>();
+        jdbcTemplate.query(
+            "SELECT TRIM(PRODUCT) AS product, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS ton" +
+            "  FROM rpsim_production_plan" +
+            " WHERE `YEAR` = ? AND `MONTH` = ? AND DIVISION = ? AND DELETED_YN = 'N'" +
+            "   AND (? = 'ALL' OR MACHINE_CODE = ?)" +
+            "   AND COALESCE(WASTE_RATE_PCT,0) < 100 AND COALESCE(GOOD_TON,0) > 0" +
+            " GROUP BY TRIM(PRODUCT)",
+            rs -> { map.put(rs.getString("product"), rs.getBigDecimal("ton")); },
+            year, month, division, machine, machine);
+        return map;
+    }
+
+    /** 생산계획 확정(잠금) 여부 — 양품이 있는 계획 행이 모두 잠겨 있으면 true */
+    private boolean isPlanLocked(int year, int month, String machine, String division) {
+        Long n = jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM rpsim_production_plan" +
+            " WHERE `YEAR` = ? AND `MONTH` = ? AND DIVISION = ? AND DELETED_YN = 'N'" +
+            "   AND (? = 'ALL' OR MACHINE_CODE = ?) AND COALESCE(GOOD_TON,0) > 0 AND COALESCE(IS_LOCKED,0) = 0",
+            Long.class, year, month, division, machine, machine);
+        return n != null && n == 0;
     }
 
     /**
@@ -250,19 +296,20 @@ public class SimulationService {
         return jdbcTemplate.queryForMap(sql, ym, division, machine, machine, ym, division, machine, machine, ym, division, machine, machine);
     }
 
-    /** 지종별 원재료비 (P/L 시뮬레이터) — PRODH2_NM 기준, SC는 PRODH4_NM(평량) 300 이상/미만 분리 */
+    /** 지종별 [지종, 생산량(톤), 원재료비, 부재료비] — SC는 PRODH4 끝 3자리(평량) 300 기준 */
     private List<Object[]> findMaterialByProduct(String ym, String machine, String division) {
         String sql =
-            "SELECT product, SUM(prod_kg) / 1000 AS production_ton, SUM(mat_cost) AS material_cost FROM (" +
+            "SELECT product, SUM(prod_kg) / 1000 AS production_ton, SUM(mat_cost) AS material_cost, SUM(sub_cost) AS sub_cost FROM (" +
             "  SELECT " + RawMaterialSql.PRODUCT_EXPR + " AS product," +
             "         MAX(" + RawMaterialSql.PROD_QTY_COL + ") AS prod_kg," +
-            "         SUM(CASE WHEN DATA_TYPE = '100' THEN " + RawMaterialSql.COST_EXPR + " ELSE 0 END) AS mat_cost" +
+            "         SUM(CASE WHEN DATA_TYPE = '100' THEN " + RawMaterialSql.COST_EXPR + " ELSE 0 END) AS mat_cost," +
+            "         SUM(CASE WHEN DATA_TYPE = '101' THEN " + RawMaterialSql.COST_EXPR + " ELSE 0 END) AS sub_cost" +
             "    FROM rpsim_raw_material" +
             "   WHERE CALMONTH = ?" + SCOPE +
             "   GROUP BY BIC_ZMACHINE, PRODH4, PRODH2_NM" +
             ") t WHERE product IS NOT NULL GROUP BY product HAVING SUM(prod_kg) > 0 ORDER BY material_cost DESC";
         return jdbcTemplate.query(sql, (rs, i) -> new Object[]{
-                rs.getString("product"), rs.getBigDecimal("production_ton"), rs.getBigDecimal("material_cost")},
+                rs.getString("product"), rs.getBigDecimal("production_ton"), rs.getBigDecimal("material_cost"), rs.getBigDecimal("sub_cost")},
                 ym, division, machine, machine);
     }
 
