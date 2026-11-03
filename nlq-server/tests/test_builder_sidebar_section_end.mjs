@@ -56,10 +56,10 @@ assertMatch(rflSrc,
     /const\s+_MFG_SIDEBAR_SECTION_END_FIELDS\s*=\s*new\s+Set\s*\(/,
     '1-1: const _MFG_SIDEBAR_SECTION_END_FIELDS = new Set([...]) 상수 선언됨');
 
-// 1-2: Set 안에 'CURRENCY' 포함
+// 1-2: Set 안에 'CURRENCY' 포함 (순서 무관 — Set 특성, PR #557 에서 BASE_UOM 과 함께 추가되어 순서 바뀜)
 assertMatch(rflSrc,
-    /_MFG_SIDEBAR_SECTION_END_FIELDS\s*=\s*new\s+Set\s*\(\s*\[\s*['"]CURRENCY['"]/,
-    "1-2: _MFG_SIDEBAR_SECTION_END_FIELDS 에 'CURRENCY' 포함 (사용자 요구: 섹션 안 맨 뒤)");
+    /_MFG_SIDEBAR_SECTION_END_FIELDS\s*=\s*new\s+Set\s*\(\s*\[[\s\S]{0,500}['"]CURRENCY['"]/,
+    "1-2: _MFG_SIDEBAR_SECTION_END_FIELDS 에 'CURRENCY' 포함 (사용자 요구: 섹션 안 맨 뒤, PR #556)");
 
 // 1-3: 상수 선언 주변에 PR #556 설계 메모
 assertMatch(rflSrc,
