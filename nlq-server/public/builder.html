@@ -2870,8 +2870,25 @@ function getDefaultAggregate(col) {
 }
 
 function addField(colName) {
-    // 중복 추가 방지 (이미 같은 컬럼이 그룹 기준으로 추가되어 있으면 무시)
-    if (selectedFields.find(f => f.column === colName && !f.aggregate)) return;
+    // ─────────────────────────────────────────────────────────────
+    // 중복 추가 방지 — 같은 column 이 이미 조회필드에 있으면 무시
+    //
+    // [2026-11-03 수정] 사용자 지적:
+    //   LBKUM(생산수량), 개당단가(UNIT_COST) 를 더블클릭하면 계속 중복 추가됨.
+    //
+    //   원인:
+    //     기존 조건은 `!f.aggregate` (aggregate 가 falsy) 일 때만 중복 판정.
+    //     - 일반 dim/KST/TOTAL (aggregate='') → 중복 체크 됨
+    //     - LBKUM (category='quantity' → getDefaultAggregate='SUM')  → 중복 체크 안 됨 ❌
+    //     - UNIT_COST (is_metric → aggregate='METRIC')               → 중복 체크 안 됨 ❌
+    //
+    //   수정:
+    //     column 이름만 비교 → aggregate 값 무관하게 무조건 중복 skip.
+    //     더블클릭 UX 는 "같은 필드는 한 번만 들어감" 이 자연스럽고,
+    //     SUM/AVG 등 다른 집계로 "같은 column 을 두 번 넣고 싶은" 니즈는
+    //     × 로 삭제 후 재선택하거나 드롭다운에서 변경하면 됨.
+    // ─────────────────────────────────────────────────────────────
+    if (selectedFields.find(f => f.column === colName)) return;
     const col = allColumns.find(c => c.name === colName);
     if (!col) return;
 
