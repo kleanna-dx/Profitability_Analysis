@@ -94,21 +94,22 @@ public class MaterialForecastService {
                 prepend(prev, scope)));
 
         // ④ 수기입력 저장값 (예상월)
-        List<MaterialForecast> saved = repo.findByYmAndDivisionAndMachineCode(ym, div, mc);
         List<Map<String, Object>> savedProd = new ArrayList<>(), savedMat = new ArrayList<>();
-        for (MaterialForecast f : saved) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("itemCode", f.getItemCode());
-            m.put("itemName", f.getItemName());
-            if ("PROD".equals(f.getRowType())) { m.put("prodTon", f.getProdTon()); savedProd.add(m); }
-            else {
-                m.put("usageQty", f.getUsageQty()); m.put("unitRate", f.getUnitRate());
-                m.put("receiptPrice", f.getReceiptPrice()); m.put("openingPrice", f.getOpeningPrice());
-                m.put("usePrice", f.getUsePrice()); m.put("issueNote", f.getIssueNote());
-                m.put("updatedBy", f.getUpdatedBy() != null ? f.getUpdatedBy() : f.getCreatedBy());
-                m.put("updatedAt", f.getUpdatedAt() != null ? f.getUpdatedAt() : f.getCreatedAt());
-                savedMat.add(m);
+        try {
+            List<Map<String, Object>> saved = jdbc.queryForList(
+                    "SELECT ROW_TYPE, ITEM_CODE AS itemCode, ITEM_NAME AS itemName, PROD_TON AS prodTon," +
+                    " USAGE_QTY AS usageQty, UNIT_RATE AS unitRate, RECEIPT_PRICE AS receiptPrice, OPENING_PRICE AS openingPrice," +
+                    " USE_PRICE AS usePrice, ISSUE_NOTE AS issueNote," +
+                    " COALESCE(UPDATED_BY, CREATED_BY) AS updatedBy, COALESCE(UPDATED_AT, CREATED_AT) AS updatedAt" +
+                    " FROM rpsim_material_forecast WHERE YM = ? AND DIVISION = ? AND MACHINE_CODE = ? AND DELETED_YN = 'N'",
+                    ym, div, mc);
+            for (Map<String, Object> r : saved) {
+                Object type = r.remove("ROW_TYPE");
+                if ("PROD".equals(type)) savedProd.add(r); else savedMat.add(r);
             }
+        } catch (org.springframework.dao.DataAccessException e) {
+            String msg = e.getMostSpecificCause() != null ? e.getMostSpecificCause().getMessage() : e.getMessage();
+            out.put("savedError", "수기입력 저장값 조회 실패 — " + msg);
         }
         out.put("savedProducts", savedProd);
         out.put("savedMaterials", savedMat);

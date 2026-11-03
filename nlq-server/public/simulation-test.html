@@ -3578,6 +3578,7 @@ function mfStatus(){
     const d=MF.data,msgs=[];
     if(MF.useSaved&&(MF.savedInfo.prod||MF.savedInfo.mat))msgs.push('<span style="color:#4f46e5;font-weight:600;"><i class="fas fa-pen mr-1"></i>데이터 소스: 수기입력</span> (지종 '+MF.savedInfo.prod+'건 · 자재 '+MF.savedInfo.mat+'건'+(MF.savedInfo.last?' · 최종 저장 '+mfEsc(String(MF.savedInfo.last).replace('T',' ').substring(0,16))+(MF.savedInfo.by?' '+mfEsc(MF.savedInfo.by):''):'')+')');
     else msgs.push('<span style="color:#16a34a;font-weight:600;"><i class="fas fa-database mr-1"></i>데이터 소스: 전월 실적 기준 자동 계산</span>');
+    if(d.savedError)msgs.push('<span style="color:#dc2626;font-weight:600;"><i class="fas fa-exclamation-triangle mr-1"></i>'+mfEsc(d.savedError)+' — rpsim_material_forecast 테이블 생성 쿼리를 실행하세요 (실적은 표시, 저장 불가)</span>');
     if(MF.dirty)msgs.push('<span style="color:#d97706;font-weight:600;"><i class="fas fa-circle mr-1" style="font-size:7px;"></i>저장하지 않은 변경 있음</span>');
     if(!(d.materials||[]).length){
         const dm=d.divisionMachines||[];

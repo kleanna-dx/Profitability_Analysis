@@ -28,9 +28,11 @@ public final class RawMaterialSql {
     /**
      * 사업부 범위 — rpsim_raw_material 에는 사업부 컬럼이 없어 호기 마스터(rpsim_unit)로 판단.
      * 해당 사업부에 등록된 호기만 포함 (미등록이면 0건 — 다른 사업부 데이터가 섞이지 않게). 파라미터 1개: division
+     * 두 테이블의 콜레이션이 달라도 비교 오류가 나지 않도록 COLLATE 지정
      */
     public static final String DIV_SCOPE =
-            " AND BIC_ZMACHINE IN (SELECT u.UNIT_CODE FROM rpsim_unit u WHERE u.DIVISION = ? AND u.DELETED_YN = 'N')";
+            " AND CONVERT(BIC_ZMACHINE USING utf8mb4) COLLATE utf8mb4_general_ci IN (SELECT CONVERT(u.UNIT_CODE USING utf8mb4) COLLATE utf8mb4_general_ci" +
+            "   FROM rpsim_unit u WHERE u.DIVISION = ? AND u.DELETED_YN = 'N')";
     /** 호기 조건 — 파라미터 2개: machine, machine ('ALL'이면 전체) */
     public static final String MACHINE_COND = " AND (? = 'ALL' OR BIC_ZMACHINE = ?)";
 
