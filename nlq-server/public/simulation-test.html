@@ -114,8 +114,8 @@
         <h1 style="font-size:14px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-calculator text-indigo-500 mr-1"></i>경영시뮬레이션</h1>
         <span style="font-size:11px;color:#94a3b8;">Rolling Planning Simulation</span>
         <div style="display:flex;gap:6px;margin-left:12px;">
-            <div class="sel-g"><label>기준월</label><select id="selYm" onchange="onFilterChange()"></select></div>
-            <div class="sel-g"><label>사업부</label><select id="selDiv" onchange="onFilterChange()"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
+            <div class="sel-g"><label>기준월</label><select id="selYm" onfocus="this.dataset.prev=this.value" onchange="onFilterChange(this)"></select></div>
+            <div class="sel-g"><label>사업부</label><select id="selDiv" onfocus="this.dataset.prev=this.value" onchange="onFilterChange(this)"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
         </div>
         <div style="flex:1;"></div>
         <div id="userInfoDisplay" style="text-align:right;line-height:1.3;margin-right:8px;display:none;"></div>
@@ -711,7 +711,13 @@ function getDiv(){return document.getElementById('selDiv')?.value||'PS';}
 function getMc(){return document.getElementById('plMc')?.value||'ALL';}
 
 // ── 필터 변경 시 전체 데이터 재로드 ──
-async function onFilterChange(){
+async function onFilterChange(src){
+    // 원부재료비 수기입력 미저장 변경이 있으면 확인 (탭 안 호기 선택과 동일)
+    if(MF.dirty&&!confirm('원부재료비에 저장하지 않은 변경이 있습니다.\n기준월/사업부를 바꾸면 변경 내용이 사라집니다. 계속할까요?')){
+        if(src&&src.dataset.prev!=null)src.value=src.dataset.prev;
+        return;
+    }
+    if(src)src.dataset.prev=src.value;
     {const pm=document.getElementById('plMc');if(pm)pm.value='ALL';}
     MF.stale=true;MF.dirty=false;
     if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
@@ -3460,6 +3466,8 @@ function initYmSelector(){
     // 현재월 기본 선택
     const curVal=String(curY)+String(curM).padStart(2,'0');
     sel.innerHTML=opts.map(o=>'<option value="'+o.val+'"'+(o.val===curVal?' selected':'')+'>'+o.lbl+'</option>').join('');
+    sel.dataset.prev=sel.value;
+    const d=document.getElementById('selDiv');if(d)d.dataset.prev=d.value;
 }
 
 // ── 마스터 옵션 (호기/지종 셀렉트용) ──
