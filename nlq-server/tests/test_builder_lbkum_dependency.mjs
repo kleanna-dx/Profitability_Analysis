@@ -196,8 +196,8 @@ assertMatch(depBlockSrc,
 // 6-1: _MFG_COST_ELEMENT_DEPS 공통 상수의 순서 재확인 (사용자 명시)
 //      CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN
 assertMatch(htmlSrc,
-    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
-    '6-1: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN] 순서 보존 (사용자 명시 앞쪽 5개)');
+    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
+    '6-1 [v5]: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, MATERIAL, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN] 순서 보존 (v5: MATERIAL 추가, MATERIAL_NM 앞)');
 
 // 6-2: 최종 동작 순서 요약 — 주석에 사용자 명시 순서 기록
 assertMatch(htmlSrc,

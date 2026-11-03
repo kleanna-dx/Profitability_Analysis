@@ -91,10 +91,11 @@ assertMatch(_aggSrc,
 // 3. 공통 상수 재사용 (DRY) — PR #550 패턴과 완전 통일
 // ============================================================
 
-// 3-1: _MFG_COST_ELEMENT_DEPS 공통 상수 순서 보존 (CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN)
+// 3-1 [v5]: _MFG_COST_ELEMENT_DEPS 공통 상수 순서 보존 (CALMONTH → PLANT → MATERIAL → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN)
+//            v5 (2026-11-03) 사용자 요구: MATERIAL 추가 (MATERIAL_NM 앞)
 assertMatch(htmlSrc,
-    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
-    '3-1: _MFG_COST_ELEMENT_DEPS 공통 상수 순서 보존 (CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN)');
+    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
+    '3-1 [v5]: _MFG_COST_ELEMENT_DEPS 공통 상수 순서 보존 (CALMONTH → PLANT → MATERIAL → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN) — v5 사용자 요구: MATERIAL 추가');
 
 // ============================================================
 // 4. 영역 격리 — 수익성분석 완전 무영향 재검증 (기존 addField 로직 재사용)

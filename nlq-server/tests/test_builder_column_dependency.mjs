@@ -79,8 +79,8 @@ assertMatch(htmlSrc,
 // 1-2 [v4]: 사용자 요구 순서 [CALMONTH, PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN]
 //           v4 변경: MATERIAL_NM(자재명) 추가 — 자재별 집계 왜곡 방지
 assertMatch(htmlSrc,
-    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
-    '1-2 [v4]: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN] (v4 사용자 승인 순서)');
+    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL['"]\s*,\s*['"]MATERIAL_NM['"]\s*,\s*['"]ZCGUBUN_D['"]\s*,\s*['"]ZCGUBUN['"]\s*\]/,
+    '1-2 [v5]: _MFG_COST_ELEMENT_DEPS = [CALMONTH, PLANT, MATERIAL, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN] (v5 사용자 요구: MATERIAL 추가, MATERIAL_NM 앞)');
 
 // 1-3: 공통 상수에 설계 메모 주석 포함
 assertMatch(htmlSrc,
@@ -200,8 +200,11 @@ assertMatch(addFieldSrc,
     '3-6: _depColNames 통합 변수 선언 (metric/column 분기 모두 사용)');
 
 // 3-7: 분기 끝에 return 하여 DATE_FIELDS/일반 분기 중복 실행 방지
+//      [v5 2026-11-03] PR #553 POST_DEPENDENCIES 블록이 push~return 사이에 삽입됨
+//      (실측 push→return 거리 ≈ 2226 chars) + MATERIAL 추가 영향 → window 확대
+//      (0,3000 → 0,5000 / 0,800 → 0,2500)
 assertMatch(addFieldSrc,
-    /_depColNames[\s\S]{0,3000}selectedFields\.push\s*\(\s*newField\s*\)[\s\S]{0,800}return\s*;/,
+    /_depColNames[\s\S]{0,5000}selectedFields\.push\s*\(\s*newField\s*\)[\s\S]{0,2500}return\s*;/,
     '3-7: dependency 분기 끝에 return → 하단 DATE_FIELDS/일반 분기 중복 실행 방지');
 
 // ============================================================

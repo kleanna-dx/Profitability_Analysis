@@ -1902,12 +1902,20 @@ function _rewriteMfgFieldLabel(colName, originalLabel) {
 //     - 집계 왜곡 방지 효과 강화 (자재별 분리 분석 가능)
 //     - 자재코드(MATERIAL) 는 제외 — 사용자 명시 (자재명만)
 //
+//   [v5 변경 2026-11-03] 사용자 추가 요청: '자재코드'(MATERIAL) 도 자동 추가.
+//     - MATERIAL_NM 바로 앞 (3번째 위치) 에 삽입.
+//     - 사유: 피벗 SQL ORDER BY 자동 규칙에서 MATERIAL 기준 정렬을 쓰기 위해
+//       (MATERIAL_NM 은 중복 가능, MATERIAL 은 자재의 유일 키).
+//     - 해당 대상: KST001~KST039 (20개 원가요소), TOTAL1/TOTAL2 (표준가),
+//       LBKUM (생산수량), TOTAL/KST_V/KST_F (합계/변동비/고정비),
+//       UNIT_COST (metric: 개당 단가).
+//
 //   확장성:
 //     향후 다른 원가요소가 추가되거나 dependency 순서/구성이 바뀌면
 //     이 공통 상수 한 곳만 수정하면 UNIT_COST + KST001~KST039 전체에
 //     일괄 반영됨.
 // ─────────────────────────────────────────────────────────────────
-const _MFG_COST_ELEMENT_DEPS = ['CALMONTH', 'PLANT', 'MATERIAL_NM', 'ZCGUBUN_D', 'ZCGUBUN'];
+const _MFG_COST_ELEMENT_DEPS = ['CALMONTH', 'PLANT', 'MATERIAL', 'MATERIAL_NM', 'ZCGUBUN_D', 'ZCGUBUN'];
 
 const MFG_METRIC_FIELD_DEPENDENCIES = {
     // 개당 단가 (metric_code='UNIT_COST'): SUM(TOTAL)/NULLIF(SUM(LBKUM),0)
