@@ -240,10 +240,11 @@ assertMatch(htmlSrc,
     /const\s+MFG_COLUMN_FIELD_DEPENDENCIES\s*=\s*\{/,
     '6-2: PR #546 MFG_COLUMN_FIELD_DEPENDENCIES 상수 보존');
 
-// 6-3: PR #547 _MFG_COST_ELEMENT_DEPS 에 MATERIAL_NM 포함 보존
+// 6-3 [v5]: PR #547 _MFG_COST_ELEMENT_DEPS 에 MATERIAL_NM 포함 보존
+//            + v5 (2026-11-03) 사용자 요구: MATERIAL 도 포함 (MATERIAL_NM 앞)
 assertMatch(htmlSrc,
-    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL_NM['"]/,
-    '6-3: PR #547 _MFG_COST_ELEMENT_DEPS 에 MATERIAL_NM 포함 보존 (v4)');
+    /_MFG_COST_ELEMENT_DEPS\s*=\s*\[\s*['"]CALMONTH['"]\s*,\s*['"]PLANT['"]\s*,\s*['"]MATERIAL['"]\s*,\s*['"]MATERIAL_NM['"]/,
+    '6-3 [v5]: _MFG_COST_ELEMENT_DEPS 에 MATERIAL + MATERIAL_NM 둘 다 포함 (MATERIAL 이 MATERIAL_NM 앞 — v5 사용자 요구)');
 
 // 6-4: PR #544 __GROUP__PLANT_PAIR 보존
 assertMatch(htmlSrc,
