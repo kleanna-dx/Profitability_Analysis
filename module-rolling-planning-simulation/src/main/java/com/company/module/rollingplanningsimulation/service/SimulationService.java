@@ -41,7 +41,8 @@ public class SimulationService {
      * 기준월 원·부재료비 = Σ(전월 지종별 원단위 × 기준월 지종 생산량)으로 구한다.</p>
      * <ul>
      *   <li>기준월 생산량: STEP3 생산계획 총생산량(양품 ÷ (1 − 손지율)) → 없으면 기준월 실적 → 없으면 0</li>
-     *   <li>전월 원단위: 지종별 (재료비 ÷ 총생산량). 전월에 없는 지종은 전월 전체 원단위 적용</li>
+     *   <li>전월 원단위: 지종별 (재료비 ÷ 총생산량). 전월 실적에 없는 지종은 0 (경고 표시)</li>
+     *   <li>지종명: 생산계획의 SC·백판지 기타는 평량(BASIS_WEIGHT) 300 미만=SC저평량 / 이상=SC고평량 — SAP 실적과 같은 규칙</li>
      * </ul>
      */
     public CostUnitRateResponse getCostUnitRates(String ym, String machine, String division) {
@@ -57,9 +58,6 @@ public class SimulationService {
         BigDecimal prevSubCost = toBD(prevTotals.get("sub_cost"));
         long prevProdTon = prevProdKg.divide(THOUSAND, 0, RoundingMode.HALF_UP).longValue();
         BigDecimal prevTonExact = prevProdKg.divide(THOUSAND, 6, RoundingMode.HALF_UP);
-        // 전월 전체 원단위 (원/톤) — 전월에 없는 지종에 적용
-        BigDecimal prevMatRateAll = div6(prevMatCost, prevTonExact);
-        BigDecimal prevSubRateAll = div6(prevSubCost, prevTonExact);
 
         Map<String, Object[]> prevMap = new LinkedHashMap<>();
         for (Object[] r : findMaterialByProduct(prevYm, machine, division)) prevMap.put((String) r[0], r);
@@ -88,8 +86,9 @@ public class SimulationService {
                 matRate = div6(pCost, pTon);
                 subRate = div6(toBD(pr, 3), pTon);
             } else {
-                matRate = prevMatRateAll;
-                subRate = prevSubRateAll;
+                // 전월 실적에 없는 지종 — 추정하지 않고 0
+                matRate = BigDecimal.ZERO;
+                subRate = BigDecimal.ZERO;
                 unmatched.add(product);
             }
             BigDecimal mat = matRate.multiply(ton);
@@ -130,7 +129,7 @@ public class SimulationService {
         if ("NONE".equals(baseSource))
             warnings.add("기준월(" + ym + ") 생산계획(STEP3)과 실적이 모두 없어 기준 생산량을 0으로 두었습니다.");
         if (!unmatched.isEmpty() && prevProdTon > 0)
-            warnings.add("전월 실적에 없는 지종은 전월 전체 원단위로 계산했습니다: " + String.join(", ", unmatched));
+            warnings.add("전월 실적에 없는 지종은 원·부재료비 0으로 계산했습니다: " + String.join(", ", unmatched));
 
         return CostUnitRateResponse.builder()
                 .ym(ym)
@@ -200,16 +199,26 @@ public class SimulationService {
         return (b == null || b.signum() == 0) ? BigDecimal.ZERO : a.divide(b, 6, RoundingMode.HALF_UP);
     }
 
+    /**
+     * 생산계획 지종명 → SAP 실적 지종명(RawMaterialSql.PRODUCT_EXPR)과 같은 규칙.
+     * SC·백판지 기타는 평량 300 미만=SC저평량 / 이상=SC고평량. 평량이 없으면 분류 불가로 남겨 0 처리(경고)
+     */
+    private static final String PLAN_PRODUCT_EXPR =
+            "CASE WHEN TRIM(PRODUCT) IN ('SC','백판지 기타') THEN " +
+            "  CASE WHEN COALESCE(BASIS_WEIGHT,0) <= 0 THEN CONCAT(TRIM(PRODUCT),'(평량 없음)')" +
+            "       WHEN BASIS_WEIGHT < 300 THEN 'SC저평량' ELSE 'SC고평량' END " +
+            "ELSE TRIM(PRODUCT) END";
+
     /** 기준월 생산계획(STEP3) 지종별 총생산량(톤) = 양품 ÷ (1 − 손지율) — 전월 원단위 분모(총생산량)와 같은 기준 */
     private Map<String, BigDecimal> findPlanProdByProduct(int year, int month, String machine, String division) {
         Map<String, BigDecimal> map = new LinkedHashMap<>();
         jdbcTemplate.query(
-            "SELECT TRIM(PRODUCT) AS product, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS ton" +
+            "SELECT " + PLAN_PRODUCT_EXPR + " AS product, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS ton" +
             "  FROM rpsim_production_plan" +
             " WHERE `YEAR` = ? AND `MONTH` = ? AND DIVISION = ? AND DELETED_YN = 'N'" +
             "   AND (? = 'ALL' OR MACHINE_CODE = ?)" +
             "   AND COALESCE(WASTE_RATE_PCT,0) < 100 AND COALESCE(GOOD_TON,0) > 0" +
-            " GROUP BY TRIM(PRODUCT)",
+            " GROUP BY " + PLAN_PRODUCT_EXPR,
             rs -> { map.put(rs.getString("product"), rs.getBigDecimal("ton")); },
             year, month, division, machine, machine);
         return map;
