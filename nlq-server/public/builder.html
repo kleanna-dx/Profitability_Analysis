@@ -2206,8 +2206,22 @@ function renderFieldList(cols) {
     //   설계: 설정 테이블 1곳에 관리, 미래에 "섹션 맨 뒤로 보낼 컬럼" 추가 요구에 대응 쉬움.
     const _isMfgArea = (typeof _currentBuilderArea === 'function') &&
                        (_currentBuilderArea() === 'manufacturing-cost');
-    const _MFG_SIDEBAR_CATEGORY_OVERRIDE = { 'CURRENCY': 'other' };
-    const _MFG_SIDEBAR_SECTION_END_FIELDS = new Set(['CURRENCY']);  // 섹션 안 맨 뒤로 밀어낼 컬럼
+    // [PR #557, 2026-11-02] BASE_UOM(기본 단위) 도 사이드바 "맨 밑" 으로 이동
+    //   사용자 요구: 사이드바 "단위(1)" 섹션에 혼자 있던 BASE_UOM 을 CURRENCY 와 함께 '기타' 섹션으로.
+    //   순서 (사용자 Q(a) 디폴트 — PR #556 과 일관성):
+    //     TOTAL1 → TOTAL2 → BASE_UOM → CURRENCY  (CURRENCY 가 가장 맨 뒤 유지)
+    //   BASE_UOM 은 _MFG_SIDEBAR_SECTION_END_FIELDS 에만 추가하면 'other' 섹션 안에서
+    //   CURRENCY 와 함께 "맨 뒤 그룹" 에 묶이지만, Set 특성상 두 컬럼 상대 순서가 보장 안 됨.
+    //   → endFields 안에서는 원본 입력 순서(allColumns 순서) 유지 — BASE_UOM 이 CURRENCY 보다 앞.
+    //   따라서 BASE_UOM 을 section_end 에 넣고, override 로 'other' 이동 → 자동으로 CURRENCY 보다 앞에 옴.
+    const _MFG_SIDEBAR_CATEGORY_OVERRIDE = {
+        'CURRENCY': 'other',   // 통화 코드 (PR #555)
+        'BASE_UOM': 'other',   // 기본 단위 (PR #557)
+    };
+    const _MFG_SIDEBAR_SECTION_END_FIELDS = new Set([
+        'BASE_UOM',  // 기본 단위 (PR #557) — '기타' 섹션 안 맨 뒤 그룹
+        'CURRENCY',  // 통화 코드 (PR #556) — '기타' 섹션 안 맨 뒤 그룹 (BASE_UOM 다음)
+    ]);
     const _overriddenCols = _isMfgArea
         ? visibleColsForSidebar.map(c => {
               const u = String(c.name || '').toUpperCase();
