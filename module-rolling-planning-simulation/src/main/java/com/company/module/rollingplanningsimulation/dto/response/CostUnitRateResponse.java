@@ -24,7 +24,7 @@ public class CostUnitRateResponse {
     private String baseProdSource;
     /** 생산계획 확정(잠금) 여부 */
     private boolean planLocked;
-    /** 전월 실적에 없어 전월 전체 원단위를 적용한 지종 */
+    /** 전월 실적에 없어 원·부재료비 0으로 계산한 지종 */
     private List<String> unmatchedProducts;
     /** 화면 경고 문구 */
     private List<String> warnings;

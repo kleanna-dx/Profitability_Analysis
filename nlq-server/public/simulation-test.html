@@ -97,6 +97,8 @@
         .sel-g{display:flex;align-items:center;gap:4px;background:#f8fafc;padding:3px 10px;border-radius:8px;border:1px solid #e5e7eb;}
         .sel-g label{font-size:10px;color:#64748b;font-weight:600;white-space:nowrap;}
         .sel-g select{font-size:11px;font-weight:700;color:#1e293b;background:transparent;border:none;outline:none;cursor:pointer;}
+        .sel-g input#selYm{width:64px;font-size:11px;font-weight:700;color:#1e293b;background:transparent;border:none;outline:none;font-family:inherit;}
+        .sel-g input#selYm.ym-bad{color:#dc2626;}
 
         /* Upload area */
 
@@ -114,7 +116,7 @@
         <h1 style="font-size:14px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-calculator text-indigo-500 mr-1"></i>경영시뮬레이션</h1>
         <span style="font-size:11px;color:#94a3b8;">Rolling Planning Simulation</span>
         <div style="display:flex;gap:6px;margin-left:12px;">
-            <div class="sel-g"><label>기준월</label><select id="selYm" onfocus="this.dataset.prev=this.value" onchange="onFilterChange(this)"></select></div>
+            <div class="sel-g"><label>기준월</label><input id="selYm" type="text" inputmode="numeric" maxlength="7" placeholder="yyyy.mm" autocomplete="off" title="yyyy.mm 형식 (예: 2026.11) — 입력 후 Enter" oninput="fmtYmInput(this)" onkeydown="if(event.key==='Enter'){this.blur();}" onchange="onYmInputChange(this)"></div>
             <div class="sel-g"><label>사업부</label><select id="selDiv" onfocus="this.dataset.prev=this.value" onchange="onFilterChange(this)"><option value="PS" selected>PS</option><option value="HL">HL</option></select></div>
         </div>
         <div style="flex:1;"></div>
@@ -706,19 +708,42 @@ let BP=0; // 기준 생산량 (API에서 갱신, 실적 없으면 0)
 let costChart=null,matChart=null,trendChart=null,compChart=null;
 function fmt(n){return n.toLocaleString('ko-KR',{maximumFractionDigits:1});}
 function fmtI(n){return Math.round(n).toLocaleString('ko-KR');}
-function getYm(){return document.getElementById('selYm')?.value||'202605';}
+// 기준월: 화면은 yyyy.mm 입력, 내부(API)는 yyyymm — 확정된 값은 dataset.ym 에 보관
+const YM_RE=/^(\d{4})\.(0[1-9]|1[0-2])$/;
+function ymToDisp(ym){return ym&&ym.length===6?ym.slice(0,4)+'.'+ym.slice(4):'';}
+function getYm(){const el=document.getElementById('selYm');return (el&&el.dataset.ym)||'';}
+function fmtYmInput(el){
+    const d=el.value.replace(/[^0-9]/g,'').substring(0,6);
+    el.value=d.length>4?d.substring(0,4)+'.'+d.substring(4):d;
+    el.classList.toggle('ym-bad',el.value.length===7&&!YM_RE.test(el.value));
+}
+function onYmInputChange(el){
+    const v=el.value.trim(),prev=el.dataset.ym||'';
+    const m=YM_RE.exec(v);
+    if(!m){
+        alert('기준월은 yyyy.mm 형식으로 입력하세요. (예: 2026.11)');
+        el.value=ymToDisp(prev);el.classList.remove('ym-bad');return;
+    }
+    const y=parseInt(m[1]);
+    if(y<2000||y>2100){alert('기준월 연도를 확인하세요. (2000~2100)');el.value=ymToDisp(prev);return;}
+    const ym=m[1]+m[2];
+    if(ym===prev){el.value=ymToDisp(ym);return;}
+    onFilterChange(el,ym);
+}
 function getDiv(){return document.getElementById('selDiv')?.value||'PS';}
 // 호기: 상단 공통 필터에서 제거 — P/L 시뮬레이터 탭 안에서 선택 (원부재료비 탭은 자체 선택)
 function getMc(){return document.getElementById('plMc')?.value||'ALL';}
 
 // ── 필터 변경 시 전체 데이터 재로드 ──
-async function onFilterChange(src){
+async function onFilterChange(src,newYm){
     // 원부재료비 수기입력 미저장 변경이 있으면 확인 (탭 안 호기 선택과 동일)
     if(MF.dirty&&!confirm('원부재료비에 저장하지 않은 변경이 있습니다.\n기준월/사업부를 바꾸면 변경 내용이 사라집니다. 계속할까요?')){
-        if(src&&src.dataset.prev!=null)src.value=src.dataset.prev;
+        if(src&&src.id==='selYm')src.value=ymToDisp(src.dataset.ym);
+        else if(src&&src.dataset.prev!=null)src.value=src.dataset.prev;
         return;
     }
-    if(src)src.dataset.prev=src.value;
+    if(src&&src.id==='selYm'){src.dataset.ym=newYm;src.value=ymToDisp(newYm);}
+    else if(src)src.dataset.prev=src.value;
     {const pm=document.getElementById('plMc');if(pm)pm.value='ALL';}
     MF.stale=true;MF.dirty=false;
     if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
@@ -919,7 +944,7 @@ const REF_READY_ITEMS=[
     {k:'daily-operations',l:'일별 가동시간',desc:'호기별 일별 가동시간/운휴 등록',yearFilter:true,monthFilter:true}
 ];
 async function renderReady(){
-    const ym=document.getElementById('selYm')?.value||'202605';
+    const ym=getYm();
     const div=document.getElementById('selDiv')?.value||'PS';
 
     // 1) 원가 모듈 (API 기반)
@@ -2816,7 +2841,7 @@ function downloadRefData(){
     ws['!cols']=d.h.map(h=>({wch:Math.max(h.length*2+4,14)}));
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws,d.l);
-    const ym=document.getElementById('selYm')?.value||'';
+    const ym=getYm();
     XLSX.writeFile(wb,d.l+'_'+ym+'.xlsx');
 }
 
@@ -3456,26 +3481,12 @@ function updateStep5(){
     }
 }
 
-// ── 기준월 셀렉터 동적 생성 (현재월 기준 과거12개월 ~ 미래6개월) ──
+// ── 기준월 입력 초기화 (현재월, yyyy.mm) ──
 function initYmSelector(){
-    const sel=document.getElementById('selYm');
+    const el=document.getElementById('selYm');
     const now=new Date();
-    const curY=now.getFullYear(),curM=now.getMonth()+1;
-    const opts=[];
-    for(let offset=-6;offset<=12;offset++){
-        let y=curY,m=curM-offset;
-        while(m<1){m+=12;y--;}
-        while(m>12){m-=12;y++;}
-        const val=String(y)+String(m).padStart(2,'0');
-        const lbl=y+'.'+String(m).padStart(2,'0');
-        opts.push({val,lbl});
-    }
-    // 최신순 정렬
-    opts.sort((a,b)=>b.val.localeCompare(a.val));
-    // 현재월 기본 선택
-    const curVal=String(curY)+String(curM).padStart(2,'0');
-    sel.innerHTML=opts.map(o=>'<option value="'+o.val+'"'+(o.val===curVal?' selected':'')+'>'+o.lbl+'</option>').join('');
-    sel.dataset.prev=sel.value;
+    const ym=String(now.getFullYear())+String(now.getMonth()+1).padStart(2,'0');
+    el.dataset.ym=ym;el.value=ymToDisp(ym);
     const d=document.getElementById('selDiv');if(d)d.dataset.prev=d.value;
 }
 
