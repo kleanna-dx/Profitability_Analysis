@@ -33,4 +33,8 @@ public class RpsimItfSchedule extends BaseAuditEntity {
     public void updateRunStatus(String status,LocalDateTime runAt,LocalDateTime nextRun){
         this.lastRunStatus=status;this.lastRunAt=runAt;this.nextRunAt=nextRun;
     }
+    /** 실행 결과만 갱신 (다음 실행 예정은 유지) */
+    public void markResult(String status,LocalDateTime runAt){this.lastRunStatus=status;this.lastRunAt=runAt;}
+    /** 다음 실행 예정 시각 갱신 */
+    public void changeNextRunAt(LocalDateTime nextRun){this.nextRunAt=nextRun;}
 }
