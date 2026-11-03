@@ -1527,14 +1527,58 @@ const BUILDER_HIDDEN_SIDEBAR_FIELDS = new Set([
 //   - 제조원가(sys_aimd_cot015)에서는 컬럼 수가 적고 코드 컬럼(PLANT, MATERIAL)도 필수 조회 대상이므로
 //     이 숨김 정책을 적용하지 않는다.
 //   - 판정은 window.AreaTabs.current 또는 body dataset (기존 _isManufacturingCostArea 와 동일 로직).
+
+// ─────────────────────────────────────────────────────────────────
+// [PR #555, 2026-11-02] 제조원가 사이드바 전용 숨김 필드
+//
+//   사용자 요구:
+//     "표준원가추정(대구분)"(ZCGUBUN_D), "원가구분(구분)"(ZCGUBUN) 2개는
+//     제조원가 사이드바에서 숨김. 이유: 다른 금액 컬럼 더블클릭 시 자동으로
+//     추가되는 필드이므로 (PR #542~#554 흐름) 사용자가 직접 선택할 필요 없음.
+//
+//   사용자 승인 조합:
+//     Q1(a): 자동 추가는 유지 — allColumns 에서는 제거 안 하고 사이드바 UI 에서만 숨김
+//     Q2(a): 조회필드에서는 평소대로 표시 (자동 추가된 상태로)
+//     Q3(b): 필터조건 드롭다운에서는 유지 — _renderFieldComboItems() 는
+//            isHiddenInBuilderSidebar() 를 호출하지 않으므로 자동 충족.
+//
+//   설계 (설정 테이블 패턴, PR #542~#554 와 통일):
+//     - 상수 1곳에 숨김 대상 집중
+//     - isHiddenInBuilderSidebar() 의 제조원가 분기 안에서 체크
+//     - 영역 가드: _area === 'manufacturing-cost' 안에서만 적용
+//     - allColumns 자체는 변경 없음 → addField() 자동 추가 로직 100% 보존
+// ─────────────────────────────────────────────────────────────────
+const _MFG_HIDDEN_SIDEBAR_FIELDS = new Set([
+    'ZCGUBUN_D',  // 표준원가추정(대구분) — 다른 필드 더블클릭 시 자동 추가
+    'ZCGUBUN',    // 원가구분(구분)       — 다른 필드 더블클릭 시 자동 추가
+]);
+
 function isHiddenInBuilderSidebar(name) {
     if (!name) return false;
-    // 제조원가 area 에서는 강제 숨김 정책 미적용 (요구사항: PLANT/MATERIAL 노출 필수)
+    const u = String(name).toUpperCase();
+    // ─────────────────────────────────────────────────────────────
+    // [2026-10-30] 제조원가 영역 전용: 묶음(Field Group)의 멤버는 사이드바에서 숨김.
+    //   - 예: '플랜트 (코드/명)' 묶음을 노출하는 대신 멤버 PLANT, PLANT_NM 은 숨김.
+    //   - MFG_FIELD_GROUPS 상수에서 자동 계산된 _MFG_FIELD_GROUP_MEMBERS 사용.
+    //   - 수익성분석 영역은 아래 기존 분기로 내려가서 영향 없음.
+    //   - 가상 묶음 컬럼 자체('__GROUP__...')는 숨기지 않음 (사이드바에 노출돼야 함).
+    //
+    // [PR #555, 2026-11-02] 제조원가 영역 전용: ZCGUBUN_D / ZCGUBUN 사이드바 숨김
+    //   - _MFG_HIDDEN_SIDEBAR_FIELDS 참조 (상수 1곳 관리)
+    //   - 자동 추가(addField)는 유지 — allColumns 에는 그대로 존재, UI 만 숨김
+    //   - 필터조건 드롭다운(_renderFieldComboItems)은 이 함수 호출 안 함 → 유지됨 (Q3(b))
+    // ─────────────────────────────────────────────────────────────
     try {
         const _area = (window.AreaTabs && window.AreaTabs.current) || document.body?.dataset?.area || '';
-        if (_area === 'manufacturing-cost') return false;
+        if (_area === 'manufacturing-cost') {
+            // 묶음 멤버는 숨김 (단, 가상 묶음 컬럼은 유지)
+            if (_MFG_FIELD_GROUP_MEMBERS.has(u) && !u.startsWith('__GROUP__')) return true;
+            // [PR #555] 사이드바 숨김 필드 (ZCGUBUN_D / ZCGUBUN)
+            if (_MFG_HIDDEN_SIDEBAR_FIELDS.has(u)) return true;
+            // 기존 정책: 제조원가에서는 다른 숨김 정책 미적용 (PLANT/MATERIAL 노출 필수)
+            return false;
+        }
     } catch (e) { /* 안전 fallback: 기존 정책 유지 */ }
-    const u = String(name).toUpperCase();
     if (BUILDER_HIDDEN_SIDEBAR_FIELDS.has(u)) return true;
     // 일부 환경에서 BW 컬럼이 'BIC_Z...' prefix 로 노출되는 경우 대응
     if (u.startsWith('BIC_')) {
@@ -1580,6 +1624,35 @@ const CATEGORY_NAMES = {
 //                       요약격인 합계(3개)와 자주 쓰는 계산지표를 원가요소 위로.
 //   - '기타'(other) 는 마지막 - TOTAL1/TOTAL2 (표준가) 가 여기에 표시됨.
 const CATEGORY_ORDER = ['period','org','product','cost_type','quantity','unit','cost_total','metric','cost','trade','amount','other'];
+
+// ─────────────────────────────────────────────────────────────────
+// [PR #551, 2026-11-02] 제조원가 VQB — 필터조건 전용 섹션 순서
+//
+//   사용자 요구:
+//     비주얼쿼리빌더 [필터조건] 드롭다운에서
+//     "자재 코드(MATERIAL) / 자재명(MATERIAL_NM)" 을 상단으로 올려서
+//     접근성 개선 (조직/사업부 위로).
+//
+//   사용자 승인 조합 (2026-11-02):
+//     Q1(a): 필터조건 드롭다운만 (조회필드 사이드바는 CATEGORY_ORDER 유지)
+//     Q2(a): "자재/제품" 섹션을 "기간" 다음 (2번째) 로 이동
+//     Q3(a): 제조원가 영역만 (수익성분석 완전 무영향)
+//     Q4(b): 기간 섹션 유지 (CALMONTH 그대로 노출)
+//
+//   순서 (조회필드 CATEGORY_ORDER 와 비교):
+//     [공용]        period → org → product → cost_type → quantity → ...
+//     [MFG 필터]    period → product → org → cost_type → quantity → ...
+//                           ^^^^^^^^^^^^^^
+//                           product(자재/제품) 가 org(조직/사업부) 앞으로
+//
+//   설계:
+//     - CATEGORY_ORDER 와 동일 요소/길이 (누락/추가 없음) 보장
+//     - product 와 org 의 상대 순서만 반전 → 나머지 섹션 영향 0
+//     - _renderFieldComboItems() (필터조건 전용 함수) 에서만 참조
+//     - 영역 가드: _currentBuilderArea() === 'manufacturing-cost' 전용
+//     - 수익성분석 영역은 기존 CATEGORY_ORDER 그대로 사용 → 완전 무영향
+// ─────────────────────────────────────────────────────────────────
+const _MFG_FILTER_CATEGORY_ORDER = ['period','product','org','cost_type','quantity','unit','cost_total','metric','cost','trade','amount','other'];
 
 // ─── Init ────────────────────────────────────
 let currentUserRole='user', currentDomain='PS', currentUserId='';
@@ -1790,6 +1863,275 @@ function _rewriteMfgFieldLabel(colName, originalLabel) {
     return short || originalLabel;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// [2026-10-30] 제조원가 Metric → 필수 Dimension Dependency 매핑
+//   사용자 요구사항:
+//     - '개당 단가(원)' 조회 시 4가지 원가 기준(실제원가/실제원가의 표준원가/
+//       매출원가/매출원가의 표준원가)이 섞여서 한 줄로 집계되는 문제 해결.
+//     - 사용자가 사이드바에서 '개당 단가' 를 더블클릭 → 조회필드 추가하면,
+//       집계 왜곡 방지를 위해 PLANT/ZCGUBUN/ZCGUBUN_D 를 함께 자동 추가.
+//     - 자동 추가된 필드는 반드시 '개당 단가' 보다 **앞쪽** 에 위치해야 함.
+//
+//   설계 원칙:
+//     - 하드코딩 UI 가 아닌 **설정 테이블(Dependency map) 패턴** 사용.
+//       향후 다른 metric 에 dependency 가 필요하면 이 상수에만 항목을
+//       추가하면 됨 (addField() 로직은 수정 불필요).
+//     - KEY: metric_code (서버 metric.metric_code 와 1:1 일치)
+//     - VALUE: 함께 자동 추가할 DB 컬럼명 배열 (순서 = 삽입 순서)
+//     - 영역 가드: manufacturing-cost 전용 (수익성분석 완전 무영향).
+//     - 중복 체크: 이미 selectedFields 에 있으면 skip (중복 추가 금지).
+//     - 제거 UX (옵션 A, 사용자 승인): 사용자가 '개당 단가' 를 수동 제거
+//       해도 자동 추가된 PLANT/ZCGUBUN/ZCGUBUN_D 는 유지. 다른 metric
+//       조합에 재사용 가능하도록 침습 최소화.
+// ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// [2026-10-30 v4] 제조원가 원가요소 공통 Dependency (DRY)
+//
+//   사용자 요구:
+//     개당 단가 및 20개 원가요소 컬럼(KST001~KST039)을 조회필드에 추가
+//     할 때 다음 5개 dimension 을 함께 자동 추가 (집계 왜곡 방지).
+//
+//   순서 (중요): CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN → [metric/column]
+//     - CALMONTH 는 DATE_FIELDS 특수 삽입 로직에 의해 selectedFields
+//       맨 앞에 배치됨 (기존 addField 로직 재사용).
+//     - 나머지 4개(PLANT, MATERIAL_NM, ZCGUBUN_D, ZCGUBUN)는 metric/column 바로 앞에 삽입.
+//     - 결과 예시: [달력연도/월, 플랜트코드, 자재명, 표준원가추정(대구분),
+//                   원가구분(구분), 재료비-펄프]
+//
+//   [v4 변경] 사용자 추가 요청: '자재명'(MATERIAL_NM) 도 자동 추가 대상에 포함.
+//     - 집계 왜곡 방지 효과 강화 (자재별 분리 분석 가능)
+//     - 자재코드(MATERIAL) 는 제외 — 사용자 명시 (자재명만)
+//
+//   확장성:
+//     향후 다른 원가요소가 추가되거나 dependency 순서/구성이 바뀌면
+//     이 공통 상수 한 곳만 수정하면 UNIT_COST + KST001~KST039 전체에
+//     일괄 반영됨.
+// ─────────────────────────────────────────────────────────────────
+const _MFG_COST_ELEMENT_DEPS = ['CALMONTH', 'PLANT', 'MATERIAL_NM', 'ZCGUBUN_D', 'ZCGUBUN'];
+
+const MFG_METRIC_FIELD_DEPENDENCIES = {
+    // 개당 단가 (metric_code='UNIT_COST'): SUM(TOTAL)/NULLIF(SUM(LBKUM),0)
+    // 집계가 의미 있는 단가가 되려면 CALMONTH × PLANT × 4가지 원가기준
+    // (ZCGUBUN × ZCGUBUN_D) 로 반드시 분리.
+    //
+    // [2026-10-30 수정] 운영 DB 의 실제 metric_code 는 'UNIT_COST'.
+    //   초기 PR #542 는 sql/054 seed 파일의 'COST_ACTUAL_UNIT_PRICE' 를
+    //   가정했으나, 운영은 'UNIT_COST' 로 수동 등록되어 있어 매칭 실패
+    //   (no-op) → 사용자 지적 반영하여 운영 기준으로 교체.
+    //   seed 파일은 참고용으로만 존재 (운영 적용되지 않은 상태).
+    //
+    // [2026-10-30 v3] 사용자 요구 반영:
+    //   - CALMONTH 를 dependency 에 추가 (시간축 기본 분리)
+    //   - 순서를 ZCGUBUN_D → ZCGUBUN (대구분이 먼저) 으로 변경
+    //   - 20개 원가요소 컬럼 매핑(MFG_COLUMN_FIELD_DEPENDENCIES)과 통일된
+    //     _MFG_COST_ELEMENT_DEPS 공통 상수를 공유
+    'UNIT_COST': _MFG_COST_ELEMENT_DEPS,
+};
+
+// ─────────────────────────────────────────────────────────────────
+// [2026-10-30 v3] 제조원가 Column Dependency 매핑 (non-metric 컬럼용)
+//
+//   사용자 요구:
+//     sys_aimd_cot015 테이블의 20개 원가요소 컬럼(KST001~KST039) 을
+//     사이드바에서 더블클릭하면 UNIT_COST 와 동일하게
+//     CALMONTH + PLANT + ZCGUBUN_D + ZCGUBUN 을 자동으로 함께 추가.
+//
+//   컬럼 매핑 (sql/043_create_sys_aimd_cot015.sql + sql/050 운영 ontology):
+//     KST001 재료비-펄프      KST002 재료비-고지      KST004 재료비-패드
+//     KST006 부재료비-약품    KST008 부재료비-포장재  KST010 재료비-기타
+//     KST012 인건비           KST014 도급비           KST015 에너지비
+//     KST017 감가상각비       KST019 수선/소모품비    KST021 기타경비
+//     KST025 외주가공비       KST027 인건비-경비      KST029 인건비-기타
+//     KST031 전력비           KST033 세금과공과       KST035 지급수수료
+//     KST037 기타경비-폐기물  KST039 생산량 (입고용)
+//
+//   설계 (설정 테이블 패턴, PR #542/#544 와 통일):
+//     - KEY = DB 컬럼명 (대문자, allColumns 의 c.name 과 일치)
+//     - VALUE = 자동 추가할 컬럼명 배열 (삽입 순서)
+//     - MFG_METRIC_FIELD_DEPENDENCIES 와 _MFG_COST_ELEMENT_DEPS 공유
+//       → 미래에 dependency 가 바뀌면 공통 상수 1곳만 수정
+//     - 영역 가드: addField 분기에서 manufacturing-cost 전용
+//     - 중복 체크: 이미 selectedFields 에 있는 컬럼은 skip
+// ─────────────────────────────────────────────────────────────────
+const MFG_COLUMN_FIELD_DEPENDENCIES = {
+    'KST001': _MFG_COST_ELEMENT_DEPS,  // 재료비-펄프
+    'KST002': _MFG_COST_ELEMENT_DEPS,  // 재료비-고지
+    'KST004': _MFG_COST_ELEMENT_DEPS,  // 재료비-패드
+    'KST006': _MFG_COST_ELEMENT_DEPS,  // 부재료비-약품
+    'KST008': _MFG_COST_ELEMENT_DEPS,  // 부재료비-포장재
+    'KST010': _MFG_COST_ELEMENT_DEPS,  // 재료비-기타
+    'KST012': _MFG_COST_ELEMENT_DEPS,  // 인건비
+    'KST014': _MFG_COST_ELEMENT_DEPS,  // 도급비
+    'KST015': _MFG_COST_ELEMENT_DEPS,  // 에너지비
+    'KST017': _MFG_COST_ELEMENT_DEPS,  // 감가상각비
+    'KST019': _MFG_COST_ELEMENT_DEPS,  // 수선/소모품비
+    'KST021': _MFG_COST_ELEMENT_DEPS,  // 기타경비
+    'KST025': _MFG_COST_ELEMENT_DEPS,  // 외주가공비
+    'KST027': _MFG_COST_ELEMENT_DEPS,  // 인건비-경비
+    'KST029': _MFG_COST_ELEMENT_DEPS,  // 인건비-기타
+    'KST031': _MFG_COST_ELEMENT_DEPS,  // 전력비
+    'KST033': _MFG_COST_ELEMENT_DEPS,  // 세금과공과
+    'KST035': _MFG_COST_ELEMENT_DEPS,  // 지급수수료
+    'KST037': _MFG_COST_ELEMENT_DEPS,  // 기타경비-폐기물
+    'KST039': _MFG_COST_ELEMENT_DEPS,  // 생산량 (입고용)
+    // ── 표준가 2개 (PR #550, 2026-11-02) ────────────────────────────
+    //   사용자 요청: 더블클릭 시 KST001~KST039 와 동일 dependency 자동 추가
+    //   순서: CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN
+    //   = 달력연도/월, 플랜트 코드, 자재명, 표준원가추정(대구분), 원가구분(구분)
+    'TOTAL1': _MFG_COST_ELEMENT_DEPS,  // 현재월 표준가
+    'TOTAL2': _MFG_COST_ELEMENT_DEPS,  // 이전월 표준가
+    // ── 생산수량 1개 (PR #553, 2026-11-02) ────────────────────────────
+    //   사용자 요청: 더블클릭 시 KST/TOTAL 과 동일 dependency 자동 추가 (앞쪽 5개)
+    //   순서: CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN → [LBKUM 자신] → BASE_UOM
+    //   앞쪽 5개는 _MFG_COST_ELEMENT_DEPS 공통 상수 재사용 (DRY),
+    //   LBKUM "뒤에" 오는 BASE_UOM 은 MFG_COLUMN_FIELD_POST_DEPENDENCIES 로 처리.
+    //   사용자 승인 Q1(a): 신규 전용 상수 참조 패턴 사용 (DRY 재사용은 공통 상수 통해 유지)
+    'LBKUM': _MFG_COST_ELEMENT_DEPS,  // 생산수량(매출수량) — DECIMAL(17,3)
+    // ── 합계 금액 3개 (PR #554, 2026-11-02) ────────────────────────────
+    //   사용자 요청: 더블클릭 시 KST/TOTAL1/TOTAL2/LBKUM 과 동일 dependency 자동 추가
+    //   순서: CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN → [자신]
+    //   = PR #550 (TOTAL1/TOTAL2) 와 완전 동일 패턴 (뒤쪽 dependency 없음)
+    'TOTAL':  _MFG_COST_ELEMENT_DEPS,  // 원가 합계금액 — BIGINT (CURR 17,2)
+    'KST_V':  _MFG_COST_ELEMENT_DEPS,  // 변동비 합계 — BIGINT (CURR 17,2)
+    'KST_F':  _MFG_COST_ELEMENT_DEPS,  // 고정비 합계 — BIGINT (CURR 17,2)
+};
+
+// ─────────────────────────────────────────────────────────────────
+// [PR #553, 2026-11-02] 제조원가 후속(POST) 필드 의존성
+//
+//   사용자 요구:
+//     LBKUM(생산수량) 더블클릭 시 아래 순서로 조회필드 자동 셋팅:
+//       CALMONTH → PLANT → MATERIAL_NM → ZCGUBUN_D → ZCGUBUN
+//       → [LBKUM 자기 자신] → BASE_UOM(기본 단위)
+//
+//   기존 MFG_COLUMN_FIELD_DEPENDENCIES 는 "선택 필드 앞에 자동 삽입" 패턴.
+//   BASE_UOM 은 LBKUM "뒤에" 와야 하므로 별도 매커니즘 신설.
+//
+//   설계 (설정 테이블 패턴, 사용자 Q6 YES / Q1(a) 신규 전용 상수):
+//     - KEY = 선택 컬럼명 (대문자, allColumns 의 c.name 과 일치)
+//     - VALUE = 선택 컬럼 "뒤에" 자동 추가할 컬럼명 배열 (순서대로 push)
+//     - addField() 함수에서 selectedFields.push(newField) 바로 뒤에 처리
+//     - 중복 체크: 이미 selectedFields 에 있으면 skip (기존 패턴 재사용)
+//     - 영역 가드: addField 안의 _isMfgArea 체크 재사용
+//
+//   사용자 승인 Q3(a): BASE_UOM 자체 더블클릭 시엔 별도 자동 추가 없음
+//     (평범한 dimension 으로 처리 — POST_DEPENDENCIES 에 BASE_UOM 키 없음)
+//   사용자 승인 Q4: "기본 단위" 사이드바 노출 상태 그대로 유지 (별도 숨김/노출 변경 없음)
+// ─────────────────────────────────────────────────────────────────
+const MFG_COLUMN_FIELD_POST_DEPENDENCIES = {
+    'LBKUM': ['BASE_UOM'],  // 생산수량 뒤에 기본 단위 자동 추가
+};
+
+// ─────────────────────────────────────────────────────────────────
+// [2026-10-30] 제조원가 집계 함수 고정 컬럼 (드롭박스 숨김)
+//
+//   사용자 요구:
+//     제조원가 VQB 조회필드에서 아래 22개 컬럼은 "원본/SUM/AVG/MIN/MAX/COUNT"
+//     드롭박스를 완전히 숨기고 SUM 고정으로 표시.
+//     이유:
+//       - 금액/수량 컬럼은 분석 상 거의 100% 합계(SUM)만 사용
+//       - 사용자가 실수로 AVG 등을 선택하면 집계 왜곡 발생
+//       - UI 단순화 (드롭박스 없이 "SUM" 텍스트만 표시)
+//
+//   대상 22개 (sys_aimd_cot015 테이블):
+//     - 원가요소 20개 (KST001~KST039)
+//     - 표준가 2개 (TOTAL1 현재월 표준가, TOTAL2 이전월 표준가)
+//
+//   제외 (드롭박스 유지):
+//     - TOTAL (원가 합계금액), KST_V (변동비 합계), KST_F (고정비 합계)
+//     - LBKUM (생산수량)
+//     → 사용자 명시 "22개만"
+//
+//   설계 (설정 테이블 패턴, PR #542/#546/#547 과 통일):
+//     - Set 구조로 O(1) 조회
+//     - 영역 가드: addField/renderSelectedFields 에서 manufacturing-cost 전용
+//     - getDefaultAggregate 는 수정하지 않음 → 여전히 'SUM' 반환
+//       (SQL 생성 로직에는 영향 없음, UI 드롭박스만 숨김)
+// ─────────────────────────────────────────────────────────────────
+const _MFG_FIXED_AGG_COLUMNS = new Set([
+    // 원가요소 20개 (KST001~KST039) — 월 금액/수량 합계
+    'KST001','KST002','KST004','KST006','KST008',
+    'KST010','KST012','KST014','KST015','KST017',
+    'KST019','KST021','KST025','KST027','KST029',
+    'KST031','KST033','KST035','KST037','KST039',
+    // 표준가 2개 — 월 금액 합계
+    'TOTAL1', // 현재월 표준가
+    'TOTAL2', // 이전월 표준가
+    // 생산수량 1개 (PR #553, 2026-11-02) — 사용자 승인 Q2(a)
+    //   LBKUM 도 다른 금액/수량 컬럼처럼 "SUM 고정 + 뱃지 제거 + 드롭박스 숨김" 통일.
+    //   DECIMAL(17,3) 타입이지만 분석 상 거의 100% 합계(SUM)만 사용.
+    'LBKUM',  // 생산수량(매출수량)
+    // 합계 금액 3개 (PR #554, 2026-11-02) — 사용자 요청
+    //   원가 합계금액(TOTAL), 변동비 합계(KST_V), 고정비 합계(KST_F) 도
+    //   KST001~KST039 / TOTAL1 / TOTAL2 / LBKUM 과 동일 UX 적용:
+    //   "원본/SUM/MAX" 드롭박스 숨김 + SUM 뱃지 제거 → dim 처럼 깔끔.
+    //   BIGINT 금액 컬럼 (CURR 17,2) — 분석 상 거의 100% 합계(SUM)만 사용.
+    'TOTAL',  // 원가 합계금액
+    'KST_V',  // 변동비 합계
+    'KST_F',  // 고정비 합계
+]);
+
+// ─────────────────────────────────────────────────────────────────
+// [2026-10-30] 제조원가 사이드바 묶음 필드 정의 (Field Group)
+//
+//   사용자 요구:
+//     사이드바에 코드/명 쌍(예: 플랜트 코드 + 플랜트명)이 2개 항목으로
+//     분리돼 있어 매번 두 번 더블클릭해야 함. 이걸 하나의 묶음 항목으로
+//     표시하고 1번 더블클릭하면 두 컬럼이 모두 조회필드에 추가되도록.
+//
+//   설계 (옵션 A, 사용자 승인):
+//     - 사이드바 전용 "가상 묶음 컬럼" 을 allColumns 에 삽입.
+//       (name 접두사 '__GROUP__' 으로 실제 컬럼과 구분)
+//     - 묶음 멤버인 실제 컬럼(PLANT, PLANT_NM 등)은 사이드바에서 숨김
+//       (isHiddenInBuilderSidebar 확장).
+//     - 더블클릭 시 묶음의 각 멤버를 순차 addField() 호출.
+//     - 중복 체크: 이미 조회필드에 있는 멤버는 skip, 없는 것만 추가
+//       (옵션 Q4-a, 사용자 승인) — addField 의 기존 중복 체크 재사용.
+//     - 영역 가드: manufacturing-cost 전용 (수익성분석 완전 무영향).
+//
+//   확장성:
+//     향후 '자재 코드/명' 등 다른 묶음도 이 상수에만 항목 추가하면 됨.
+//     renderFieldList/addFieldByClick/loadColumns 로직은 수정 불필요.
+//
+//   KEY: 가상 묶음 컬럼 name (반드시 '__GROUP__' 접두사)
+//   VALUE: {
+//     label:    사이드바 표시 라벨 (사용자 승인: "플랜트 (코드/명)")
+//     category: CATEGORY_ORDER 중 하나 ('org', 'product' 등)
+//     type:     아이콘 결정용 ('text' / 'number')
+//     members:  더블클릭 시 순차 추가할 실제 컬럼명 배열 (이 순서로 추가)
+//     synonyms: 사이드바 우측에 표시할 동의어 (검색 매칭에도 사용)
+//   }
+// ─────────────────────────────────────────────────────────────────
+const MFG_FIELD_GROUPS = {
+    '__GROUP__PLANT_PAIR': {
+        label: '플랜트 (코드/명)',
+        category: 'org',
+        type: 'text',
+        members: ['PLANT', 'PLANT_NM'],
+        synonyms: ['플랜트', '공장', 'plant', '플랜트 코드', '플랜트명'],
+    },
+    // [2026-10-30 add] 제품군 (코드/명) 묶음
+    //   운영 라벨 (sql/050_seed_cost_ontology.sql 기준):
+    //     - DIVISION    = '제품군' (SAP CHAR 2)
+    //     - DIVISION_NM = '제품군 명 (⚠️ 필터에 사용 금지 — DIVISION 코드 사용)' (SAP CHAR 40)
+    //   DIVISION_NM 라벨이 길어 사이드바 가독성이 낮았음 → 묶음으로 통합하면
+    //   한 줄로 깔끔하게 표시되고, 더블클릭 1번으로 두 컬럼 동시 추가.
+    '__GROUP__DIVISION_PAIR': {
+        label: '제품군 (코드/명)',
+        category: 'org',
+        type: 'text',
+        members: ['DIVISION', 'DIVISION_NM'],
+        synonyms: ['제품군', 'division', '제품군 코드', '제품군 명', '사업부'],
+    },
+};
+
+// 묶음의 멤버(실제 컬럼명) 집합 — 사이드바 숨김 판정에 사용
+// MFG_FIELD_GROUPS 가 바뀌면 자동 재계산 (상수 추가만 하면 됨)
+const _MFG_FIELD_GROUP_MEMBERS = new Set();
+Object.values(MFG_FIELD_GROUPS).forEach(g => {
+    (g.members || []).forEach(m => _MFG_FIELD_GROUP_MEMBERS.add(String(m).toUpperCase()));
+});
+
 async function loadColumns() {
     try {
         // [2026-09-17] area 파라미터 추가 - 서버가 area 별 target table 로 컬럼 조회
@@ -1804,6 +2146,40 @@ async function loadColumns() {
             return (shortLabel !== c.label) ? { ...c, label: shortLabel } : c;
         });
         allColumns = cols.filter(c => c.category !== 'system');
+
+        // ─────────────────────────────────────────────────────────
+        // [2026-10-30] 제조원가 영역: 가상 묶음 컬럼 삽입 (Field Group)
+        //   - 사이드바 전용 가상 항목 (name='__GROUP__XXX') 을 allColumns 에
+        //     추가하여 renderFieldList 가 기존 non-metric 분기로 자연스럽게
+        //     렌더링하도록 함.
+        //   - is_group:true 플래그로 addFieldByClick 분기에서 식별.
+        //   - 멤버 중 최소 1개라도 서버 응답에 존재해야 가상 항목 노출
+        //     (환경 차이로 PLANT_NM 이 없을 수 있는 안전 가드).
+        //   - 수익성분석 영역은 가드로 완전 무영향.
+        // ─────────────────────────────────────────────────────────
+        if (areaParam === 'manufacturing-cost') {
+            const existingColNames = new Set(allColumns.map(c => String(c.name).toUpperCase()));
+            Object.entries(MFG_FIELD_GROUPS).forEach(([groupName, groupDef]) => {
+                // 멤버 중 서버 응답에 실제 존재하는 것들만 유효
+                const availableMembers = (groupDef.members || []).filter(
+                    m => existingColNames.has(String(m).toUpperCase())
+                );
+                if (availableMembers.length === 0) return; // 멤버 전부 없으면 가상 항목도 skip
+                // 이미 같은 name 이 있으면 중복 삽입 금지 (loadColumns 재호출 안전)
+                if (allColumns.some(c => c.name === groupName)) return;
+                allColumns.push({
+                    name: groupName,
+                    label: groupDef.label,
+                    type: groupDef.type || 'text',
+                    category: groupDef.category || 'org',
+                    is_metric: false,
+                    is_group: true,                      // 묶음 항목 식별 플래그
+                    group_members: availableMembers,     // 실제 추가 대상 (가용 멤버만)
+                    synonyms: Array.isArray(groupDef.synonyms) ? groupDef.synonyms.slice() : [],
+                });
+            });
+        }
+
         renderFieldList(allColumns);
     } catch(e) {
         document.getElementById('fieldList').innerHTML = '<p style="color:var(--error);padding:16px;">필드 로딩 실패</p>';
@@ -1816,11 +2192,74 @@ function renderFieldList(cols) {
     //   - 검색/렌더 양쪽 모두에서 일관되게 빠지도록 여기서 필터링
     const visibleColsForSidebar = (cols || []).filter(c => !isHiddenInBuilderSidebar(c.name));
 
+    // [PR #555, 2026-11-02] 제조원가 사이드바 전용: 특정 컬럼을 맨 하단('other' 섹션)으로 재배치
+    //   사용자 요구: 통화 코드(CURRENCY) 를 필드목록 맨 하단에 위치시킴.
+    //     CATEGORY_ORDER 는 ['period','org','product',...,'amount','other'] 로 'other' 가 마지막.
+    //     → category 를 'other' 로 override 하면 자연스럽게 맨 아래 섹션으로 이동.
+    //   영역 가드: 제조원가(manufacturing-cost)에서만 적용. 다른 영역에선 서버 category 유지.
+    //   원본 객체 보존: 얕은 복사(…c)로 override — allColumns 참조는 변경 없음 → addField 자동 추가 로직 무영향.
+    //
+    // [PR #556, 2026-11-02] 특정 컬럼을 섹션 안 "맨 뒤"로 밀어내기 (SECTION_END)
+    //   사용자 요구: '기타(other)' 섹션 안에서 현재월 표준가 → 이전월 표준가 → 통화 코드 순.
+    //     기존 순서는 allColumns 입력 순서대로 push 되므로 CURRENCY 가 TOTAL1/TOTAL2 앞에 왔음.
+    //     → _MFG_SIDEBAR_SECTION_END_FIELDS 에 명시된 컬럼은 grouped[cat] 배열의 맨 뒤로 재정렬.
+    //   설계: 설정 테이블 1곳에 관리, 미래에 "섹션 맨 뒤로 보낼 컬럼" 추가 요구에 대응 쉬움.
+    const _isMfgArea = (typeof _currentBuilderArea === 'function') &&
+                       (_currentBuilderArea() === 'manufacturing-cost');
+    // [PR #557, 2026-11-02] BASE_UOM(기본 단위) 도 사이드바 "맨 밑" 으로 이동
+    //   사용자 요구: 사이드바 "단위(1)" 섹션에 혼자 있던 BASE_UOM 을 CURRENCY 와 함께 '기타' 섹션으로.
+    //   순서 (사용자 Q(a) 디폴트 — PR #556 과 일관성):
+    //     TOTAL1 → TOTAL2 → BASE_UOM → CURRENCY  (CURRENCY 가 가장 맨 뒤 유지)
+    //   BASE_UOM 은 _MFG_SIDEBAR_SECTION_END_FIELDS 에만 추가하면 'other' 섹션 안에서
+    //   CURRENCY 와 함께 "맨 뒤 그룹" 에 묶이지만, Set 특성상 두 컬럼 상대 순서가 보장 안 됨.
+    //   → endFields 안에서는 원본 입력 순서(allColumns 순서) 유지 — BASE_UOM 이 CURRENCY 보다 앞.
+    //   따라서 BASE_UOM 을 section_end 에 넣고, override 로 'other' 이동 → 자동으로 CURRENCY 보다 앞에 옴.
+    const _MFG_SIDEBAR_CATEGORY_OVERRIDE = {
+        'CURRENCY': 'other',   // 통화 코드 (PR #555)
+        'BASE_UOM': 'other',   // 기본 단위 (PR #557)
+    };
+    const _MFG_SIDEBAR_SECTION_END_FIELDS = new Set([
+        'BASE_UOM',  // 기본 단위 (PR #557) — '기타' 섹션 안 맨 뒤 그룹
+        'CURRENCY',  // 통화 코드 (PR #556) — '기타' 섹션 안 맨 뒤 그룹 (BASE_UOM 다음)
+    ]);
+    const _overriddenCols = _isMfgArea
+        ? visibleColsForSidebar.map(c => {
+              const u = String(c.name || '').toUpperCase();
+              if (_MFG_SIDEBAR_CATEGORY_OVERRIDE[u]) {
+                  return { ...c, category: _MFG_SIDEBAR_CATEGORY_OVERRIDE[u] };
+              }
+              return c;
+          })
+        : visibleColsForSidebar;
+
     const grouped = {};
-    visibleColsForSidebar.forEach(c => {
+    _overriddenCols.forEach(c => {
         if (!grouped[c.category]) grouped[c.category] = [];
         grouped[c.category].push(c);
     });
+
+    // [PR #556, 2026-11-02] 섹션 안 "맨 뒤로 밀기" — 제조원가 영역만 적용
+    //   _MFG_SIDEBAR_SECTION_END_FIELDS 에 포함된 컬럼은 해당 section 배열의 끝으로 이동.
+    //   영역 가드 재사용(_isMfgArea), 원본 참조 보존(배열 재정렬만).
+    if (_isMfgArea) {
+        Object.keys(grouped).forEach(cat => {
+            const arr = grouped[cat];
+            if (!Array.isArray(arr) || arr.length <= 1) return;
+            const endFields = [];
+            const normalFields = [];
+            arr.forEach(c => {
+                const u = String(c.name || '').toUpperCase();
+                if (_MFG_SIDEBAR_SECTION_END_FIELDS.has(u)) {
+                    endFields.push(c);
+                } else {
+                    normalFields.push(c);
+                }
+            });
+            if (endFields.length > 0) {
+                grouped[cat] = [...normalFields, ...endFields];
+            }
+        });
+    }
 
     let html = '';
     CATEGORY_ORDER.forEach(cat => {
@@ -2381,7 +2820,33 @@ function handleCondDrop(e) {
 }
 
 // ─── Field Management ────────────────────────
-function addFieldByClick(colName) { addField(colName); }
+function addFieldByClick(colName) {
+    // ─────────────────────────────────────────────────────────────
+    // [2026-10-30] 묶음(Field Group) 더블클릭 분기
+    //   - 가상 묶음 컬럼(name 이 '__GROUP__' 으로 시작) 을 더블클릭하면
+    //     그 묶음의 멤버(group_members)를 순차 addField() 호출.
+    //   - 중복 체크 (옵션 Q4-a, 사용자 승인): 이미 조회필드에 있는 멤버는
+    //     addField 의 기존 중복 체크로 자동 skip. 없는 것만 추가.
+    //   - 영역 가드: 가상 묶음 컬럼은 loadColumns 에서 manufacturing-cost
+    //     영역일 때만 삽입되므로, 여기서는 별도 가드 불필요
+    //     (수익성분석 영역에서는 '__GROUP__' name 자체가 존재하지 않음).
+    //   - 일반 non-group 더블클릭은 기존 그대로 addField(colName) 호출.
+    // ─────────────────────────────────────────────────────────────
+    if (typeof colName === 'string' && colName.startsWith('__GROUP__')) {
+        const col = allColumns.find(c => c.name === colName);
+        if (col && col.is_group && Array.isArray(col.group_members)) {
+            col.group_members.forEach(memberName => {
+                // addField 자체가 '이미 같은 column 이 그룹 기준으로 추가되어
+                // 있으면 무시' 하는 중복 체크를 가짐 → 재사용으로 skip 보장.
+                addField(memberName);
+            });
+            return;
+        }
+        // 가상 묶음 메타가 없거나 손상된 경우는 조용히 무시 (실제 컬럼이 아니므로 addField 호출 금지)
+        return;
+    }
+    addField(colName);
+}
 
 // 컬럼 카테고리/타입에 따라 기본 집계 추천
 //   amount/quantity → SUM (월 합계가 기본)
@@ -2411,6 +2876,123 @@ function addField(colName) {
         // ★ 카테고리 기반 기본 집계 자동 추천 (금액/수량 → SUM, 그 외 → 그룹기준)
         const defaultAgg = getDefaultAggregate(col);
         newField = { column: colName, alias: col.label, aggregate: defaultAgg, type: col.type, category: col.category };
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // [2026-10-30] 제조원가 Field Dependency 자동 추가 (Metric + Column 통합)
+    //   - 영역이 'manufacturing-cost' 이고,
+    //   - 추가하는 필드가 matching dependency 매핑에 등록되어 있으면,
+    //   먼저 의존 dimension 필드들을 선삽입 → 마지막에 선택 필드를 추가.
+    //   이렇게 하면 결과 순서가 자동으로
+    //       [...이미 선택된 필드, ...자동 추가 dimension, metric/column] 이 되어
+    //   사용자 요구("자동 추가된 구분 필드가 앞쪽에") 를 만족.
+    //
+    // ★ 특수 처리 - CALMONTH 는 DATE_FIELDS 특수 삽입 로직에 의해
+    //   selectedFields 맨 앞으로 자동 배치됨 (호출 위임).
+    //   결과 레이아웃: [CALMONTH, ...기존, PLANT, ZCGUBUN_D, ZCGUBUN, 선택필드]
+    //
+    //   설계 (설정 테이블 패턴):
+    //     MFG_METRIC_FIELD_DEPENDENCIES  — key=metric_code  (예: UNIT_COST)
+    //     MFG_COLUMN_FIELD_DEPENDENCIES  — key=column_name  (예: KST001)
+    //     둘 다 _MFG_COST_ELEMENT_DEPS 공통 상수 공유 → 변경 1곳 반영 N곳
+    //
+    //   영역 가드: 수익성분석(profitability) 에서는 완전 무영향.
+    //   중복 체크: 이미 selectedFields 에 있는 컬럼은 skip (중복 추가 금지).
+    //   제거 UX (옵션 A): 사용자가 metric 을 수동 제거해도 자동 추가 필드는
+    //                     유지 (removeField 는 수정하지 않음, 침습 최소화).
+    //   기존 non-metric / DATE_FIELDS 분기는 완전 무변경.
+    // ─────────────────────────────────────────────────────────────
+    const _isMfgArea = (typeof _currentBuilderArea === 'function') &&
+                       (_currentBuilderArea() === 'manufacturing-cost');
+
+    // 통합 dependency lookup — metric 이면 metric_code 기준, 아니면 column name 기준
+    let _depColNames = null;
+    if (_isMfgArea) {
+        if (col.is_metric && col.metric_code &&
+            Array.isArray(MFG_METRIC_FIELD_DEPENDENCIES[col.metric_code])) {
+            _depColNames = MFG_METRIC_FIELD_DEPENDENCIES[col.metric_code];
+        } else if (!col.is_metric &&
+                   Array.isArray(MFG_COLUMN_FIELD_DEPENDENCIES[colName])) {
+            _depColNames = MFG_COLUMN_FIELD_DEPENDENCIES[colName];
+        }
+    }
+
+    if (_depColNames) {
+        let _autoAddedCount = 0;
+        for (const _depName of _depColNames) {
+            // 이미 조회필드에 있으면 skip (dimension 은 aggregate 없이 추가되므로
+            // 'aggregate 없는 동일 컬럼' 기준으로 중복 판정)
+            if (selectedFields.find(f => f.column === _depName && !f.aggregate)) continue;
+            // 메타정보 조회 (사이드바에 노출된 컬럼만 자동 추가 — 없으면 조용히 skip)
+            const _depCol = allColumns.find(c => c.name === _depName);
+            if (!_depCol) continue;
+            // CALMONTH 등 DATE_FIELDS 는 addField 를 재귀 호출하여 특수 삽입 로직
+            // (selectedFields 맨 앞 CALYEAR → CALMONTH → CALDAY 순서) 활용.
+            // 그 외 dimension 은 바로 push.
+            if (DATE_FIELDS.includes(_depName)) {
+                addField(_depName);  // 재귀 호출 → DATE_FIELDS 분기 활용
+                _autoAddedCount++;
+                continue;
+            }
+            const _depAgg = getDefaultAggregate(_depCol);
+            const _depField = {
+                column: _depName,
+                alias: _depCol.label,
+                aggregate: _depAgg,
+                type: _depCol.type,
+                category: _depCol.category,
+            };
+            selectedFields.push(_depField);
+            _autoAddedCount++;
+        }
+        // metric/column 은 마지막에 push → 자동 추가된 dimension 들이 자연스럽게 앞에 위치
+        selectedFields.push(newField);
+
+        // ─────────────────────────────────────────────────────────
+        // [PR #553, 2026-11-02] POST dependency 처리
+        //
+        //   선택 필드 "뒤에" 자동 추가되는 dimension (예: LBKUM 뒤에 BASE_UOM).
+        //   기존 dependency 는 "앞에" 삽입이지만, 사용자가 특정 순서를 명시한
+        //   경우(LBKUM → BASE_UOM) 를 지원하려면 self push 뒤에 처리해야 함.
+        //
+        //   설계 (사용자 Q1(a) 신규 전용 상수 + Q3(a) BASE_UOM 평범 dim):
+        //     - MFG_COLUMN_FIELD_POST_DEPENDENCIES[colName] 에서 조회
+        //     - 배열 순서대로 push (dimension 만 — 재귀 호출 없음, LBKUM/BASE_UOM 둘 다 dim/metric 성격 고정)
+        //     - 중복 체크 + 메타 조회 로직은 기존 "앞쪽 dependency" 와 동일 패턴
+        //     - BASE_UOM 자체는 POST_DEPENDENCIES 에 키 없음 → 평범한 dim 으로 동작 (Q3(a))
+        // ─────────────────────────────────────────────────────────
+        if (Array.isArray(MFG_COLUMN_FIELD_POST_DEPENDENCIES[colName])) {
+            for (const _postName of MFG_COLUMN_FIELD_POST_DEPENDENCIES[colName]) {
+                // 중복 체크 (앞쪽 dependency 와 동일 패턴)
+                if (selectedFields.find(f => f.column === _postName && !f.aggregate)) continue;
+                const _postCol = allColumns.find(c => c.name === _postName);
+                if (!_postCol) continue;  // 사이드바에 없으면 조용히 skip
+                const _postAgg = getDefaultAggregate(_postCol);
+                selectedFields.push({
+                    column: _postName,
+                    alias: _postCol.label,
+                    aggregate: _postAgg,
+                    type: _postCol.type,
+                    category: _postCol.category,
+                });
+                _autoAddedCount++;
+            }
+        }
+
+        if(!builderDomainLocked){builderDomainLocked=true;renderDomainSelectorBar();}
+        renderSelectedFields();
+        updateOrderByOptions();
+        updateCompareDimPanel();
+        // 사용자 피드백 (snackbar 유틸이 있으면 사용, 없으면 조용히 skip)
+        if (_autoAddedCount > 0 && typeof showSnackbar === 'function') {
+            try {
+                showSnackbar(
+                    `'${col.label || col.metric_code || colName}' 집계 왜곡 방지를 위해 ` +
+                    `달력연도/월·플랜트·원가구분·표준원가추정 필드를 함께 추가했습니다.`
+                );
+            } catch(_e) { /* snackbar 실패는 무시 */ }
+        }
+        return;
     }
 
     // ★ 기간 필드(CALYEAR/CALMONTH/CALDAY)는 항상 결과 표 맨 앞에 오도록 selectedFields 앞쪽에 배치
@@ -2573,17 +3155,46 @@ function renderSelectedFields() {
             // Metric: 산식 표시 (수정 불가)
             html += `<span class="metric-formula-badge" title="${(f.formula||'').replace(/"/g,'&quot;')}"><i class="fas fa-calculator" style="font-size:9px;margin-right:2px;"></i>산식</span>`;
         } else if (isNum) {
-            // 카테고리 기반 추천 집계 (UI 힌트용)
-            const recommended = (f.category === 'amount' || f.category === 'quantity') ? 'SUM' : '';
-            const mark = (v) => v === recommended ? ' ⭐' : '';
-            html += `<select class="agg-select" onchange="setAggregate(${i}, this.value)" onclick="event.stopPropagation()" title="⭐ = 자동 추천 (월 합계 기준). 원본값을 보려면 '원본' 선택">
-                <option value="" ${f.aggregate===''?'selected':''}>원본${mark('')}</option>
-                <option value="SUM" ${f.aggregate==='SUM'?'selected':''}>SUM${mark('SUM')}</option>
-                <option value="AVG" ${f.aggregate==='AVG'?'selected':''}>AVG</option>
-                <option value="MAX" ${f.aggregate==='MAX'?'selected':''}>MAX</option>
-                <option value="MIN" ${f.aggregate==='MIN'?'selected':''}>MIN</option>
-                <option value="COUNT" ${f.aggregate==='COUNT'?'selected':''}>COUNT</option>
-            </select>`;
+            // ─────────────────────────────────────────────────────────
+            // [2026-10-30] 제조원가 영역 전용: 22개 고정 집계 컬럼은
+            // 드롭박스/뱃지 자체를 완전 숨김 — 필드명만 표시
+            // (dimension 필드와 동일한 깔끔한 UX).
+            //
+            //   대상: KST001~KST039 (20개) + TOTAL1 + TOTAL2 (표준가 2개)
+            //   영역 가드: _currentBuilderArea() === 'manufacturing-cost' 전용
+            //   수익성분석(profitability) 영역은 기존 드롭박스 그대로 유지.
+            //
+            //   [2026-10-30 v2 사용자 수정 요청] 'SUM' 텍스트 뱃지도 제거.
+            //     사용자 명시: "다른 필드처럼 [필드명]만 보이게 해줘"
+            //     → T 아이콘 dimension 필드와 동일한 UX 통일.
+            //
+            //   NOTE: f.aggregate 는 addField 시점에 getDefaultAggregate() 가
+            //         'SUM' 으로 세팅해둠 (금액/수량 카테고리 자동 추천).
+            //         여기서는 UI 만 숨기므로 SQL 생성 로직은 영향 없음.
+            //         (서버로 전송되는 payload 의 aggregate='SUM' 그대로 유지)
+            // ─────────────────────────────────────────────────────────
+            const _isMfgAreaForAgg = (typeof _currentBuilderArea === 'function') &&
+                                     (_currentBuilderArea() === 'manufacturing-cost');
+            const _isFixedAgg = _isMfgAreaForAgg && _MFG_FIXED_AGG_COLUMNS.has(String(f.column).toUpperCase());
+
+            if (_isFixedAgg) {
+                // 고정 집계: 집계 UI(뱃지·드롭박스) 를 전혀 렌더링하지 않음.
+                // 사용자 요청: dimension 필드처럼 [필드명]만 보이게.
+                // SQL 생성 로직은 getDefaultAggregate() 가 그대로 SUM 반환하므로
+                // 서버 payload 와 집계 결과에는 영향 없음 (UI 만 숨김).
+            } else {
+                // 기존 드롭박스 — 수익성분석 영역 + 제조원가의 다른 컬럼
+                const recommended = (f.category === 'amount' || f.category === 'quantity') ? 'SUM' : '';
+                const mark = (v) => v === recommended ? ' ⭐' : '';
+                html += `<select class="agg-select" onchange="setAggregate(${i}, this.value)" onclick="event.stopPropagation()" title="⭐ = 자동 추천 (월 합계 기준). 원본값을 보려면 '원본' 선택">
+                    <option value="" ${f.aggregate===''?'selected':''}>원본${mark('')}</option>
+                    <option value="SUM" ${f.aggregate==='SUM'?'selected':''}>SUM${mark('SUM')}</option>
+                    <option value="AVG" ${f.aggregate==='AVG'?'selected':''}>AVG</option>
+                    <option value="MAX" ${f.aggregate==='MAX'?'selected':''}>MAX</option>
+                    <option value="MIN" ${f.aggregate==='MIN'?'selected':''}>MIN</option>
+                    <option value="COUNT" ${f.aggregate==='COUNT'?'selected':''}>COUNT</option>
+                </select>`;
+            }
         }
         html += `<span class="remove" onclick="removeField(${i})">&times;</span></div>`;
     });
@@ -2865,7 +3476,14 @@ function _renderFieldComboItems(qRaw) {
     const cur = conditions[filterCombo.condIdx]?.column;
     let html = '';
     let total = 0;
-    CATEGORY_ORDER.forEach(cat => {
+    // [PR #551, 2026-11-02] 제조원가 영역에서는 필터조건 전용 섹션 순서 사용
+    //   - product(자재/제품) 를 org(조직/사업부) 앞으로 이동 → "자재 코드/명" 접근성 개선
+    //   - 수익성분석(및 기타) 영역은 기존 CATEGORY_ORDER 그대로 → 완전 무영향
+    //   - 조회필드 사이드바(renderFieldList 계열) 는 CATEGORY_ORDER 참조 → 조회필드 UI 무영향
+    const _isMfgAreaForFilter = (typeof _currentBuilderArea === 'function') &&
+                                (_currentBuilderArea() === 'manufacturing-cost');
+    const _activeOrder = _isMfgAreaForFilter ? _MFG_FILTER_CATEGORY_ORDER : CATEGORY_ORDER;
+    _activeOrder.forEach(cat => {
         const cols = allColumns.filter(c => c.category === cat);
         if (cols.length === 0) return;
         const matched = cols.filter(c => {

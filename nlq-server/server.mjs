@@ -17301,6 +17301,78 @@ app.post('/api/builder/query', async (req, res) => {
   const isMfgArea = (areaKey === 'manufacturing-cost');
   console.log(`[Builder] area=${areaKey} table=${targetTable} isMfg=${isMfgArea}`);
 
+  // ─────────────────────────────────────────────────────────────────
+  // [PR #552, 2026-11-02] 제조원가 피벗 SQL — 원가 기준 자동 정렬 규칙
+  //
+  //   사용자 요구:
+  //     SELECT 조회필드에 PLANT + ZCGUBUN_D + ZCGUBUN 3개가 모두 포함된
+  //     제조원가 피벗 SQL 에, 사용자가 별도의 정렬을 지정하지 않은 경우
+  //     원가 기준(입고-생산 → 소비-소비 / 실제·매출 → 표준) 정렬을 자동 추가.
+  //
+  //   최종 결과 순서 (플랜트별):
+  //     1. 입고-생산 / 실제원가
+  //     2. 입고-생산 / 표준원가
+  //     3. 소비-소비 / 매출원가
+  //     4. 소비-소비 / 표준원가
+  //
+  //   사용자 승인 설계 조합 (대화 중 Q&A):
+  //     Q1: 서버 쪽 SQL 생성 (/api/builder/query 라우트에서 조립 — 실조사)
+  //     Q2(a): 사용자가 order_by 를 지정한 경우 자동 ORDER BY skip (사용자 의도 존중)
+  //     Q4(A, 재확인): 엄격 매칭 — PLANT + ZCGUBUN_D + ZCGUBUN 3개 모두 SELECT 포함
+  //                  → GROUP BY 모드 안전성 (ONLY_FULL_GROUP_BY) 확보
+  //     Q5(a): SQL 주석 없이 조용히 추가 (깔끔한 UI)
+  //     Q6: 설정 테이블 패턴 — 상수 1곳에 모든 규칙 집중 (사용자 명시 요구)
+  //
+  //   설계 (설정 테이블 패턴, PR #542/#544/#546/#549/#550/#551 과 통일):
+  //     - required_columns: 3개 전부 SELECT 에 있어야 적용 (엄격 매칭)
+  //     - order_by_sql: 자동 추가될 ORDER BY 절 (ORDER BY 키워드 제외)
+  //     - 미래에 ZCGUBUN_D 값/순서가 바뀌면 이 상수 1곳만 수정
+  //
+  //   영역 격리:
+  //     - 제조원가 (manufacturing-cost) 영역만 적용
+  //     - 수익성분석 (profitability) 영역 완전 무영향 (isMfgArea 가드)
+  //     - 사용자가 order_by 지정한 경우 100% 사용자 정렬 우선 (skip)
+  // ─────────────────────────────────────────────────────────────────
+  const _MFG_AUTO_ORDER_RULES = {
+    required_columns: ['PLANT', 'ZCGUBUN_D', 'ZCGUBUN'],  // 엄격 매칭 (사용자 Q4(A) 승인)
+    order_by_sql: `PLANT, ` +
+      `CASE ` +
+        `WHEN ZCGUBUN_D = '입고-생산' THEN 1 ` +
+        `WHEN ZCGUBUN_D = '소비-소비' THEN 2 ` +
+        `ELSE 99 ` +
+      `END, ` +
+      `CASE ` +
+        `WHEN ZCGUBUN_D = '입고-생산' AND ZCGUBUN = '실제원가' THEN 1 ` +
+        `WHEN ZCGUBUN_D = '입고-생산' AND ZCGUBUN = '표준원가' THEN 2 ` +
+        `WHEN ZCGUBUN_D = '소비-소비' AND ZCGUBUN = '매출원가' THEN 1 ` +
+        `WHEN ZCGUBUN_D = '소비-소비' AND ZCGUBUN = '표준원가' THEN 2 ` +
+        `ELSE 99 ` +
+      `END`,
+  };
+
+  // ─── 헬퍼: 제조원가 자동 ORDER BY 적용 여부 판단 + SQL 반환 ───
+  //   입력: userOrderBy = 사용자가 UI 에서 선택한 정렬 컬럼 (payload order_by)
+  //         fieldsArr   = payload fields 배열
+  //   반환: 조건 만족 시 ORDER BY 뒤 올 SQL 문자열 (ORDER BY 키워드 제외),
+  //         아니면 null (자동 적용 안 함).
+  //
+  //   조건 (모두 AND):
+  //     1) isMfgArea === true (제조원가 영역)
+  //     2) 사용자가 order_by 를 지정하지 않음 (빈 문자열 또는 null)
+  //     3) SELECT fields 에 required_columns 3개가 모두 포함
+  const _mfgAutoOrderBySql = (userOrderBy, fieldsArr) => {
+    if (!isMfgArea) return null;
+    const userOrderStr = (userOrderBy || '').toString().trim();
+    if (userOrderStr) return null;  // 사용자 정렬 우선 (Q2(a))
+    if (!Array.isArray(fieldsArr) || fieldsArr.length === 0) return null;
+    const selectedCols = new Set(
+      fieldsArr.map(f => (f && f.column ? String(f.column).toUpperCase() : '')).filter(Boolean)
+    );
+    const allPresent = _MFG_AUTO_ORDER_RULES.required_columns.every(c => selectedCols.has(c));
+    if (!allPresent) return null;
+    return _MFG_AUTO_ORDER_RULES.order_by_sql;
+  };
+
   // ─── [2026-06-29] 요청 단위 로거 — 11개 stage 단계별 추적 ────────────────
   //   (사용자 요청 #3) 요청 수신 → LLM 필요 여부 → LLM 호출/응답 → SQL 파싱
   //   → DB 실행 → 이력 저장 → 응답 반환 까지 모든 단계를 requestId 로 묶음
@@ -17894,6 +17966,17 @@ app.post('/api/builder/query', async (req, res) => {
       if (order_by) {
         const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
         sql += ` ORDER BY \`${order_by}\` ${dir}`;
+      } else {
+        // [PR #552] 제조원가 자동 ORDER BY (compare 모드)
+        //   - 사용자가 order_by 미지정 + 제조원가 영역 + PLANT/ZCGUBUN_D/ZCGUBUN 3개 모두 선택 시
+        //   - compare 모드에서는 outer SELECT 이 이미 cur 서브쿼리를 wrapping 하는 구조 →
+        //     outer SELECT 에 PLANT/ZCGUBUN_D/ZCGUBUN 이 모두 포함돼야 ORDER BY 가 참조 가능.
+        //   - fields 기반 체크로 조건 판단 (SELECT 에도 존재한다는 전제)
+        const _autoOrderCompare = _mfgAutoOrderBySql(order_by, fields);
+        if (_autoOrderCompare) {
+          sql += ` ORDER BY ${_autoOrderCompare}`;
+          log.stage('mfg_auto_order_by_applied', { path: 'compare_mode', rule: 'PR#552' });
+        }
       }
       sql += ` LIMIT ${safeLimit}`;
 
@@ -18047,6 +18130,16 @@ app.post('/api/builder/query', async (req, res) => {
       if (order_by) {
         const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
         orderClause = `ORDER BY ${order_by} ${dir}`;
+      } else {
+        // [PR #552] 제조원가 자동 ORDER BY (메인 경로)
+        //   - 사용자가 order_by 미지정 + 제조원가 영역 + PLANT/ZCGUBUN_D/ZCGUBUN 3개 모두 선택 시
+        //   - GROUP BY 모드에서도 안전 (3개 모두 SELECT/GROUP BY 에 포함되므로 ORDER BY 참조 가능)
+        //   - 사용자 Q4(A) 승인: 엄격 매칭 (ONLY_FULL_GROUP_BY 안전)
+        const _autoOrderMain = _mfgAutoOrderBySql(order_by, fields);
+        if (_autoOrderMain) {
+          orderClause = `ORDER BY ${_autoOrderMain}`;
+          log.stage('mfg_auto_order_by_applied', { path: 'main_route', rule: 'PR#552' });
+        }
       }
 
       sql = `SELECT ${selectParts.join(', ')} FROM ${targetTable}`;
@@ -18289,6 +18382,23 @@ app.post('/api/builder/query', async (req, res) => {
             if (order_by && !isTimeDim(order_by)) {
               const dir = (order_dir || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
               orderClause2 = `ORDER BY ${order_by} ${dir}`;
+            } else {
+              // [PR #552] 제조원가 자동 ORDER BY (월별 비교 분기)
+              //   - 사용자가 order_by 미지정 (또는 시간 차원) + 제조원가 영역 +
+              //     PLANT/ZCGUBUN_D/ZCGUBUN 3개 모두 선택 시
+              //   - 월별 비교 분기는 CALMONTH 를 SELECT/GROUP BY 에서 제외하지만,
+              //     PLANT/ZCGUBUN_D/ZCGUBUN 은 일반 차원 분기 (18362번) 로 유지되므로
+              //     ORDER BY 참조 안전
+              //   - 사용자가 order_by 를 지정했어도 시간 차원인 경우(isTimeDim)
+              //     월별 비교에서는 의미 없으므로 자동 ORDER BY 적용 허용
+              const _autoOrderCompareMonth = _mfgAutoOrderBySql(
+                (order_by && !isTimeDim(order_by)) ? order_by : '',  // 시간 차원이면 "없음" 으로 간주
+                fields
+              );
+              if (_autoOrderCompareMonth) {
+                orderClause2 = `ORDER BY ${_autoOrderCompareMonth}`;
+                log.stage('mfg_auto_order_by_applied', { path: 'month_compare_branch', rule: 'PR#552' });
+              }
             }
 
             let newSql = `SELECT ${newSelectParts.join(', ')} FROM ${targetTable}`;
