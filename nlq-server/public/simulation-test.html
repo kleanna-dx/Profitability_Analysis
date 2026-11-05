@@ -322,7 +322,7 @@
             <div class="sc" style="padding:14px;text-align:center;border-left:4px solid #4f46e5;">
                 <div style="font-size:10px;color:#94a3b8;font-weight:600;">가동일수</div>
                 <div style="margin:4px 0;display:flex;align-items:center;justify-content:center;gap:4px;">
-                    <input type="number" id="capaOpDaysInput" value="21" min="0" max="31" step="0.1"
+                    <input type="number" id="capaOpDaysInput" value="0" min="0" max="31" step="0.1"
                         style="width:70px;padding:6px 8px;border:1px solid #c7d2fe;border-radius:8px;font-size:18px;font-weight:800;color:#4f46e5;text-align:center;background:#eef2ff;"
                         oninput="renderCapaTable()">
                 </div>
@@ -437,7 +437,7 @@
                 <div class="ard"></div>
                 <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:24px;">
                     <div style="text-align:center;"><div class="kn n-bl"><div class="lb">매출</div><div class="vl">-</div><div class="sb">매출액</div></div><div style="font-size:9px;color:#94a3b8;margin-top:3px;">수동 입력</div></div>
-                    <div style="text-align:center;"><div class="kn n-am" id="csMat" style="cursor:pointer;" onclick="toggleDrill()"><div class="lb">변동비</div><div class="vl" id="csMatV">327.3</div><div class="sb">원재료비 (천원/톤)</div><div style="font-size:8px;color:#b45309;margin-top:1px;"><i class="fas fa-hand-pointer mr-1"></i>클릭: 드릴다운</div></div><div style="font-size:9px;color:#16a34a;margin-top:3px;"><i class="fas fa-database mr-1"></i>DB</div>
+                    <div style="text-align:center;"><div class="kn n-am" id="csMat" style="cursor:pointer;" onclick="toggleDrill()"><div class="lb">변동비</div><div class="vl" id="csMatV">-</div><div class="sb">원재료비 (천원/톤)</div><div style="font-size:8px;color:#b45309;margin-top:1px;"><i class="fas fa-hand-pointer mr-1"></i>클릭: 드릴다운</div></div><div style="font-size:9px;color:#16a34a;margin-top:3px;"><i class="fas fa-database mr-1"></i>DB</div>
                         <div id="drillBox" style="display:none;margin-top:6px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px;text-align:left;min-width:220px;">
                             <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:4px;"><i class="fas fa-sitemap mr-1"></i>지종별 드릴다운</div>
                             <table style="width:100%;font-size:10px;border-collapse:collapse;"><thead><tr style="border-bottom:1px solid #fcd34d;"><th style="text-align:left;padding:2px 3px;color:#78350f;">지종</th><th style="text-align:right;padding:2px 3px;color:#78350f;">원단위</th><th style="text-align:right;padding:2px 3px;color:#78350f;">비중</th></tr></thead><tbody id="drillTb"></tbody></table>
@@ -455,8 +455,8 @@
                 </div>
                 <div class="ard"></div>
                 <div style="display:flex;gap:20px;justify-content:center;">
-                    <div class="kn n-rd" style="min-width:220px;"><div class="lb">COST</div><div class="vl" id="csCost">327.3</div><div class="sb">총원가 (천원/톤)</div></div>
-                    <div class="kn n-in" style="min-width:220px;"><div class="lb">OUTPUT</div><div class="vl" id="csProf">-327.3</div><div class="sb">영업이익 (천원/톤)</div></div>
+                    <div class="kn n-rd" style="min-width:220px;"><div class="lb">COST</div><div class="vl" id="csCost">-</div><div class="sb">총원가 (천원/톤)</div></div>
+                    <div class="kn n-in" style="min-width:220px;"><div class="lb">OUTPUT</div><div class="vl" id="csProf">-</div><div class="sb">영업이익 (천원/톤)</div></div>
                 </div>
             </div>
         </div>
@@ -467,9 +467,9 @@
         <div class="sc" style="padding:16px;margin-bottom:14px;">
             <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-balance-scale text-amber-500 mr-2"></i>지종별 생산량 손익 시뮬레이션</h3>
             <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
-                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #64748b;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">기준 총재료비</div><div style="font-size:18px;font-weight:800;color:#475569;" id="psBase">2,739</div><div style="font-size:10px;color:#94a3b8;">백만원 (기준월 예상)</div></div>
-                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #4f46e5;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">시뮬 총재료비</div><div style="font-size:18px;font-weight:800;color:#4f46e5;" id="psSim">2,739</div><div style="font-size:10px;color:#94a3b8;">백만원 (시뮬)</div></div>
-                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #16a34a;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">기준월 대비 손익</div><div style="font-size:18px;font-weight:800;color:#16a34a;" id="psDiff">0</div><div style="font-size:10px;color:#94a3b8;">억원 (절감+ / 증가-)</div></div>
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #64748b;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">기준 총재료비</div><div style="font-size:18px;font-weight:800;color:#475569;" id="psBase">-</div><div style="font-size:10px;color:#94a3b8;">백만원 (기준월 예상)</div></div>
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #4f46e5;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">시뮬 총재료비</div><div style="font-size:18px;font-weight:800;color:#4f46e5;" id="psSim">-</div><div style="font-size:10px;color:#94a3b8;">백만원 (시뮬)</div></div>
+                <div class="sc" style="padding:12px;text-align:center;border-left:4px solid #16a34a;"><div style="font-size:10px;color:#94a3b8;font-weight:600;">기준월 대비 손익</div><div style="font-size:18px;font-weight:800;color:#16a34a;" id="psDiff">-</div><div style="font-size:10px;color:#94a3b8;">억원 (절감+ / 증가-)</div></div>
             </div>
         </div>
         <div class="sc" style="overflow:hidden;">
@@ -663,18 +663,18 @@
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px;">
         <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #4f46e5;">
             <div style="font-size:11px;color:#94a3b8;font-weight:600;">영업이익 (예상)</div>
-            <div style="font-size:24px;font-weight:800;color:#4f46e5;margin:6px 0;">24.3억</div>
-            <div style="font-size:11px;color:#16a34a;font-weight:600;"><i class="fas fa-arrow-up mr-1"></i>+7.4억 개선</div>
+            <div style="font-size:24px;font-weight:800;color:#4f46e5;margin:6px 0;">-</div>
+            <div style="font-size:11px;color:#94a3b8;">데이터 준비 후 계산</div>
         </div>
         <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #f59e0b;">
             <div style="font-size:11px;color:#94a3b8;font-weight:600;">총원가</div>
-            <div style="font-size:24px;font-weight:800;color:#d97706;margin:6px 0;">191.5억</div>
-            <div style="font-size:11px;color:#16a34a;font-weight:600;"><i class="fas fa-arrow-down mr-1"></i>-6.7억 절감</div>
+            <div style="font-size:24px;font-weight:800;color:#d97706;margin:6px 0;">-</div>
+            <div style="font-size:11px;color:#94a3b8;">데이터 준비 후 계산</div>
         </div>
         <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #16a34a;">
             <div style="font-size:11px;color:#94a3b8;font-weight:600;">마진율</div>
-            <div style="font-size:24px;font-weight:800;color:#16a34a;margin:6px 0;">14.2%</div>
-            <div style="font-size:11px;color:#16a34a;font-weight:600;"><i class="fas fa-arrow-up mr-1"></i>+3.3%p</div>
+            <div style="font-size:24px;font-weight:800;color:#16a34a;margin:6px 0;">-</div>
+            <div style="font-size:11px;color:#94a3b8;">매출 입력 후 계산</div>
         </div>
         <div class="sc" style="padding:16px;text-align:center;border-top:4px solid #8b5cf6;">
             <div style="font-size:11px;color:#94a3b8;font-weight:600;">생산량</div>
@@ -683,16 +683,16 @@
         </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div class="sc" style="padding:16px;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-chart-line text-indigo-500 mr-1"></i>월별 손익 추이</h3><div style="height:220px;position:relative;"><canvas id="trendChart"></canvas></div></div>
-        <div class="sc" style="padding:16px;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-chart-bar text-amber-500 mr-1"></i>원가 구성비</h3><div style="height:220px;position:relative;"><canvas id="compChart"></canvas></div></div>
+        <div class="sc" style="padding:16px;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-chart-line text-indigo-500 mr-1"></i>월별 손익 추이 <span style="font-size:10px;font-weight:400;color:#94a3b8;">(계산 로직 준비 중)</span></h3><div style="height:220px;position:relative;"><canvas id="trendChart"></canvas></div></div>
+        <div class="sc" style="padding:16px;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-chart-bar text-amber-500 mr-1"></i>원가 구성비 <span style="font-size:10px;font-weight:400;color:#94a3b8;">(계산 로직 준비 중)</span></h3><div style="height:220px;position:relative;"><canvas id="compChart"></canvas></div></div>
     </div>
     <div class="sc" style="padding:16px;margin-top:14px;">
-        <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-exchange-alt text-purple-500 mr-1"></i>What-If 변수 민감도</h3>
+        <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px;"><i class="fas fa-exchange-alt text-purple-500 mr-1"></i>What-If 변수 민감도 <span style="font-size:10px;font-weight:400;color:#94a3b8;">(계산 로직 준비 중)</span></h3>
         <div style="font-size:12px;color:#64748b;line-height:2;">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">고지 단가</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:70%;background:linear-gradient(90deg,#ef4444,#f87171);border-radius:4px;"></div></div><span style="font-weight:700;color:#dc2626;">±4.2억</span></div>
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">펄프 단가</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:52%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:4px;"></div></div><span style="font-weight:700;color:#d97706;">±3.1억</span></div>
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">생산량</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:47%;background:linear-gradient(90deg,#4f46e5,#818cf8);border-radius:4px;"></div></div><span style="font-weight:700;color:#4f46e5;">±2.8억</span></div>
-            <div style="display:flex;align-items:center;gap:10px;"><span style="width:100px;font-weight:600;">가동률</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:20%;background:linear-gradient(90deg,#16a34a,#4ade80);border-radius:4px;"></div></div><span style="font-weight:700;color:#16a34a;">±1.2억</span></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">고지 단가</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:0%;background:linear-gradient(90deg,#ef4444,#f87171);border-radius:4px;"></div></div><span style="font-weight:700;color:#dc2626;">-</span></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">펄프 단가</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:0%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:4px;"></div></div><span style="font-weight:700;color:#d97706;">-</span></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span style="width:100px;font-weight:600;">생산량</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:0%;background:linear-gradient(90deg,#4f46e5,#818cf8);border-radius:4px;"></div></div><span style="font-weight:700;color:#4f46e5;">-</span></div>
+            <div style="display:flex;align-items:center;gap:10px;"><span style="width:100px;font-weight:600;">가동률</span><div style="flex:1;height:18px;background:#e2e8f0;border-radius:4px;position:relative;overflow:hidden;"><div style="height:100%;width:0%;background:linear-gradient(90deg,#16a34a,#4ade80);border-radius:4px;"></div></div><span style="font-weight:700;color:#16a34a;">-</span></div>
         </div>
     </div>
 </div>
@@ -1153,10 +1153,9 @@ async function loadWasteRates(){
     try{const r=await fetch(API+'/waste-rates?year='+yr+'&division='+div);const j=await r.json();WASTE_RATES=j.data||[];}catch(_){WASTE_RATES=[];}
 }
 function getWasteRate(machineCode,product){
-    // 호기+지종 매칭 → 호기 기본값 → 전체 기본값
+    // 호기+지종 매칭 → 같은 호기의 지종 공통값 → 없으면 0 (다른 호기·지종 값으로 대체하지 않음)
     const m=WASTE_RATES.find(w=>w.machineCode===machineCode&&w.product===product)
-        ||WASTE_RATES.find(w=>w.machineCode===machineCode&&(!w.product||w.product===''))
-        ||WASTE_RATES[0];
+        ||WASTE_RATES.find(w=>w.machineCode===machineCode&&(!w.product||w.product===''));
     return m?parseFloat(m.wasteRatePct)||0:0;
 }
 
@@ -1190,7 +1189,7 @@ function getCapaOpDays(){
     // 폴백: OD(월합산)
     let opMin=0;
     OD.forEach(o=>{if(o.mc===mc)opMin+=parseFloat(o.ndM||0);});
-    return opMin>0?opMin/1440:daysInMonth; // OD도 없으면 전일 가동
+    return opMin>0?opMin/1440:0; // 가동시간 미등록 — 전일 가동으로 채우지 않음 (0 + 경고)
 }
 
 function renderCapa(){
@@ -1200,7 +1199,8 @@ function renderCapa(){
     const opInput=document.getElementById('capaOpDaysInput');
     if(opInput)opInput.value=opDays.toFixed(1);
     const srcEl=document.getElementById('capaOpDaysSrc');
-    if(srcEl)srcEl.textContent=DAILY_OPS.length?'(일별 가동시간 기반)':'(기본값)';
+    if(srcEl){const hasDaily=DAILY_OPS.some(o=>o.machineCode===mc);const hasOd=OD.some(o=>o.mc===mc&&parseFloat(o.ndM)>0);
+        srcEl.innerHTML=hasDaily?'(일별 가동시간 기반)':hasOd?'(월 가동시간 기반)':'<span style="color:#dc2626;">(가동시간 미등록 — 0일)</span>';}
 
     // 선속 마스터에서 해당 호기 데이터 가져오기
     const speeds=MACHINE_SPEEDS.filter(s=>s.machineCode===mc);
@@ -3089,25 +3089,10 @@ function openSpeedModal(){let h='<h3><i class="fas fa-tachometer-alt text-blue-5
 function closeModal(){document.getElementById('modalBg').style.display='none';}
 
 // ── 인터페이스 관리 (마스터/수행/이력 3탭) — DB API 연동 ──
-// fallback: DB 미연결 시 하드코딩 데이터 사용
-const ITF_MASTERS_FALLBACK=[
-    {id:'RPSIM_ITF_001',name:'스팀사용 원단위',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_steam_unit_rate',apiKey:'steam-unit-rates',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_002',name:'보일러 마스터',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_boiler_master',apiKey:'boiler-masters',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_003',name:'보일러 정비계획',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_boiler_maintenance',apiKey:'boiler-maintenances',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_004',name:'스팀 구간단가',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_steam_price_interval',apiKey:'steam-price-intervals',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_005',name:'보일러 연료단가',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_boiler_cost_rate',apiKey:'boiler-cost-rates',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_006',name:'연료비 고정차감',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_cogen_deduction',apiKey:'cogen-deductions',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_007',name:'LNG 버너 원단위',sender:'에너지팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_burner_lng_rate',apiKey:'burner-lng-rates',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_008',name:'일별 가동시간',sender:'생산관리',receiver:'RPSIM',rfcName:'-',table:'rpsim_daily_operation',apiKey:'daily-operations',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_009',name:'제지 생산 선속',sender:'생산관리',receiver:'RPSIM',rfcName:'-',table:'rpsim_machine_speed',apiKey:'machine-speeds',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_010',name:'폐품률 마스터',sender:'품질팀',receiver:'RPSIM',rfcName:'-',table:'rpsim_waste_rate',apiKey:'waste-rates',mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_011',name:'원재료비 (ZOHPP100)',sender:'SAP BW',receiver:'RPSIM',rfcName:'Z_BI_WEB_EX_BL_2',table:'rpsim_raw_material',apiKey:null,mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_012',name:'부재료비 (ZOHPP101)',sender:'SAP BW',receiver:'RPSIM',rfcName:'Z_BI_WEB_EX_BL_2',table:'rpsim_raw_material',apiKey:null,mode:'REPLACE',active:true},
-    {id:'RPSIM_ITF_013',name:'전력비 계산 결과',sender:'전력비 모듈',receiver:'RPSIM',rfcName:'-',table:'rpsim_pw_monthly_summary',apiKey:null,mode:'MERGE',active:true},
-];
+// 인터페이스 마스터는 DB에서만 로드 (예비 목록 없음)
 // apiKey 매핑 (DB 마스터에는 targetTable만 있으므로 테이블→apiKey 변환)
 const TABLE_API_MAP={'rpsim_steam_unit_rate':'steam-unit-rates','rpsim_boiler_master':'boiler-masters','rpsim_boiler_maintenance':'boiler-maintenances','rpsim_steam_price_interval':'steam-price-intervals','rpsim_boiler_cost_rate':'boiler-cost-rates','rpsim_cogen_deduction':'cogen-deductions','rpsim_burner_lng_rate':'burner-lng-rates','rpsim_daily_operation':'daily-operations','rpsim_machine_speed':'machine-speeds','rpsim_waste_rate':'waste-rates'};
-let ITF_MASTERS=[];  // DB 로드 결과 (또는 fallback)
+let ITF_MASTERS=[];  // DB 로드 결과 (실패 시 빈 목록)
 let ITF_SCHEDULES=[]; // DB 스케줄 목록
 let ITF_HISTORIES=[]; // DB 이력 목록
 
@@ -3123,7 +3108,7 @@ function switchItfTab(tab){
 async function loadItfList(){
     const div=getDiv();const yr=getYm().substring(0,4);const mo=parseInt(getYm().substring(4,6));
 
-    // 1) DB에서 마스터 로드 → 실패 시 fallback
+    // 1) DB에서 마스터 로드 → 실패 시 빈 목록 + 경고
     try{
         const r=await fetch(API+'/itf-masters');const j=await r.json();
         if(j.data&&Array.isArray(j.data)&&j.data.length>0){
@@ -3134,8 +3119,8 @@ async function loadItfList(){
                 mode:d.execMode||'REPLACE', active:d.isActive!==false,
                 remark:d.remark||'', createdBy:d.createdBy||'', updatedBy:d.updatedBy||''
             }));
-        }else{ITF_MASTERS=[...ITF_MASTERS_FALLBACK];}
-    }catch(_){ITF_MASTERS=[...ITF_MASTERS_FALLBACK];}
+        }else{ITF_MASTERS=[];}
+    }catch(e){ITF_MASTERS=[];console.warn('[ITF] 인터페이스 마스터 조회 실패:',e.message);}
 
     // 2) DB 건수 조회
     let totalDb=0,successCnt=0,failCnt=0;
@@ -3548,8 +3533,8 @@ function initCharts(){
     costChart=new Chart(document.getElementById('costChart').getContext('2d'),{type:'bar',data:{labels:PL.filter(i=>i.k!=='rev').map(i=>i.l),datasets:[{label:'당월',data:PL.filter(i=>i.k!=='rev').map(i=>i.r),backgroundColor:'rgba(79,70,229,.5)',borderRadius:4,maxBarThickness:32},{label:'시뮬',data:PL.filter(i=>i.k!=='rev').map(i=>i.r),backgroundColor:'rgba(245,158,11,.5)',borderRadius:4,maxBarThickness:32}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:10,family:'Noto Sans KR'}}}},scales:{y:{beginAtZero:true,title:{display:true,text:'천원/톤',font:{size:10}}}}}});
     const matSrc=MAT_API.length?MAT_API:[];
     matChart=new Chart(document.getElementById('matChart').getContext('2d'),{type:'doughnut',data:{labels:matSrc.map(m=>m.p),datasets:[{data:matSrc.map(m=>m.pct),backgroundColor:['#4f46e5','#7c3aed','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#ec4899'],borderWidth:2,borderColor:'#fff'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{font:{size:10,family:'Noto Sans KR'}}}}}});
-    trendChart=new Chart(document.getElementById('trendChart').getContext('2d'),{type:'line',data:{labels:['1월','2월','3월','4월','5월','6월'],datasets:[{label:'영업이익(억)',data:[18,20,22,19,24,28],borderColor:'#4f46e5',backgroundColor:'rgba(79,70,229,.1)',fill:true,tension:.3,borderWidth:2},{label:'총원가(억)',data:[195,192,198,200,191,188],borderColor:'#f59e0b',borderWidth:2,tension:.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:10}}}},scales:{y:{beginAtZero:false}}}});
-    compChart=new Chart(document.getElementById('compChart').getContext('2d'),{type:'bar',data:{labels:['원재료비','전력비','물류비','인건비','감가상각','판관비'],datasets:[{label:'구성비(%)',data:[45,18,12,10,8,7],backgroundColor:['#f59e0b','#ef4444','#3b82f6','#10b981','#8b5cf6','#64748b'],borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,max:50}}}});
+    trendChart=new Chart(document.getElementById('trendChart').getContext('2d'),{type:'line',data:{labels:[],datasets:[{label:'영업이익(억)',data:[],borderColor:'#4f46e5',backgroundColor:'rgba(79,70,229,.1)',fill:true,tension:.3,borderWidth:2},{label:'총원가(억)',data:[],borderColor:'#f59e0b',borderWidth:2,tension:.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:10}}}},scales:{y:{beginAtZero:false}}}});
+    compChart=new Chart(document.getElementById('compChart').getContext('2d'),{type:'bar',data:{labels:['원재료비','전력비','물류비','인건비','감가상각','판관비'],datasets:[{label:'구성비(%)',data:[],backgroundColor:['#f59e0b','#ef4444','#3b82f6','#10b981','#8b5cf6','#64748b'],borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,max:50}}}});
 }
 
 // ── matChart / STEP5 동적 갱신 ──
