@@ -49,8 +49,6 @@ public class PowerCostService {
     private final AuditSupport auditSupport;
     private final OperatingTimeRepository operatingTimeRepository;
 
-    /** 기본요금 단가 (원/kW) — 산업용(을) 고압A 기준 */
-    private static final BigDecimal DEMAND_CHARGE_PER_KW = new BigDecimal("8190");
     /** 전력기금 비율 */
     private static final BigDecimal POWER_FUND_RATE = new BigDecimal("0.027");
 
@@ -199,9 +197,9 @@ public class PowerCostService {
             energyCost = energyCost.add(usage.multiply(tariff));
         }
 
-        // 기본요금 = 최대수요전력(kW) × 8,190원
+        // 기본요금 = 최대수요전력(kW) × 기본요금 단가(한전 요금 기준정보 DEMAND_KRW) — 미등록이면 0
         BigDecimal effectiveKw = getEffectivePeakDemand(ym, division);
-        BigDecimal demandCost = effectiveKw.multiply(DEMAND_CHARGE_PER_KW);
+        BigDecimal demandCost = effectiveKw.multiply(getDemandRate(year, season, division));
 
         // 역률요금 (고정값, POWER_FIXED 항목)
         BigDecimal powerFactorKrw = getFixedAmount(ym, division, "POWER_FIXED");
@@ -292,12 +290,20 @@ public class PowerCostService {
                 .orElse(BigDecimal.ZERO);
     }
 
+    /** 해당 월 최대수요전력만 사용 — 다른 월 값으로 대체하지 않음 (미등록이면 0) */
     private BigDecimal getEffectivePeakDemand(String ym, String division) {
         return peakDemandRepository.findByYmAndDivision(ym, division)
                 .map(PwPeakDemand::getEffectiveKw)
-                .orElse(peakDemandRepository.findTopByDivisionOrderByYmDesc(division)
-                        .map(PwPeakDemand::getEffectiveKw)
-                        .orElse(BigDecimal.ZERO));
+                .orElse(BigDecimal.ZERO);
+    }
+
+    /** 기본요금 단가(원/kW) — 해당 연도·계절 한전 요금 기준정보의 DEMAND_KRW (미등록이면 0) */
+    private BigDecimal getDemandRate(int year, String season, String division) {
+        return pwTariffRepository.findByYearAndDivisionOrderBySeasonAscTimeZoneAsc(year, division).stream()
+                .filter(t -> season.equals(t.getSeason()) && t.getDemandKrw() != null && t.getDemandKrw().signum() > 0)
+                .map(PwTariff::getDemandKrw)
+                .findFirst()
+                .orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal getFixedAmount(String ym, String division, String itemCode) {
@@ -308,20 +314,15 @@ public class PowerCostService {
 
     private BigDecimal getRunHoursFromOptime(String ym, String division, String machineCode) {
         // OperatingTime에서 가동시간 계산: 정상가동(분) ÷ 60 = 시간(h)
-        return operatingTimeRepository.findAll().stream()
-                .filter(o -> ym.equals(o.getYm()) && machineCode.equals(o.getMachineCode())
-                        && "N".equals(o.getDeletedYn()))
-                .findFirst()
+        // 사업부 기준으로 조회 (다른 사업부 같은 호기코드 섞임 방지)
+        return operatingTimeRepository.findByDivisionAndMachineCodeAndYmAndDeletedYn(division, machineCode, ym, "N")
                 .map(o -> o.getOperationNormalDays().divide(BigDecimal.valueOf(60), 2, java.math.RoundingMode.HALF_UP))
                 .orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal getStbyHoursFromOptime(String ym, String division, String machineCode) {
         // 운휴시간(h) = (총계 - 정상가동)(분) ÷ 60
-        return operatingTimeRepository.findAll().stream()
-                .filter(o -> ym.equals(o.getYm()) && machineCode.equals(o.getMachineCode())
-                        && "N".equals(o.getDeletedYn()))
-                .findFirst()
+        return operatingTimeRepository.findByDivisionAndMachineCodeAndYmAndDeletedYn(division, machineCode, ym, "N")
                 .map(o -> o.getTotalDays().subtract(o.getOperationNormalDays())
                         .divide(BigDecimal.valueOf(60), 2, java.math.RoundingMode.HALF_UP))
                 .orElse(BigDecimal.ZERO);
