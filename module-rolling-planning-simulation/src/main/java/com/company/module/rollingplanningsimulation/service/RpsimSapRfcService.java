@@ -65,6 +65,8 @@ public class RpsimSapRfcService {
             "BIC_ZPUNIT", "BIC_ZREQ_QTY", "BIC_ZBASEQTY", "BIC_ZTUNIT", "BIC_ZPDTBQTY",
             "BIC_ZTPQTY", "BIC_ZPRD_QTY", "BIC_ZSCR_QTY", "BIC_ZLUNIT", "BIC_ZDTB_QTY", "BIC_ZZLBKUM60"
     );
+    /** 원화 ÷100 보정 대상 — 실데이터로 확인된 실적단가만 (SapRfcSyncService 와 동일) */
+    private static final Set<String> KRW_SCALED_RAW_MATERIAL = Set.of("BIC_ZTPRICE");
     private static final Set<String> BIGINT_COLS_RAW_MATERIAL = Set.of(
             "BIC_ZRDCD_M01", "BIC_ZTPRICE", "BIC_ZTRAWMATR", "BIC_ZRAMT_060", "BIC_ZTUSEDIF", "BIC_ZTPRIDIF"
     );
@@ -216,7 +218,7 @@ public class RpsimSapRfcService {
                     values[c] = parseValue(raw, col, DECIMAL_COLS_RAW_MATERIAL, BIGINT_COLS_RAW_MATERIAL);
                 }
                 // 자재그룹 첫 자리로 원재료/부재료 구분 (1*=원재료 '100', 2*=부재료 '101')
-                adjustKrw(values, DB_COLS_RAW_MATERIAL, BIGINT_COLS_RAW_MATERIAL);
+                adjustKrw(values, DB_COLS_RAW_MATERIAL, KRW_SCALED_RAW_MATERIAL);
                 Object mg = values[DB_COLS_RAW_MATERIAL.indexOf("MATL_GROUP")];
                 values[DB_COLS_RAW_MATERIAL.indexOf("DATA_TYPE")] =
                         (mg != null && mg.toString().trim().startsWith("2")) ? "101" : "100";

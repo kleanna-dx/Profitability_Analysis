@@ -340,7 +340,9 @@ public class SapRfcSyncService {
 
     private static final Set<String> DECIMAL_COLUMNS_RPSIM_RAW = Set.of(
             "BIC_ZPUNIT", "BIC_ZREQ_QTY", "BIC_ZBASEQTY", "BIC_ZTUNIT", "BIC_ZPDTBQTY",
-            "BIC_ZTPQTY", "BIC_ZPRD_QTY", "BIC_ZSCR_QTY", "BIC_ZLUNIT", "BIC_ZDTB_QTY", "BIC_ZZLBKUM60"
+            "BIC_ZTPQTY", "BIC_ZPRD_QTY", "BIC_ZSCR_QTY", "BIC_ZLUNIT", "BIC_ZDTB_QTY", "BIC_ZZLBKUM60",
+            // 금액 컬럼 — 정수 절삭만 막음 (원화 보정은 확인 후)
+            "BIC_ZRDCD_M01", "BIC_ZTRAWMATR", "BIC_ZRAMT_060", "BIC_ZTUSEDIF", "BIC_ZTPRIDIF"
     );
     private static final Set<String> NUMERIC_COLUMNS_RPSIM_RAW;
     static {
@@ -349,10 +351,12 @@ public class SapRfcSyncService {
         NUMERIC_COLUMNS_RPSIM_RAW = Collections.unmodifiableSet(nums);
     }
 
-    /** 통화금액(CURR) 컬럼 — 단가·금액. 정수로 자르지 않고, 원화는 SAP 내부값(÷100)을 실제 원 단위로 보정 */
-    private static final Set<String> CURRENCY_COLUMNS_RPSIM_RAW = Set.of(
-            "BIC_ZRDCD_M01", "BIC_ZTPRICE", "BIC_ZTRAWMATR", "BIC_ZRAMT_060", "BIC_ZTUSEDIF", "BIC_ZTPRIDIF"
-    );
+    /**
+     * 원화 ÷100 보정 대상 — 실데이터로 확인된 컬럼만 (BIC_ZTPRICE: 925원 → 9 로 저장되던 것 확인).
+     * 나머지 금액 컬럼(계획단가·재료비·출고금액·차이)은 ÷100 여부 미확인 → 소수만 유지하고 보정하지 않음
+     * (BIC_ZRAMT_060 은 1,844,767 처럼 절삭 흔적 없이 들어와 ÷100 이 아닐 수 있음)
+     */
+    private static final Set<String> CURRENCY_COLUMNS_RPSIM_RAW = Set.of("BIC_ZTPRICE");
 
     static final TableMapping RPSIM_RAW_MATERIAL_MAPPING = new TableMapping(
             "rpsim_raw_material",
