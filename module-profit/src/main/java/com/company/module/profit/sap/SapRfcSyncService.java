@@ -59,6 +59,10 @@ public class SapRfcSyncService {
         final Map<String, String> sapFieldToDbColumn;
         final Set<String> numericColumns;
         final Set<String> decimalColumns;
+        /** SAP 통화금액(CURR) 컬럼 — 소수 그대로 받아 BigDecimal 저장, 통화별 소수자리 보정 (경영시뮬레이션 전용) */
+        final Set<String> currencyAmountColumns;
+        /** 통화키 컬럼명 (예: CURRENCY) — currencyAmountColumns 보정 기준. null 이면 보정 안 함 */
+        final String currencyKeyColumn;
         final String insertSql;
         final String deleteSql;
         final String countSql;
@@ -68,7 +72,19 @@ public class SapRfcSyncService {
                      Map<String, String> sapFieldToDbColumn,
                      Set<String> numericColumns,
                      Set<String> decimalColumns) {
+            this(targetTable, dbColumns, sapFieldToDbColumn, numericColumns, decimalColumns, Set.of(), null);
+        }
+
+        TableMapping(String targetTable,
+                     List<String> dbColumns,
+                     Map<String, String> sapFieldToDbColumn,
+                     Set<String> numericColumns,
+                     Set<String> decimalColumns,
+                     Set<String> currencyAmountColumns,
+                     String currencyKeyColumn) {
             this.targetTable = targetTable;
+            this.currencyAmountColumns = Set.copyOf(currencyAmountColumns);
+            this.currencyKeyColumn = currencyKeyColumn;
             this.dbColumns = List.copyOf(dbColumns);
             this.sapFieldToDbColumn = Map.copyOf(sapFieldToDbColumn);
             this.numericColumns = Set.copyOf(numericColumns);
@@ -333,12 +349,19 @@ public class SapRfcSyncService {
         NUMERIC_COLUMNS_RPSIM_RAW = Collections.unmodifiableSet(nums);
     }
 
+    /** 통화금액(CURR) 컬럼 — 단가·금액. 정수로 자르지 않고, 원화는 SAP 내부값(÷100)을 실제 원 단위로 보정 */
+    private static final Set<String> CURRENCY_COLUMNS_RPSIM_RAW = Set.of(
+            "BIC_ZRDCD_M01", "BIC_ZTPRICE", "BIC_ZTRAWMATR", "BIC_ZRAMT_060", "BIC_ZTUSEDIF", "BIC_ZTPRIDIF"
+    );
+
     static final TableMapping RPSIM_RAW_MATERIAL_MAPPING = new TableMapping(
             "rpsim_raw_material",
             DB_COLUMNS_RPSIM_RAW_MATERIAL,
             SAP_FIELD_TO_DB_COLUMN_RPSIM_RAW,
             NUMERIC_COLUMNS_RPSIM_RAW,
-            DECIMAL_COLUMNS_RPSIM_RAW
+            DECIMAL_COLUMNS_RPSIM_RAW,
+            CURRENCY_COLUMNS_RPSIM_RAW,
+            "CURRENCY"
     );
 
     // ================================================================
@@ -368,13 +391,40 @@ public class SapRfcSyncService {
         NUMERIC_COLUMNS_RPSIM_INV = Collections.unmodifiableSet(nums);
     }
 
+    private static final Set<String> CURRENCY_COLUMNS_RPSIM_INV = Set.of(
+            "BIC_ZRNETPR", "BIC_ZRNETPR20", "BIC_ZRNETPR60", "BIC_ZRNETP110"
+    );
+
     static final TableMapping RPSIM_RAW_INVENTORY_MAPPING = new TableMapping(
             "rpsim_raw_inventory",
             DB_COLUMNS_RPSIM_RAW_INVENTORY,
             SAP_FIELD_TO_DB_COLUMN_RPSIM_INV,
             NUMERIC_COLUMNS_RPSIM_INV,
-            DECIMAL_COLUMNS_RPSIM_INV
+            DECIMAL_COLUMNS_RPSIM_INV,
+            CURRENCY_COLUMNS_RPSIM_INV,
+            "CURRENCY"
     );
+
+    /**
+     * SAP 은 소수자리가 0인 통화(KRW·JPY)의 금액을 내부적으로 ÷100 해서 보관·전송한다 (예: 925원 → 9.25).
+     * 통화금액 컬럼은 이 값을 ×100 해서 실제 금액으로 저장한다.
+     */
+    private static final Set<String> ZERO_DECIMAL_CURRENCIES = Set.of("KRW", "JPY");
+
+    /** 한 행의 통화금액 컬럼 보정 — 통화키가 원화 등 소수 0자리 통화이면 ×100 */
+    private static void adjustCurrencyAmounts(Object[] values, TableMapping mapping) {
+        if (mapping.currencyKeyColumn == null || mapping.currencyAmountColumns.isEmpty()) return;
+        int curIdx = mapping.dbColumns.indexOf(mapping.currencyKeyColumn);
+        if (curIdx < 0 || values[curIdx] == null) return;
+        String cur = values[curIdx].toString().trim().toUpperCase(Locale.ROOT);
+        if (!ZERO_DECIMAL_CURRENCIES.contains(cur)) return;
+        for (int c = 0; c < mapping.dbColumns.size(); c++) {
+            if (mapping.currencyAmountColumns.contains(mapping.dbColumns.get(c))
+                    && values[c] instanceof java.math.BigDecimal bd) {
+                values[c] = bd.movePointRight(2);
+            }
+        }
+    }
 
     // ================================================================
     // 매핑 선택 / SAP 필드명 정규화
@@ -713,6 +763,13 @@ public class SapRfcSyncService {
                     String rawValue = (String) getStringMethod.invoke(tDataTable, fieldIdx);
                     if (rawValue == null || rawValue.trim().isEmpty()) {
                         values[c] = mapping.numericColumns.contains(col) ? 0 : null;
+                    } else if (mapping.currencyAmountColumns.contains(col)) {
+                        // 통화금액: 소수 유지 (정수 절삭 금지) — 통화별 보정은 행 완성 후 adjustCurrencyAmounts
+                        try {
+                            values[c] = new java.math.BigDecimal(rawValue.replace(",", "").trim());
+                        } catch (NumberFormatException e) {
+                            values[c] = java.math.BigDecimal.ZERO;
+                        }
                     } else if (mapping.numericColumns.contains(col)) {
                         try {
                             double d = Double.parseDouble(rawValue.replace(",", "").trim());
@@ -725,6 +782,7 @@ public class SapRfcSyncService {
                         values[c] = rawValue.trim();
                     }
                 }
+                adjustCurrencyAmounts(values, mapping);
                 batch.add(values);
 
                 // 배치 INSERT
