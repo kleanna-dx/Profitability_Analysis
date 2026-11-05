@@ -60,7 +60,7 @@ public class RpsimSapRfcService {
     /** SAP 필드명 → DB 컬럼명 매핑 — DB가 BIC_ 접두어 포함이므로 매핑 불필요 (빈 맵) */
     private static final Map<String, String> SAP_TO_DB_RAW_MATERIAL = Collections.emptyMap();
 
-    /** 숫자형 컬럼 (QUAN/CURR → DECIMAL 또는 BIGINT) — BIC_ 접두어 포함 */
+    /** 숫자형 컬럼 — DECIMAL=수량(QUAN), BIGINT 목록=통화금액(CURR: 단가·금액, 소수 유지 + 원화 ×100 보정) */
     private static final Set<String> DECIMAL_COLS_RAW_MATERIAL = Set.of(
             "BIC_ZPUNIT", "BIC_ZREQ_QTY", "BIC_ZBASEQTY", "BIC_ZTUNIT", "BIC_ZPDTBQTY",
             "BIC_ZTPQTY", "BIC_ZPRD_QTY", "BIC_ZSCR_QTY", "BIC_ZLUNIT", "BIC_ZDTB_QTY", "BIC_ZZLBKUM60"
@@ -216,6 +216,7 @@ public class RpsimSapRfcService {
                     values[c] = parseValue(raw, col, DECIMAL_COLS_RAW_MATERIAL, BIGINT_COLS_RAW_MATERIAL);
                 }
                 // 자재그룹 첫 자리로 원재료/부재료 구분 (1*=원재료 '100', 2*=부재료 '101')
+                adjustKrw(values, DB_COLS_RAW_MATERIAL, BIGINT_COLS_RAW_MATERIAL);
                 Object mg = values[DB_COLS_RAW_MATERIAL.indexOf("MATL_GROUP")];
                 values[DB_COLS_RAW_MATERIAL.indexOf("DATA_TYPE")] =
                         (mg != null && mg.toString().trim().startsWith("2")) ? "101" : "100";
@@ -272,6 +273,7 @@ public class RpsimSapRfcService {
                     String raw = (String) getStr.invoke(tDataTable, idx);
                     values[c] = parseValue(raw, col, DECIMAL_COLS_RAW_INVENTORY, BIGINT_COLS_RAW_INVENTORY);
                 }
+                adjustKrw(values, DB_COLS_RAW_INVENTORY, BIGINT_COLS_RAW_INVENTORY);
                 batch.add(values);
 
                 if (batch.size() >= 1000 || i == rowCount - 1) {
@@ -357,9 +359,24 @@ public class RpsimSapRfcService {
     }
 
     /** 문자열 → Java 값 변환 */
+    /**
+     * SAP 은 소수자리 0인 통화(KRW·JPY) 금액을 ÷100 해서 전송한다 (925원 → 9.25).
+     * 통화금액 컬럼을 ×100 해서 실제 금액으로 보정 — SapRfcSyncService 와 동일 규칙.
+     */
+    private static void adjustKrw(Object[] values, List<String> cols, Set<String> amountCols) {
+        int ci = cols.indexOf("CURRENCY");
+        if (ci < 0 || values[ci] == null) return;
+        String cur = values[ci].toString().trim().toUpperCase();
+        if (!cur.equals("KRW") && !cur.equals("JPY")) return;
+        for (int c = 0; c < cols.size(); c++) {
+            if (amountCols.contains(cols.get(c)) && values[c] instanceof java.math.BigDecimal bd) values[c] = bd.movePointRight(2);
+        }
+    }
+
     private Object parseValue(String raw, String col, Set<String> decimalCols, Set<String> bigintCols) {
         if (raw == null || raw.trim().isEmpty()) {
-            if (decimalCols.contains(col) || bigintCols.contains(col)) return 0;
+            if (decimalCols.contains(col)) return 0;
+            if (bigintCols.contains(col)) return java.math.BigDecimal.ZERO;
             return null;
         }
         raw = raw.trim();
@@ -368,8 +385,9 @@ public class RpsimSapRfcService {
             catch (NumberFormatException e) { return 0.0; }
         }
         if (bigintCols.contains(col)) {
-            try { return (long) Double.parseDouble(raw.replace(",", "")); }
-            catch (NumberFormatException e) { return 0L; }
+            // 통화금액(단가·금액): 소수 유지 — 원화 보정(×100)은 행 완성 후 adjustKrw
+            try { return new java.math.BigDecimal(raw.replace(",", "")); }
+            catch (NumberFormatException e) { return java.math.BigDecimal.ZERO; }
         }
         return raw;
     }
