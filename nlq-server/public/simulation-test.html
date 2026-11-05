@@ -630,18 +630,17 @@
         </div>
         <div class="sc" style="overflow:hidden;">
             <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;">
-                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-list text-indigo-400 mr-1"></i>자재별 재료비 <span style="font-size:10px;color:#94a3b8;font-weight:400;">사용량·원단위 중 하나를 고치면 나머지가 다시 계산되고, 고친 행(●)은 생산량을 바꿔도 자동 계산되지 않습니다 · 입고단가/기초재고단가는 참고용(계산 미사용)</span></h3>
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-list text-indigo-400 mr-1"></i>자재별 재료비 <span style="font-size:10px;color:#94a3b8;font-weight:400;">사용량·원단위 중 하나를 고치면 나머지가 다시 계산되고, 고친 행(●)은 생산량을 바꿔도 자동 계산되지 않습니다 · 단가는 전월 실적 단가 고정 (단가 변동은 구매 이동계획에서 반영)</span></h3>
             </div>
             <div style="overflow:auto;max-height:640px;"><table class="st" style="font-size:11px;white-space:nowrap;">
                 <thead style="position:sticky;top:0;z-index:2;background:#fff;">
                     <tr><th rowspan="2">원/부</th><th rowspan="2">자재코드</th><th rowspan="2">자재명</th>
                         <th colspan="5" style="text-align:center;background:#f1f5f9;" id="mfHPrev">전월 실적</th>
-                        <th colspan="7" style="text-align:center;background:#eef2ff;" id="mfHNext">차월 예상</th>
-                        <th colspan="3" style="text-align:center;background:#f0fdf4;">손익효과 (억원)</th>
+                        <th colspan="4" style="text-align:center;background:#eef2ff;" id="mfHNext">차월 예상</th>
+                        <th rowspan="2" class="r" style="background:#f0fdf4;">손익효과<br>사용량차이<br>(억원)</th>
                         <th rowspan="2">이슈사항</th></tr>
                     <tr><th class="r" style="background:#f1f5f9;">사용량</th><th class="r" style="background:#f1f5f9;">원단위<br>(kg/톤)</th><th class="r" style="background:#f1f5f9;">사용단가<br>(원/kg)</th><th class="r" style="background:#f1f5f9;">비용<br>(억원)</th><th class="r" style="background:#f1f5f9;">톤당<br>(천원/톤)</th>
-                        <th class="r" style="background:#eef2ff;">사용량</th><th class="r" style="background:#eef2ff;">원단위<br>(kg/톤)</th><th class="r" style="background:#eef2ff;color:#94a3b8;">입고단가<br>(참고)</th><th class="r" style="background:#eef2ff;color:#94a3b8;">기초재고단가<br>(참고)</th><th class="r" style="background:#eef2ff;">사용단가<br>(원/kg)</th><th class="r" style="background:#eef2ff;">비용<br>(억원)</th><th class="r" style="background:#eef2ff;">톤당<br>(천원/톤)</th>
-                        <th class="r" style="background:#f0fdf4;">사용량차이</th><th class="r" style="background:#f0fdf4;">단가차이</th><th class="r" style="background:#f0fdf4;">재료비종합</th></tr>
+                        <th class="r" style="background:#eef2ff;">사용량</th><th class="r" style="background:#eef2ff;">원단위<br>(kg/톤)</th><th class="r" style="background:#eef2ff;">비용<br>(억원)<br><span style="font-weight:400;color:#94a3b8;">전월 단가</span></th><th class="r" style="background:#eef2ff;">톤당<br>(천원/톤)</th></tr>
                 </thead>
                 <tbody id="mfMatTb"></tbody>
                 <tfoot id="mfMatFoot"></tfoot>
@@ -649,7 +648,7 @@
             <div style="padding:8px 16px;font-size:10px;color:#94a3b8;border-top:1px solid #f1f5f9;line-height:1.7;">
                 · 전월 원단위 = 사용량 ÷ 호기 전체 생산량 · 사용단가 = 비용 ÷ 사용량 (실적배부수량 × 실적단가 가중평균)<br>
                 · 차월 사용량 = Σ(지종별 원단위 × 차월 지종 생산량), 지종별 원단위가 없으면 전월 원단위 × 차월 생산량<br>
-                · 사용량차이 = (전월 사용량 − 차월 사용량) × 전월 단가 · 단가차이 = (전월 단가 − 차월 단가) × 차월 사용량 · <span style="color:#2563eb;">+ 절감</span> / <span style="color:#dc2626;">△ 증가</span> · 50만원 미만은 -
+                · 차월 비용 = 차월 사용량 × 전월 사용단가 · 사용량차이 = (전월 사용량 − 차월 사용량) × 전월 사용단가 · 단가 변동 영향은 이 탭에서 계산하지 않고 구매 이동계획(구매팀 업로드)에서 반영 · <span style="color:#2563eb;">+ 절감</span> / <span style="color:#dc2626;">△ 증가</span> · 50만원 미만은 -
             </div>
         </div>
     </div>
@@ -3598,7 +3597,7 @@ async function loadMasterOptions(){
 //   기준월 = 예상월, 실적 = 전월 / 사업부·호기 필터 / 가짜 값 없음(실적 없으면 빈 화면 + 안내)
 // ══════════════════════════════════════════════════════════════════
 let MF={data:null,stale:true,useSaved:true,dirty:false,prods:[],rows:[],P0:0,P1:0,rateByProd:{},prevProdTon:{},orphans:[]};
-const MF_XL_HEAD=['원/부','자재그룹','자재코드','자재명','전월 사용량','전월 원단위(kg/톤)','전월 사용단가(원/kg)','전월 비용(억원)','전월 톤당(천원/톤)','차월 사용량','차월 원단위(kg/톤)','차월 입고단가(참고)','차월 기초재고단가(참고)','차월 사용단가(원/kg)','차월 비용(억원)','차월 톤당(천원/톤)','사용량차이(억원)','단가차이(억원)','재료비종합(억원)','이슈사항'];
+const MF_XL_HEAD=['원/부','자재그룹','자재코드','자재명','전월 사용량','전월 원단위(kg/톤)','전월 사용단가(원/kg)','전월 비용(억원)','전월 톤당(천원/톤)','차월 사용량','차월 원단위(kg/톤)','차월 비용(억원)','차월 톤당(천원/톤)','사용량차이(억원)','이슈사항'];
 const MF_XL_PROD='지종별 생산량';
 function mfEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function mfNum(v){if(v==null)return null;const s=String(v).replace(/,/g,'').trim();if(s==='')return null;const n=Number(s);return isFinite(n)?n:null;}
@@ -3645,13 +3644,10 @@ function mfBuild(){
     MF.rows=(d.materials||[]).map(m=>{
         const U0=parseFloat(m.usageQty)||0,C0=parseFloat(m.cost)||0,p0=U0>0?C0/U0:0;
         const row={code:mfCode(m.materialCode),name:m.materialName||'',cat:mfCat(m),groupKey:(m.largeGroup||'')+'|'+(m.matlGroup||''),groupName:m.groupName||m.largeName||'(미분류)',largeName:m.largeName||'',
-            U0,C0,p0,rate0:MF.P0>0?U0/MF.P0:0,U1:0,priceInput:null,receipt:null,opening:null,note:'',edited:false,manual:false};
+            U0,C0,p0,rate0:MF.P0>0?U0/MF.P0:0,U1:0,note:'',edited:false,manual:false};
         const s=savedM[row.code];
         if(s){row.manual=true;const su=s.usageQty==null?null:parseFloat(s.usageQty),sr=s.unitRate==null?null:parseFloat(s.unitRate);
             if(su!=null){row.U1=su;row.edited=true;}else if(sr!=null){row.U1=sr*P1;row.edited=true;}
-            if(s.usePrice!=null)row.priceInput=parseFloat(s.usePrice);
-            if(s.receiptPrice!=null)row.receipt=parseFloat(s.receiptPrice);
-            if(s.openingPrice!=null)row.opening=parseFloat(s.openingPrice);
             row.note=s.issueNote||'';}
         return row;});
     MF.orphans=Object.keys(savedM).filter(k=>!MF.rows.some(r=>r.code===k));
@@ -3665,12 +3661,11 @@ function mfRecalc(){
     const P1=mfP1();MF.P1=P1;
     MF.rows.forEach(r=>{
         if(!r.edited)r.U1=mfAutoU1(r,P1);
-        r.p1=r.priceInput!=null?r.priceInput:r.p0;
+        // 단가는 전월 실적 단가 고정 — 단가 변동은 구매 이동계획에서 반영
         r.rate1=P1>0?r.U1/P1:0;
-        r.C1=r.U1*r.p1;
+        r.C1=r.U1*r.p0;
         r.useDiff=(r.U0-r.U1)*r.p0;   // 사용량차이
-        r.priceDiff=(r.p0-r.p1)*r.U1; // 단가차이
-        r.total=r.useDiff+r.priceDiff; // = U0·p0 − U1·p1
+        r.total=r.useDiff;
     });
 }
 
@@ -3679,9 +3674,6 @@ function mfEdit(i,field,v){
     const r=MF.rows[i];if(!r)return;const n=mfNum(v);const P1=MF.P1||mfP1();
     if(field==='U1'){r.U1=n==null?0:Math.max(0,n);r.edited=true;}
     else if(field==='rate1'){r.U1=(n==null?0:Math.max(0,n))*P1;r.edited=true;}
-    else if(field==='price')r.priceInput=n==null?null:Math.max(0,n);
-    else if(field==='receipt')r.receipt=n;
-    else if(field==='opening')r.opening=n;
     else if(field==='note'){r.note=String(v||'').substring(0,1000);MF.dirty=true;mfStatus();return;}
     MF.dirty=true;mfRecalc();mfRerender();
 }
@@ -3732,8 +3724,8 @@ function renderMf(){
     document.getElementById('mfCards').innerHTML=
         card('생산량',mfF(P0,0)+' → '+mfF(P1,0),'톤',(P0>0?((P1-P0)>=0?'+':'')+mfF((P1-P0)/P0*100,1)+'%':'-'),'#7c3aed')+
         card('전월 재료비',mfF(C0/1e8,2),'억원 ('+pt(C0,P0)+' 천원/톤)','원 '+mfF(sum(raw,'C0')/1e8,2)+' · 부 '+mfF(sum(sub,'C0')/1e8,2),'#64748b')+
-        card('차월 예상 재료비',mfF(C1/1e8,2),'억원 ('+pt(C1,P1)+' 천원/톤)','원 '+mfF(sum(raw,'C1')/1e8,2)+' · 부 '+mfF(sum(sub,'C1')/1e8,2),'#4f46e5')+
-        card('손익효과',mfEff(T),'억원 (+ 절감 / △ 증가)','사용량 '+mfEff(sum(MF.rows,'useDiff'))+' · 단가 '+mfEff(sum(MF.rows,'priceDiff')),'#16a34a');
+        card('차월 예상 재료비 (전월 단가)',mfF(C1/1e8,2),'억원 ('+pt(C1,P1)+' 천원/톤)','원 '+mfF(sum(raw,'C1')/1e8,2)+' · 부 '+mfF(sum(sub,'C1')/1e8,2),'#4f46e5')+
+        card('사용량 손익효과',mfEff(T),'억원 (+ 절감 / △ 증가)','단가 영향은 구매 이동계획에서 반영','#16a34a');
     // ── 지종별 생산량 ──
     const prodTb=document.getElementById('mfProdTb');
     if(!MF.prods.length)prodTb.innerHTML='<tr><td colspan="5" style="text-align:center;padding:18px;color:#94a3b8;">전월 생산 실적이 없습니다.</td></tr>';
@@ -3745,13 +3737,13 @@ function renderMf(){
     // ── 자재별 표 (대분류+자재그룹 단위) ──
     const tb=document.getElementById('mfMatTb'),ft=document.getElementById('mfMatFoot');
     const vis=MF.rows.map((r,i)=>({r,i})).filter(x=>mfVisible(x.r));
-    if(!vis.length){tb.innerHTML='<tr><td colspan="19" style="text-align:center;padding:24px;color:#94a3b8;">'+(MF.rows.length?'필터 조건에 맞는 자재가 없습니다.':'전월 자재 실적이 없습니다.')+'</td></tr>';ft.innerHTML='';return;}
+    if(!vis.length){tb.innerHTML='<tr><td colspan="14" style="text-align:center;padding:24px;color:#94a3b8;">'+(MF.rows.length?'필터 조건에 맞는 자재가 없습니다.':'전월 자재 실적이 없습니다.')+'</td></tr>';ft.innerHTML='';return;}
     const inp=(id,val,dec,on,w,ph)=>'<input id="'+id+'" type="text" inputmode="decimal" value="'+(val==null?'':mfR(val,dec))+'"'+(ph!=null?' placeholder="'+mfR(ph,dec)+'"':'')+' onchange="'+on+'" style="width:'+w+'px;padding:2px 4px;border:1px solid #c7d2fe;border-radius:4px;font-size:11px;text-align:right;font-family:inherit;">';
     const groups=[];const gIdx={};vis.forEach(x=>{const k=x.r.groupKey;if(gIdx[k]==null){gIdx[k]=groups.length;groups.push({key:k,name:x.r.groupName,large:x.r.largeName,items:[]});}groups[gIdx[k]].items.push(x);});
     let h='';
     groups.forEach(g=>{
         const cats=[...new Set(g.items.map(x=>x.r.cat))].join('/');
-        h+='<tr style="background:#f8fafc;"><td colspan="19" style="font-weight:700;color:#475569;"><span style="font-size:10px;padding:1px 6px;border-radius:8px;margin-right:6px;'+(cats==='원'?'background:#dbeafe;color:#1d4ed8;':'background:#fef3c7;color:#92400e;')+'">'+cats+'</span>'+(g.large&&g.large!==g.name?mfEsc(g.large)+' › ':'')+mfEsc(g.name)+' <span style="font-weight:400;color:#94a3b8;">('+g.items.length+')</span></td></tr>';
+        h+='<tr style="background:#f8fafc;"><td colspan="14" style="font-weight:700;color:#475569;"><span style="font-size:10px;padding:1px 6px;border-radius:8px;margin-right:6px;'+(cats==='원'?'background:#dbeafe;color:#1d4ed8;':'background:#fef3c7;color:#92400e;')+'">'+cats+'</span>'+(g.large&&g.large!==g.name?mfEsc(g.large)+' › ':'')+mfEsc(g.name)+' <span style="font-weight:400;color:#94a3b8;">('+g.items.length+')</span></td></tr>';
         g.items.forEach(({r,i})=>{
             h+='<tr>'+
             '<td style="text-align:center;color:'+(r.cat==='원'?'#1d4ed8':'#92400e')+';font-weight:600;">'+r.cat+'</td>'+
@@ -3760,21 +3752,18 @@ function renderMf(){
             '<td class="r mn">'+mfF(r.U0,0)+'</td><td class="r mn">'+mfF(r.rate0,3)+'</td><td class="r mn">'+mfF(r.p0,1)+'</td><td class="r mn">'+mfF(r.C0/1e8,2)+'</td><td class="r mn">'+(P0>0?mfF(r.C0/P0/1000,1):'-')+'</td>'+
             '<td class="r">'+inp('mfU_'+i,r.U1,0,"mfEdit("+i+",'U1',this.value)",86)+'</td>'+
             '<td class="r">'+inp('mfRt_'+i,r.rate1,3,"mfEdit("+i+",'rate1',this.value)",66)+'</td>'+
-            '<td class="r">'+inp('mfRc_'+i,r.receipt,1,"mfEdit("+i+",'receipt',this.value)",62)+'</td>'+
-            '<td class="r">'+inp('mfOp_'+i,r.opening,1,"mfEdit("+i+",'opening',this.value)",62)+'</td>'+
-            '<td class="r">'+inp('mfPr_'+i,r.priceInput,1,"mfEdit("+i+",'price',this.value)",66,r.p0)+'</td>'+
             '<td class="r mn" style="font-weight:600;">'+mfF(r.C1/1e8,2)+'</td><td class="r mn">'+(P1>0?mfF(r.C1/P1/1000,1):'-')+'</td>'+
-            '<td class="r mn">'+mfEff(r.useDiff)+'</td><td class="r mn">'+mfEff(r.priceDiff)+'</td><td class="r mn">'+mfEff(r.total)+'</td>'+
+            '<td class="r mn">'+mfEff(r.useDiff)+'</td>'+
             '<td><input id="mfN_'+i+'" type="text" value="'+mfEsc(r.note)+'" maxlength="1000" onchange="mfEdit('+i+',\'note\',this.value)" style="width:160px;padding:2px 4px;border:1px solid #e2e8f0;border-radius:4px;font-size:11px;font-family:inherit;"></td></tr>';
         });
         // 그룹 소계 — 전월 실적만
         const gU=g.items.reduce((a,x)=>a+x.r.U0,0),gC=g.items.reduce((a,x)=>a+x.r.C0,0);
-        h+='<tr style="background:#f1f5f9;font-weight:700;font-size:11px;"><td colspan="3" style="text-align:right;color:#475569;">'+mfEsc(g.name)+' 소계</td><td class="r">'+mfF(gU,0)+'</td><td></td><td></td><td class="r">'+mfF(gC/1e8,2)+'</td><td class="r">'+(P0>0?mfF(gC/P0/1000,1):'-')+'</td><td colspan="11"></td></tr>';
+        h+='<tr style="background:#f1f5f9;font-weight:700;font-size:11px;"><td colspan="3" style="text-align:right;color:#475569;">'+mfEsc(g.name)+' 소계</td><td class="r">'+mfF(gU,0)+'</td><td></td><td></td><td class="r">'+mfF(gC/1e8,2)+'</td><td class="r">'+(P0>0?mfF(gC/P0/1000,1):'-')+'</td><td colspan="6"></td></tr>';
     });
     tb.innerHTML=h;
     // ── 합계 (원재료 / 부재료 / 전체) — 현재 표시 행 기준 ──
     const filtered=(document.getElementById('mfProdFilter')?.value||'ALL')!=='ALL'||(document.getElementById('mfCatFilter')?.value||'ALL')!=='ALL';
-    const tot=(label,rows,bg)=>{const c0=sum(rows,'C0'),c1=sum(rows,'C1');return '<tr style="background:'+bg+';font-weight:700;"><td colspan="3">'+label+'</td><td></td><td></td><td></td><td class="r">'+mfF(c0/1e8,2)+'</td><td class="r">'+(P0>0?mfF(c0/P0/1000,1):'-')+'</td><td colspan="5"></td><td class="r">'+mfF(c1/1e8,2)+'</td><td class="r">'+(P1>0?mfF(c1/P1/1000,1):'-')+'</td><td class="r">'+mfEff(sum(rows,'useDiff'))+'</td><td class="r">'+mfEff(sum(rows,'priceDiff'))+'</td><td class="r">'+mfEff(sum(rows,'total'))+'</td><td></td></tr>';};
+    const tot=(label,rows,bg)=>{const c0=sum(rows,'C0'),c1=sum(rows,'C1');return '<tr style="background:'+bg+';font-weight:700;"><td colspan="3">'+label+'</td><td></td><td></td><td></td><td class="r">'+mfF(c0/1e8,2)+'</td><td class="r">'+(P0>0?mfF(c0/P0/1000,1):'-')+'</td><td colspan="2"></td><td class="r">'+mfF(c1/1e8,2)+'</td><td class="r">'+(P1>0?mfF(c1/P1/1000,1):'-')+'</td><td class="r">'+mfEff(sum(rows,'useDiff'))+'</td><td></td></tr>';};
     const vr=vis.map(x=>x.r);
     ft.innerHTML=tot('원재료 계',vr.filter(r=>r.cat==='원'),'#eff6ff')+tot('부재료 계',vr.filter(r=>r.cat==='부'),'#fffbeb')+tot('전체 합계'+(filtered?' <span style="font-size:10px;font-weight:400;color:#64748b;">(필터 적용)</span>':''),vr,'#eef2ff');
 }
@@ -3785,7 +3774,7 @@ async function saveMaterialForecast(){
     const d=MF.data;
     const body={ym:d.ym,division:d.division,machineCode:d.machine,
         products:MF.prods.map(p=>({itemCode:p.product,prodTon:mfR(p.plan||0,3)})),
-        materials:MF.rows.map(r=>({itemCode:r.code,itemName:r.name,usageQty:mfR(r.U1,3),unitRate:mfR(r.rate1,4),receiptPrice:r.receipt,openingPrice:r.opening,usePrice:mfR(r.p1,4),issueNote:r.note||null}))};
+        materials:MF.rows.map(r=>({itemCode:r.code,itemName:r.name,usageQty:mfR(r.U1,3),unitRate:mfR(r.rate1,4),receiptPrice:null,openingPrice:null,usePrice:null,issueNote:r.note||null}))};
     try{
         const r=await fetch(API+'/material-forecast/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         if(!r.ok){alert('저장 실패: '+(await apiErrMsg(r)));return;}
@@ -3801,8 +3790,8 @@ function downloadMfExcel(){
     const aoa=[MF_XL_HEAD];
     MF.rows.forEach(r=>aoa.push([r.cat==='원'?'원재료':'부재료',r.groupName,r.code,r.name,
         mfR(r.U0,3),mfR(r.rate0,4),mfR(r.p0,2),mfR(r.C0/1e8,4),P0>0?mfR(r.C0/P0/1000,2):'',
-        mfR(r.U1,3),mfR(r.rate1,4),r.receipt??'',r.opening??'',mfR(r.p1,2),mfR(r.C1/1e8,4),P1>0?mfR(r.C1/P1/1000,2):'',
-        mfEffXl(r.useDiff),mfEffXl(r.priceDiff),mfEffXl(r.total),r.note||'']));
+        mfR(r.U1,3),mfR(r.rate1,4),mfR(r.C1/1e8,4),P1>0?mfR(r.C1/P1/1000,2):'',
+        mfEffXl(r.useDiff),r.note||'']));
     const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=MF_XL_HEAD.map(h=>({wch:Math.max(10,h.length*2)}));
     const ps=XLSX.utils.aoa_to_sheet([['지종','전월 생산량(톤)','차월 생산량(톤)']].concat(MF.prods.map(p=>[p.product,mfR(p.prev,3),mfR(p.plan,3)])));ps['!cols']=[{wch:16},{wch:18},{wch:18}];
     const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'자재별');XLSX.utils.book_append_sheet(wb,ps,MF_XL_PROD);
@@ -3825,9 +3814,6 @@ async function uploadMfExcel(input){
         rows.forEach(r=>{const code=mfCode(r['자재코드']);if(!code)return;const row=MF.rows.find(x=>x.code===code);if(!row){miss.push(code);return;}
             const u=mfNum(r['차월 사용량']),rt=mfNum(r['차월 원단위(kg/톤)']);
             if(u!=null){row.U1=Math.max(0,u);row.edited=true;}else if(rt!=null){row.U1=Math.max(0,rt)*P1;row.edited=true;}
-            if('차월 사용단가(원/kg)' in r){const v=mfNum(r['차월 사용단가(원/kg)']);row.priceInput=v==null?null:Math.max(0,v);}
-            if('차월 입고단가(참고)' in r)row.receipt=mfNum(r['차월 입고단가(참고)']);
-            if('차월 기초재고단가(참고)' in r)row.opening=mfNum(r['차월 기초재고단가(참고)']);
             if('이슈사항' in r)row.note=String(r['이슈사항']||'').substring(0,1000);
             ok++;});
         MF.dirty=true;mfRecalc();renderMf();
