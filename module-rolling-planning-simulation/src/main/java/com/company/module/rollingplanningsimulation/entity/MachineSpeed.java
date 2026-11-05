@@ -31,7 +31,13 @@ public class MachineSpeed extends BaseAuditEntity {
 
     /** 이론 생산량 자동 계산 */
     private void calcTheoryProd(){
-        if(basisWeight!=null && trimWidth!=null && speed!=null){
+        // 평량·지폭·선속 중 하나라도 없으면 계산하지 않음 (기본값으로 채우지 않음)
+        if(basisWeight==null || trimWidth==null || speed==null
+                || basisWeight.signum()<=0 || trimWidth.signum()<=0 || speed.signum()<=0){
+            theoryProdTpd = null;
+            return;
+        }
+        {
             // 평량(g/m²)×0.001×0.001 × 지폭(mm)×0.001 × 선속(m/min) × 1440
             theoryProdTpd = basisWeight
                 .multiply(new BigDecimal("0.000001"))
@@ -43,15 +49,13 @@ public class MachineSpeed extends BaseAuditEntity {
         }
     }
 
-    /** 지폭 기본값: 3510mm (고정) */
-    private static final BigDecimal DEFAULT_TRIM_WIDTH = new BigDecimal("3510");
 
     @Builder
     public MachineSpeed(Integer year,String machineCode,String product,BigDecimal basisWeight,
                         BigDecimal trimWidth,BigDecimal speed,String division,String note){
         this.year=year;this.machineCode=machineCode;this.product=product;
         this.basisWeight=basisWeight!=null?basisWeight:BigDecimal.ZERO;
-        this.trimWidth=trimWidth!=null&&trimWidth.compareTo(BigDecimal.ZERO)>0?trimWidth:DEFAULT_TRIM_WIDTH;
+        this.trimWidth=trimWidth; // PM마다 다름 — 기본값 없음
         this.speed=speed!=null?speed:BigDecimal.ZERO;
         this.division=division!=null?division:"PS";this.note=note;
         calcTheoryProd();

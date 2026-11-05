@@ -60,7 +60,7 @@ public class LogiExchangeRate extends BaseAuditEntity {
         this.month = month;
         this.division = division != null ? division : "PS";
         this.currency = currency != null ? currency : "USD";
-        this.rate = rate != null ? rate : new BigDecimal("1350");
+        this.rate = rate; // 기본값 없음 — 필수 입력 (요청 DTO @NotNull)
         this.memo = memo;
     }
 
