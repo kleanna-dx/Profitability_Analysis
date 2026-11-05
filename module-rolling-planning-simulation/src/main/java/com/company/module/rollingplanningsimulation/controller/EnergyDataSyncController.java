@@ -121,6 +121,15 @@ public class EnergyDataSyncController {
             @RequestParam int year,
             @RequestParam(defaultValue = "PS") String division) {
         String yearStr = String.valueOf(year);
+        if (!EnergyDataSyncService.isSupported(division)) {
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("year", year);
+            r.put("division", division);
+            r.put("available", false);
+            r.put("supported", false);
+            r.put("message", "사업부 " + division + "의 에너지팀 수신 매핑이 정의되지 않았습니다.");
+            return ResponseEntity.ok(ApiResponse.success(r));
+        }
         try {
             Long priceCount = syncService.getJdbcTemplate().queryForObject(
                     "SELECT COUNT(*) FROM aiplatform.steam_cell_value WHERE table_name='unit_price_detail' AND month=?",
@@ -130,6 +139,8 @@ public class EnergyDataSyncController {
                     Long.class, yearStr);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("year", year);
+            result.put("division", division);
+            result.put("supported", true);
             result.put("priceDataCount", priceCount != null ? priceCount : 0);
             result.put("unitRateDataCount", unitRateCount != null ? unitRateCount : 0);
             result.put("available", (priceCount != null && priceCount > 0) || (unitRateCount != null && unitRateCount > 0));

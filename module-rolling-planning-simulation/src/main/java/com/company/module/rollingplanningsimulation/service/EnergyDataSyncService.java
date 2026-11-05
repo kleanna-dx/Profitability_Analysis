@@ -42,29 +42,52 @@ public class EnergyDataSyncService {
 
     private static final String[] INTERVAL_UK = {"contractYear", "month", "boilerCode", "intervalSeq", "division"};
 
-    /** 단가 row_key → {boilerCode, rateType, rateName, rateUnit} */
-    private static final Map<String, String[]> PRICE_MAPPING = new LinkedHashMap<>();
-    static {
-        // row_key → [boilerCode, rateType, rateName, rateUnit]
-        PRICE_MAPPING.put("lng_unit",          new String[]{"BLR-LNG",    "FUEL_RATE",  "LNG 단가",           "원/㎥"});
-        PRICE_MAPPING.put("waste2_steam",      new String[]{"BLR-INCIN",  "STEAM_RATE", "폐합성2호 스팀단가",   "원/톤"});
-        PRICE_MAPPING.put("waste2_fixed_hr",   new String[]{"BLR-INCIN",  "FIXED_HR",   "폐합성2호 고정단가",   "원/HR"});
-        PRICE_MAPPING.put("fluid_steam",       new String[]{"BLR-FLUID",  "STEAM_RATE", "유동상 스팀단가",      "원/톤"});
-        PRICE_MAPPING.put("fluid_fixed_hr",    new String[]{"BLR-FLUID",  "FIXED_HR",   "유동상 고정단가",      "원/HR"});
+    /**
+     * 사업부별 수신 매핑 — 에너지팀 대시보드(steam_cell_value)에는 사업부 구분이 없고 row_key 로만 구분되므로
+     * 어떤 row_key 를 어느 사업부의 어떤 보일러/호기로 받을지 사업부마다 따로 정의한다.
+     * 매핑이 없는 사업부는 수신하지 않는다 (다른 사업부 값이 섞여 저장되는 것 방지).
+     */
+    private static final class DivisionMapping {
+        /** 단가 row_key → [boilerCode, rateType, rateName, rateUnit] */
+        final Map<String, String[]> price = new LinkedHashMap<>();
+        /** 복합보일러 구간단가(comb_asc/comb_bsc/보증량/FACTOR) 수신 여부 */
+        boolean cogenInterval;
+        /** 원단위 row_key → machineCode */
+        final Map<String, String> unitRate = new LinkedHashMap<>();
+        /** 원단위 조회 row_key 접두어 (예: t17|) */
+        String unitRatePrefix;
     }
 
-    /** FACTOR row_key → {boilerCode, rateType} - 이 값은 해당 rateType의 FACTOR로 업데이트 */
-    private static final Map<String, String[]> FACTOR_MAPPING = new LinkedHashMap<>();
+    private static final Map<String, DivisionMapping> MAPPINGS = new LinkedHashMap<>();
     static {
-        FACTOR_MAPPING.put("comb_bsc_factor",  new String[]{"BLR-COGEN", "BSC"});
-        FACTOR_MAPPING.put("comb_asc_factor",  new String[]{"BLR-COGEN", "ASC"});
+        // ── PS ──
+        DivisionMapping ps = new DivisionMapping();
+        ps.price.put("lng_unit",        new String[]{"BLR-LNG",   "FUEL_RATE",  "LNG 단가",         "원/㎥"});
+        ps.price.put("waste2_steam",    new String[]{"BLR-INCIN", "STEAM_RATE", "폐합성2호 스팀단가", "원/톤"});
+        ps.price.put("waste2_fixed_hr", new String[]{"BLR-INCIN", "FIXED_HR",   "폐합성2호 고정단가", "원/HR"});
+        ps.price.put("fluid_steam",     new String[]{"BLR-FLUID", "STEAM_RATE", "유동상 스팀단가",    "원/톤"});
+        ps.price.put("fluid_fixed_hr",  new String[]{"BLR-FLUID", "FIXED_HR",   "유동상 고정단가",    "원/HR"});
+        ps.cogenInterval = true;
+        ps.unitRatePrefix = "t17|";
+        ps.unitRate.put("t17|r01", "PM2");
+        ps.unitRate.put("t17|r02", "PM3");
+        MAPPINGS.put("PS", ps);
+        // ── HL ── 매핑 미정 (정해지면 여기에 추가)
     }
 
-    /** 원단위 row_key → machineCode */
-    private static final Map<String, String> UNIT_RATE_MAPPING = new LinkedHashMap<>();
-    static {
-        UNIT_RATE_MAPPING.put("t17|r01", "PM2");
-        UNIT_RATE_MAPPING.put("t17|r02", "PM3");
+    /** 사업부 매핑 조회 — 없으면 수신 거부 */
+    private static DivisionMapping mappingOf(String division) {
+        String d = division == null ? "" : division.trim().toUpperCase();
+        DivisionMapping m = MAPPINGS.get(d);
+        if (m == null)
+            throw new IllegalArgumentException("사업부 " + d + "의 에너지팀 수신 매핑이 정의되지 않아 수신하지 않습니다. "
+                    + "(다른 사업부 단가·원단위가 " + d + "로 저장되는 것을 막기 위함)");
+        return m;
+    }
+
+    /** 수신 가능한 사업부인지 */
+    public static boolean isSupported(String division) {
+        return division != null && MAPPINGS.containsKey(division.trim().toUpperCase());
     }
 
     // ================================================================
@@ -79,6 +102,7 @@ public class EnergyDataSyncService {
      */
     @Transactional
     public int syncPriceData(int year, String division) {
+        DivisionMapping mp = mappingOf(division);
         String yearStr = String.valueOf(year);
         log.info("[EnergySync] 단가 수신 시작 — year={}, division={}", year, division);
 
@@ -105,7 +129,7 @@ public class EnergyDataSyncService {
         int count = 0;
 
         // 3) 일반 단가 매핑 → boiler_cost_rate에 월별 INSERT
-        for (Map.Entry<String, String[]> entry : PRICE_MAPPING.entrySet()) {
+        for (Map.Entry<String, String[]> entry : mp.price.entrySet()) {
             String rowKey = entry.getKey();
             String[] mapping = entry.getValue();
             String boilerCode = mapping[0], rateType = mapping[1], rateName = mapping[2], rateUnit = mapping[3];
@@ -124,11 +148,8 @@ public class EnergyDataSyncService {
             }
         }
 
-        // 4) 복합보일러 구간단가 (BSC/ASC) → steam_price_interval에 저장
-        count += syncIntervalPrices(dataMap, year, division);
-
-        // 5) FACTOR 매핑 → boiler_cost_rate의 factor 컬럼 업데이트
-        count += syncFactors(dataMap, year, division);
+        // 4) 복합보일러 구간단가 (BSC/ASC·보증량·FACTOR) — 해당 사업부 매핑에 있을 때만
+        if (mp.cogenInterval) count += syncIntervalPrices(dataMap, year, division);
 
         log.info("[EnergySync] 단가 수신 완료 — {}건 처리", count);
         return count;
@@ -219,15 +240,6 @@ public class EnergyDataSyncService {
         return count;
     }
 
-    /**
-     * FACTOR 동기화 — boiler_cost_rate의 INTERVAL 레코드에 factor 반영.
-     */
-    private int syncFactors(Map<String, Map<Integer, BigDecimal>> dataMap, int year, String division) {
-        // FACTOR는 이미 syncIntervalPrices에서 처리됨 (saveOrUpdateCostRate에 factor 전달)
-        // 여기서는 추가 독립 FACTOR row_key 처리 (필요 시)
-        return 0;
-    }
-
     // ================================================================
     // 2. 원단위 수신 (energy_fuel_ratio → steam_unit_rate)
     // ================================================================
@@ -240,18 +252,20 @@ public class EnergyDataSyncService {
      */
     @Transactional
     public int syncUnitRateData(int year, String division) {
+        DivisionMapping mp = mappingOf(division);
+        if (mp.unitRate.isEmpty() || mp.unitRatePrefix == null) return 0;
         String yearStr = String.valueOf(year);
         log.info("[EnergySync] 원단위 수신 시작 — year={}, division={}", year, division);
 
-        // aiplatform.steam_cell_value에서 energy_fuel_ratio t17 조회
+        // aiplatform.steam_cell_value에서 energy_fuel_ratio 조회 (사업부 매핑의 row_key 접두어)
         // col_index: 2=1월 ~ 13=12월
         String sql = "SELECT row_key, col_index - 1 AS mon, CAST(cell_value AS DECIMAL(8,4)) AS val " +
                      "FROM aiplatform.steam_cell_value " +
                      "WHERE table_name = 'energy_fuel_ratio' AND month = ? " +
-                     "AND row_key LIKE 't17|%' AND col_index BETWEEN 2 AND 13";
+                     "AND row_key LIKE ? AND col_index BETWEEN 2 AND 13";
 
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, yearStr);
-        log.info("[EnergySync] energy_fuel_ratio t17 조회 결과: {}건", rows.size());
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, yearStr, mp.unitRatePrefix + "%");
+        log.info("[EnergySync] energy_fuel_ratio {} 조회 결과: {}건 (division={})", mp.unitRatePrefix, rows.size(), division);
 
         if (rows.isEmpty()) return 0;
 
@@ -261,7 +275,7 @@ public class EnergyDataSyncService {
             int mon = ((Number) row.get("mon")).intValue();
             BigDecimal val = row.get("val") != null ? new BigDecimal(row.get("val").toString()) : BigDecimal.ZERO;
 
-            String machineCode = UNIT_RATE_MAPPING.get(rowKey);
+            String machineCode = mp.unitRate.get(rowKey);
             if (machineCode == null) continue;
             if (val.compareTo(BigDecimal.ZERO) == 0) continue;
 

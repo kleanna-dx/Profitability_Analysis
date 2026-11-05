@@ -142,6 +142,7 @@
         <div class="step-item" onclick="goStep(4)"><div class="step-num">4</div>원가 분석 & 의사결정</div>
         <div class="step-arrow"><i class="fas fa-chevron-right"></i></div>
         <div class="step-item" onclick="goStep(5)"><div class="step-num">5</div>결과 확인</div>
+        <span id="divScopeNote" style="display:none;font-size:11px;color:#64748b;align-self:center;margin-left:8px;"></span>
     </div>
 
     <!-- Content -->
@@ -413,6 +414,7 @@
                 </div>
             </div>
             <div id="plMatNote" style="margin-top:8px;font-size:10px;color:#64748b;"></div>
+            <div id="plPwNote" style="display:none;margin-top:4px;font-size:10px;color:#d97706;"></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:14px;" id="plCards"></div>
         <div class="sc" style="margin-bottom:14px;overflow:hidden;">
@@ -766,6 +768,20 @@ async function applyFilter(){
     try{await onFilterChange();}
     finally{if(btn){btn.disabled=false;btn.innerHTML='<i class="fas fa-check mr-1"></i>적용';}}
 }
+// 생산 최적화·원가 분석(STEP 2~5)을 쓰는 사업부 — HL은 성격이 달라 별도 개발 예정이므로 STEP 1(데이터 준비)만 표시
+const COST_STEP_DIVISIONS=['PS'];
+function hasCostSteps(div){return COST_STEP_DIVISIONS.includes(div||getDiv());}
+function applyDivisionLayout(){
+    const on=hasCostSteps();
+    const flow=document.getElementById('stepFlow');
+    if(flow){
+        flow.querySelectorAll('.step-item').forEach((el,i)=>{if(i>0)el.style.display=on?'':'none';});
+        flow.querySelectorAll('.step-arrow').forEach(el=>{el.style.display=on?'':'none';});
+    }
+    const nt=document.getElementById('divScopeNote');
+    if(nt){nt.style.display=on?'none':'';nt.innerHTML='<i class="fas fa-info-circle mr-1"></i>'+getDiv()+' 사업부는 생산 최적화·원가 분석 화면이 없습니다 (별도 개발 예정). 데이터 준비만 사용할 수 있습니다.';}
+    if(!on&&curStep!==1)goStep(1);
+}
 // 호기: 상단 공통 필터에서 제거 — P/L 시뮬레이터 탭 안에서 선택 (원부재료비 탭은 자체 선택)
 function getMc(){return document.getElementById('plMc')?.value||'ALL';}
 
@@ -774,16 +790,18 @@ function getMc(){return document.getElementById('plMc')?.value||'ALL';}
 async function onFilterChange(){
     {const pm=document.getElementById('plMc');if(pm)pm.value='ALL';}
     MF.stale=true;MF.dirty=false;
-    if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
+    applyDivisionLayout();
     await loadMasterOptions();
-    await loadCostUnitRates();
     await renderReady();
+    loadRef();
+    if(!hasCostSteps())return; // HL 등: 데이터 준비만 — 원가·생산 데이터는 불러오지 않음
+    if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
+    await loadCostUnitRates();
     await loadOptimeFromAPI();
     await loadWasteRates();
     await loadMachineSpeeds();
     await loadEnergyRefData();
     await loadPowerRefData();
-    loadRef();
     initCapaMcSel();
     CAPA_ROWS=[]; // 필터 변경 시 초기화
     renderCapa();
@@ -794,6 +812,7 @@ async function onFilterChange(){
 // ── Step Navigation ──
 let curStep=1;
 function goStep(n){
+    if(n!==1&&!hasCostSteps()){n=1;}
     curStep=n;
     for(let i=1;i<=5;i++){
         const el=document.getElementById('step-'+i);
@@ -851,6 +870,7 @@ async function loadCostUnitRates(){
                 let h='<i class="fas fa-info-circle mr-1"></i>원·부재료비 = '+lbl+' 실적 지종별 원단위 × 기준월 지종별 생산량 (총생산량 기준)';
                 (d.warnings||[]).forEach(w=>{h+='<div style="color:#d97706;margin-top:2px;"><i class="fas fa-exclamation-triangle mr-1"></i>'+w+'</div>';});
                 nt.innerHTML=h;}}
+        renderPowerMissing();
         // P/L 탭 호기 선택 — 해당 사업부(호기 마스터) 호기 중 실적 있는 호기
         {const sel=document.getElementById('plMc'),note=document.getElementById('plMcNote');if(sel){const cur=sel.value;const ms=d.machines||[];
             sel.innerHTML='<option value="ALL">전체</option>'+ms.map(m=>'<option value="'+m.code+'">'+m.code+(m.name?' ('+m.name+')':'')+'</option>').join('');
@@ -895,6 +915,12 @@ async function loadCostUnitRates(){
     updateDrillData();
     updateMatChart();
     updateStep5();
+}
+function renderPowerMissing(){
+    const el=document.getElementById('plPwNote');if(!el)return;
+    const miss=powerMissingInfo();
+    el.innerHTML=miss.length?'<i class="fas fa-exclamation-triangle mr-1"></i>전력비 기준정보 미등록 — 0으로 계산: '+miss.join(', '):'';
+    el.style.display=miss.length?'':'none';
 }
 function calcPL(){
     const sp=parseInt(document.getElementById('prodSl').value)||0,ratio=BP>0?sp/BP:1,dp=((ratio-1)*100).toFixed(1); // 실적 없으면(BP=0) 변동 0%
@@ -1141,10 +1167,10 @@ function initCapaMcSel(){
     const sel=document.getElementById('capaMcSel');
     if(!sel)return;
     const mcs=UNIT_OPTIONS.length?UNIT_OPTIONS.filter(u=>u.isActive!==false):[];
-    sel.innerHTML=mcs.map(u=>'<option value="'+u.unitCode+'">'+u.unitCode+' ('+u.unitName+')</option>').join('')||'<option value="PM3">PM3</option>';
+    sel.innerHTML=mcs.map(u=>'<option value="'+u.unitCode+'">'+u.unitCode+' ('+u.unitName+')</option>').join('')||'<option value="">(호기 마스터 미등록)</option>';
 }
 
-function getCapaMc(){return document.getElementById('capaMcSel')?.value||'PM3';}
+function getCapaMc(){return document.getElementById('capaMcSel')?.value||'';}
 
 function getCapaOpDays(){
     const mc=getCapaMc();
@@ -1440,58 +1466,52 @@ async function loadPowerRefData(){
     const yr=getYm().substring(0,4);const div=getDiv();const ym=getYm();
     try{const r=await fetch(API+'/pw-lines?division='+div);const j=await r.json();PW_LINES=Array.isArray(j.data)?j.data:j.data?.content||[];}catch(_){PW_LINES=[];}
     try{const r=await fetch(API+'/pw-tariffs?division='+div);const j=await r.json();PW_TARIFFS=Array.isArray(j.data)?j.data:j.data?.content||[];}catch(_){PW_TARIFFS=[];}
-    try{const r=await fetch(API+'/pw-peak-demands?division='+div);const j=await r.json();const all=Array.isArray(j.data)?j.data:j.data?.content||[];PW_PEAK_DEMANDS=all.filter(p=>p.ym===ym);if(!PW_PEAK_DEMANDS.length)PW_PEAK_DEMANDS=all.slice(-1);}catch(_){PW_PEAK_DEMANDS=[];}
+    try{const r=await fetch(API+'/pw-peak-demands?division='+div);const j=await r.json();const all=Array.isArray(j.data)?j.data:j.data?.content||[];PW_PEAK_DEMANDS=all.filter(p=>p.ym===ym);/* 해당 월만 — 다른 월로 대체하지 않음 */}catch(_){PW_PEAK_DEMANDS=[];}
     try{const r=await fetch(API+'/pw-fixed-items?division='+div);const j=await r.json();const all=Array.isArray(j.data)?j.data:j.data?.content||[];PW_FIXED_ITEMS=all.filter(p=>p.ym===ym);}catch(_){PW_FIXED_ITEMS=[];}
-    // 샘플 폴백
-    if(!PW_LINES.length) PW_LINES=[
-        {lineCode:'PM2',lineName:'제지 2호기',kwhPerHourRun:3200,kwhPerHourStby:400,isActive:true,division:div},
-        {lineCode:'PM3',lineName:'제지 3호기',kwhPerHourRun:4500,kwhPerHourStby:500,isActive:true,division:div}
-    ];
-    if(!PW_TARIFFS.length) PW_TARIFFS=[
-        {year:parseInt(yr),season:'spring_fall',timeZone:'peak',energyKrw:120.8,demandKrw:8190},
-        {year:parseInt(yr),season:'spring_fall',timeZone:'mid',energyKrw:83.6,demandKrw:8190},
-        {year:parseInt(yr),season:'spring_fall',timeZone:'off',energyKrw:59.2,demandKrw:8190}
-    ];
-    if(!PW_PEAK_DEMANDS.length) PW_PEAK_DEMANDS=[{ym,effectiveKw:15000,division:div}];
+    // 예시값 없음 — 미등록이면 0으로 계산하고 P/L에 경고 표시
 }
 
 // ── 전력비 톤당 단가 경량 계산 (P/L 슬라이더 연동용) ──
+//    예시값·기본값 없음: 기준정보가 없는 항목은 0으로 계산하고 powerMissingInfo()로 경고
+function pwSeason(m){return (m===7||m===8)?'summer':(m>=11||m<=2)?'winter':'spring_fall';}
+function powerMissingInfo(){
+    const miss=[];const ym=getYm();const season=pwSeason(parseInt(ym.substring(4,6)));
+    if(!PW_LINES.filter(l=>l.isActive!==false).length)miss.push('전력비 호기');
+    else{const noOd=PW_LINES.filter(l=>l.isActive!==false&&!OD.some(o=>o.mc===l.lineCode)).map(l=>l.lineCode);if(noOd.length)miss.push('가동시간('+noOd.join(', ')+')');}
+    const tf=PW_TARIFFS.filter(t=>t.season===season);
+    if(!tf.some(t=>parseFloat(t.energyKrw)>0))miss.push('한전 전력량요금('+season+')');
+    if(!tf.some(t=>parseFloat(t.demandKrw)>0))miss.push('한전 기본요금('+season+')');
+    if(!PW_PEAK_DEMANDS.some(p=>parseFloat(p.effectiveKw)>0))miss.push('최대수요전력('+ymToDisp(ym)+')');
+    return miss;
+}
 function calcPowerPerTon(totalProdTon){
     if(!totalProdTon||totalProdTon<=0||!PW_LINES.length)return 0;
-    // 1) 설비별 전력사용량 = 가동시간 × kWh/hr
-    //    가동시간은 OD(가동시간 데이터)에서 가져오거나, 생산량 기반 추정
+    const season=pwSeason(parseInt(getYm().substring(4,6)));
+    // 1) 설비별 전력사용량 = 가동시간 × kWh/hr — 가동시간 미등록 호기는 0
     let totalKwh=0;
-    const units=PW_LINES.filter(l=>l.isActive!==false);
-    units.forEach(line=>{
+    PW_LINES.filter(l=>l.isActive!==false).forEach(line=>{
         const opData=OD.find(o=>o.mc===line.lineCode);
-        const runHrs=opData?(parseFloat(opData.ndM||0)/60):672; // 정상가동분÷60=시간, 기본 28일×24h
-        const stbyHrs=opData?((parseFloat(opData.tdM||0)-parseFloat(opData.ndM||0))/60):48;
-        const runKwh=parseFloat(line.kwhPerHourRun)||0;
-        const stbyKwh=parseFloat(line.kwhPerHourStby)||0;
-        totalKwh+=runHrs*runKwh+stbyHrs*stbyKwh;
+        if(!opData)return;
+        const runHrs=parseFloat(opData.ndM||0)/60; // 정상가동(분)÷60
+        const stbyHrs=Math.max(0,(parseFloat(opData.tdM||0)-parseFloat(opData.ndM||0))/60);
+        totalKwh+=runHrs*(parseFloat(line.kwhPerHourRun)||0)+stbyHrs*(parseFloat(line.kwhPerHourStby)||0);
     });
-
-    // 2) 에너지요금 = 총 사용량 × 평균 단가 (부하별 단가 가중평균 간소화)
-    const tariffs=PW_TARIFFS.filter(t=>t.energyKrw>0);
-    const avgTariff=tariffs.length?tariffs.reduce((s,t)=>s+parseFloat(t.energyKrw||0),0)/tariffs.length:80;
+    // 2) 에너지요금 = 사용량 × 해당 계절 전력량요금 평균 (미등록이면 0)
+    const tf=PW_TARIFFS.filter(t=>t.season===season);
+    const et=tf.filter(t=>parseFloat(t.energyKrw)>0);
+    const avgTariff=et.length?et.reduce((s,t)=>s+parseFloat(t.energyKrw),0)/et.length:0;
     const energyCost=totalKwh*avgTariff;
-
-    // 3) 기본요금 = 최대수요전력(kW) × 8,190원
-    const peakKw=PW_PEAK_DEMANDS.length?parseFloat(PW_PEAK_DEMANDS[0].effectiveKw||0):15000;
-    const demandCost=peakKw*8190;
-
+    // 3) 기본요금 = 해당 월 최대수요전력(kW) × 해당 계절 기본요금 단가 (미등록이면 0)
+    const peakKw=PW_PEAK_DEMANDS.length?parseFloat(PW_PEAK_DEMANDS[0].effectiveKw||0):0;
+    const dt=tf.find(t=>parseFloat(t.demandKrw)>0);
+    const demandCost=peakKw*(dt?parseFloat(dt.demandKrw):0);
     // 4) 고정층 (DR환급, ESS 등)
     const fixedTotal=PW_FIXED_ITEMS.reduce((s,f)=>s+parseFloat(f.amountKrw||0),0);
-
-    // 5) 전력기금 2.7%
+    // 5) 전력기금 2.7% (전기사업법 법정 요율 — 서버 계산과 동일)
     const subtotal=energyCost+demandCost;
     const powerFund=subtotal*0.027;
-
-    // 6) 월 총 전력비
     const monthlyTotal=subtotal+powerFund+fixedTotal;
-
-    // 7) 톤당 전력비 (천원/톤)
-    return monthlyTotal/totalProdTon/1000;
+    return monthlyTotal/totalProdTon/1000; // 천원/톤
 }
 
 async function loadEnergyRefData(){
@@ -3832,6 +3852,7 @@ async function uploadMfExcel(input){
 // ── Init ──
 async function initAll(){
     initYmSelector();
+    applyDivisionLayout();
     await loadMasterOptions();
     renderRefTabs();
     switchRef(0);
