@@ -1811,7 +1811,8 @@ function calcEnergyCost(){
         const isSD=dop?dop.isShutdown:false;
         if(!isSD){opDays_++;totalWeightedScale_+=getDayLineScale_(d);}
     }
-    if(opDays_<=0){opDays_=daysInMonth_;totalWeightedScale_=daysInMonth_;}
+    // 전 일자 운휴 → 한 달 가동으로 바꾸지 않음 (스팀 배분 0 + 경고)
+    const allShutdown_=opDays_<=0;
 
     const boilerMonthAlloc={};boilersSorted.forEach(b=>{boilerMonthAlloc[b.boilerCode]=0;});
     let steamRemainingTotal=0;
@@ -1993,6 +1994,7 @@ function calcEnergyCost(){
         if(!BURNER_LNG_RATES.length)miss.push('LNG 버너 원단위 (LNG 버너비 0원)');
         if(BURNER_LNG_RATES.length&&!lngFuelRate)miss.push('LNG 단가 — 보일러 연료단가의 LNG FUEL_RATE (LNG 버너비 0원)');
         if(!LINE_STEAM_RATIOS.length)miss.push('라인 스팀비중 (호기 운휴일에도 수요 축소 없이 계산)');
+        if(allShutdown_&&totalSteamReq>0)miss.push('기준월 전 일자 운휴로 등록됨 — 스팀 배분 0 (보일러 운영비 0원). 일별 가동시간을 확인하세요');
         if(!DAILY_OPS.length)miss.push('일별 가동시간 미등록 — 운휴 없이 전 일자 24시간 가동으로 계산 (기준정보 > 일별 가동시간 등록 필요)');
         if(!COGEN_DEDUCTIONS.length)miss.push('연료비 고정차감 항목 (차감 0원)');
         {const noResp=BOILER_MAINTENANCES.filter(m=>!normResp(m.responsibility));if(noResp.length)miss.push('보일러 정비계획 귀책구분 미입력 '+noResp.length+'건 — 스팀 공급에서는 정지로 반영, 고정단가 운휴에서는 제외 (당사/협력사 입력 필요)');}
@@ -2204,7 +2206,7 @@ function updateSteamAllocFooter(){
         const opH=opHEl?parseFloat(opHEl.dataset.val)||0:0;
         if(opH>0){opDays++;totalOpHours+=opH;}
     }
-    if(opDays<=0) opDays=dim;
+    const noOpDays=opDays<=0; // 가동일 없음 → 평균 '-' (달력 일수로 대체하지 않음)
     // 1) 보일러별 누계 + 평균T/H
     STEAM_ALLOC_BOILERS.forEach(b=>{
         const el=document.getElementById('saFootTotal_'+b.code);
@@ -2214,10 +2216,10 @@ function updateSteamAllocFooter(){
         if(tphEl) tphEl.textContent=totalOpHours>0?fmt(boilerSums[b.code]/totalOpHours):'-';
         // 평균 행: 일평균 배분
         const avgEl=document.getElementById('saFootAvg_'+b.code);
-        if(avgEl) avgEl.textContent=fmtI(Math.round(boilerSums[b.code]/opDays));
+        if(avgEl) avgEl.textContent=noOpDays?'-':fmtI(Math.round(boilerSums[b.code]/opDays));
         // 평균 행: 평균T/H
         const avgTphEl=document.getElementById('saFootAvgTph_'+b.code);
-        if(avgTphEl){const avgPerDay=boilerSums[b.code]/opDays;const avgOpH=totalOpHours/opDays;avgTphEl.textContent=avgOpH>0?fmt(avgPerDay/avgOpH):'-';}
+        if(avgTphEl){if(noOpDays){avgTphEl.textContent='-';}else{const avgPerDay=boilerSums[b.code]/opDays;const avgOpH=totalOpHours/opDays;avgTphEl.textContent=avgOpH>0?fmt(avgPerDay/avgOpH):'-';}}
     });
     // 2) 전체 누계
     const gtEl=document.getElementById('saFootGrandTotal');
@@ -2235,9 +2237,9 @@ function updateSteamAllocFooter(){
     }
     // 5) 평균 행: 전체 평균
     const avgTotEl=document.getElementById('saFootAvgTotal');
-    if(avgTotEl) avgTotEl.textContent=fmtI(Math.round(grandTotal/opDays));
+    if(avgTotEl) avgTotEl.textContent=noOpDays?'-':fmtI(Math.round(grandTotal/opDays));
     const avgDemEl=document.getElementById('saFootAvgDemand');
-    if(avgDemEl) avgDemEl.textContent=fmtI(Math.round(totalDemand/opDays));
+    if(avgDemEl) avgDemEl.textContent=noOpDays?'-':fmtI(Math.round(totalDemand/opDays));
 }
 
 async function loadDailySteamAlloc(){
@@ -2397,7 +2399,7 @@ function renderDailyAlloc(totalSteamReq, boilerAllocRows, totalProd){
         const isSD=dop?dop.isShutdown:false;
         if(!isSD){opDaysCount++;totalWeightedScaleDA+=getDayLineScaleDA(d);}
     }
-    if(opDaysCount<=0){opDaysCount=daysInMonth;totalWeightedScaleDA=daysInMonth;}
+    // 전 일자 운휴 → 한 달 가동으로 바꾸지 않음 (일별 배분 전부 0)
 
     // ★ STEP 2: 일별 계산 — 라인 비중 반영 가중 배분 + 부족분 재배분 (반복)
     //   일별 수요 = 총필요량 × (해당일 스케일 / 전체 가동일 스케일 합)
