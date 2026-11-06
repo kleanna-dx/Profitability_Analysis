@@ -216,11 +216,7 @@ public class SimulationService {
      * 생산계획 지종명 → SAP 실적 지종명(RawMaterialSql.PRODUCT_EXPR)과 같은 규칙.
      * SC·백판지 기타는 평량 300 미만=SC저평량 / 이상=SC고평량. 평량이 없으면 분류 불가로 남겨 0 처리(경고)
      */
-    private static final String PLAN_PRODUCT_EXPR =
-            "CASE WHEN TRIM(PRODUCT) IN ('SC','백판지 기타') THEN " +
-            "  CASE WHEN COALESCE(BASIS_WEIGHT,0) <= 0 THEN CONCAT(TRIM(PRODUCT),'(평량 없음)')" +
-            "       WHEN BASIS_WEIGHT < 300 THEN 'SC저평량' ELSE 'SC고평량' END " +
-            "ELSE TRIM(PRODUCT) END";
+    private static final String PLAN_PRODUCT_EXPR = RawMaterialSql.PLAN_PRODUCT_EXPR;
 
     /** 기준월 생산계획(STEP3) 지종별 총생산량(톤) = 양품 ÷ (1 − 손지율) — 전월 원단위 분모(총생산량)와 같은 기준 */
     private Map<String, BigDecimal> findPlanProdByProduct(int year, int month, String machine, String division) {
