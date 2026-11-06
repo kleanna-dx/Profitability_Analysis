@@ -52,10 +52,11 @@ public class PurchasePlanController {
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 
-    /** P/L 구매 단가 영향 — 기준월을 포함하는 최신 시작월 버전 */
+    /** P/L 구매 단가 영향 — 기준월을 포함하는 최신 시작월 버전, 원재료/부재료/상품 + 호기 배분 */
     @GetMapping("/impact")
     public ResponseEntity<ApiResponse<Map<String, Object>>> impact(@RequestParam String ym,
-                                                                   @RequestParam(defaultValue = "PS") String division) {
-        return ResponseEntity.ok(ApiResponse.success(service.impact(ym, division)));
+                                                                   @RequestParam(defaultValue = "PS") String division,
+                                                                   @RequestParam(defaultValue = "ALL") String machine) {
+        return ResponseEntity.ok(ApiResponse.success(service.impact(ym, division, machine)));
     }
 }

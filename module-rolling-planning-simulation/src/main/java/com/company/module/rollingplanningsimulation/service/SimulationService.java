@@ -74,7 +74,7 @@ public class SimulationService {
         // ── 지종별: 전월 원단위 × 기준월 생산량 ──
         BigDecimal baseTon = BigDecimal.ZERO, estMat = BigDecimal.ZERO, estSub = BigDecimal.ZERO;
         List<String> unmatched = new ArrayList<>();
-        List<Object[]> rows = new ArrayList<>(); // [지종, 톤, 원재료비, 원재료 원단위(원/톤), 전월톤, 전월원재료비]
+        List<Object[]> rows = new ArrayList<>(); // [지종, 톤, 원재료비, 원재료 원단위(원/톤), 전월톤, 전월원재료비, 부재료 원단위(원/톤)]
         for (Map.Entry<String, BigDecimal> e : baseByProd.entrySet()) {
             String product = e.getKey();
             BigDecimal ton = e.getValue();
@@ -95,15 +95,28 @@ public class SimulationService {
             baseTon = baseTon.add(ton);
             estMat = estMat.add(mat);
             estSub = estSub.add(subRate.multiply(ton));
-            rows.add(new Object[]{product, ton, mat, matRate, pTon, pCost});
+            rows.add(new Object[]{product, ton, mat, matRate, pTon, pCost, subRate});
+        }
+        // 전월에만 있는 지종 — 기준월 생산량 0으로 추가 (P/L 지종별 생산량 what-if 에서 입력할 수 있게)
+        for (Map.Entry<String, Object[]> e : prevMap.entrySet()) {
+            if (baseByProd.containsKey(e.getKey())) continue;
+            Object[] pr = e.getValue();
+            BigDecimal pTon = toBD(pr, 1);
+            if (pTon.signum() <= 0) continue;
+            rows.add(new Object[]{e.getKey(), BigDecimal.ZERO, BigDecimal.ZERO, div6(toBD(pr, 2), pTon), pTon, toBD(pr, 2), div6(toBD(pr, 3), pTon)});
         }
 
         List<CostUnitRateResponse.MaterialByProduct> materialByProduct = new ArrayList<>();
         for (Object[] r : rows) {
             BigDecimal ton = (BigDecimal) r[1], mat = (BigDecimal) r[2], rate = (BigDecimal) r[3];
-            BigDecimal pTon = (BigDecimal) r[4], pCost = (BigDecimal) r[5];
+            BigDecimal pTon = (BigDecimal) r[4], pCost = (BigDecimal) r[5], subRate = (BigDecimal) r[6];
             materialByProduct.add(CostUnitRateResponse.MaterialByProduct.builder()
                     .product((String) r[0])
+                    .productionTonExact(ton.setScale(3, RoundingMode.HALF_UP))
+                    .prevProductionTonExact(pTon.setScale(3, RoundingMode.HALF_UP))
+                    .matRateWon(rate.setScale(2, RoundingMode.HALF_UP))
+                    .subRateWon(subRate.setScale(2, RoundingMode.HALF_UP))
+                    .prevMatched(pTon.signum() > 0)
                     .productionTon(ton.setScale(0, RoundingMode.HALF_UP).longValue())
                     .materialCost(mat.setScale(0, RoundingMode.HALF_UP))
                     .unitCost1000(rate.divide(THOUSAND, 1, RoundingMode.HALF_UP))
