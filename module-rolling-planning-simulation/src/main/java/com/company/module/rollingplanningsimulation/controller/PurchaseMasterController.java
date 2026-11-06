@@ -30,6 +30,7 @@ public class PurchaseMasterController {
     private final PurchaseExchangeRateRepository rateRepo;
     private final PurchaseIncidentalRateRepository incidentalRepo;
     private final AuditSupport auditSupport;
+    private final PurchasePlanService planService;
 
     private static final String[] UK_CUR = {"currencyCode"};
     private static final String[] UK_RATE = {"ym", "currencyCode"};
@@ -137,12 +138,18 @@ public class PurchaseMasterController {
     private PurchaseIncidentalRate persistIncidental(Long id, Map<String, Object> b) {
         String y = str(b.get("year"));
         if (y == null || !y.matches("\\d{4}")) throw new IllegalArgumentException("연도는 4자리 숫자입니다: " + b.get("year"));
-        String code = PurchasePlanService.stripCode(b.get("materialCode"));
-        if (code == null) throw new IllegalArgumentException("SAP 펄프자재를 선택하세요");
+        String raw = str(b.get("materialCode"));
+        if (raw == null) throw new IllegalArgumentException("SAP 펄프자재를 선택하세요");
+        // "1100016 ARACRUZ" 처럼 이름이 붙어 와도 앞의 코드만 사용
+        java.util.regex.Matcher mm = java.util.regex.Pattern.compile("^0*(\\d+)").matcher(raw);
+        String code = mm.find() ? mm.group(1) : raw;
+        String matName = null;
+        for (Map<String, Object> m : planService.pulpMaterials()) if (code.equals(m.get("code"))) { matName = (String) m.get("name"); break; }
+        if (matName == null) throw new IllegalArgumentException("SAP 수불부에 없는 펄프자재입니다: " + code + " (원부자재 수불부 인터페이스 수신 후 등록)");
         BigDecimal rate = dec(b.get("rate"), "부대비율");
         if (rate.signum() <= 0) throw new IllegalArgumentException("부대비율은 0보다 커야 합니다 (예: 1.05)");
         PurchaseIncidentalRate e = PurchaseIncidentalRate.builder().year(Integer.valueOf(y)).materialCode(code)
-                .materialName(str(b.get("materialName"))).rate(rate).memo(str(b.get("memo"))).build();
+                .materialName(matName).rate(rate).memo(str(b.get("memo"))).build();
         return id != null ? auditSupport.updateById(incidentalRepo, id, e, UK_INC) : auditSupport.upsert(incidentalRepo, e, UK_INC);
     }
 }

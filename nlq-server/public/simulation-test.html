@@ -157,6 +157,7 @@
         <div class="sub-tab active" onclick="subTab(1,'ready')">데이터 준비 현황</div>
         <div class="sub-tab" onclick="subTab(1,'ref')">기준정보 관리</div>
         <div class="sub-tab" onclick="subTab(1,'itf')">인터페이스 관리</div>
+        <div class="sub-tab" onclick="subTab(1,'purchase')">구매 이동계획</div>
     </div>
 
     <!-- 1-1 데이터 준비 현황 -->
@@ -278,6 +279,70 @@
                     <th>상태</th><th>시작</th><th>종료</th><th class="r">처리건수</th>
                     <th>오류 메시지</th><th>실행자</th><th style="width:70px;">관리</th>
                 </tr></thead><tbody id="itfHistTbody"><tr><td colspan="11" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr></tbody></table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 1-5 구매 이동계획 (전사 공통) -->
+    <div id="s1-purchase" style="display:none;">
+        <div class="ref-tabs" id="purTabs">
+            <div class="ref-tab active" onclick="purTab('plan')"><i class="fas fa-file-invoice-dollar mr-1"></i>이동계획 업로드·결과</div>
+            <div class="ref-tab" onclick="purTab('cur')"><i class="fas fa-coins mr-1"></i>지급통화</div>
+            <div class="ref-tab" onclick="purTab('rate')"><i class="fas fa-exchange-alt mr-1"></i>이동계획 환율</div>
+            <div class="ref-tab" onclick="purTab('inc')"><i class="fas fa-percent mr-1"></i>부대비율</div>
+        </div>
+        <!-- 업로드·결과 -->
+        <div id="pur-plan">
+            <div class="sc" style="padding:14px 18px;margin-bottom:14px;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+                    <div>
+                        <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 4px;"><i class="fas fa-truck-loading text-indigo-500 mr-2"></i>구매 이동계획 <span style="font-size:10px;padding:1px 6px;border-radius:6px;background:#f1f5f9;color:#64748b;font-weight:600;">전사 공통</span></h3>
+                        <div style="font-size:11px;color:#64748b;line-height:1.6;">구매팀 3개월 이동계획(펄프 수불 + 펄프외 손익영향)을 엑셀로 올립니다 · 기초재고는 SAP 수불부 전월 기말에서 자동으로 가져옵니다<br>양식을 받아 작성 → 업로드 → 오류가 있으면 저장하지 않고 행 번호와 함께 알려드립니다</div>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                        <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="purDownloadTemplate(null)"><i class="fas fa-file-download mr-1"></i>양식 다운로드</button>
+                        <label class="btn-p" style="font-size:11px;padding:5px 12px;cursor:pointer;margin:0;"><i class="fas fa-file-upload mr-1"></i>엑셀 업로드<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="purUpload(this)"></label>
+                    </div>
+                </div>
+                <div id="purResult" style="margin-top:10px;"></div>
+            </div>
+            <div class="sc" style="overflow:hidden;margin-bottom:14px;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-history text-indigo-400 mr-1"></i>업로드 버전 <span style="font-size:10px;color:#94a3b8;font-weight:400;">같은 월을 여러 버전이 포함하면 P/L은 시작월이 가장 늦은 사용중 버전을 씁니다</span></h3>
+                    <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="purLoadVersions()"><i class="fas fa-sync-alt mr-1"></i>새로고침</button>
+                </div>
+                <div style="overflow-x:auto;max-height:260px;"><table class="st" style="font-size:11px;"><thead><tr><th>상태</th><th>대상 기간</th><th>작성일</th><th>파일</th><th class="r">펄프 행</th><th class="r">펄프외 행</th><th class="r">경고</th><th>업로드</th><th style="width:110px;">관리</th></tr></thead><tbody id="purVerTb"></tbody></table></div>
+            </div>
+            <div id="purDetail"></div>
+        </div>
+        <!-- 지급통화 -->
+        <div id="pur-cur" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-coins text-indigo-500 mr-1"></i>지급통화 <span style="font-size:10px;color:#94a3b8;font-weight:400;">엑셀 지급통화 드롭다운에 쓰입니다 · 원화(KRW 등)는 '원화'로 표시하면 환율 없이 원/톤으로 계산</span></h3>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="purCurModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
+                <div style="overflow-x:auto;"><table class="st"><thead><tr><th>통화코드</th><th>통화명</th><th>원화</th><th class="r">정렬</th><th>사용</th><th style="width:90px;">관리</th></tr></thead><tbody id="purCurTb"></tbody></table></div>
+            </div>
+        </div>
+        <!-- 이동계획 환율 -->
+        <div id="pur-rate" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-exchange-alt text-indigo-500 mr-1"></i>이동계획 환율 <span id="purRateYear" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:600;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">월별 · 물류 환율(기준정보 '월별 환율')과 별도</span></h3>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="purRateModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
+                <div style="overflow-x:auto;"><table class="st"><thead><tr><th>적용년월</th><th>통화</th><th class="r">환율 (원/통화)</th><th>메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="purRateTb"></tbody></table></div>
+            </div>
+        </div>
+        <!-- 부대비율 -->
+        <div id="pur-inc" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-percent text-indigo-500 mr-1"></i>부대비율 <span id="purIncYear" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:600;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">펄프 자재별 1년 동일값 · 구매 금액 = 구매수량 × 단가 × 부대비율 × 이동계획 환율</span></h3>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="purIncModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
+                <div style="overflow-x:auto;"><table class="st"><thead><tr><th>연도</th><th>자재코드</th><th>자재명</th><th class="r">부대비율</th><th>메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="purIncTb"></tbody></table></div>
             </div>
         </div>
     </div>
@@ -415,6 +480,7 @@
             </div>
             <div id="plMatNote" style="margin-top:8px;font-size:10px;color:#64748b;"></div>
             <div id="plPwNote" style="display:none;margin-top:4px;font-size:10px;color:#d97706;"></div>
+            <div id="plPurNote" style="display:none;margin-top:4px;font-size:10px;color:#475569;"></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:14px;" id="plCards"></div>
         <div class="sc" style="margin-bottom:14px;overflow:hidden;">
@@ -793,6 +859,7 @@ async function onFilterChange(){
     await loadMasterOptions();
     await renderReady();
     loadRef();
+    {const sp=document.getElementById('s1-purchase');if(sp&&sp.style.display!=='none')purOnShow();} // 전사 공통 — 사업부 무관
     if(!hasCostSteps())return; // HL 등: 데이터 준비만 — 원가·생산 데이터는 불러오지 않음
     if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
     await loadCostUnitRates();
@@ -825,13 +892,14 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','ref','itf'],2:[],4:['plsim','causal','prodsim','energy','matfc']};
+const SUB_MAP={1:['ready','ref','itf','purchase'],2:[],4:['plsim','causal','prodsim','energy','matfc']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
     const parent=document.getElementById('step-'+step);
     if(parent){parent.querySelectorAll('.sub-tab').forEach((t,i)=>{t.classList.toggle('active',subs[i]===key);});}
     if(step===4&&key==='matfc'&&(MF.stale||!MF.data))loadMaterialForecast();
+    if(step===1&&key==='purchase')purOnShow();
 }
 
 // ── P/L Simulator ──
@@ -839,6 +907,7 @@ let PL=[
     {l:'매출액',k:'rev',b:'-',r:0,p:0,db:false,n:'수동'},
     {l:'원재료비',k:'mat',b:'변동비',r:0,p:0,db:false,n:'준비중'},
     {l:'부재료비',k:'sub',b:'변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'구매 단가 영향',k:'pur',b:'변동비',r:0,p:0,db:false,n:'업로드 없음'}, // 구매 이동계획 손익영향 → 비용(천원/톤), 개선이면 음수
     {l:'전력비',k:'pw',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
     {l:'에너지비',k:'eng',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
     {l:'물류비',k:'log',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
@@ -909,6 +978,7 @@ async function loadCostUnitRates(){
     }catch(e){
         console.warn('[CostUnitRates] API 호출 실패:',e.message);
     }
+    await loadPurchaseImpact(); // 구매 이동계획 손익영향 (BP 확정 후 톤당 환산)
     calcPL();
     renderProdSim();
     updateDrillData();
@@ -941,7 +1011,7 @@ function calcPL(){
         const st=sr*sp/1000,d=sr-it.r,dc=d>0?'color:#dc2626':d<0?'color:#16a34a':'color:#94a3b8';
         const bc=it.b==='변동비'?'background:#fef3c7;color:#92400e':it.b==='준변동비'?'background:#fefce8;color:#a16207':it.b==='고정비'?'background:#dcfce7;color:#166534':'background:#f1f5f9;color:#64748b';
         const db=it.db?'<span style="font-size:9px;color:#16a34a;"><i class="fas fa-check-circle mr-1"></i>DB</span>':'<span style="font-size:9px;color:#94a3b8;">'+it.n+'</span>';
-        tbH+='<tr><td style="font-weight:600;">'+it.l+'</td><td><span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;'+bc+'">'+it.b+'</span></td><td class="r mn" style="font-weight:600;">'+fmt(it.r)+'</td><td class="r mn" style="color:#94a3b8;">'+fmt(it.p)+'</td><td class="r mn" style="font-weight:700;color:#4f46e5;">'+fmt(sr)+'</td><td class="r mn">'+(it.r>0?fmt(st):'-')+'</td><td class="r" style="font-weight:600;'+dc+'">'+fmt(Math.abs(d))+'</td><td>'+db+'</td></tr>';
+        tbH+='<tr><td style="font-weight:600;">'+it.l+'</td><td><span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;'+bc+'">'+it.b+'</span></td><td class="r mn" style="font-weight:600;">'+fmt(it.r)+'</td><td class="r mn" style="color:#94a3b8;">'+fmt(it.p)+'</td><td class="r mn" style="font-weight:700;color:#4f46e5;">'+fmt(sr)+'</td><td class="r mn">'+(it.r!==0?fmt(st):'-')+'</td><td class="r" style="font-weight:600;'+dc+'">'+fmt(Math.abs(d))+'</td><td>'+db+'</td></tr>';
     });
     const pf=0-tc;
     [{l:'매출액',v:0,c:'#475569',bd:''},{l:'원재료비',v:srs[PLI('mat')],c:'#d97706',bd:'border-left:3px solid #f59e0b;'},{l:'부재료비',v:srs[PLI('sub')],c:'#b45309',bd:''},{l:'전력비',v:srs[PLI('pw')],c:'#ef4444',bd:''},{l:'에너지비',v:srs[PLI('eng')],c:'#f97316',bd:'border-left:3px solid #f97316;'},{l:'물류비',v:srs[PLI('log')],c:'#475569',bd:''},{l:'영업이익',v:pf,c:'#4f46e5',bd:'border-left:3px solid #4f46e5;'}].forEach(c=>{
@@ -3820,6 +3890,318 @@ async function uploadMfExcel(input){
         alert('엑셀 반영 완료 (저장 버튼을 눌러야 DB에 저장됩니다)\n지종 생산량 '+prodCnt+'건 · 자재 '+ok+'건'+(miss.length?'\n전월 실적에 없는 자재코드 '+miss.length+'건 제외: '+miss.slice(0,10).join(', ')+(miss.length>10?' 외':''):''));
     }catch(e){alert('엑셀 읽기 실패: '+e.message);}
     input.value='';
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 구매 이동계획 (전사 공통) — 기준정보(통화·환율·부대비율) + 업로드 + 계산 결과 + P/L 구매 단가 영향
+//   가짜 값 없음: 미등록 환율·부대비율은 서버가 0 + 경고
+// ══════════════════════════════════════════════════════════════════
+const PUR_API=API+'/purchase-plan',PUR_M_API=API+'/purchase-master';
+let PUR={tab:'plan',masters:null,versions:[],detailId:null,cur:[],rate:[],inc:[]};
+function purEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function purF(n,d){if(n==null||n===''||!isFinite(n))return '-';return Number(n).toLocaleString('ko-KR',{minimumFractionDigits:d||0,maximumFractionDigits:d||0});}
+function purM(won,d){if(won==null||!isFinite(won))return '-';return purF(won/1e6,d==null?1:d);}
+function purYmDot(ym){return ym&&String(ym).length===6?String(ym).slice(0,4)+'.'+String(ym).slice(4):(ym||'-');}
+// 엑셀 셀 → 'yyyy.mm' (숫자 2026.05 → 2026.5 로 읽히는 경우 보정)
+function purYmCell(v){if(v==null||v==='')return '';if(typeof v==='number'){const y=Math.floor(v),m=Math.round((v-y)*100);return (m>=1&&m<=12)?y+'.'+String(m).padStart(2,'0'):String(v);}return String(v).trim();}
+function purNormYm(v){const s=purYmCell(v).replace(/[.\-\/\s]/g,'');return /^\d{6}$/.test(s)&&+s.slice(4)>=1&&+s.slice(4)<=12?s:null;}
+function purImpact(won){if(won==null||!isFinite(won)||Math.abs(won)<500000)return '<span style="color:#cbd5e1;">-</span>';const v=purF(Math.abs(won)/1e6,1);return won>0?'<span style="color:#2563eb;font-weight:600;">+'+v+'</span>':'<span style="color:#dc2626;font-weight:600;">△'+v+'</span>';}
+async function purGet(url){const r=await fetch(url);if(!r.ok)throw new Error(await apiErrMsg(r));const j=await r.json();return j.data;}
+async function purSend(url,method,body){const r=await fetch(url,{method,headers:{'Content-Type':'application/json'},body:body==null?undefined:JSON.stringify(body)});if(!r.ok)throw new Error(await apiErrMsg(r));const j=await r.json().catch(()=>({}));return j.data;}
+
+function purTab(k){
+    PUR.tab=k;
+    ['plan','cur','rate','inc'].forEach(x=>{const el=document.getElementById('pur-'+x);if(el)el.style.display=x===k?'':'none';});
+    document.querySelectorAll('#purTabs .ref-tab').forEach((t,i)=>t.classList.toggle('active',['plan','cur','rate','inc'][i]===k));
+    if(k==='plan')purLoadVersions();else if(k==='cur')purLoadCur();else if(k==='rate')purLoadRate();else purLoadInc();
+}
+function purOnShow(){purTab(PUR.tab||'plan');}
+
+// ── 기준정보: 지급통화 ──
+async function purLoadCur(){
+    const tb=document.getElementById('purCurTb');if(!tb)return;
+    try{PUR.cur=await purGet(PUR_M_API+'/currencies')||[];}catch(e){tb.innerHTML='<tr><td colspan="6" style="color:#dc2626;padding:16px;">불러오기 실패: '+purEsc(e.message)+'</td></tr>';return;}
+    tb.innerHTML=PUR.cur.length?PUR.cur.map((c,i)=>'<tr><td class="mn" style="font-weight:700;">'+purEsc(c.currencyCode)+'</td><td>'+purEsc(c.currencyName||'')+'</td><td>'+(c.baseYn==='Y'?'<span style="color:#4f46e5;font-weight:600;">원화</span>':'-')+'</td><td class="r">'+(c.sortOrder??'')+'</td><td>'+(c.useYn==='Y'?'사용':'<span style="color:#94a3b8;">미사용</span>')+'</td><td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="purCurModal('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="purDel(\'currencies\','+c.currencyId+',purLoadCur)">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8;">등록된 지급통화가 없습니다 — 엑셀 업로드 전에 USD 등 사용하는 통화를 등록하세요</td></tr>';
+}
+function purCurModal(i){
+    const c=i==null?{}:PUR.cur[i];
+    let h='<h3><i class="fas fa-coins text-indigo-500"></i> 지급통화 '+(i==null?'등록':'수정')+'</h3>';
+    h+='<label>통화코드 (영문 3자리)</label><input name="currencyCode" value="'+purEsc(c.currencyCode||'')+'" placeholder="USD" maxlength="3" style="text-transform:uppercase;">';
+    h+='<label>통화명</label><input name="currencyName" value="'+purEsc(c.currencyName||'')+'" placeholder="미국 달러">';
+    h+='<label>원화 여부 <span style="font-size:10px;color:#94a3b8;">(원화 = 환율 없이 단가를 원/톤으로 계산)</span></label><select name="baseYn"><option value="N"'+(c.baseYn!=='Y'?' selected':'')+'>외화</option><option value="Y"'+(c.baseYn==='Y'?' selected':'')+'>원화</option></select>';
+    h+='<label>정렬순서</label><input name="sortOrder" value="'+(c.sortOrder??'')+'" inputmode="numeric">';
+    h+='<label>사용</label><select name="useYn"><option value="Y"'+(c.useYn!=='N'?' selected':'')+'>사용</option><option value="N"'+(c.useYn==='N'?' selected':'')+'>미사용 (엑셀 드롭다운 제외)</option></select>';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="purSaveModal(\'currencies\','+(i==null?'null':c.currencyId)+',purLoadCur)">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+// ── 기준정보: 이동계획 환율 ──
+async function purLoadRate(){
+    const tb=document.getElementById('purRateTb');if(!tb)return;const yr=getYm().substring(0,4);
+    document.getElementById('purRateYear').textContent=yr+'년';
+    try{PUR.rate=await purGet(PUR_M_API+'/exchange-rates?year='+yr)||[];}catch(e){tb.innerHTML='<tr><td colspan="5" style="color:#dc2626;padding:16px;">불러오기 실패: '+purEsc(e.message)+'</td></tr>';return;}
+    tb.innerHTML=PUR.rate.length?PUR.rate.map((x,i)=>'<tr><td class="mn">'+purYmDot(x.ym)+'</td><td class="mn" style="font-weight:700;">'+purEsc(x.currencyCode)+'</td><td class="r mn" style="font-weight:600;">'+purF(x.rate,2)+'</td><td>'+purEsc(x.memo||'')+'</td><td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="purRateModal('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="purDel(\'exchange-rates\','+x.rateId+',purLoadRate)">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="5" style="text-align:center;padding:24px;color:#94a3b8;">'+yr+'년 이동계획 환율이 없습니다 — 미등록 월의 외화 구매 금액은 0으로 계산됩니다</td></tr>';
+}
+async function purRateModal(i){
+    const x=i==null?{}:PUR.rate[i];
+    if(!PUR.cur.length){try{PUR.cur=await purGet(PUR_M_API+'/currencies')||[];}catch(_){}}
+    const curs=PUR.cur.filter(c=>c.useYn==='Y'&&c.baseYn!=='Y');
+    if(!curs.length){alert('외화 지급통화가 등록되어 있지 않습니다. [지급통화] 탭에서 먼저 등록하세요.');return;}
+    let h='<h3><i class="fas fa-exchange-alt text-indigo-500"></i> 이동계획 환율 '+(i==null?'등록':'수정')+'</h3>';
+    h+='<label>적용년월 (yyyy.mm)</label><input name="ym" value="'+(x.ym?purYmDot(x.ym):'')+'" placeholder="'+purYmDot(getYm())+'" maxlength="7" oninput="fmtYmInput(this)">';
+    h+='<label>통화</label><select name="currencyCode">'+curs.map(c=>'<option value="'+purEsc(c.currencyCode)+'"'+(c.currencyCode===x.currencyCode?' selected':'')+'>'+purEsc(c.currencyCode)+(c.currencyName?' ('+purEsc(c.currencyName)+')':'')+'</option>').join('')+'</select>';
+    h+='<label>환율 (원/통화)</label><input name="rate" value="'+(x.rate??'')+'" inputmode="decimal">';
+    h+='<label>메모</label><input name="memo" value="'+purEsc(x.memo||'')+'">';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="purSaveModal(\'exchange-rates\','+(i==null?'null':x.rateId)+',purLoadRate)">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+// ── 기준정보: 부대비율 ──
+async function purLoadInc(){
+    const tb=document.getElementById('purIncTb');if(!tb)return;const yr=getYm().substring(0,4);
+    document.getElementById('purIncYear').textContent=yr+'년';
+    try{PUR.inc=await purGet(PUR_M_API+'/incidental-rates?year='+yr)||[];}catch(e){tb.innerHTML='<tr><td colspan="6" style="color:#dc2626;padding:16px;">불러오기 실패: '+purEsc(e.message)+'</td></tr>';return;}
+    tb.innerHTML=PUR.inc.length?PUR.inc.map((x,i)=>'<tr><td>'+x.year+'</td><td class="mn">'+purEsc(x.materialCode)+'</td><td>'+purEsc(x.materialName||'')+'</td><td class="r mn" style="font-weight:600;">'+purF(x.rate,4)+'</td><td>'+purEsc(x.memo||'')+'</td><td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="purIncModal('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="purDel(\'incidental-rates\','+x.incidentalId+',purLoadInc)">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8;">'+yr+'년 부대비율이 없습니다 — 미등록 자재의 구매 금액(직접입력 제외)은 0으로 계산됩니다</td></tr>';
+}
+async function purIncModal(i){
+    const x=i==null?{}:PUR.inc[i];
+    try{PUR.masters=await purGet(PUR_API+'/masters');}catch(e){alert('펄프자재 목록 불러오기 실패: '+e.message);return;}
+    const mats=PUR.masters.pulpMaterials||[];
+    if(!mats.length){alert('SAP 수불부에 펄프 자재가 없습니다. 인터페이스(원부자재 수불부)를 먼저 수신하세요.');return;}
+    let h='<h3><i class="fas fa-percent text-indigo-500"></i> 부대비율 '+(i==null?'등록':'수정')+'</h3>';
+    h+='<label>연도</label><input name="year" value="'+(x.year||getYm().substring(0,4))+'" maxlength="4" inputmode="numeric">';
+    h+='<label>SAP 펄프자재</label><select name="materialCode">'+mats.map(m=>'<option value="'+purEsc(m.code)+'"'+(m.code===x.materialCode?' selected':'')+'>'+purEsc(m.code+' '+(m.name||''))+'</option>').join('')+'</select>';
+    h+='<label>부대비율 <span style="font-size:10px;color:#94a3b8;">(예: 1.05)</span></label><input name="rate" value="'+(x.rate??'')+'" inputmode="decimal">';
+    h+='<label>메모</label><input name="memo" value="'+purEsc(x.memo||'')+'">';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="purSaveModal(\'incidental-rates\','+(i==null?'null':x.incidentalId)+',purLoadInc)">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+async function purSaveModal(kind,id,reload){
+    const body={};document.querySelectorAll('.modal-box [name]').forEach(el=>{body[el.name]=el.value.trim();});
+    if(body.currencyCode)body.currencyCode=body.currencyCode.toUpperCase();
+    try{const d=await purSend(PUR_M_API+'/'+kind+(id!=null?'/'+id:''),id!=null?'PUT':'POST',body);
+        if(d&&d.upserted)alert('같은 기준의 데이터가 있어 기존 행을 덮어썼습니다.');}
+    catch(e){alert('저장 실패: '+e.message);return;}
+    closeModal();reload();
+}
+async function purDel(kind,id,reload){if(!confirm('삭제하시겠습니까?'))return;try{await purSend(PUR_M_API+'/'+kind+'/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}reload();}
+
+// ── 업로드 버전 ──
+async function purLoadVersions(){
+    const tb=document.getElementById('purVerTb');if(!tb)return;
+    try{PUR.versions=await purGet(PUR_API+'/versions')||[];}catch(e){tb.innerHTML='<tr><td colspan="9" style="color:#dc2626;padding:16px;">불러오기 실패: '+purEsc(e.message)+' — rpsim_purchase_* 테이블과 서버 배포를 확인하세요</td></tr>';return;}
+    if(!PUR.versions.length){tb.innerHTML='<tr><td colspan="9" style="text-align:center;padding:24px;color:#94a3b8;">업로드된 구매 이동계획이 없습니다.</td></tr>';document.getElementById('purDetail').innerHTML='';return;}
+    tb.innerHTML=PUR.versions.map(v=>{const act=v.status==='ACTIVE';const sel=PUR.detailId===v.versionId;
+        return '<tr style="'+(sel?'background:#eef2ff;':'')+(act?'':'color:#94a3b8;')+'"><td>'+(act?'<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#dcfce7;color:#166534;font-weight:700;">사용중</span>':'<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#f1f5f9;color:#94a3b8;">교체됨</span>')+'</td>'
+        +'<td class="mn" style="font-weight:600;">'+purYmDot(v.startYm)+' ~ '+purYmDot(v.endYm)+'</td><td class="mn">'+purEsc(v.writeDate||'-')+'</td><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+purEsc(v.fileName||'')+'">'+purEsc(v.fileName||'-')+'</td>'
+        +'<td class="r">'+(v.pulpRows??0)+'</td><td class="r">'+(v.nonPulpRows??0)+'</td><td class="r">'+((v.warnings||[]).length?'<span style="color:#d97706;font-weight:600;">'+v.warnings.length+'</span>':'0')+'</td>'
+        +'<td class="mn" style="font-size:10px;">'+purEsc(String(v.createdAt||'').replace('T',' ').substring(0,16))+' '+purEsc(v.createdBy||'')+'</td>'
+        +'<td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="purShowDetail('+v.versionId+')">보기</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;" title="이 버전 내용을 양식에 채워 다운로드" onclick="purDownloadTemplate('+v.versionId+')"><i class="fas fa-download"></i></button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="purDeleteVersion('+v.versionId+')"><i class="fas fa-trash"></i></button></td></tr>';}).join('');
+    if(PUR.detailId==null||!PUR.versions.some(v=>v.versionId===PUR.detailId)){const a=PUR.versions.find(v=>v.status==='ACTIVE');if(a)purShowDetail(a.versionId);else document.getElementById('purDetail').innerHTML='';}
+}
+async function purDeleteVersion(id){
+    const v=PUR.versions.find(x=>x.versionId===id);
+    if(!confirm((v?purYmDot(v.startYm)+' ~ '+purYmDot(v.endYm)+' ':'')+'업로드를 삭제할까요?'+(v&&v.status==='ACTIVE'?'\n(사용중 버전입니다 — 삭제하면 이 기간 P/L 구매 단가 영향은 다른 사용중 버전 또는 0으로 계산됩니다. 교체된 이전 버전은 다시 살아나지 않습니다)':'')))return;
+    try{await purSend(PUR_API+'/versions/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}
+    if(PUR.detailId===id)PUR.detailId=null;purLoadVersions();
+}
+async function purShowDetail(id){
+    PUR.detailId=id;
+    const box=document.getElementById('purDetail');box.innerHTML='<div class="sc" style="padding:20px;color:#64748b;"><i class="fas fa-spinner fa-spin mr-1"></i>계산 중...</div>';
+    document.querySelectorAll('#purVerTb tr').forEach((tr,i)=>{const v=PUR.versions[i];tr.style.background=v&&v.versionId===id?'#eef2ff':'';});
+    let d;try{d=await purGet(PUR_API+'/versions/'+id);}catch(e){box.innerHTML='<div class="sc" style="padding:16px;color:#dc2626;">계산 실패: '+purEsc(e.message)+'</div>';return;}
+    const months=d.months||[],divs=['PS','HL'];
+    const pi=d.pulpImpact||{},ni=d.nonPulpImpact||{};
+    // 요약: 사업부 × 월
+    let h='<div class="sc" style="overflow:hidden;margin-bottom:14px;"><div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-calculator text-indigo-500 mr-1"></i>손익영향 요약 (백만원) · '+purYmDot(d.version.startYm)+' ~ '+purYmDot(d.version.endYm)+(d.version.status!=='ACTIVE'?' <span style="font-size:10px;color:#94a3b8;">(교체된 버전)</span>':'')+' <span style="font-size:10px;color:#94a3b8;font-weight:400;">+ 개선 / △ 악화 · 펄프 = (전월 출고단가 − 당월 출고단가) × 당월 실제 사용량</span></h3></div>';
+    h+='<div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>사업부</th><th>구분</th>'+months.map(m=>'<th class="r">'+purYmDot(m)+'</th>').join('')+'<th class="r">합계</th></tr></thead><tbody>';
+    divs.forEach(dv=>{const rowsDef=[['펄프',k=>pi[dv+'|'+k]||0],['펄프외',k=>ni[dv+'|'+k]||0],['합계',k=>(pi[dv+'|'+k]||0)+(ni[dv+'|'+k]||0)]];
+        rowsDef.forEach(([lbl,fn],ri)=>{let t=0;h+='<tr style="'+(ri===2?'background:#f8fafc;font-weight:700;':'')+'">'+(ri===0?'<td rowspan="3" style="font-weight:700;color:#4f46e5;">'+dv+'</td>':'')+'<td>'+lbl+'</td>'+months.map(m=>{const v=fn(m);t+=v;return '<td class="r mn">'+purImpact(v)+'</td>';}).join('')+'<td class="r mn">'+purImpact(t)+'</td></tr>';});});
+    h+='</tbody></table></div>';
+    const w=d.warnings||[];
+    if(w.length)h+='<div style="padding:8px 16px;border-top:1px solid #f1f5f9;font-size:10px;line-height:1.7;">'+w.map(x=>'<div style="color:'+(/마이너스|0으로|없습니다|제외/.test(x)?'#d97706':'#64748b')+';"><i class="fas fa-'+(/마이너스|0으로|없습니다/.test(x)?'exclamation-triangle':'info-circle')+' mr-1"></i>'+purEsc(x)+'</div>').join('')+'</div>';
+    h+='</div>';
+    // 펄프 수불 계산표
+    const L=d.ledger||[];
+    h+='<div class="sc" style="overflow:hidden;margin-bottom:14px;"><div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-boxes text-indigo-500 mr-1"></i>펄프 수불 계산 <span style="font-size:10px;color:#94a3b8;font-weight:400;">수량 톤 · 금액 백만원 · 단가 원/톤 · 기초재고 = SAP 수불부 '+purYmDot(d.openingBasis?.sapMonth)+' 기말 · 이동입고 단가 = 보내는 사업부 (기초 + 구매) 평균</span></h3></div>';
+    h+='<div style="overflow:auto;max-height:560px;"><table class="st" style="font-size:11px;white-space:nowrap;"><thead style="position:sticky;top:0;z-index:2;background:#fff;"><tr><th>사업부</th><th>자재</th><th>월</th><th class="r">기초</th><th class="r">기초금액</th><th class="r">구매</th><th class="r">구매금액</th><th class="r">이동입고</th><th class="r">이동금액</th><th class="r">출고<br><span style="font-weight:400;">(이동 포함)</span></th><th class="r">이동보냄</th><th class="r">실제사용</th><th class="r">전월<br>출고단가</th><th class="r">당월<br>출고단가</th><th class="r">기말</th><th class="r">기말금액</th><th class="r">손익영향</th></tr></thead><tbody>';
+    if(!L.length)h+='<tr><td colspan="17" style="text-align:center;padding:20px;color:#94a3b8;">펄프 수불 데이터가 없습니다.</td></tr>';
+    let prevKey='';
+    const basisLbl={INPUT:'직접입력',CALC:'',MISSING_RATE:'환율 미등록 → 0',MISSING_INCIDENTAL:'부대비율 미등록 → 0',NONE:''};
+    L.forEach(r=>{const key=r.division+'|'+r.materialCode;const first=key!==prevKey;prevKey=key;
+        const neg=r.endQty<-0.0005;
+        h+='<tr style="'+(first?'border-top:2px solid #e2e8f0;':'')+'">'+(first?'<td style="font-weight:700;color:#4f46e5;">'+r.division+'</td><td><span class="mn">'+purEsc(r.materialCode)+'</span> '+purEsc(r.materialName||'')+'</td>':'<td></td><td></td>')
+        +'<td class="mn">'+purYmDot(r.ym)+'</td><td class="r mn">'+purF(r.openQty,3)+'</td><td class="r mn">'+purM(r.openAmtWon)+'</td>'
+        +'<td class="r mn">'+(r.purchaseQty?purF(r.purchaseQty,3):'-')+'</td><td class="r mn">'+(r.purchaseQty||r.purchaseAmtWon?purM(r.purchaseAmtWon):'-')+(basisLbl[r.purchaseAmtBasis]?'<div style="font-size:9px;color:'+(r.purchaseAmtBasis==='INPUT'?'#4f46e5':'#dc2626')+';">'+basisLbl[r.purchaseAmtBasis]+'</div>':'')+'</td>'
+        +'<td class="r mn" style="'+(r.moveInQty?'background:#f0fdf4;':'')+'">'+(r.moveInQty?purF(r.moveInQty,3):'-')+'</td><td class="r mn" style="'+(r.moveInQty?'background:#f0fdf4;':'')+'">'+(r.moveInQty?purM(r.moveInAmtWon):'-')+'</td>'
+        +'<td class="r mn">'+(r.outQty?purF(r.outQty,3):'-')+'</td><td class="r mn" style="'+(r.moveOutQty?'background:#f0fdf4;':'')+'">'+(r.moveOutQty?purF(r.moveOutQty,3):'-')+'</td><td class="r mn" style="font-weight:600;">'+(r.useQty?purF(r.useQty,3):'-')+'</td>'
+        +'<td class="r mn" style="color:#94a3b8;">'+purF(r.prevPrice)+'</td><td class="r mn" style="font-weight:600;">'+purF(r.avgPrice)+'</td>'
+        +'<td class="r mn" style="'+(neg?'color:#dc2626;font-weight:700;':'')+'">'+purF(r.endQty,3)+'</td><td class="r mn">'+purM(r.endAmtWon)+'</td><td class="r mn">'+purImpact(r.impactWon)+'</td></tr>';});
+    h+='</tbody></table></div></div>';
+    // 펄프외
+    const N=d.nonPulp||[];
+    h+='<div class="sc" style="overflow:hidden;"><div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-list text-indigo-500 mr-1"></i>펄프외 손익영향 ('+N.length+'건)</h3></div>';
+    h+='<div style="overflow:auto;max-height:400px;"><table class="st" style="font-size:11px;"><thead><tr><th>대상월</th><th>사업부</th><th>품목그룹</th><th>자재그룹</th><th>품목</th><th>내용</th><th class="r">손익영향(백만원)</th><th>비고</th></tr></thead><tbody>';
+    h+=N.length?N.map(n=>'<tr><td class="mn">'+purYmDot(n.ym)+'</td><td style="font-weight:600;">'+purEsc(n.division)+'</td><td>'+purEsc(n.itemGroup)+'</td><td>'+purEsc(n.matlGroup||'')+'</td><td>'+purEsc(n.itemName||'')+'</td><td style="max-width:420px;white-space:normal;">'+purEsc(n.content||'')+'</td><td class="r mn" style="font-weight:600;color:'+(n.impactMkrw<0?'#dc2626':'#2563eb')+';">'+purF(n.impactMkrw,1)+'</td><td>'+purEsc(n.note||'')+'</td></tr>').join(''):'<tr><td colspan="8" style="text-align:center;padding:20px;color:#94a3b8;">펄프외 손익영향이 없습니다.</td></tr>';
+    h+='</tbody></table></div></div>';
+    box.innerHTML=h;
+}
+
+// ── 엑셀 양식 (ExcelJS: 드롭다운 = 허용된 값만) ──
+function purLoadExcelJS(){if(window.ExcelJS)return Promise.resolve();return new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';s.onload=()=>res();s.onerror=()=>rej(new Error('엑셀 라이브러리(ExcelJS)를 불러오지 못했습니다'));document.head.appendChild(s);});}
+const PUR_SUB=['입고수량\n(톤)','그중\n이동수량(톤)','지급통화','단가\n(지급통화/톤)','OFFER월','입고금액(백만원)\n※직접입력시','출고수량\n(톤)'];
+const PUR_SUB_KEY=['inQty','moveInQty','currency','unitPrice','offerMonth','inAmountMkrw','outQty'];
+const PUR_NP_HEAD=['대상월\n(yyyy.mm)','사업부','품목그룹\n(SAP 대분류)','자재그룹\n(선택)','품목','내용','손익영향\n(백만원)','비고'];
+async function purDownloadTemplate(versionId){
+    let startYm,detail=null;
+    try{await purLoadExcelJS();PUR.masters=await purGet(PUR_API+'/masters');}catch(e){alert('양식 준비 실패: '+e.message);return;}
+    if(versionId!=null){try{detail=await purGet(PUR_API+'/versions/'+versionId);}catch(e){alert('버전 불러오기 실패: '+e.message);return;}startYm=detail.version.startYm;}
+    else{const v=prompt('양식 시작월을 입력하세요 (yyyy.mm) — 시작월부터 3개월',purYmDot(getYm()));if(v==null)return;startYm=purNormYm(v);if(!startYm){alert('시작월 형식이 올바르지 않습니다: '+v);return;}}
+    const M=PUR.masters,mats=M.pulpMaterials||[],curs=(M.currencies||[]).map(c=>c.code),grps=M.itemGroups||[],mgs=M.matlGroups||[];
+    const miss=[];if(!mats.length)miss.push('SAP 펄프자재(수불부 미수신)');if(!curs.length)miss.push('지급통화');
+    if(miss.length&&!confirm(miss.join(', ')+' 목록이 비어 있어 해당 드롭다운이 빈 상태로 만들어집니다. 계속할까요?'))return;
+    const months=[0,1,2].map(i=>{const y=+startYm.slice(0,4),m=+startYm.slice(4)+i;const yy=y+Math.floor((m-1)/12),mm=((m-1)%12)+1;return yy+'.'+String(mm).padStart(2,'0');});
+    const wb=new ExcelJS.Workbook();
+    const H1={type:'pattern',pattern:'solid',fgColor:{argb:'FF4F46E5'}},H2={type:'pattern',pattern:'solid',fgColor:{argb:'FFE0E7FF'}},MVH={type:'pattern',pattern:'solid',fgColor:{argb:'FF16A34A'}},MV={type:'pattern',pattern:'solid',fgColor:{argb:'FFDCFCE7'}},AUTO={type:'pattern',pattern:'solid',fgColor:{argb:'FFF1F5F9'}};
+    const thin={style:'thin',color:{argb:'FFCBD5E1'}},BD={top:thin,left:thin,bottom:thin,right:thin};
+    const hdr=(c,fill,white)=>{c.fill=fill;c.font={bold:true,color:{argb:white?'FFFFFFFF':'FF3730A3'}};c.alignment={horizontal:'center',vertical:'middle',wrapText:true};c.border=BD;};
+    // 기본정보
+    const wi=wb.addWorksheet('기본정보');
+    const writeDate=detail&&detail.version.writeDate?detail.version.writeDate:new Date().toISOString().substring(0,10);
+    [['구매 이동계획 업로드 양식',''],['작성일 (yyyy-mm-dd)',writeDate],['시작월 (yyyy.mm)',months[0]],['대상 기간','시작월부터 3개월 ('+months[0]+' ~ '+months[2]+')'],['',''],['작성 규칙',''],
+     ['1','시트 이름·머리글은 바꾸지 마세요. 행은 추가/삭제해도 됩니다. 사업부·자재·통화·품목그룹·자재그룹은 드롭다운 값만 사용합니다.'],
+     ['2','사업부 + 자재 한 줄에 한 달의 입고·출고를 모두 적습니다 (같은 사업부·자재를 두 줄로 나누지 않습니다).'],
+     ['3','펄프 기초재고는 입력하지 않습니다 — SAP 수불부 전월 기말(P100=PS, P200·P300=HL)에서 자동으로 가져옵니다.'],
+     ['4','입고수량 = 그 달 전체 입고 (외부 구매 + 다른 사업부에서 옮겨오는 수량). 그중 이동수량 = 그중 다른 사업부에서 옮겨오는 수량 (없으면 비움).'],
+     ['','   · 이동분 단가는 보내는 사업부의 그 달 평균단가로 시스템이 계산합니다. 보내는 사업부 출고수량에는 지금처럼 이동분을 포함해서 적습니다.'],
+     ['5','지급통화·단가 = 외부 구매분(입고 − 이동)의 단가. 입고금액은 비우면 구매수량 × 단가 × 부대비율 × 이동계획 환율로 계산합니다.'],
+     ['','   · 혼합 금액 등 식이 다른 경우만 입고금액(백만원, 구매분)을 직접 입력 — 입력값 우선. 입고 전부가 이동분이면 통화·단가·금액은 비웁니다.'],
+     ['6','펄프외 손익영향: 사업부 필수, 손익영향은 백만원 숫자 (손익 악화 = 음수, 예: △180 → -180).'],
+     ['7','마이너스 기말재고는 경고만 표시하고 업로드는 진행합니다. 같은 시작월로 이미 올린 내용이 있으면 다시 올릴지 확인 후 교체합니다.']
+    ].forEach(r=>wi.addRow(r));
+    wi.getCell('A1').font={bold:true,size:14};wi.getCell('A6').font={bold:true};wi.getColumn(1).width=22;wi.getColumn(2).width=120;
+    wi.getCell('B2').numFmt='@';wi.getCell('B3').numFmt='@';
+    // 목록 (숨김)
+    const cols=[M.divisions||['PS','HL'],mats.map(m=>m.code+' '+(m.name||'')),mats.map(m=>m.group||''),curs,grps,mgs];
+    const rng=(ci,n)=>"'목록'!$"+String.fromCharCode(65+ci)+'$2:$'+String.fromCharCode(65+ci)+'$'+Math.max(2,n+1);
+    const listDv=(ws,addr,ci,n)=>{if(!n)return;ws.dataValidations.add(addr,{type:'list',allowBlank:true,formulae:[rng(ci,n)],showErrorMessage:true,errorStyle:'stop',errorTitle:'허용되지 않은 값',error:'드롭다운 목록의 값만 입력할 수 있습니다.'});};
+    // 펄프_수불
+    const wp=wb.addWorksheet('펄프_수불',{views:[{state:'frozen',xSplit:3,ySplit:2}]});
+    const NB=PUR_SUB.length,first=4,noteCol=first+3*NB;
+    ['사업부','SAP 펄프자재','자재그룹\n(자동)'].forEach((t,i)=>{wp.mergeCells(1,i+1,2,i+1);const c=wp.getCell(1,i+1);c.value=t;hdr(c,H1,true);});
+    months.forEach((ym,m)=>{const c0=first+m*NB;wp.mergeCells(1,c0,1,c0+NB-1);const c=wp.getCell(1,c0);c.value=ym;hdr(c,H1,true);PUR_SUB.forEach((t,i)=>{const s=wp.getCell(2,c0+i);s.value=t;hdr(s,i===1?MVH:H2,i===1);});});
+    wp.mergeCells(1,noteCol,2,noteCol);{const c=wp.getCell(1,noteCol);c.value='비고';hdr(c,H1,true);}
+    wp.getRow(2).height=44;wp.getColumn(1).width=8;wp.getColumn(2).width=32;wp.getColumn(3).width=22;for(let c=first;c<noteCol;c++)wp.getColumn(c).width=11;wp.getColumn(noteCol).width=60;
+    // 버전 내용 채우기
+    const prow=[];
+    if(detail){const map={};(detail.pulpRows||[]).forEach(p=>{const k=p.division+'|'+p.materialCode;if(!map[k]){map[k]={division:p.division,code:p.materialCode,name:p.materialName,row:p.excelRowNo??9999,note:'',m:{}};prow.push(map[k]);}map[k].m[p.ym]=p;if(p.note)map[k].note=p.note;map[k].row=Math.min(map[k].row,p.excelRowNo??9999);});prow.sort((a,b)=>a.row-b.row);}
+    const lastRow=Math.max(200,prow.length+50);
+    for(let r=3;r<=lastRow;r++){
+        const src=prow[r-3];const row=wp.getRow(r);
+        if(src){row.getCell(1).value=src.division;row.getCell(2).value=src.code+' '+(src.name||'');row.getCell(noteCol).value=src.note||null;
+            months.forEach((ym,m)=>{const p=src.m[ym.replace('.','')];if(!p)return;PUR_SUB_KEY.forEach((k,i)=>{const v=p[k];if(v!=null&&v!=='')row.getCell(first+m*NB+i).value=(k==='currency'||k==='offerMonth')?String(v):Number(v);});});}
+        row.getCell(3).value={formula:"IFERROR(VLOOKUP(B"+r+",'목록'!$B:$C,2,FALSE),\"\")"};row.getCell(3).fill=AUTO;
+        for(let c=1;c<=noteCol;c++){const cell=row.getCell(c);cell.border=BD;if(c>=first&&c<noteCol){const i=(c-first)%NB;if(i===1)cell.fill=MV;if(i!==2&&i!==4)cell.numFmt='#,##0.0##';}}
+    }
+    listDv(wp,'A3:A'+lastRow,0,cols[0].length);listDv(wp,'B3:B'+lastRow,1,cols[1].length);
+    months.forEach((_,m)=>{const c0=first+m*NB;const col=i=>wp.getColumn(c0+i).letter;
+        listDv(wp,col(2)+'3:'+col(2)+lastRow,3,cols[3].length);
+        [0,1,3,5,6].forEach(i=>{if(i===1)return;wp.dataValidations.add(col(i)+'3:'+col(i)+lastRow,{type:'decimal',operator:i===5?'between':'greaterThanOrEqual',allowBlank:true,formulae:i===5?[-1e12,1e12]:[0],showErrorMessage:true,errorTitle:'숫자 확인',error:i===5?'숫자만 입력하세요.':'0 이상의 숫자만 입력하세요.'});});
+        const q=col(0),mv=col(1);
+        wp.dataValidations.add(mv+'3:'+mv+lastRow,{type:'custom',allowBlank:true,formulae:['OR('+mv+'3="",AND(ISNUMBER('+mv+'3),'+mv+'3>=0,'+mv+'3<=N('+q+'3)))'],showErrorMessage:true,errorTitle:'이동수량 확인',error:'이동수량은 0 이상, 입고수량 이하로 입력하세요.'});
+    });
+    // 펄프외_영향
+    const wn=wb.addWorksheet('펄프외_영향',{views:[{state:'frozen',ySplit:1}]});
+    PUR_NP_HEAD.forEach((t,i)=>{const c=wn.getCell(1,i+1);c.value=t;hdr(c,H1,true);});
+    wn.getRow(1).height=36;[10,8,16,24,16,60,12,30].forEach((w,i)=>wn.getColumn(i+1).width=w);
+    const nps=detail?(detail.nonPulp||[]):[];
+    const npLast=Math.max(300,nps.length+50);
+    for(let r=2;r<=npLast;r++){const n=nps[r-2];const row=wn.getRow(r);
+        if(n){row.getCell(1).value=purYmDot(n.ym);row.getCell(2).value=n.division;row.getCell(3).value=n.itemGroup;row.getCell(4).value=n.matlGroup||null;row.getCell(5).value=n.itemName||null;row.getCell(6).value=n.content||null;row.getCell(7).value=n.impactMkrw!=null?Number(n.impactMkrw):null;row.getCell(8).value=n.note||null;}
+        row.getCell(1).numFmt='@';row.getCell(7).numFmt='#,##0.0##;-#,##0.0##';for(let c=1;c<=8;c++)row.getCell(c).border=BD;}
+    wn.dataValidations.add('A2:A'+npLast,{type:'list',allowBlank:true,formulae:['"'+months.join(',')+'"'],showErrorMessage:true,errorTitle:'대상월',error:months.join(', ')+' 중 하나를 고르세요.'});
+    listDv(wn,'B2:B'+npLast,0,cols[0].length);listDv(wn,'C2:C'+npLast,4,cols[4].length);listDv(wn,'D2:D'+npLast,5,cols[5].length);
+    wn.dataValidations.add('G2:G'+npLast,{type:'decimal',operator:'between',allowBlank:true,formulae:[-1e12,1e12],showErrorMessage:true,errorTitle:'숫자 확인',error:'백만원 숫자만 입력하세요 (악화 = 음수).'});
+    // 목록 (숨김, 마지막 시트) — 드롭다운 원본
+    const wl=wb.addWorksheet('목록',{state:'hidden'});
+    wl.getRow(1).values=['사업부','SAP 펄프자재','자재그룹','지급통화','품목그룹','자재그룹(펄프외)'];
+    cols.forEach((arr,ci)=>arr.forEach((v,ri)=>{wl.getCell(ri+2,ci+1).value=v;}));
+    const buf=await wb.xlsx.writeBuffer();
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+    a.download='구매이동계획_'+months[0].replace('.','')+(detail?'_v'+versionId:'_양식')+'.xlsx';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+}
+
+// ── 업로드 ──
+function purStrip(s){return String(s==null?'':s).replace(/\s+/g,'');}
+function purParse(wb){
+    const out={startYm:null,writeDate:null,pulp:[],nonPulp:[],problems:[]};
+    const get=n=>wb.Sheets[n];
+    const wi=get('기본정보'),wp=get('펄프_수불'),wn=get('펄프외_영향');
+    if(!wp&&!wn){out.problems.push('펄프_수불 / 펄프외_영향 시트가 없습니다 — [양식 다운로드]로 받은 파일을 사용하세요');return out;}
+    if(wi){XLSX.utils.sheet_to_json(wi,{header:1,defval:'',raw:true}).forEach(r=>{const k=purStrip(r[0]);if(k.startsWith('시작월'))out.startYm=purNormYm(r[1]);else if(k.startsWith('작성일'))out.writeDate=excelDateToYmd(r[1])||null;});}
+    if(wp){const a=XLSX.utils.sheet_to_json(wp,{header:1,defval:'',raw:true});const h1=a[0]||[],h2=a[1]||[];
+        const ci=t=>h1.findIndex(x=>purStrip(x).startsWith(t));
+        const dC=ci('사업부'),mC=ci('SAP펄프자재'),nC=ci('비고');
+        if(dC<0||mC<0)out.problems.push('펄프_수불 시트 머리글(사업부, SAP 펄프자재)을 찾지 못했습니다');
+        const blocks=[];h1.forEach((x,c)=>{const ym=purNormYm(x);if(ym)blocks.push({ym,c});});
+        if(!blocks.length)out.problems.push('펄프_수불 시트 1행에서 월(yyyy.mm) 머리글을 찾지 못했습니다');
+        blocks.forEach((b,bi)=>{const end=bi+1<blocks.length?blocks[bi+1].c:(nC>0?nC:h2.length);b.map={};
+            for(let c=b.c;c<end;c++){const t=purStrip(h2[c]);if(t.includes('이동수량'))b.map.moveInQty=c;else if(t.startsWith('입고수량'))b.map.inQty=c;else if(t.startsWith('지급통화'))b.map.currency=c;else if(t.startsWith('단가'))b.map.unitPrice=c;else if(t.startsWith('OFFER'))b.map.offerMonth=c;else if(t.startsWith('입고금액'))b.map.inAmountMkrw=c;else if(t.startsWith('출고수량'))b.map.outQty=c;}});
+        if(!out.startYm&&blocks.length)out.startYm=blocks[0].ym;
+        for(let i=2;i<a.length;i++){const r=a[i];if(!r)continue;
+            const matRaw=String(r[mC]??'').trim();const mm=matRaw.match(/^\s*0*(\d+)/);
+            blocks.forEach(b=>{const e={row:i+1,ym:b.ym,division:String(r[dC]??'').trim(),materialCode:mm?mm[1]:matRaw,note:nC>=0?String(r[nC]??'').trim():''};
+                let any=false;Object.entries(b.map).forEach(([k,c])=>{let v=r[c];if(v===''||v==null)return;if(k==='currency'||k==='offerMonth')v=String(v).trim();any=true;e[k]=v;});
+                if(any)out.pulp.push(e);});}}
+    if(wn){const a=XLSX.utils.sheet_to_json(wn,{header:1,defval:'',raw:true});const h=(a[0]||[]).map(purStrip);
+        const f=t=>h.findIndex(x=>x.startsWith(t));const exact=t=>h.findIndex(x=>x===t);
+        const C={ym:f('대상월'),division:f('사업부'),itemGroup:f('품목그룹'),matlGroup:f('자재그룹'),itemName:exact('품목'),content:f('내용'),impactMkrw:f('손익영향'),note:f('비고')};
+        if(C.ym<0||C.impactMkrw<0)out.problems.push('펄프외_영향 시트 머리글(대상월, 손익영향)을 찾지 못했습니다');
+        for(let i=1;i<a.length;i++){const r=a[i];if(!r||!r.some(v=>v!==''&&v!=null))continue;
+            const e={row:i+1};Object.entries(C).forEach(([k,c])=>{if(c<0)return;let v=r[c];if(k==='ym')v=purYmCell(v);else if(k!=='impactMkrw')v=String(v??'').trim();e[k]=v===''?null:v;});
+            out.nonPulp.push(e);}}
+    return out;
+}
+async function purUpload(input){
+    const file=input.files[0];input.value='';if(!file)return;
+    const box=document.getElementById('purResult');box.innerHTML='<div style="font-size:11px;color:#64748b;"><i class="fas fa-spinner fa-spin mr-1"></i>엑셀 읽는 중...</div>';
+    let p;try{p=purParse(XLSX.read(await file.arrayBuffer(),{type:'array'}));}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;">엑셀 읽기 실패: '+purEsc(e.message)+'</div>';return;}
+    if(p.problems.length){purShowErrors(p.problems,[]);return;}
+    if(!p.startYm){purShowErrors(['기본정보 시트의 시작월(yyyy.mm)을 찾지 못했습니다'],[]);return;}
+    if(p.startYm!==getYm()&&!confirm('엑셀 시작월('+purYmDot(p.startYm)+')이 상단 기준월('+purYmDot(getYm())+')과 다릅니다.\n그대로 업로드할까요?')){box.innerHTML='';return;}
+    const body={startYm:p.startYm,writeDate:p.writeDate,fileName:file.name,replace:false,pulp:p.pulp,nonPulp:p.nonPulp};
+    box.innerHTML='<div style="font-size:11px;color:#64748b;"><i class="fas fa-spinner fa-spin mr-1"></i>검증·저장 중... (펄프 '+p.pulp.length+'건 · 펄프외 '+p.nonPulp.length+'건)</div>';
+    let res;try{res=await purSend(PUR_API+'/upload','POST',body);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;">업로드 실패: '+purEsc(e.message)+'</div>';return;}
+    if(res&&res.needConfirm){const ex=res.existing||{};
+        if(!confirm(purYmDot(res.startYm)+' 시작 구매 이동계획이 이미 업로드되어 있습니다.\n(업로드: '+String(ex.createdAt||'').replace('T',' ').substring(0,16)+' '+(ex.createdBy||'')+(ex.fileName?' · '+ex.fileName:'')+')\n\n다시 업로드할까요? 기존 내용은 "교체됨"으로 남고 새 내용이 사용됩니다.')){box.innerHTML='<div style="font-size:11px;color:#64748b;">업로드를 취소했습니다.</div>';return;}
+        body.replace=true;try{res=await purSend(PUR_API+'/upload','POST',body);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;">업로드 실패: '+purEsc(e.message)+'</div>';return;}}
+    if(!res||!res.ok){purShowErrors(res&&res.errors||['알 수 없는 오류'],[]);return;}
+    const v=res.version||{};
+    let h='<div style="padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:11px;color:#166534;"><i class="fas fa-check-circle mr-1"></i><b>'+purYmDot(v.startYm)+' ~ '+purYmDot(v.endYm)+'</b> 업로드 완료 — 펄프 '+(v.pulpRows||0)+'건 · 펄프외 '+(v.nonPulpRows||0)+'건'+(res.replaced?' · 기존 버전 교체':'')+'</div>';
+    if((res.warnings||[]).length)h+=purMsgList('경고 (업로드는 완료)',res.warnings,'#d97706','#fffbeb','#fde68a');
+    box.innerHTML=h;PUR.detailId=v.versionId;purLoadVersions();
+    if(typeof loadPurchaseImpact==='function'&&hasCostSteps()){loadPurchaseImpact().then(()=>calcPL());}
+}
+function purMsgList(title,arr,color,bg,bd){return '<div style="margin-top:8px;padding:10px 12px;background:'+bg+';border:1px solid '+bd+';border-radius:8px;font-size:11px;color:'+color+';max-height:260px;overflow:auto;"><div style="font-weight:700;margin-bottom:4px;">'+title+' '+arr.length+'건</div>'+arr.map(x=>'<div>· '+purEsc(x)+'</div>').join('')+'</div>';}
+function purShowErrors(errs,warns){document.getElementById('purResult').innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다 — 오류를 고친 뒤 다시 올려 주세요.',errs,'#b91c1c','#fef2f2','#fecaca')+(warns.length?purMsgList('경고',warns,'#d97706','#fffbeb','#fde68a'):'');}
+
+// ── P/L 구매 단가 영향 (기준월을 포함하는 최신 시작월 사용중 버전) ──
+let PUR_IMPACT=null;
+async function loadPurchaseImpact(){
+    const pk=PLK('pur');pk.r=0;pk.p=0;pk.db=false;pk.n='업로드 없음';PUR_IMPACT=null;
+    const el=document.getElementById('plPurNote');
+    try{PUR_IMPACT=await purGet(PUR_API+'/impact?ym='+getYm()+'&division='+getDiv());}
+    catch(e){if(el){el.style.display='';el.innerHTML='<i class="fas fa-exclamation-triangle mr-1"></i>구매 단가 영향 불러오기 실패 — 0으로 계산: '+purEsc(e.message);}return;}
+    const d=PUR_IMPACT||{};const tot=(+d.pulpImpactWon||0)+(+d.nonPulpImpactWon||0);
+    if(d.found){pk.db=true;pk.n='구매 이동계획';pk.r=BP>0?-tot/BP/1000:0;} // 손익 개선(+) = 비용 감소 → 천원/톤 음수
+    if(!el)return;el.style.display='';
+    let h='<i class="fas fa-truck-loading mr-1"></i>구매 단가 영향 ';
+    if(d.found){const v=d.version||{};h+='<b>'+purImpact(tot)+'</b>백만원 (펄프 '+purImpact(+d.pulpImpactWon||0)+' · 펄프외 '+purImpact(+d.nonPulpImpactWon||0)+') — 구매 이동계획 '+purYmDot(v.startYm)+'~'+purYmDot(v.endYm)+' 업로드 기준 · + 개선 / △ 악화 · P/L에는 비용(천원/톤)으로 반영';
+        if(BP<=0&&Math.abs(tot)>0)h+='<div style="color:#d97706;"><i class="fas fa-exclamation-triangle mr-1"></i>기준월 생산량이 0이라 톤당 금액으로 반영하지 못했습니다</div>';}
+    else h+='0 — ';
+    (d.warnings||[]).filter(w=>!/반올림 차이/.test(w)).forEach(w=>{h+='<div style="color:#d97706;"><i class="fas fa-exclamation-triangle mr-1"></i>'+purEsc(w)+'</div>';});
+    el.innerHTML=h;el.style.color='#475569';
 }
 
 // ── Init ──

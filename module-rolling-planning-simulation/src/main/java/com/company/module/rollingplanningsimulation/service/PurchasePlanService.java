@@ -83,7 +83,7 @@ public class PurchasePlanService {
         return s.isEmpty() ? null : s;
     }
 
-    private static BigDecimal num(Object o, String label, int row, List<String> errors) {
+    private static BigDecimal num(Object o, String label, Integer row, List<String> errors) {
         if (o == null) return null;
         String s = o.toString().replace(",", "").trim();
         if (s.isEmpty()) return null;
@@ -194,6 +194,7 @@ public class PurchasePlanService {
         res.put("version", versionInfo(v));
         res.put("months", c.months);
         res.put("ledger", c.ledgerOut());
+        res.put("pulpRows", pulpOut(pulp));
         res.put("pulpImpact", c.impactByDivMonth());
         res.put("nonPulp", npOut(np));
         res.put("nonPulpImpact", npSum(np));
@@ -258,6 +259,21 @@ public class PurchasePlanService {
         res.put("nonPulpItems", npItems);
         res.put("warnings", warnings);
         return res;
+    }
+
+    /** 업로드한 원래 입력값 (엑셀 재다운로드용) */
+    private List<Map<String, Object>> pulpOut(List<PurchasePulpPlan> rows) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (PurchasePulpPlan p : rows) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("excelRowNo", p.getExcelRowNo()); m.put("ym", p.getYm()); m.put("division", p.getDivision());
+            m.put("materialCode", p.getMaterialCode()); m.put("materialName", p.getMaterialName());
+            m.put("inQty", p.getInQtyTon()); m.put("moveInQty", p.getMoveInQtyTon()); m.put("currency", p.getPayCurrency());
+            m.put("unitPrice", p.getUnitPriceFc()); m.put("offerMonth", p.getOfferMonth()); m.put("inAmountMkrw", p.getInAmountMkrw());
+            m.put("outQty", p.getOutQtyTon()); m.put("note", p.getNote());
+            out.add(m);
+        }
+        return out;
     }
 
     private List<Map<String, Object>> npOut(List<PurchaseNonPulpImpact> np) {
