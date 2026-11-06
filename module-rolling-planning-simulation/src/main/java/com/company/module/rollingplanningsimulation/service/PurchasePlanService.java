@@ -216,77 +216,127 @@ public class PurchasePlanService {
 
     /**
      * P/L 용 — 기준월을 포함하는 ACTIVE 버전 중 시작월이 가장 늦은 것.
+     *
+     * <p>구매 이동계획에서는 <b>단가</b>만 가져오고, 사용량은 <b>지종별 원단위 × 지종 생산량</b>으로 정한다.
+     * 화면(P/L 지종별 생산량 what-if)이 아래 원단위로 금액을 계산하도록 재료만 내려준다.</p>
      * <ul>
-     *   <li>계정: 원부자재 단가 변동은 모두 제조원가(매출원가). 펄프 = 원재료, 펄프외는 SAP 원/부 구분(DATA_TYPE 100/101), OEM(상품) = 상품</li>
-     *   <li>호기 선택 시: 펄프는 자재별 전월 사용 비중(SAP 원재료 실적 실적배부수량), 펄프외·상품은 호기별 생산량 비중</li>
-     *   <li>금액은 구매팀 업로드 값 그대로 (P/L 지종별 생산량 what-if 와 무관하게 총액 고정)</li>
+     *   <li>펄프(원재료): 단가 영향 = (전월 SAP 실적 사용단가 − 구매계획 이동평균 출고단가) × Σ(지종별 자재 원단위 × 지종 생산량)
+     *       — 원단위·단가는 전월 SAP 원재료 실적(실적배부수량·실적단가), kg → 톤 환산</li>
+     *   <li>펄프외: 구매팀 금액 × (시뮬 사용량 ÷ 기준월 생산계획 사용량). 사용량 = 자재그룹(없으면 대분류)의 전월 재료비 원단위(원/톤) × 지종 생산량.
+     *       분모는 사업부 전체, 분자는 선택 호기 → 호기별 합 = 사업부 금액</li>
+     *   <li>OEM(상품)·SAP 사용 실적이 없는 펄프외: 구매팀 금액 고정 (호기 선택 시 호기 생산량 비중)</li>
+     *   <li>구매팀 출고수량은 2~3개월째 이동평균 단가 계산에만 사용</li>
+     *   <li>계정: 모두 제조원가(매출원가). 펄프 = 원재료, 펄프외는 SAP 원/부 구분, OEM = 상품</li>
      * </ul>
      * 금액 부호: + 손익 개선 / − 악화 (원)
      */
     public Map<String, Object> impact(String ymRaw, String division, String machineRaw) {
         String ym = normYm(ymRaw);
         if (ym == null) throw new IllegalArgumentException("기준월 형식이 올바르지 않습니다: " + ymRaw);
-        String machine = machineRaw == null || machineRaw.isBlank() ? "ALL" : machineRaw.trim();
-        boolean all = "ALL".equalsIgnoreCase(machine);
+        String m0 = machineRaw == null || machineRaw.isBlank() ? "ALL" : machineRaw.trim();
+        final boolean all = "ALL".equalsIgnoreCase(m0);
+        final String machine = all ? "ALL" : m0;
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("ym", ym);
         res.put("division", division);
-        res.put("machine", all ? "ALL" : machine);
+        res.put("machine", machine);
         Optional<PurchasePlanVersion> ov = versionRepo
                 .findFirstByStatusAndStartYmLessThanEqualAndEndYmGreaterThanEqualOrderByStartYmDescVersionIdDesc(
                         PurchasePlanVersion.ACTIVE, ym, ym);
         if (ov.isEmpty()) {
             res.put("found", false);
-            for (String k : List.of("rawWon", "subWon", "goodsWon", "pulpImpactWon", "nonPulpImpactWon")) res.put(k, 0);
+            res.put("pulpItems", List.of());
+            res.put("nonPulpItems", List.of());
             res.put("warnings", List.of(ymDot(ym) + "을 포함하는 구매 이동계획 업로드가 없습니다 — 구매 단가 영향 0으로 계산"));
             return res;
         }
         PurchasePlanVersion v = ov.get();
         List<String> warnings = new ArrayList<>();
         Calc c = compute(v.getStartYm(), pulpRepo.findByVersionIdOrderByExcelRowNoAscYmAsc(v.getVersionId()), warnings);
+        // 구매팀 출고수량 기준 경고(마이너스 기말 등)는 STEP 1 결과 화면용 — P/L 에는 단가·원단위 관련만 남김
+        warnings.removeIf(w -> w.contains("기말재고가 마이너스") || w.contains("반올림 차이"));
 
-        // ── 호기 배분 비중 ──
         String prevYm = addMonths(ym, -1);
-        Map<String, Double> pulpShare = all ? Map.of() : pulpMachineShare(prevYm, division, machine);
-        Double prodShare = all ? Double.valueOf(1d) : null;
-        String prodShareBasis = null;
-        if (!all) {
-            Object[] ps = prodMachineShare(ym, prevYm, division, machine);
-            prodShare = (Double) ps[0];
-            prodShareBasis = (String) ps[1];
-        }
+        res.put("prevYm", prevYm);
 
-        // ── 펄프 = 원재료 ──
-        double pulpAll = 0, pulpAlloc = 0;
-        List<Map<String, Object>> items = new ArrayList<>();
-        List<String> noShare = new ArrayList<>();
+        // ── 전월 SAP 지종 생산량 (톤) — 선택 호기 / 사업부 전체 ──
+        final Map<String, Double> prodScope = prevProdTon(prevYm, division, machine);
+        final Map<String, Double> prodDiv = all ? prodScope : prevProdTon(prevYm, division, "ALL");
+        if (prodDiv.isEmpty()) warnings.add(ymDot(prevYm) + " SAP 원부재료 실적(지종 생산량)이 없어 원단위를 구할 수 없습니다 — 구매 단가 영향 0");
+
+        // ── 펄프: 자재 × 지종 원단위(톤/톤, 선택 호기) + 전월 실적 사용단가(원/톤, 사업부 전체) ──
+        Map<String, Map<String, Double>> pulpRate = new HashMap<>();
+        Map<String, double[]> pulpPrice = new HashMap<>();
+        Set<String> badUnit = new TreeSet<>();
+        jdbc.query("SELECT product, MATERIAL, MAX(U) AS U, SUM(q) AS Q FROM (" +
+                " SELECT " + RawMaterialSql.PRODUCT_EXPR + " AS product, MATERIAL, UNIT AS U, COALESCE(BIC_ZDTB_QTY,0) AS q" +
+                " FROM rpsim_raw_material WHERE CALMONTH = ? AND DATA_TYPE = '100'" + RawMaterialSql.DIV_SCOPE + RawMaterialSql.MACHINE_COND +
+                ") t WHERE product IS NOT NULL GROUP BY product, MATERIAL", rs -> {
+            double f = unitToTon(rs.getString("U"));
+            String code = stripCode(rs.getString("MATERIAL"));
+            if (f < 0) { badUnit.add(code + "(" + rs.getString("U") + ")"); return; }
+            Double pt = prodScope.get(rs.getString("product"));
+            if (pt == null || pt <= EPS) return;
+            pulpRate.computeIfAbsent(code, k -> new HashMap<>()).merge(rs.getString("product"), rs.getDouble("Q") * f / pt, Double::sum);
+        }, prevYm, division, machine, machine);
+        jdbc.query("SELECT MATERIAL, MAX(UNIT) AS U, SUM(COALESCE(BIC_ZDTB_QTY,0)) AS Q, SUM(" + RawMaterialSql.COST_EXPR + ") AS C" +
+                " FROM rpsim_raw_material WHERE CALMONTH = ? AND DATA_TYPE = '100'" + RawMaterialSql.DIV_SCOPE +
+                " GROUP BY MATERIAL", rs -> {
+            double f = unitToTon(rs.getString("U"));
+            if (f < 0) return;
+            pulpPrice.put(stripCode(rs.getString("MATERIAL")), new double[]{rs.getDouble("C"), rs.getDouble("Q") * f});
+        }, prevYm, division);
+
+        List<Map<String, Object>> pulpItems = new ArrayList<>();
+        List<String> noUse = new ArrayList<>(), noPrice = new ArrayList<>();
         for (Cell cell : c.cells.values()) {
             if (!cell.ym.equals(ym) || !cell.div.equals(division)) continue;
-            Double sh = all ? Double.valueOf(1d) : pulpShare.get(cell.code);
-            if (sh == null) { sh = 0d; if (Math.abs(cell.impactWon) > 0.5) noShare.add(cell.code + " " + (cell.name == null ? "" : cell.name)); }
-            pulpAll += cell.impactWon;
-            pulpAlloc += cell.impactWon * sh;
+            String label = cell.code + " " + (cell.name == null ? "" : cell.name);
+            if (cell.avgPrice == null) { if (cell.outQty > EPS || cell.purchaseQty > EPS) noPrice.add(label); continue; }
+            double[] pp = pulpPrice.get(cell.code);
+            Double prev = pp != null && pp[1] > EPS ? pp[0] / pp[1] : null;
+            if (prev == null) { noUse.add(label); continue; }
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("materialCode", cell.code); m.put("materialName", cell.name);
-            m.put("useQtyTon", r(cell.useQty, 3)); m.put("prevPrice", r(cell.prevPrice, 0)); m.put("avgPrice", r(cell.avgPrice, 0));
-            m.put("impactWon", r(cell.impactWon, 0)); m.put("share", r(sh, 4)); m.put("allocWon", r(cell.impactWon * sh, 0));
-            items.add(m);
+            m.put("materialCode", cell.code);
+            m.put("materialName", cell.name);
+            m.put("planPrice", r(cell.avgPrice, 2));      // 구매계획 이동평균 출고단가 (원/톤)
+            m.put("prevPrice", r(prev, 2));               // 전월 SAP 실적 사용단가 (원/톤)
+            m.put("rates", roundMap(pulpRate.getOrDefault(cell.code, Map.of()), 8)); // 지종 → 톤/톤 (선택 호기)
+            m.put("purchaseUseTon", r(cell.useQty, 3));   // 참고: 구매팀 출고 − 이동 보냄
+            pulpItems.add(m);
         }
-        if (!noShare.isEmpty())
-            warnings.add(machine + " " + ymDot(prevYm) + " 사용 실적이 없는 펄프는 이 호기에 0으로 배분했습니다 (사업부 전체에서는 반영): " + String.join(", ", noShare));
+        if (!noUse.isEmpty())
+            warnings.add(ymDot(prevYm) + " " + division + " SAP 사용 실적이 없는 펄프는 원단위가 없어 단가 영향 0: " + String.join(", ", noUse));
+        if (!noPrice.isEmpty())
+            warnings.add("구매계획에 재고·입고가 없어 단가를 정할 수 없는 펄프 (단가 영향 0): " + String.join(", ", noPrice));
+        if (!badUnit.isEmpty())
+            warnings.add("단위를 알 수 없는 펄프 실적은 원단위에서 제외했습니다 (KG/TO만 처리): " + String.join(", ", badUnit));
 
-        // ── 펄프외 → 원재료 / 부재료 / 상품 ──
+        // ── 펄프외: 자재그룹/대분류 × 지종 재료비 원단위(원/톤) ──
+        Map<String, Map<String, Double>> costScope = new HashMap<>();
+        loadGroupCost(prevYm, division, machine, costScope);
+        Map<String, Map<String, Double>> costDiv = costScope;
+        if (!all) { costDiv = new HashMap<>(); loadGroupCost(prevYm, division, "ALL", costDiv); }
+
+        // 분모: 기준월 생산계획 지종 생산량 (사업부 전체) → 없으면 기준월 실적
+        Map<String, Double> planTon = planProdTon(ym, division);
+        String planBasis = ymDot(ym) + " 생산계획";
+        if (planTon.isEmpty()) { planTon = prevProdTon(ym, division, "ALL"); planBasis = ymDot(ym) + " 실적"; }
+        if (planTon.isEmpty()) planBasis = null;
+        res.put("planBasis", planBasis);
+
         Map<String, String> catByGroup = new HashMap<>(), catByMatl = new HashMap<>();
         Set<String> mixed = new TreeSet<>();
         loadGroupCategories(catByGroup, catByMatl, mixed);
-        double npRaw = 0, npSub = 0, goods = 0, npAll = 0;
+        Double prodShare = Double.valueOf(1d);
+        String prodShareBasis = null;
+        if (!all) { Object[] ps = prodMachineShare(ym, prevYm, division, machine); prodShare = (Double) ps[0]; prodShareBasis = (String) ps[1]; }
+
         List<Map<String, Object>> npItems = new ArrayList<>();
-        Set<String> unknown = new TreeSet<>();
-        double ps = prodShare == null ? 0 : prodShare;
+        Set<String> unknown = new TreeSet<>(), fixedNp = new TreeSet<>();
         for (PurchaseNonPulpImpact n : nonPulpRepo.findByVersionIdOrderByYmAscExcelRowNoAsc(v.getVersionId())) {
             if (!n.getYm().equals(ym) || !n.getDivision().equals(division)) continue;
             double won = d(n.getImpactMkrw()) * 1_000_000d;
-            npAll += won;
             String cat;
             if (OEM_GROUP.equals(n.getItemGroup())) cat = "GOODS";
             else {
@@ -295,50 +345,102 @@ public class PurchasePlanService {
                 if (cat == null) { cat = "SUB"; unknown.add(n.getItemGroup()); }
                 else if (n.getMatlGroupNm() == null && mixed.contains(n.getItemGroup())) unknown.add(n.getItemGroup() + "(원/부 혼재 — 자재그룹 미입력)");
             }
-            double alloc = won * ps;
-            if ("RAW".equals(cat)) npRaw += alloc; else if ("GOODS".equals(cat)) goods += alloc; else npSub += alloc;
             Map<String, Object> m = npRow(n);
-            m.put("category", cat); m.put("allocWon", r(alloc, 0));
+            m.put("impactWon", r(won, 0));
+            m.put("category", cat);
+            String basis = "FIXED", key = null;
+            double planUse = 0;
+            Map<String, Double> rates = Map.of();
+            if (!"GOODS".equals(cat)) {
+                if (n.getMatlGroupNm() != null && costDiv.containsKey("M|" + n.getMatlGroupNm())) { key = "M|" + n.getMatlGroupNm(); basis = "MATL"; }
+                else if (costDiv.containsKey("G|" + n.getItemGroup())) { key = "G|" + n.getItemGroup(); basis = "GROUP"; }
+                if (key != null) {
+                    Map<String, Double> rDiv = perTon(costDiv.get(key), prodDiv);
+                    for (Map.Entry<String, Double> e : planTon.entrySet()) planUse += rDiv.getOrDefault(e.getKey(), 0d) * e.getValue();
+                    rates = perTon(costScope.getOrDefault(key, Map.of()), prodScope);
+                    if (planUse <= EPS) { basis = "FIXED"; rates = Map.of(); }
+                }
+                if ("FIXED".equals(basis)) fixedNp.add(n.getItemName() != null ? n.getItemName() : n.getItemGroup());
+            }
+            m.put("basis", basis);                         // MATL / GROUP / FIXED
+            m.put("basisKey", key == null ? null : key.substring(2));
+            m.put("planUseWon", r(planUse, 0));             // 기준월 생산계획 사용량 (재료비 원, 사업부 전체)
+            m.put("rates", roundMap(rates, 4));             // 지종 → 원/톤 (선택 호기)
+            m.put("share", "FIXED".equals(basis) ? (prodShare == null ? 0d : r(prodShare, 6)) : 1d);
             npItems.add(m);
         }
         if (!unknown.isEmpty())
             warnings.add("원/부 구분을 SAP에서 확정하지 못한 펄프외 품목그룹은 부재료(또는 많이 쓰인 쪽)로 반영했습니다: " + String.join(", ", unknown));
-        if (!all && prodShare == null && Math.abs(npAll) > 0.5)
-            warnings.add(machine + " 생산량 비중을 구할 수 없어(생산계획·전월 실적 없음) 펄프외·상품 단가 영향을 0으로 배분했습니다");
-        if (!all && prodShare != null)
-            res.put("prodShare", r(prodShare, 4));
-        if (prodShareBasis != null) res.put("prodShareBasis", prodShareBasis);
+        if (!fixedNp.isEmpty())
+            warnings.add("SAP 사용 실적(자재그룹·대분류) 또는 기준월 생산계획이 없어 구매팀 금액 그대로 반영한 펄프외: " + String.join(", ", fixedNp));
+        if (!all && prodShare == null)
+            warnings.add(machine + " 생산량 비중을 구할 수 없어 금액 고정 항목(상품 등)은 0으로 배분했습니다");
+        if (!all) { res.put("prodShare", prodShare == null ? null : r(prodShare, 4)); res.put("prodShareBasis", prodShareBasis); }
 
         res.put("found", true);
         res.put("version", versionInfo(v));
-        res.put("rawWon", r(pulpAlloc + npRaw, 0));
-        res.put("subWon", r(npSub, 0));
-        res.put("goodsWon", r(goods, 0));
-        res.put("pulpImpactWon", r(pulpAlloc, 0));
-        res.put("nonPulpImpactWon", r(npRaw + npSub + goods, 0));
-        res.put("divisionPulpWon", r(pulpAll, 0));
-        res.put("divisionNonPulpWon", r(npAll, 0));
-        res.put("pulpItems", items);
+        res.put("pulpItems", pulpItems);
         res.put("nonPulpItems", npItems);
         res.put("warnings", warnings);
         return res;
     }
 
-    /** 펄프 자재별 호기 사용 비중 = 해당 호기 실적배부수량 ÷ 사업부 전체 (SAP 원재료 실적, 전월) */
-    private Map<String, Double> pulpMachineShare(String prevYm, String division, String machine) {
-        Map<String, double[]> acc = new HashMap<>(); // code → {machineQty, totalQty}
-        jdbc.query("SELECT MATERIAL, BIC_ZMACHINE, SUM(COALESCE(BIC_ZDTB_QTY,0)) AS Q FROM rpsim_raw_material" +
-                " WHERE CALMONTH = ? AND DATA_TYPE = '100'" + RawMaterialSql.DIV_SCOPE +
-                " GROUP BY MATERIAL, BIC_ZMACHINE", rs -> {
-            String code = stripCode(rs.getString("MATERIAL"));
-            double q = rs.getDouble("Q");
-            double[] a = acc.computeIfAbsent(code, k -> new double[2]);
-            a[1] += q;
-            if (machine.equals(rs.getString("BIC_ZMACHINE"))) a[0] += q;
-        }, prevYm, division);
-        Map<String, Double> out = new HashMap<>();
-        acc.forEach((k, a) -> { if (a[1] > EPS) out.put(k, a[0] / a[1]); });
+    /** UNIT → 톤 환산계수 (KG=0.001, TO=1, 그 외 -1) */
+    private static double unitToTon(String u) {
+        String s = u == null ? "" : u.trim().toUpperCase();
+        if (s.equals("KG")) return 0.001;
+        if (s.equals("TO") || s.equals("TON") || s.equals("T")) return 1;
+        return -1;
+    }
+
+    private static Map<String, Double> roundMap(Map<String, Double> m, int scale) {
+        Map<String, Double> out = new TreeMap<>();
+        m.forEach((k, v) -> { Double x = r(v, scale); if (x != null && Math.abs(x) > 0) out.put(k, x); });
         return out;
+    }
+
+    /** 지종별 금액 ÷ 지종 생산량 → 원/톤 */
+    private static Map<String, Double> perTon(Map<String, Double> cost, Map<String, Double> ton) {
+        Map<String, Double> out = new HashMap<>();
+        if (cost == null) return out;
+        cost.forEach((p, w) -> { Double t = ton.get(p); if (t != null && t > EPS) out.put(p, w / t); });
+        return out;
+    }
+
+    /** SAP 원부재료 실적 지종별 생산량(톤) — (호기, 제품레벨4)별 MAX 합계 */
+    private Map<String, Double> prevProdTon(String calmonth, String division, String machine) {
+        Map<String, Double> out = new HashMap<>();
+        jdbc.query("SELECT product, SUM(q) / 1000 AS T FROM (" +
+                " SELECT " + RawMaterialSql.PRODUCT_EXPR + " AS product, MAX(" + RawMaterialSql.PROD_QTY_COL + ") AS q" +
+                " FROM rpsim_raw_material WHERE CALMONTH = ?" + RawMaterialSql.DIV_SCOPE + RawMaterialSql.MACHINE_COND +
+                " GROUP BY BIC_ZMACHINE, PRODH4, PRODH2_NM) t WHERE product IS NOT NULL GROUP BY product HAVING SUM(q) > 0",
+                rs -> { out.put(rs.getString("product"), rs.getDouble("T")); }, calmonth, division, machine, machine);
+        return out;
+    }
+
+    /** 기준월 생산계획 지종별 총생산량(톤, 사업부 전체) = 양품 ÷ (1 − 손지율) */
+    private Map<String, Double> planProdTon(String ym, String division) {
+        Map<String, Double> out = new HashMap<>();
+        jdbc.query("SELECT " + RawMaterialSql.PLAN_PRODUCT_EXPR + " AS product, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS T" +
+                " FROM rpsim_production_plan WHERE `YEAR` = ? AND `MONTH` = ? AND DIVISION = ? AND DELETED_YN = 'N'" +
+                "   AND COALESCE(WASTE_RATE_PCT,0) < 100 AND COALESCE(GOOD_TON,0) > 0 GROUP BY " + RawMaterialSql.PLAN_PRODUCT_EXPR,
+                rs -> { out.put(rs.getString("product"), rs.getDouble("T")); },
+                Integer.parseInt(ym.substring(0, 4)), Integer.parseInt(ym.substring(4)), division);
+        return out;
+    }
+
+    /** 자재그룹("M|대분류 : 자재그룹명")·대분류("G|대분류") × 지종 재료비(원) — 원재료·부재료 모두 */
+    private void loadGroupCost(String calmonth, String division, String machine, Map<String, Map<String, Double>> out) {
+        jdbc.query("SELECT product, L, G, SUM(cost) AS C FROM (" +
+                " SELECT " + RawMaterialSql.PRODUCT_EXPR + " AS product, BIC_ZMATGROUP_NM AS L, MATL_GROUP_NM AS G, " + RawMaterialSql.COST_EXPR + " AS cost" +
+                " FROM rpsim_raw_material WHERE CALMONTH = ?" + RawMaterialSql.DIV_SCOPE + RawMaterialSql.MACHINE_COND +
+                ") t WHERE product IS NOT NULL AND L IS NOT NULL AND L <> '' GROUP BY product, L, G", rs -> {
+            String p = rs.getString("product"), l = str(rs.getString("L")), g = str(rs.getString("G"));
+            double cost = rs.getDouble("C");
+            if (l == null || cost == 0) return;
+            out.computeIfAbsent("G|" + l, k -> new HashMap<>()).merge(p, cost, Double::sum);
+            if (g != null) out.computeIfAbsent("M|" + l + " : " + g, k -> new HashMap<>()).merge(p, cost, Double::sum);
+        }, calmonth, division, machine, machine);
     }
 
     /** 호기 생산량 비중 — 기준월 생산계획(총생산량) 우선, 없으면 전월 SAP 실적. {비중 or null, 출처} */

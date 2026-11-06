@@ -26,6 +26,16 @@ public final class RawMaterialSql {
             "ELSE COALESCE(NULLIF(TRIM(PRODH2_NM),''),'(미분류)') END";
 
     /**
+     * 생산계획(rpsim_production_plan) 지종명 → SAP 실적 지종명(PRODUCT_EXPR)과 같은 규칙.
+     * SC·백판지 기타는 평량 300 미만=SC저평량 / 이상=SC고평량. 평량이 없으면 분류 불가로 남겨 0 처리(경고)
+     */
+    public static final String PLAN_PRODUCT_EXPR =
+            "CASE WHEN TRIM(PRODUCT) IN ('SC','백판지 기타') THEN " +
+            "  CASE WHEN COALESCE(BASIS_WEIGHT,0) <= 0 THEN CONCAT(TRIM(PRODUCT),'(평량 없음)')" +
+            "       WHEN BASIS_WEIGHT < 300 THEN 'SC저평량' ELSE 'SC고평량' END " +
+            "ELSE TRIM(PRODUCT) END";
+
+    /**
      * 사업부 범위 — rpsim_raw_material 에는 사업부 컬럼이 없어 호기 마스터(rpsim_unit)로 판단.
      * 해당 사업부에 등록된 호기만 포함 (미등록이면 0건 — 다른 사업부 데이터가 섞이지 않게). 파라미터 1개: division
      * 두 테이블의 콜레이션이 달라도 비교 오류가 나지 않도록 COLLATE 지정
