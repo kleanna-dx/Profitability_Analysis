@@ -97,5 +97,15 @@ public class CostUnitRateResponse {
         private BigDecimal prevMaterialCost;
         private BigDecimal prevUnitCost1000;
         private BigDecimal sharePct;
+        /** 기준월 생산량(톤, 소수 3자리) — 전월에만 있는 지종은 0 */
+        private BigDecimal productionTonExact;
+        /** 전월 생산량(톤, 소수 3자리) */
+        private BigDecimal prevProductionTonExact;
+        /** 전월 원재료 원단위 (원/톤) — P/L 지종별 생산량 what-if 계산용 */
+        private BigDecimal matRateWon;
+        /** 전월 부재료 원단위 (원/톤) */
+        private BigDecimal subRateWon;
+        /** 전월 실적에 있는 지종인지 (없으면 원단위 0) */
+        private boolean prevMatched;
     }
 }

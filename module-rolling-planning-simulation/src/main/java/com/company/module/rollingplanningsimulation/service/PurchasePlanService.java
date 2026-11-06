@@ -2,6 +2,7 @@ package com.company.module.rollingplanningsimulation.service;
 
 import com.company.module.rollingplanningsimulation.entity.*;
 import com.company.module.rollingplanningsimulation.repository.*;
+import com.company.module.rollingplanningsimulation.support.RawMaterialSql;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -213,52 +214,186 @@ public class PurchasePlanService {
         versionRepo.save(v);
     }
 
-    /** P/L 용 — 기준월을 포함하는 ACTIVE 버전 중 시작월이 가장 늦은 것 */
-    public Map<String, Object> impact(String ymRaw, String division) {
+    /**
+     * P/L 용 — 기준월을 포함하는 ACTIVE 버전 중 시작월이 가장 늦은 것.
+     * <ul>
+     *   <li>계정: 원부자재 단가 변동은 모두 제조원가(매출원가). 펄프 = 원재료, 펄프외는 SAP 원/부 구분(DATA_TYPE 100/101), OEM(상품) = 상품</li>
+     *   <li>호기 선택 시: 펄프는 자재별 전월 사용 비중(SAP 원재료 실적 실적배부수량), 펄프외·상품은 호기별 생산량 비중</li>
+     *   <li>금액은 구매팀 업로드 값 그대로 (P/L 지종별 생산량 what-if 와 무관하게 총액 고정)</li>
+     * </ul>
+     * 금액 부호: + 손익 개선 / − 악화 (원)
+     */
+    public Map<String, Object> impact(String ymRaw, String division, String machineRaw) {
         String ym = normYm(ymRaw);
         if (ym == null) throw new IllegalArgumentException("기준월 형식이 올바르지 않습니다: " + ymRaw);
+        String machine = machineRaw == null || machineRaw.isBlank() ? "ALL" : machineRaw.trim();
+        boolean all = "ALL".equalsIgnoreCase(machine);
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("ym", ym);
         res.put("division", division);
+        res.put("machine", all ? "ALL" : machine);
         Optional<PurchasePlanVersion> ov = versionRepo
                 .findFirstByStatusAndStartYmLessThanEqualAndEndYmGreaterThanEqualOrderByStartYmDescVersionIdDesc(
                         PurchasePlanVersion.ACTIVE, ym, ym);
         if (ov.isEmpty()) {
             res.put("found", false);
-            res.put("pulpImpactWon", 0);
-            res.put("nonPulpImpactWon", 0);
+            for (String k : List.of("rawWon", "subWon", "goodsWon", "pulpImpactWon", "nonPulpImpactWon")) res.put(k, 0);
             res.put("warnings", List.of(ymDot(ym) + "을 포함하는 구매 이동계획 업로드가 없습니다 — 구매 단가 영향 0으로 계산"));
             return res;
         }
         PurchasePlanVersion v = ov.get();
         List<String> warnings = new ArrayList<>();
         Calc c = compute(v.getStartYm(), pulpRepo.findByVersionIdOrderByExcelRowNoAscYmAsc(v.getVersionId()), warnings);
-        double pulp = 0;
+
+        // ── 호기 배분 비중 ──
+        String prevYm = addMonths(ym, -1);
+        Map<String, Double> pulpShare = all ? Map.of() : pulpMachineShare(prevYm, division, machine);
+        Double prodShare = all ? Double.valueOf(1d) : null;
+        String prodShareBasis = null;
+        if (!all) {
+            Object[] ps = prodMachineShare(ym, prevYm, division, machine);
+            prodShare = (Double) ps[0];
+            prodShareBasis = (String) ps[1];
+        }
+
+        // ── 펄프 = 원재료 ──
+        double pulpAll = 0, pulpAlloc = 0;
         List<Map<String, Object>> items = new ArrayList<>();
+        List<String> noShare = new ArrayList<>();
         for (Cell cell : c.cells.values()) {
             if (!cell.ym.equals(ym) || !cell.div.equals(division)) continue;
-            pulp += cell.impactWon;
+            Double sh = all ? Double.valueOf(1d) : pulpShare.get(cell.code);
+            if (sh == null) { sh = 0d; if (Math.abs(cell.impactWon) > 0.5) noShare.add(cell.code + " " + (cell.name == null ? "" : cell.name)); }
+            pulpAll += cell.impactWon;
+            pulpAlloc += cell.impactWon * sh;
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("materialCode", cell.code); m.put("materialName", cell.name);
             m.put("useQtyTon", r(cell.useQty, 3)); m.put("prevPrice", r(cell.prevPrice, 0)); m.put("avgPrice", r(cell.avgPrice, 0));
-            m.put("impactWon", r(cell.impactWon, 0));
+            m.put("impactWon", r(cell.impactWon, 0)); m.put("share", r(sh, 4)); m.put("allocWon", r(cell.impactWon * sh, 0));
             items.add(m);
         }
-        double npTotal = 0;
+        if (!noShare.isEmpty())
+            warnings.add(machine + " " + ymDot(prevYm) + " 사용 실적이 없는 펄프는 이 호기에 0으로 배분했습니다 (사업부 전체에서는 반영): " + String.join(", ", noShare));
+
+        // ── 펄프외 → 원재료 / 부재료 / 상품 ──
+        Map<String, String> catByGroup = new HashMap<>(), catByMatl = new HashMap<>();
+        Set<String> mixed = new TreeSet<>();
+        loadGroupCategories(catByGroup, catByMatl, mixed);
+        double npRaw = 0, npSub = 0, goods = 0, npAll = 0;
         List<Map<String, Object>> npItems = new ArrayList<>();
+        Set<String> unknown = new TreeSet<>();
+        double ps = prodShare == null ? 0 : prodShare;
         for (PurchaseNonPulpImpact n : nonPulpRepo.findByVersionIdOrderByYmAscExcelRowNoAsc(v.getVersionId())) {
             if (!n.getYm().equals(ym) || !n.getDivision().equals(division)) continue;
-            npTotal += d(n.getImpactMkrw()) * 1_000_000d;
-            npItems.add(npRow(n));
+            double won = d(n.getImpactMkrw()) * 1_000_000d;
+            npAll += won;
+            String cat;
+            if (OEM_GROUP.equals(n.getItemGroup())) cat = "GOODS";
+            else {
+                cat = n.getMatlGroupNm() != null ? catByMatl.get(n.getMatlGroupNm()) : null;
+                if (cat == null) cat = catByGroup.get(n.getItemGroup());
+                if (cat == null) { cat = "SUB"; unknown.add(n.getItemGroup()); }
+                else if (n.getMatlGroupNm() == null && mixed.contains(n.getItemGroup())) unknown.add(n.getItemGroup() + "(원/부 혼재 — 자재그룹 미입력)");
+            }
+            double alloc = won * ps;
+            if ("RAW".equals(cat)) npRaw += alloc; else if ("GOODS".equals(cat)) goods += alloc; else npSub += alloc;
+            Map<String, Object> m = npRow(n);
+            m.put("category", cat); m.put("allocWon", r(alloc, 0));
+            npItems.add(m);
         }
+        if (!unknown.isEmpty())
+            warnings.add("원/부 구분을 SAP에서 확정하지 못한 펄프외 품목그룹은 부재료(또는 많이 쓰인 쪽)로 반영했습니다: " + String.join(", ", unknown));
+        if (!all && prodShare == null && Math.abs(npAll) > 0.5)
+            warnings.add(machine + " 생산량 비중을 구할 수 없어(생산계획·전월 실적 없음) 펄프외·상품 단가 영향을 0으로 배분했습니다");
+        if (!all && prodShare != null)
+            res.put("prodShare", r(prodShare, 4));
+        if (prodShareBasis != null) res.put("prodShareBasis", prodShareBasis);
+
         res.put("found", true);
         res.put("version", versionInfo(v));
-        res.put("pulpImpactWon", r(pulp, 0));
+        res.put("rawWon", r(pulpAlloc + npRaw, 0));
+        res.put("subWon", r(npSub, 0));
+        res.put("goodsWon", r(goods, 0));
+        res.put("pulpImpactWon", r(pulpAlloc, 0));
+        res.put("nonPulpImpactWon", r(npRaw + npSub + goods, 0));
+        res.put("divisionPulpWon", r(pulpAll, 0));
+        res.put("divisionNonPulpWon", r(npAll, 0));
         res.put("pulpItems", items);
-        res.put("nonPulpImpactWon", r(npTotal, 0));
         res.put("nonPulpItems", npItems);
         res.put("warnings", warnings);
         return res;
+    }
+
+    /** 펄프 자재별 호기 사용 비중 = 해당 호기 실적배부수량 ÷ 사업부 전체 (SAP 원재료 실적, 전월) */
+    private Map<String, Double> pulpMachineShare(String prevYm, String division, String machine) {
+        Map<String, double[]> acc = new HashMap<>(); // code → {machineQty, totalQty}
+        jdbc.query("SELECT MATERIAL, BIC_ZMACHINE, SUM(COALESCE(BIC_ZDTB_QTY,0)) AS Q FROM rpsim_raw_material" +
+                " WHERE CALMONTH = ? AND DATA_TYPE = '100'" + RawMaterialSql.DIV_SCOPE +
+                " GROUP BY MATERIAL, BIC_ZMACHINE", rs -> {
+            String code = stripCode(rs.getString("MATERIAL"));
+            double q = rs.getDouble("Q");
+            double[] a = acc.computeIfAbsent(code, k -> new double[2]);
+            a[1] += q;
+            if (machine.equals(rs.getString("BIC_ZMACHINE"))) a[0] += q;
+        }, prevYm, division);
+        Map<String, Double> out = new HashMap<>();
+        acc.forEach((k, a) -> { if (a[1] > EPS) out.put(k, a[0] / a[1]); });
+        return out;
+    }
+
+    /** 호기 생산량 비중 — 기준월 생산계획(총생산량) 우선, 없으면 전월 SAP 실적. {비중 or null, 출처} */
+    private Object[] prodMachineShare(String ym, String prevYm, String division, String machine) {
+        int y = Integer.parseInt(ym.substring(0, 4)), m = Integer.parseInt(ym.substring(4));
+        double[] a = new double[2];
+        jdbc.query("SELECT MACHINE_CODE, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS T FROM rpsim_production_plan" +
+                " WHERE `YEAR` = ? AND `MONTH` = ? AND DIVISION = ? AND DELETED_YN = 'N'" +
+                "   AND COALESCE(WASTE_RATE_PCT,0) < 100 AND COALESCE(GOOD_TON,0) > 0 GROUP BY MACHINE_CODE", rs -> {
+            double t = rs.getDouble("T");
+            a[1] += t;
+            if (machine.equals(rs.getString("MACHINE_CODE"))) a[0] += t;
+        }, y, m, division);
+        if (a[1] > EPS) return new Object[]{a[0] / a[1], ymDot(ym) + " 생산계획"};
+        double[] b = new double[2];
+        jdbc.query("SELECT BIC_ZMACHINE, SUM(q) AS T FROM (SELECT BIC_ZMACHINE, MAX(" + RawMaterialSql.PROD_QTY_COL + ") AS q" +
+                " FROM rpsim_raw_material WHERE CALMONTH = ?" + RawMaterialSql.DIV_SCOPE +
+                " GROUP BY BIC_ZMACHINE, PRODH4) t GROUP BY BIC_ZMACHINE", rs -> {
+            double t = rs.getDouble("T");
+            b[1] += t;
+            if (machine.equals(rs.getString("BIC_ZMACHINE"))) b[0] += t;
+        }, prevYm, division);
+        if (b[1] > EPS) return new Object[]{b[0] / b[1], ymDot(prevYm) + " 실적"};
+        return new Object[]{null, null};
+    }
+
+    /** SAP 원/부 구분 — 대분류명·"대분류 : 자재그룹명" → RAW(100) / SUB(101). 대분류 안에 둘 다 있으면 많이 쓰인 쪽 + mixed 표시 */
+    private void loadGroupCategories(Map<String, String> byGroup, Map<String, String> byMatl, Set<String> mixed) {
+        Map<String, int[]> g = new HashMap<>(), mg = new HashMap<>();
+        jdbc.query("SELECT BIC_ZMATGROUP_NM AS L, MATL_GROUP_NM AS G, DATA_TYPE AS T, COUNT(*) AS N FROM rpsim_raw_material" +
+                " WHERE DELETED_YN = 'N' AND BIC_ZMATGROUP_NM IS NOT NULL AND BIC_ZMATGROUP_NM <> ''" +
+                " GROUP BY BIC_ZMATGROUP_NM, MATL_GROUP_NM, DATA_TYPE", rs -> {
+            String l = str(rs.getString("L")), gg = str(rs.getString("G"));
+            int idx = "101".equals(rs.getString("T")) ? 1 : 0;
+            int n = rs.getInt("N");
+            g.computeIfAbsent(l, k -> new int[2])[idx] += n;
+            if (gg != null) mg.computeIfAbsent(l + " : " + gg, k -> new int[2])[idx] += n;
+        });
+        // 원부재료 실적에 없는 대분류·자재그룹만 수불부 자재그룹 첫 자리(1=원, 2=부)로 판단
+        final Set<String> fromUsageG = new HashSet<>(g.keySet()), fromUsageMg = new HashSet<>(mg.keySet());
+        jdbc.query("SELECT BIC_ZMATGROUP_NM AS L, MATL_GROUP_NM AS G, LEFT(TRIM(MATL_GROUP),1) AS F, COUNT(*) AS N FROM rpsim_raw_inventory" +
+                " WHERE DELETED_YN = 'N' AND BIC_ZMATGROUP_NM IS NOT NULL AND BIC_ZMATGROUP_NM <> ''" +
+                " GROUP BY BIC_ZMATGROUP_NM, MATL_GROUP_NM, LEFT(TRIM(MATL_GROUP),1)", rs -> {
+            String l = str(rs.getString("L")), gg = str(rs.getString("G")), f = rs.getString("F");
+            if (!"1".equals(f) && !"2".equals(f)) return;
+            int idx = "2".equals(f) ? 1 : 0;
+            int n = rs.getInt("N");
+            if (!fromUsageG.contains(l)) g.computeIfAbsent(l, k -> new int[2])[idx] += n;
+            if (gg != null && !fromUsageMg.contains(l + " : " + gg)) mg.computeIfAbsent(l + " : " + gg, k -> new int[2])[idx] += n;
+        });
+        g.forEach((k, a) -> {
+            byGroup.put(k, a[1] > a[0] ? "SUB" : "RAW");
+            if (a[0] > 0 && a[1] > 0) mixed.add(k);
+        });
+        mg.forEach((k, a) -> byMatl.put(k, a[1] > a[0] ? "SUB" : "RAW"));
     }
 
     /** 업로드한 원래 입력값 (엑셀 재다운로드용) */

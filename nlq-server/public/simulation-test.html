@@ -456,25 +456,25 @@
     <!-- 4-1 P/L 시뮬레이터 -->
     <div id="s4-plsim">
         <div class="sc" style="padding:16px;margin-bottom:14px;">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-sliders-h text-indigo-500 mr-2"></i>생산량 조정</h3>
-                <div style="display:flex;align-items:center;gap:6px;margin-left:auto;margin-right:12px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
+                <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-sliders-h text-indigo-500 mr-2"></i>지종별 생산량 <span style="font-size:10px;color:#94a3b8;font-weight:400;">what-if · 저장 안 함</span></h3>
+                <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
                     <label style="font-size:11px;color:#64748b;">호기</label>
                     <select id="plMc" onchange="loadCostUnitRates()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;"><option value="ALL">전체</option></select>
                     <span id="plMcNote" style="font-size:10px;color:#94a3b8;"></span>
+                    <button onclick="resetSlider()" class="btn-g" style="font-size:10px;padding:4px 10px;"><i class="fas fa-redo mr-1"></i>생산계획으로 초기화</button>
                 </div>
-                <button onclick="resetSlider()" style="font-size:10px;color:#94a3b8;cursor:pointer;background:none;border:none;"><i class="fas fa-redo mr-1"></i>초기화</button>
             </div>
-            <div style="display:flex;align-items:center;gap:16px;">
-                <div style="flex:1;">
-                    <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-                        <span style="font-size:11px;color:#64748b;"><span id="plBaseLbl">기준월 생산량</span>: <b id="plBaseProd">-</b></span>
-                        <span style="font-size:11px;color:#4f46e5;font-weight:700;" id="slLbl">시뮬: - 톤</span>
-                    </div>
-                    <input type="range" min="0" max="15000" value="0" step="100" class="sim-slider" id="prodSl" oninput="calcPL()">
-                </div>
-                <div style="text-align:center;padding:10px 16px;background:#eef2ff;border-radius:10px;border:1px solid #c7d2fe;min-width:90px;">
-                    <div style="font-size:9px;color:#6366f1;font-weight:700;">변동</div>
+            <div style="font-size:10px;color:#64748b;line-height:1.7;margin-bottom:8px;padding:6px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;">
+                <div><i class="fas fa-info-circle mr-1"></i>시뮬 생산량은 화면에서만 바꿔 보는 값입니다 — 저장하지 않으며, 기준월·사업부·호기를 바꾸거나 새로고침하면 생산계획 값으로 돌아갑니다. 원부재료비 탭의 지종별 생산량과는 따로 움직입니다.</div>
+                <div><i class="fas fa-truck-loading mr-1"></i>구매 단가 영향(원재료·부재료·상품)은 구매팀 업로드 금액 그대로 고정입니다 — 지종 생산량을 바꿔도 금액은 변하지 않고 톤당 값만 바뀝니다.</div>
+            </div>
+            <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">
+                <div style="flex:1;min-width:520px;overflow-x:auto;max-height:320px;"><table class="st" style="font-size:11px;"><thead><tr><th>지종</th><th class="r">전월 실적(톤)</th><th class="r">전월 원·부재료<br>원단위(천원/톤)</th><th class="r">기준월 생산계획(톤)</th><th class="r">시뮬 생산량(톤)</th><th class="r">증감</th></tr></thead><tbody id="plProdTb"></tbody></table></div>
+                <div style="text-align:center;padding:10px 16px;background:#eef2ff;border-radius:10px;border:1px solid #c7d2fe;min-width:130px;">
+                    <div style="font-size:9px;color:#6366f1;font-weight:700;" id="plBaseLbl">기준월 생산량</div>
+                    <div style="font-size:11px;color:#475569;margin-top:2px;"><b id="plBaseProd">-</b></div>
+                    <div style="font-size:9px;color:#6366f1;font-weight:700;margin-top:8px;" id="slLbl">시뮬: - 톤</div>
                     <div style="font-size:20px;font-weight:800;color:#4f46e5;" id="prodD">0%</div>
                 </div>
             </div>
@@ -903,18 +903,41 @@ function subTab(step,key){
 }
 
 // ── P/L Simulator ──
+// g: rev=매출 / cogs=매출원가(제조원가) / sga=판관비 — 원부자재 단가 변동은 모두 제조원가(매출원가)
+// b='고정액': 구매 이동계획 업로드 금액(총액 고정) → 톤당 = −금액 ÷ 생산량 (손익 개선이면 비용 감소 = 음수)
 let PL=[
-    {l:'매출액',k:'rev',b:'-',r:0,p:0,db:false,n:'수동'},
-    {l:'원재료비',k:'mat',b:'변동비',r:0,p:0,db:false,n:'준비중'},
-    {l:'부재료비',k:'sub',b:'변동비',r:0,p:0,db:false,n:'준비중'},
-    {l:'구매 단가 영향',k:'pur',b:'변동비',r:0,p:0,db:false,n:'업로드 없음'}, // 구매 이동계획 손익영향 → 비용(천원/톤), 개선이면 음수
-    {l:'전력비',k:'pw',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
-    {l:'에너지비',k:'eng',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
-    {l:'물류비',k:'log',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
-    {l:'인건비',k:'lab',b:'고정비',r:0,p:0,db:false,n:'수동'},
-    {l:'감가상각',k:'dep',b:'고정비',r:0,p:0,db:false,n:'수동'},
-    {l:'판관비',k:'sga',b:'고정비',r:0,p:0,db:false,n:'수동'},
+    {l:'매출액',k:'rev',g:'rev',b:'-',r:0,p:0,db:false,n:'수동'},
+    {l:'원재료비',k:'mat',g:'cogs',b:'변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'원재료 단가 영향',k:'purRaw',g:'cogs',b:'고정액',r:0,p:null,db:false,n:'업로드 없음',sub:true},
+    {l:'부재료비',k:'sub',g:'cogs',b:'변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'부재료 단가 영향',k:'purSub',g:'cogs',b:'고정액',r:0,p:null,db:false,n:'업로드 없음',sub:true},
+    {l:'전력비',k:'pw',g:'cogs',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'에너지비',k:'eng',g:'cogs',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'인건비(제조)',k:'lab',g:'cogs',b:'고정비',r:0,p:0,db:false,n:'수동'},
+    {l:'감가상각(제조)',k:'dep',g:'cogs',b:'고정비',r:0,p:0,db:false,n:'수동'},
+    {l:'상품 단가 영향',k:'purGoods',g:'cogs',b:'고정액',r:0,p:null,db:false,n:'업로드 없음',sub:true},
+    {l:'물류비',k:'log',g:'sga',b:'준변동비',r:0,p:0,db:false,n:'준비중'},
+    {l:'기타 판관비',k:'sga',g:'sga',b:'고정비',r:0,p:0,db:false,n:'수동'},
 ];
+const PUR_KEYS=['purRaw','purSub','purGoods'];
+let PUR_AMT={purRaw:0,purSub:0,purGoods:0}; // 원 (+ 손익 개선 / − 악화) — 구매팀 업로드 금액 고정
+// 지종별 생산량 what-if (저장 안 함): {p, plan, prev, mr(원/톤), sr(원/톤), matched, sim}
+let PL_PROD=[],PL_SIM=null;
+function plSimTon(){return PL_PROD.reduce((a,x)=>a+(x.sim||0),0);}
+function plPlanTon(){return PL_PROD.reduce((a,x)=>a+(x.plan||0),0);}
+function renderPlProd(){
+    const tb=document.getElementById('plProdTb');if(!tb)return;
+    if(!PL_PROD.length){tb.innerHTML='<tr><td colspan="6" style="text-align:center;padding:16px;color:#94a3b8;">기준월 생산계획·전월 실적이 없습니다 (STEP 3 생산계획 확인)</td></tr>';return;}
+    const sp=plSimTon(),pp=plPlanTon(),pv=PL_PROD.reduce((a,x)=>a+(x.prev||0),0);
+    tb.innerHTML=PL_PROD.map((x,i)=>{const d=(x.sim||0)-(x.plan||0);
+        return '<tr><td style="font-weight:600;color:#4f46e5;">'+x.p+(x.matched?'':' <span title="전월 실적에 없는 지종 — 원·부재료 원단위 0" style="color:#d97706;"><i class="fas fa-exclamation-triangle"></i></span>')+'</td>'
+        +'<td class="r mn" style="color:#94a3b8;">'+(x.prev?fmtI(x.prev):'-')+'</td><td class="r mn">'+(x.matched?fmt((x.mr+x.sr)/1000):'<span style="color:#d97706;">0</span>')+'</td>'
+        +'<td class="r mn">'+(x.plan?fmtI(x.plan):'-')+'</td>'
+        +'<td class="r"><input id="plProd_'+i+'" type="text" inputmode="decimal" value="'+(Math.round((x.sim||0)*10)/10)+'" onchange="plEditProd('+i+',this.value)" style="width:96px;padding:3px 6px;border:1px solid #c7d2fe;border-radius:4px;font-size:11px;text-align:right;font-family:inherit;"></td>'
+        +'<td class="r mn" style="color:'+(d>0?'#2563eb':d<0?'#dc2626':'#94a3b8')+';">'+(Math.abs(d)<0.05?'-':(d>0?'+':'')+fmt(d))+'</td></tr>';}).join('')
+        +'<tr style="background:#f8fafc;font-weight:700;"><td>합계</td><td class="r">'+fmtI(pv)+'</td><td></td><td class="r">'+fmtI(pp)+'</td><td class="r" style="color:#4f46e5;">'+fmtI(sp)+'</td><td class="r">'+(Math.abs(sp-pp)<0.05?'-':((sp-pp)>0?'+':'')+fmt(sp-pp))+'</td></tr>';
+}
+function plEditProd(i,v){const x=PL_PROD[i];if(!x)return;const n=parseFloat(String(v).replace(/,/g,''));x.sim=isFinite(n)&&n>0?n:0;renderPlProd();calcPL();}
 let MAT_API=[];
 // P/L 항목은 위치(인덱스)가 아니라 키로 찾음 — 항목 추가 시 인덱스 밀림 방지
 function PLK(k){return PL.find(i=>i.k===k)||{r:0,p:0,db:false,n:''};}
@@ -929,7 +952,6 @@ async function loadCostUnitRates(){
         if(!d)return;
         // 기준 생산량 갱신
         BP=d.baseProdTon||0;
-        document.getElementById('prodSl').value=BP;
         {const b=document.getElementById('plBaseProd');const src=d.baseProdSource;
             const srcLbl=src==='PLAN'?(d.planLocked?'생산계획(확정)':'생산계획(미확정)'):src==='ACTUAL'?'기준월 실적':'';
             if(b)b.textContent=BP>0?fmtI(BP)+' 톤'+(srcLbl?' · '+srcLbl:''):'생산계획 없음';
@@ -973,11 +995,15 @@ async function loadCostUnitRates(){
                 pct:parseFloat(m.sharePct)||0
             }));
         }
-        // 슬라이더 라벨 갱신
-        document.querySelector('#prodSl').max=Math.max(BP*2,15000);
+        // 지종별 생산량 what-if — 초기값 = 기준월 생산계획 (저장 안 함)
+        PL_PROD=(d.materialByProduct||[]).map(m=>{const plan=parseFloat(m.productionTonExact??m.productionTon)||0;
+            return {p:m.product,plan,prev:parseFloat(m.prevProductionTonExact??m.prevProductionTon)||0,mr:parseFloat(m.matRateWon)||0,sr:parseFloat(m.subRateWon)||0,matched:m.prevMatched!==false,sim:plan};})
+            .sort((a,b)=>(b.plan-a.plan)||(b.prev-a.prev));
     }catch(e){
         console.warn('[CostUnitRates] API 호출 실패:',e.message);
+        PL_PROD=[];
     }
+    renderPlProd();
     await loadPurchaseImpact(); // 구매 이동계획 손익영향 (BP 확정 후 톤당 환산)
     calcPL();
     renderProdSim();
@@ -992,8 +1018,8 @@ function renderPowerMissing(){
     el.style.display=miss.length?'':'none';
 }
 function calcPL(){
-    const sp=parseInt(document.getElementById('prodSl').value)||0,ratio=BP>0?sp/BP:1,dp=((ratio-1)*100).toFixed(1); // 실적 없으면(BP=0) 변동 0%
-    // ── 생산량 변동 시 전력비/에너지비 자동 재계산 ──
+    const sp=plSimTon(),pt=plPlanTon()||BP,ratio=pt>0?sp/pt:1,dp=((ratio-1)*100).toFixed(1);
+    // ── 생산량 변동 시 전력비/에너지비 자동 재계산 (총생산량 기준) ──
     if(PW_LINES.length){
         const pwPerTon=calcPowerPerTon(sp);
         if(pwPerTon>0){PLK('pw').r=pwPerTon;PLK('pw').db=true;PLK('pw').n='자동';}
@@ -1002,26 +1028,51 @@ function calcPL(){
         const engPerTon=calcEnergyPerTon(sp);
         if(engPerTon>0){PLK('eng').r=engPerTon;PLK('eng').db=true;PLK('eng').n='자동';}
     }
+    // 원·부재료비 = Σ(지종별 전월 원단위 × 시뮬 지종 생산량) ÷ 시뮬 총생산량 → 지종 구성이 바뀌면 톤당 값도 바뀜
+    let simMat=null,simSub=null;
+    if(PL_PROD.length){const m=PL_PROD.reduce((a,x)=>a+x.mr*(x.sim||0),0),su=PL_PROD.reduce((a,x)=>a+x.sr*(x.sim||0),0);simMat=sp>0?m/sp/1000:0;simSub=sp>0?su/sp/1000:0;}
     document.getElementById('slLbl').textContent='시뮬: '+fmtI(sp)+' 톤';
     const dE=document.getElementById('prodD');dE.textContent=(dp>=0?'+':'')+dp+'%';dE.style.color=dp>0?'#4f46e5':dp<0?'#dc2626':'#475569';
     try{document.getElementById('csProd').textContent=fmtI(sp);}catch(_){}
-    let tc=0,cardsH='',tbH='';const srs=[];
+    const srs=[];const sum={rev:{r:0,s:0},cogs:{r:0,s:0},sga:{r:0,s:0}};
     PL.forEach(it=>{
-        let sr=it.r;if(it.b==='고정비'&&it.r>0&&sp>0&&BP>0)sr=it.r*BP/sp;srs.push(sr);if(it.k!=='rev')tc+=sr;
-        const st=sr*sp/1000,d=sr-it.r,dc=d>0?'color:#dc2626':d<0?'color:#16a34a':'color:#94a3b8';
-        const bc=it.b==='변동비'?'background:#fef3c7;color:#92400e':it.b==='준변동비'?'background:#fefce8;color:#a16207':it.b==='고정비'?'background:#dcfce7;color:#166534':'background:#f1f5f9;color:#64748b';
-        const db=it.db?'<span style="font-size:9px;color:#16a34a;"><i class="fas fa-check-circle mr-1"></i>DB</span>':'<span style="font-size:9px;color:#94a3b8;">'+it.n+'</span>';
-        tbH+='<tr><td style="font-weight:600;">'+it.l+'</td><td><span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;'+bc+'">'+it.b+'</span></td><td class="r mn" style="font-weight:600;">'+fmt(it.r)+'</td><td class="r mn" style="color:#94a3b8;">'+fmt(it.p)+'</td><td class="r mn" style="font-weight:700;color:#4f46e5;">'+fmt(sr)+'</td><td class="r mn">'+(it.r!==0?fmt(st):'-')+'</td><td class="r" style="font-weight:600;'+dc+'">'+fmt(Math.abs(d))+'</td><td>'+db+'</td></tr>';
+        let sr=it.r;
+        if(it.k==='mat'&&simMat!=null)sr=simMat;
+        else if(it.k==='sub'&&simSub!=null)sr=simSub;
+        else if(it.b==='고정액')sr=sp>0?-(PUR_AMT[it.k]||0)/sp/1000:0; // 구매팀 금액 고정 → 톤당만 변함
+        else if(it.b==='고정비'&&it.r>0&&sp>0&&BP>0)sr=it.r*BP/sp;
+        sr=sr||0; // -0 표시 방지
+        srs.push(sr);sum[it.g].r+=it.r;sum[it.g].s+=sr;
     });
-    const pf=0-tc;
-    [{l:'매출액',v:0,c:'#475569',bd:''},{l:'원재료비',v:srs[PLI('mat')],c:'#d97706',bd:'border-left:3px solid #f59e0b;'},{l:'부재료비',v:srs[PLI('sub')],c:'#b45309',bd:''},{l:'전력비',v:srs[PLI('pw')],c:'#ef4444',bd:''},{l:'에너지비',v:srs[PLI('eng')],c:'#f97316',bd:'border-left:3px solid #f97316;'},{l:'물류비',v:srs[PLI('log')],c:'#475569',bd:''},{l:'영업이익',v:pf,c:'#4f46e5',bd:'border-left:3px solid #4f46e5;'}].forEach(c=>{
+    const bcOf=b=>b==='변동비'?'background:#fef3c7;color:#92400e':b==='준변동비'?'background:#fefce8;color:#a16207':b==='고정비'?'background:#dcfce7;color:#166534':b==='고정액'?'background:#ede9fe;color:#6d28d9':'background:#f1f5f9;color:#64748b';
+    const row=(it,sr)=>{const st=sr*sp/1000,d=sr-it.r,dc=d>0.05?'color:#dc2626':d<-0.05?'color:#16a34a':'color:#94a3b8';
+        const db=it.db?'<span style="font-size:9px;color:#16a34a;"><i class="fas fa-check-circle mr-1"></i>'+(it.n&&it.n!=='DB'&&it.n!=='자동'?it.n:'DB')+'</span>':'<span style="font-size:9px;color:#94a3b8;">'+it.n+'</span>';
+        return '<tr><td style="font-weight:600;'+(it.sub?'padding-left:26px;color:#6d28d9;':'padding-left:18px;')+'">'+(it.sub?'└ ':'')+it.l+'</td><td><span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;'+bcOf(it.b)+'">'+it.b+'</span></td><td class="r mn" style="font-weight:600;">'+fmt(it.r)+'</td><td class="r mn" style="color:#94a3b8;">'+(it.p==null?'-':fmt(it.p))+'</td><td class="r mn" style="font-weight:700;color:#4f46e5;">'+fmt(sr)+'</td><td class="r mn">'+(sr!==0?fmt(st):'-')+'</td><td class="r" style="font-weight:600;'+dc+'">'+(Math.abs(d)<0.05?'-':(d>0?'+':'△')+fmt(Math.abs(d)))+'</td><td>'+db+'</td></tr>';};
+    const tot=(label,r,sv,bg,color)=>'<tr style="background:'+bg+';font-weight:700;"><td style="color:'+(color||'#1e293b')+';">'+label+'</td><td></td><td class="r mn">'+fmt(r)+'</td><td></td><td class="r mn" style="color:'+(color||'#4f46e5')+';">'+fmt(sv)+'</td><td class="r mn">'+(sv!==0?fmt(sv*sp/1000):'-')+'</td><td class="r" style="color:#94a3b8;">'+(Math.abs(sv-r)<0.05?'-':(sv-r>0?'+':'△')+fmt(Math.abs(sv-r)))+'</td><td></td></tr>';
+    const sec=t=>'<tr><td colspan="8" style="background:#f1f5f9;font-weight:700;color:#475569;font-size:11px;">'+t+'</td></tr>';
+    let tbH='';
+    PL.forEach((it,i)=>{if(it.g==='rev')tbH+=row(it,srs[i]).replace('padding-left:18px;','');});
+    tbH+=sec('매출원가 <span style="font-weight:400;color:#94a3b8;">(제조원가 — 원부자재 단가 변동 포함)</span>');
+    PL.forEach((it,i)=>{if(it.g==='cogs')tbH+=row(it,srs[i]);});
+    tbH+=tot('매출원가 계',sum.cogs.r,sum.cogs.s,'#fff7ed');
+    tbH+=tot('매출총이익',sum.rev.r-sum.cogs.r,sum.rev.s-sum.cogs.s,'#eef2ff','#4f46e5');
+    tbH+=sec('판관비');
+    PL.forEach((it,i)=>{if(it.g==='sga')tbH+=row(it,srs[i]);});
+    tbH+=tot('판관비 계',sum.sga.r,sum.sga.s,'#f0fdf4');
+    const pfR=sum.rev.r-sum.cogs.r-sum.sga.r,pf=sum.rev.s-sum.cogs.s-sum.sga.s,tc=sum.cogs.s+sum.sga.s;
+    tbH+=tot('영업이익',pfR,pf,'#e0e7ff','#4338ca');
+    const v=k=>srs[PLI(k)]||0;
+    let cardsH='';
+    [{l:'매출원가',v:sum.cogs.s,c:'#b45309',bd:'border-left:3px solid #f59e0b;'},{l:'원재료비',v:v('mat'),c:'#d97706',bd:''},{l:'부재료비',v:v('sub'),c:'#b45309',bd:''},{l:'구매 단가 영향',v:v('purRaw')+v('purSub')+v('purGoods'),c:'#6d28d9',bd:'border-left:3px solid #8b5cf6;'},{l:'전력비',v:v('pw'),c:'#ef4444',bd:''},{l:'에너지비',v:v('eng'),c:'#f97316',bd:''},{l:'판관비',v:sum.sga.s,c:'#16a34a',bd:'border-left:3px solid #22c55e;'},{l:'영업이익',v:pf,c:'#4f46e5',bd:'border-left:3px solid #4f46e5;'}].forEach(c=>{
         cardsH+='<div class="sc" style="padding:12px;text-align:center;'+c.bd+'"><div style="font-size:9px;color:#94a3b8;font-weight:600;">'+c.l+'</div><div style="font-size:16px;font-weight:800;color:'+c.c+';margin:3px 0;">'+fmt(c.v)+'</div><div style="font-size:9px;color:#94a3b8;">천원/톤</div></div>';
     });
     document.getElementById('plCards').innerHTML=cardsH;document.getElementById('plTb').innerHTML=tbH;
-    try{document.getElementById('csProf').textContent=fmt(pf);document.getElementById('csCost').textContent=fmt(tc);document.getElementById('csMatV').textContent=fmt(srs[PLI('mat')]);document.getElementById('csPwV').textContent=PLK('pw').r>0?fmt(srs[PLI('pw')]):'-';document.getElementById('csEngV').textContent=PLK('eng').r>0?fmt(srs[PLI('eng')]):'-';}catch(_){}
+    PL_SIM={sp,matSub:v('mat')+v('sub')+v('purRaw')+v('purSub')+v('purGoods')};
+    try{document.getElementById('csProf').textContent=fmt(pf);document.getElementById('csCost').textContent=fmt(tc);document.getElementById('csMatV').textContent=fmt(v('mat'));document.getElementById('csPwV').textContent=PLK('pw').r>0?fmt(v('pw')):'-';document.getElementById('csEngV').textContent=PLK('eng').r>0?fmt(v('eng')):'-';}catch(_){}
     if(costChart){costChart.data.datasets[0].data=PL.filter(i=>i.k!=='rev').map(i=>i.r);costChart.data.datasets[1].data=srs.filter((_,i)=>PL[i].k!=='rev');costChart.update();}
+    updateStep5();
 }
-function resetSlider(){document.getElementById('prodSl').value=BP;calcPL();}
+function resetSlider(){PL_PROD.forEach(x=>{x.sim=x.plan;});renderPlProd();calcPL();}
 
 // ── Drilldown toggle (API 데이터 사용) ──
 let DRILL=[];
@@ -3618,8 +3669,9 @@ function updateMatChart(){
 }
 function updateStep5(){
     const src=MAT_API.length?MAT_API:[];
-    const matRate=(PLK('mat').r||0)+(PLK('sub').r||0);
-    const sp=parseInt(document.getElementById('prodSl')?.value||BP);
+    // 원·부재료비 + 구매 단가 영향 (P/L 시뮬 결과 사용, 없으면 기준월 값)
+    const matRate=PL_SIM?PL_SIM.matSub:((PLK('mat').r||0)+(PLK('sub').r||0));
+    const sp=PL_SIM?PL_SIM.sp:BP;
     // 총원가(억) = (원재료비 + 부재료비) 원단위 × 생산량 / 100000
     const totalCostEok=(matRate*sp/100000).toFixed(1);
     // 영업이익 = 매출 - 총원가 (매출 미입력시 근사)
@@ -4187,21 +4239,32 @@ function purMsgList(title,arr,color,bg,bd){return '<div style="margin-top:8px;pa
 function purShowErrors(errs,warns){document.getElementById('purResult').innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다 — 오류를 고친 뒤 다시 올려 주세요.',errs,'#b91c1c','#fef2f2','#fecaca')+(warns.length?purMsgList('경고',warns,'#d97706','#fffbeb','#fde68a'):'');}
 
 // ── P/L 구매 단가 영향 (기준월을 포함하는 최신 시작월 사용중 버전) ──
+//   원재료(펄프 + 펄프외 원재료) / 부재료(펄프외 부재료) / 상품(OEM) — 모두 매출원가
+//   호기 선택 시: 펄프 = 자재별 전월 사용 비중, 펄프외·상품 = 호기 생산량 비중 (서버 계산)
+//   금액은 구매팀 업로드 값 그대로 고정 — 지종별 생산량 what-if 로 바뀌지 않음
 let PUR_IMPACT=null;
 async function loadPurchaseImpact(){
-    const pk=PLK('pur');pk.r=0;pk.p=0;pk.db=false;pk.n='업로드 없음';PUR_IMPACT=null;
+    PUR_AMT={purRaw:0,purSub:0,purGoods:0};PUR_IMPACT=null;
+    PUR_KEYS.forEach(k=>{const p=PLK(k);p.r=0;p.p=null;p.db=false;p.n='업로드 없음';});
     const el=document.getElementById('plPurNote');
-    try{PUR_IMPACT=await purGet(PUR_API+'/impact?ym='+getYm()+'&division='+getDiv());}
-    catch(e){if(el){el.style.display='';el.innerHTML='<i class="fas fa-exclamation-triangle mr-1"></i>구매 단가 영향 불러오기 실패 — 0으로 계산: '+purEsc(e.message);}return;}
-    const d=PUR_IMPACT||{};const tot=(+d.pulpImpactWon||0)+(+d.nonPulpImpactWon||0);
-    if(d.found){pk.db=true;pk.n='구매 이동계획';pk.r=BP>0?-tot/BP/1000:0;} // 손익 개선(+) = 비용 감소 → 천원/톤 음수
-    if(!el)return;el.style.display='';
+    const mc=getMc();
+    try{PUR_IMPACT=await purGet(PUR_API+'/impact?ym='+getYm()+'&division='+getDiv()+'&machine='+encodeURIComponent(mc));}
+    catch(e){if(el){el.style.display='';el.innerHTML='<i class="fas fa-exclamation-triangle mr-1"></i>구매 단가 영향 불러오기 실패 — 0으로 계산: '+purEsc(e.message);el.style.color='#d97706';}return;}
+    const d=PUR_IMPACT||{};
+    if(d.found){const v=d.version||{};const lbl='구매계획 '+String(v.startYm||'').slice(4)+'~'+String(v.endYm||'').slice(4)+'월';
+        PUR_AMT={purRaw:+d.rawWon||0,purSub:+d.subWon||0,purGoods:+d.goodsWon||0};
+        PUR_KEYS.forEach(k=>{const p=PLK(k);p.db=true;p.n=lbl;p.r=BP>0?-PUR_AMT[k]/BP/1000:0;});}
+    if(!el)return;el.style.display='';el.style.color='#475569';
+    const tot=PUR_AMT.purRaw+PUR_AMT.purSub+PUR_AMT.purGoods;
     let h='<i class="fas fa-truck-loading mr-1"></i>구매 단가 영향 ';
-    if(d.found){const v=d.version||{};h+='<b>'+purImpact(tot)+'</b>백만원 (펄프 '+purImpact(+d.pulpImpactWon||0)+' · 펄프외 '+purImpact(+d.nonPulpImpactWon||0)+') — 구매 이동계획 '+purYmDot(v.startYm)+'~'+purYmDot(v.endYm)+' 업로드 기준 · + 개선 / △ 악화 · P/L에는 비용(천원/톤)으로 반영';
+    if(d.found){const v=d.version||{};
+        h+='<b>'+purImpact(tot)+'</b>백만원 = 원재료 '+purImpact(PUR_AMT.purRaw)+' · 부재료 '+purImpact(PUR_AMT.purSub)+' · 상품 '+purImpact(PUR_AMT.purGoods)+' — 구매 이동계획 '+purYmDot(v.startYm)+'~'+purYmDot(v.endYm)+' · + 개선 / △ 악화 · 매출원가에 비용(천원/톤)으로 반영';
+        if(mc!=='ALL'){h+='<div style="color:#64748b;"><i class="fas fa-industry mr-1"></i>'+purEsc(mc)+' 배분 — 펄프: 자재별 '+purYmDot(String(d.ym?(+d.ym.slice(4)===1?(+d.ym.slice(0,4)-1)+'12':d.ym.slice(0,4)+String(+d.ym.slice(4)-1).padStart(2,'0')):''))+' 사용 비중 · 펄프외·상품: 생산량 비중 '+(d.prodShare!=null?(Math.round(d.prodShare*1000)/10)+'%'+(d.prodShareBasis?' ('+purEsc(d.prodShareBasis)+')':''):'없음')
+            +' · '+getDiv()+' 전체: 펄프 '+purImpact(+d.divisionPulpWon||0)+' · 펄프외 '+purImpact(+d.divisionNonPulpWon||0)+'</div>';}
         if(BP<=0&&Math.abs(tot)>0)h+='<div style="color:#d97706;"><i class="fas fa-exclamation-triangle mr-1"></i>기준월 생산량이 0이라 톤당 금액으로 반영하지 못했습니다</div>';}
     else h+='0 — ';
     (d.warnings||[]).filter(w=>!/반올림 차이/.test(w)).forEach(w=>{h+='<div style="color:#d97706;"><i class="fas fa-exclamation-triangle mr-1"></i>'+purEsc(w)+'</div>';});
-    el.innerHTML=h;el.style.color='#475569';
+    el.innerHTML=h;
 }
 
 // ── Init ──
