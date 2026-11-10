@@ -158,6 +158,7 @@
         <div class="sub-tab" onclick="subTab(1,'ref')">기준정보 관리</div>
         <div class="sub-tab" onclick="subTab(1,'itf')">인터페이스 관리</div>
         <div class="sub-tab" onclick="subTab(1,'purchase')">구매 이동계획</div>
+        <div class="sub-tab" onclick="subTab(1,'sales')">판매계획</div>
     </div>
 
     <!-- 1-1 데이터 준비 현황 -->
@@ -346,6 +347,60 @@
             </div>
         </div>
     </div>
+
+    <!-- 1-6 판매계획 (사업부별, 표준 양식) -->
+    <div id="s1-sales" style="display:none;">
+        <div class="ref-tabs" id="salTabs">
+            <div class="ref-tab active" onclick="salTab('plan')"><i class="fas fa-chart-line mr-1"></i>판매계획 업로드·결과</div>
+            <div class="ref-tab" onclick="salTab('code')"><i class="fas fa-list-ul mr-1"></i>판매 코드</div>
+            <div class="ref-tab" onclick="salTab('grade')"><i class="fas fa-tags mr-1"></i>판매 지종</div>
+        </div>
+        <div id="sal-plan">
+            <div class="sc" style="padding:14px 18px;margin-bottom:14px;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+                    <div>
+                        <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 4px;"><i class="fas fa-chart-line text-indigo-500 mr-2"></i>판매계획 <span class="sal-div" style="font-size:10px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;"></span></h3>
+                        <div style="font-size:11px;color:#64748b;line-height:1.6;">표준 양식(한 줄 = 년월 · 판매구분 · 제품유형 · 지종 · 판매량)으로 올립니다 · 판매량(톤)만 받고 금액·단가는 받지 않습니다<br>판매구분·제품유형·국가·지종은 [판매 코드]·[판매 지종] 기준정보 값만 허용 — 새 값은 기준정보에 추가하면 양식 드롭다운·검사·결과표에 바로 반영됩니다</div>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                        <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="salDownloadTemplate(null)"><i class="fas fa-file-download mr-1"></i>양식 다운로드</button>
+                        <label class="btn-p" style="font-size:11px;padding:5px 12px;cursor:pointer;margin:0;"><i class="fas fa-file-upload mr-1"></i>엑셀 업로드<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="salUpload(this)"></label>
+                    </div>
+                </div>
+                <div id="salResult" style="margin-top:10px;"></div>
+            </div>
+            <div class="sc" style="overflow:hidden;margin-bottom:14px;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-history text-indigo-400 mr-1"></i>업로드 버전 <span class="sal-div" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">같은 월을 여러 버전이 포함하면 시작월이 가장 늦은 사용중 버전을 씁니다</span></h3>
+                    <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="salLoadVersions()"><i class="fas fa-sync-alt mr-1"></i>새로고침</button>
+                </div>
+                <div style="overflow-x:auto;max-height:260px;"><table class="st" style="font-size:11px;"><thead><tr><th>상태</th><th>대상 기간</th><th>작성일</th><th>파일</th><th class="r">지종 행</th><th class="r">국가 행</th><th class="r">경고</th><th>업로드</th><th style="width:110px;">관리</th></tr></thead><tbody id="salVerTb"></tbody></table></div>
+            </div>
+            <div id="salDetail"></div>
+        </div>
+        <div id="sal-code" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-list-ul text-indigo-500 mr-1"></i>판매 코드 <span style="font-size:10px;padding:1px 6px;border-radius:6px;background:#f1f5f9;color:#64748b;font-weight:600;">전사 공통</span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">판매구분 · 제품유형 · 국가 — 미사용으로 바꾸면 양식 드롭다운에서 빠지고 업로드도 거부됩니다</span></h3>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <select id="salCodeFilter" onchange="salRenderCodes()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;"><option value="">전체</option><option value="SALES_TYPE">판매구분</option><option value="PRODUCT_TYPE">제품유형</option><option value="COUNTRY">국가</option></select>
+                        <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="salCodeModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                    </div>
+                </div>
+                <div style="overflow-x:auto;max-height:560px;"><table class="st"><thead><tr><th>종류</th><th>코드명</th><th>국가 입력</th><th class="r">정렬</th><th>사용</th><th>메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="salCodeTb"></tbody></table></div>
+            </div>
+        </div>
+        <div id="sal-grade" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-tags text-indigo-500 mr-1"></i>판매 지종 <span class="sal-div" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">사업부 × 제품유형 × 지종 · 연결 생산 지종 = 생산계획 지종과 짝 (상품 등은 비움)</span></h3>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="salGradeModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
+                <div style="overflow-x:auto;max-height:560px;"><table class="st"><thead><tr><th>제품유형</th><th>지종명</th><th>연결 생산 지종</th><th class="r">정렬</th><th>사용</th><th>메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="salGradeTb"></tbody></table></div>
+            </div>
+        </div>
+    </div>
+
 
 </div>
 
@@ -871,6 +926,7 @@ async function onFilterChange(){
     await renderReady();
     loadRef();
     {const sp=document.getElementById('s1-purchase');if(sp&&sp.style.display!=='none')purOnShow();} // 전사 공통 — 사업부 무관
+    {const ss=document.getElementById('s1-sales');if(ss&&ss.style.display!=='none')salOnShow(true);} // 판매계획 — 사업부별
     if(!hasCostSteps())return; // HL 등: 데이터 준비만 — 원가·생산 데이터는 불러오지 않음
     if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
     await loadCostUnitRates();
@@ -903,7 +959,7 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','ref','itf','purchase'],2:[],4:['plsim','causal','prodsim','energy','matfc']};
+const SUB_MAP={1:['ready','ref','itf','purchase','sales'],2:[],4:['plsim','causal','prodsim','energy','matfc']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
@@ -911,6 +967,7 @@ function subTab(step,key){
     if(parent){parent.querySelectorAll('.sub-tab').forEach((t,i)=>{t.classList.toggle('active',subs[i]===key);});}
     if(step===4&&key==='matfc'&&(MF.stale||!MF.data))loadMaterialForecast();
     if(step===1&&key==='purchase')purOnShow();
+    if(step===1&&key==='sales')salOnShow(false);
 }
 
 // ── P/L Simulator (원가 중심 — 매출 없음, 총원가 기준) ──
@@ -4345,6 +4402,272 @@ function renderPurNote(){
     else h+='0 — ';
     (d.warnings||[]).forEach(w=>{h+='<div style="color:#d97706;"><i class="fas fa-exclamation-triangle mr-1"></i>'+purEsc(w)+'</div>';});
     el.innerHTML=h;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 판매계획 (사업부별) — 표준 양식(한 줄 = 한 건) + 기준정보(판매 코드·판매 지종)
+//   허용 값은 모두 기준정보에서 읽음 → 새 제품유형·지종·국가는 기준정보에 추가만 (소스 수정 없음)
+//   미등록 값은 업로드 거부 → 사용자가 확인하면 기준정보에 일괄 등록 후 다시 올림 (자동 등록 없음)
+// ══════════════════════════════════════════════════════════════════
+const SAL_API=API+'/sales-plan';
+const SAL_TYPES=[['SALES_TYPE','판매구분'],['PRODUCT_TYPE','제품유형'],['COUNTRY','국가']];
+let SAL={tab:'plan',versions:[],detailId:null,codes:[],grades:[],pending:null};
+function salTypeLbl(t){const x=SAL_TYPES.find(a=>a[0]===t);return x?x[1]:t;}
+function salYm(v){if(typeof v==='number'&&v>20000&&v<80000&&window.XLSX&&XLSX.SSF){const p=XLSX.SSF.parse_date_code(v);if(p)return p.y+'.'+String(p.m).padStart(2,'0');}return purYmCell(v);}
+function salUseBadge(u){return u==='Y'?'사용':'<span style="color:#94a3b8;">미사용</span>';}
+function salTab(k){
+    SAL.tab=k;
+    ['plan','code','grade'].forEach(x=>{const el=document.getElementById('sal-'+x);if(el)el.style.display=x===k?'':'none';});
+    document.querySelectorAll('#salTabs .ref-tab').forEach((t,i)=>t.classList.toggle('active',['plan','code','grade'][i]===k));
+    document.querySelectorAll('.sal-div').forEach(e=>{e.textContent=getDiv();});
+    if(k==='plan')salLoadVersions();else if(k==='code')salLoadCodes();else salLoadGrades();
+}
+function salOnShow(reset){if(reset){SAL.detailId=null;SAL.pending=null;const r=document.getElementById('salResult');if(r)r.innerHTML='';}salTab(SAL.tab||'plan');}
+
+// ── 기준정보: 판매 코드 (전사 공통) ──
+async function salLoadCodes(){
+    const tb=document.getElementById('salCodeTb');if(!tb)return;
+    try{SAL.codes=await purGet(SAL_API+'/codes')||[];}catch(e){tb.innerHTML='<tr><td colspan="7" style="color:#dc2626;padding:16px;">불러오기 실패: '+purEsc(e.message)+' — rpsim_sales_* 테이블과 서버 배포를 확인하세요</td></tr>';return;}
+    salRenderCodes();
+}
+function salRenderCodes(){
+    const tb=document.getElementById('salCodeTb');if(!tb)return;const f=(document.getElementById('salCodeFilter')||{}).value||'';
+    const list=SAL.codes.map((c,i)=>({c,i})).filter(x=>!f||x.c.codeType===f);
+    tb.innerHTML=list.length?list.map(({c,i})=>'<tr><td><span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#f1f5f9;color:#475569;font-weight:600;">'+salTypeLbl(c.codeType)+'</span></td><td style="font-weight:700;">'+purEsc(c.codeName)+'</td>'
+        +'<td>'+(c.codeType==='SALES_TYPE'?(c.countryYn==='Y'?'<span style="color:#4f46e5;font-weight:600;"><i class="fas fa-globe-asia mr-1"></i>국가별 입력</span>':'-'):'')+'</td>'
+        +'<td class="r">'+(c.sortOrder??'')+'</td><td>'+salUseBadge(c.useYn)+'</td><td>'+purEsc(c.memo||'')+'</td>'
+        +'<td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="salCodeModal('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="salDel(\'codes\','+c.codeId+',salLoadCodes)">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="7" style="text-align:center;padding:24px;color:#94a3b8;">등록된 판매 코드가 없습니다 — [등록]으로 추가하거나, 판매계획을 올리면 없는 값을 확인 후 한 번에 등록할 수 있습니다</td></tr>';
+}
+function salCodeModal(i){
+    const c=i==null?{codeType:(document.getElementById('salCodeFilter')||{}).value||'SALES_TYPE'}:SAL.codes[i];
+    let h='<h3><i class="fas fa-list-ul text-indigo-500"></i> 판매 코드 '+(i==null?'등록':'수정')+'</h3>';
+    h+='<label>종류</label><select name="codeType" onchange="document.getElementById(\'salCtyRow\').style.display=this.value===\'SALES_TYPE\'?\'\':\'none\'">'+SAL_TYPES.map(([k,l])=>'<option value="'+k+'"'+(k===c.codeType?' selected':'')+'>'+l+'</option>').join('')+'</select>';
+    h+='<label>코드명 <span style="font-size:10px;color:#94a3b8;">(엑셀에 적는 값 그대로 — 예: 내수, 수출, 제품, 상품, 베트남)</span></label><input name="codeName" value="'+purEsc(c.codeName||'')+'" maxlength="100">';
+    h+='<div id="salCtyRow" style="'+(c.codeType==='SALES_TYPE'?'':'display:none;')+'"><label>국가별 입력 <span style="font-size:10px;color:#94a3b8;">(켜면 [국가별] 시트에 이 판매구분의 국가별 판매량을 적습니다)</span></label><select name="countryYn"><option value="N"'+(c.countryYn!=='Y'?' selected':'')+'>안 함</option><option value="Y"'+(c.countryYn==='Y'?' selected':'')+'>국가별 입력</option></select></div>';
+    h+='<label>정렬순서</label><input name="sortOrder" value="'+(c.sortOrder??'')+'" inputmode="numeric">';
+    h+='<label>사용</label><select name="useYn"><option value="Y"'+(c.useYn!=='N'?' selected':'')+'>사용</option><option value="N"'+(c.useYn==='N'?' selected':'')+'>미사용 (드롭다운 제외 · 업로드 거부)</option></select>';
+    h+='<label>메모</label><input name="memo" value="'+purEsc(c.memo||'')+'">';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="salSave(\'codes\','+(i==null?'null':c.codeId)+',salLoadCodes)">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+// ── 기준정보: 판매 지종 (사업부별) ──
+async function salLoadGrades(){
+    const tb=document.getElementById('salGradeTb');if(!tb)return;
+    try{SAL.grades=await purGet(SAL_API+'/grades?division='+getDiv())||[];}catch(e){tb.innerHTML='<tr><td colspan="7" style="color:#dc2626;padding:16px;">불러오기 실패: '+purEsc(e.message)+'</td></tr>';return;}
+    tb.innerHTML=SAL.grades.length?SAL.grades.map((g,i)=>'<tr><td>'+purEsc(g.productType)+'</td><td style="font-weight:700;">'+purEsc(g.gradeName)+'</td><td>'+(g.prodProduct?purEsc(g.prodProduct):'<span style="color:#cbd5e1;">-</span>')+'</td><td class="r">'+(g.sortOrder??'')+'</td><td>'+salUseBadge(g.useYn)+'</td><td>'+purEsc(g.memo||'')+'</td>'
+        +'<td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="salGradeModal('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="salDel(\'grades\','+g.gradeId+',salLoadGrades)">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="7" style="text-align:center;padding:24px;color:#94a3b8;">'+getDiv()+' 판매 지종이 없습니다 — [등록]으로 추가하거나, 판매계획을 올리면 없는 지종을 확인 후 한 번에 등록할 수 있습니다</td></tr>';
+}
+async function salGradeModal(i){
+    const g=i==null?{}:SAL.grades[i];
+    try{SAL.codes=await purGet(SAL_API+'/codes')||[];}catch(e){alert('판매 코드 불러오기 실패: '+e.message);return;}
+    const pts=SAL.codes.filter(c=>c.codeType==='PRODUCT_TYPE'&&(c.useYn==='Y'||c.codeName===g.productType));
+    if(!pts.length){alert('제품유형이 등록되어 있지 않습니다. [판매 코드] 탭에서 제품유형(예: 제품, 상품)을 먼저 등록하세요.');return;}
+    const prods=PRODUCT_OPTIONS.map(p=>p.productCode);if(g.prodProduct&&!prods.includes(g.prodProduct))prods.unshift(g.prodProduct);
+    let h='<h3><i class="fas fa-tags text-indigo-500"></i> 판매 지종 '+(i==null?'등록':'수정')+' <span style="font-size:11px;color:#4f46e5;">'+getDiv()+'</span></h3>';
+    h+='<input type="hidden" name="division" value="'+getDiv()+'">';
+    h+='<label>제품유형</label><select name="productType">'+pts.map(c=>'<option value="'+purEsc(c.codeName)+'"'+(c.codeName===g.productType?' selected':'')+'>'+purEsc(c.codeName)+'</option>').join('')+'</select>';
+    h+='<label>지종명 <span style="font-size:10px;color:#94a3b8;">(엑셀에 적는 값 그대로 — 예: SC(저), Cream)</span></label><input name="gradeName" value="'+purEsc(g.gradeName||'')+'" maxlength="100">';
+    h+='<label>연결 생산 지종 <span style="font-size:10px;color:#94a3b8;">(지종 마스터 · 상품 등 생산하지 않는 지종은 비움)</span></label><select name="prodProduct"><option value="">(연결 없음)</option>'+prods.map(p=>'<option value="'+purEsc(p)+'"'+(p===g.prodProduct?' selected':'')+'>'+purEsc(p)+'</option>').join('')+'</select>';
+    h+='<label>정렬순서</label><input name="sortOrder" value="'+(g.sortOrder??'')+'" inputmode="numeric">';
+    h+='<label>사용</label><select name="useYn"><option value="Y"'+(g.useYn!=='N'?' selected':'')+'>사용</option><option value="N"'+(g.useYn==='N'?' selected':'')+'>미사용 (드롭다운 제외 · 업로드 거부)</option></select>';
+    h+='<label>메모</label><input name="memo" value="'+purEsc(g.memo||'')+'">';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="salSave(\'grades\','+(i==null?'null':g.gradeId)+',salLoadGrades)">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+async function salSave(kind,id,reload){
+    const body={};document.querySelectorAll('.modal-box [name]').forEach(el=>{body[el.name]=el.value.trim();});
+    try{const d=await purSend(SAL_API+'/'+kind+(id!=null?'/'+id:''),id!=null?'PUT':'POST',body);if(d&&d.upserted)alert('같은 값이 있어 기존 행을 덮어썼습니다.');}
+    catch(e){alert('저장 실패: '+e.message);return;}
+    closeModal();reload();
+}
+async function salDel(kind,id,reload){if(!confirm('삭제하시겠습니까?\n(이미 올린 판매계획은 그대로 남지만, 다음 업로드부터 이 값은 거부됩니다)'))return;try{await purSend(SAL_API+'/'+kind+'/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}reload();}
+
+// ── 업로드 버전 ──
+async function salLoadVersions(){
+    const tb=document.getElementById('salVerTb');if(!tb)return;
+    try{SAL.versions=await purGet(SAL_API+'/versions?division='+getDiv())||[];}catch(e){tb.innerHTML='<tr><td colspan="9" style="color:#dc2626;padding:16px;">불러오기 실패: '+purEsc(e.message)+' — rpsim_sales_* 테이블과 서버 배포를 확인하세요</td></tr>';return;}
+    if(!SAL.versions.length){tb.innerHTML='<tr><td colspan="9" style="text-align:center;padding:24px;color:#94a3b8;">'+getDiv()+' 판매계획이 없습니다.</td></tr>';document.getElementById('salDetail').innerHTML='';return;}
+    tb.innerHTML=SAL.versions.map(v=>{const act=v.status==='ACTIVE';const sel=SAL.detailId===v.versionId;
+        return '<tr style="'+(sel?'background:#eef2ff;':'')+(act?'':'color:#94a3b8;')+'"><td>'+(act?'<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#dcfce7;color:#166534;font-weight:700;">사용중</span>':'<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#f1f5f9;color:#94a3b8;">교체됨</span>')+'</td>'
+        +'<td class="mn" style="font-weight:600;">'+purYmDot(v.startYm)+' ~ '+purYmDot(v.endYm)+'</td><td class="mn">'+purEsc(v.writeDate||'-')+'</td><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+purEsc(v.fileName||'')+'">'+purEsc(v.fileName||'-')+'</td>'
+        +'<td class="r">'+(v.gradeRows??0)+'</td><td class="r">'+(v.countryRows??0)+'</td><td class="r">'+((v.warnings||[]).length?'<span style="color:#d97706;font-weight:600;">'+v.warnings.length+'</span>':'0')+'</td>'
+        +'<td class="mn" style="font-size:10px;">'+purEsc(String(v.createdAt||'').replace('T',' ').substring(0,16))+' '+purEsc(v.createdBy||'')+'</td>'
+        +'<td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="salShowDetail('+v.versionId+')">보기</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;" title="이 버전 내용을 양식에 채워 다운로드" onclick="salDownloadTemplate('+v.versionId+')"><i class="fas fa-download"></i></button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="salDeleteVersion('+v.versionId+')"><i class="fas fa-trash"></i></button></td></tr>';}).join('');
+    if(SAL.detailId==null||!SAL.versions.some(v=>v.versionId===SAL.detailId)){const a=SAL.versions.find(v=>v.status==='ACTIVE');if(a)salShowDetail(a.versionId);else document.getElementById('salDetail').innerHTML='';}
+}
+async function salDeleteVersion(id){
+    const v=SAL.versions.find(x=>x.versionId===id);
+    if(!confirm((v?purYmDot(v.startYm)+' ~ '+purYmDot(v.endYm)+' ':'')+'판매계획 업로드를 삭제할까요?'+(v&&v.status==='ACTIVE'?'\n(사용중 버전입니다 — 교체된 이전 버전은 다시 살아나지 않습니다)':'')))return;
+    try{await purSend(SAL_API+'/versions/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}
+    if(SAL.detailId===id)SAL.detailId=null;salLoadVersions();
+}
+// ── 결과표: 판매구분 → 제품유형 → 지종 × 월 (묶음 순서 = 기준정보 정렬순서) ──
+async function salShowDetail(id){
+    SAL.detailId=id;
+    const box=document.getElementById('salDetail');box.innerHTML='<div class="sc" style="padding:20px;color:#64748b;"><i class="fas fa-spinner fa-spin mr-1"></i>불러오는 중...</div>';
+    document.querySelectorAll('#salVerTb tr').forEach((tr,i)=>{const v=SAL.versions[i];tr.style.background=v&&v.versionId===id?'#eef2ff':'';});
+    let d;try{d=await purGet(SAL_API+'/versions/'+id);}catch(e){box.innerHTML='<div class="sc" style="padding:16px;color:#dc2626;">불러오기 실패: '+purEsc(e.message)+'</div>';return;}
+    try{SAL.codes=await purGet(SAL_API+'/codes')||[];}catch(_){}
+    let grades=[];try{grades=await purGet(SAL_API+'/grades?division='+d.version.division)||[];}catch(_){}
+    const ord=(t,n)=>{const i=SAL.codes.findIndex(c=>c.codeType===t&&c.codeName===n);return i<0?1e6:i;};
+    const gOrd=(pt,g)=>{const i=grades.findIndex(x=>x.productType===pt&&x.gradeName===g);return i<0?1e6:i;};
+    const R=d.rows||[],C=d.countries||[];
+    const months=[...new Set(R.map(r=>r.ym).concat(C.map(r=>r.ym)))].sort();
+    const num=v=>Number(v)||0,sum=m=>months.reduce((a,ym)=>a+(m[ym]||0),0),add=(t,m)=>{months.forEach(ym=>{t[ym]=(t[ym]||0)+(m[ym]||0);});};
+    const cells=m=>months.map(ym=>'<td class="r mn">'+(Math.abs(m[ym]||0)>0.0005?purF(m[ym],1):'<span style="color:#cbd5e1;">-</span>')+'</td>').join('')+'<td class="r mn" style="font-weight:700;">'+purF(sum(m),1)+'</td>';
+    const sortBy=(keys,f)=>keys.sort((a,b)=>f(a)-f(b));
+    const tree=new Map();
+    R.forEach(r=>{if(!tree.has(r.salesType))tree.set(r.salesType,new Map());const pm=tree.get(r.salesType);if(!pm.has(r.productType))pm.set(r.productType,new Map());const gm=pm.get(r.productType);if(!gm.has(r.gradeName))gm.set(r.gradeName,{});const m=gm.get(r.gradeName);m[r.ym]=(m[r.ym]||0)+num(r.qtyTon);});
+    const v=d.version;
+    let h='<div class="sc" style="overflow:hidden;margin-bottom:14px;"><div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-table text-indigo-500 mr-1"></i>판매계획 (톤) · '+purEsc(v.division)+' · '+purYmDot(v.startYm)+' ~ '+purYmDot(v.endYm)+(v.status!=='ACTIVE'?' <span style="font-size:10px;color:#94a3b8;">(교체된 버전)</span>':'')+'</h3></div>';
+    h+='<div style="overflow:auto;max-height:620px;"><table class="st" style="font-size:11px;white-space:nowrap;"><thead style="position:sticky;top:0;z-index:2;background:#fff;"><tr><th>판매구분</th><th>제품유형</th><th>지종</th>'+months.map(m=>'<th class="r">'+purYmDot(m)+'</th>').join('')+'<th class="r">합계</th></tr></thead><tbody>';
+    const grand={},stTot={};
+    sortBy([...tree.keys()],k=>ord('SALES_TYPE',k)).forEach(st=>{const pm=tree.get(st),sT={};let firstSt=true;
+        sortBy([...pm.keys()],k=>ord('PRODUCT_TYPE',k)).forEach(pt=>{const gm=pm.get(pt),pT={};let firstPt=true;
+            sortBy([...gm.keys()],g=>gOrd(pt,g)).forEach(g=>{const m=gm.get(g);add(pT,m);
+                h+='<tr><td style="color:#4f46e5;font-weight:700;">'+(firstSt?purEsc(st):'')+'</td><td style="font-weight:600;">'+(firstPt?purEsc(pt):'')+'</td><td>'+purEsc(g)+(gOrd(pt,g)>=1e6?' <span title="현재 판매 지종 기준정보에 없음 (삭제됨)" style="color:#d97706;"><i class="fas fa-exclamation-triangle"></i></span>':'')+'</td>'+cells(m)+'</tr>';firstSt=false;firstPt=false;});
+            h+='<tr style="background:#f8fafc;font-weight:600;"><td></td><td colspan="2" style="color:#475569;">'+purEsc(pt)+' 계</td>'+cells(pT)+'</tr>';add(sT,pT);});
+        h+='<tr style="background:#eef2ff;font-weight:700;"><td colspan="3" style="color:#4338ca;">'+purEsc(st)+' 계</td>'+cells(sT)+'</tr>';stTot[st]=sT;add(grand,sT);});
+    if(!R.length)h+='<tr><td colspan="'+(months.length+4)+'" style="text-align:center;padding:20px;color:#94a3b8;">판매계획 행이 없습니다.</td></tr>';
+    else h+='<tr style="background:#e0e7ff;font-weight:800;"><td colspan="3" style="color:#312e81;">총계</td>'+cells(grand)+'</tr>';
+    h+='</tbody></table></div>';
+    const w=v.warnings||[];
+    if(w.length)h+='<div style="padding:8px 16px;border-top:1px solid #f1f5f9;font-size:10px;line-height:1.7;">'+w.map(x=>'<div style="color:#d97706;"><i class="fas fa-exclamation-triangle mr-1"></i>'+purEsc(x)+'</div>').join('')+'</div>';
+    h+='</div>';
+    if(C.length){
+        const ct=new Map();C.forEach(r=>{if(!ct.has(r.salesType))ct.set(r.salesType,new Map());const m0=ct.get(r.salesType);if(!m0.has(r.country))m0.set(r.country,{});const m=m0.get(r.country);m[r.ym]=(m[r.ym]||0)+num(r.qtyTon);});
+        h+='<div class="sc" style="overflow:hidden;"><div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-globe-asia text-indigo-500 mr-1"></i>국가별 판매량 (톤) <span style="font-size:10px;color:#94a3b8;font-weight:400;">국가 합계와 지종 합계가 다르면 빨간색</span></h3></div>';
+        h+='<div style="overflow:auto;max-height:520px;"><table class="st" style="font-size:11px;white-space:nowrap;"><thead style="position:sticky;top:0;z-index:2;background:#fff;"><tr><th>판매구분</th><th>국가</th>'+months.map(m=>'<th class="r">'+purYmDot(m)+'</th>').join('')+'<th class="r">합계</th></tr></thead><tbody>';
+        sortBy([...ct.keys()],k=>ord('SALES_TYPE',k)).forEach(st=>{const m0=ct.get(st),cT={};let first=true;
+            sortBy([...m0.keys()],k=>ord('COUNTRY',k)).forEach(c=>{const m=m0.get(c);add(cT,m);h+='<tr><td style="color:#4f46e5;font-weight:700;">'+(first?purEsc(st):'')+'</td><td>'+purEsc(c)+'</td>'+cells(m)+'</tr>';first=false;});
+            h+='<tr style="background:#eef2ff;font-weight:700;"><td colspan="2" style="color:#4338ca;">'+purEsc(st)+' 국가 계</td>'+cells(cT)+'</tr>';
+            const g=stTot[st]||{};const diff={};months.forEach(ym=>{diff[ym]=(cT[ym]||0)-(g[ym]||0);});
+            const bad=months.some(ym=>Math.abs(diff[ym])>0.001);
+            h+='<tr style="font-size:10px;color:'+(bad?'#dc2626':'#94a3b8')+';"><td colspan="2">지종 합계와 차이</td>'+months.map(ym=>'<td class="r mn">'+(Math.abs(diff[ym])>0.001?purF(diff[ym],1):'0')+'</td>').join('')+'<td class="r mn">'+(Math.abs(sum(diff))>0.001?purF(sum(diff),1):'0')+'</td></tr>';});
+        h+='</tbody></table></div></div>';
+    }
+    box.innerHTML=h;
+}
+
+// ── 엑셀 양식 (ExcelJS: 드롭다운 = 기준정보 값만) ──
+const SAL_HEAD=['년월\n(yyyy.mm)','판매구분','제품유형','지종','판매량\n(톤)','비고'];
+const SAL_C_HEAD=['년월\n(yyyy.mm)','판매구분','국가','판매량\n(톤)','비고'];
+async function salDownloadTemplate(versionId){
+    const div=getDiv();let M,detail=null;
+    try{await purLoadExcelJS();M=await purGet(SAL_API+'/masters?division='+div);}catch(e){alert('양식 준비 실패: '+e.message);return;}
+    if(versionId!=null){try{detail=await purGet(SAL_API+'/versions/'+versionId);}catch(e){alert('버전 불러오기 실패: '+e.message);return;}}
+    const sts=(M.SALES_TYPE||[]).map(x=>x.name),pts=(M.PRODUCT_TYPE||[]).map(x=>x.name),cts=(M.COUNTRY||[]).map(x=>x.name);
+    const ctySts=(M.SALES_TYPE||[]).filter(x=>x.countryYn==='Y').map(x=>x.name);
+    const gns=[...new Set((M.grades||[]).map(g=>g.gradeName))];
+    const miss=[];if(!sts.length)miss.push('판매구분');if(!pts.length)miss.push('제품유형');if(!gns.length)miss.push(div+' 판매 지종');
+    if(miss.length&&!confirm(miss.join(', ')+' 기준정보가 비어 있어 해당 드롭다운이 없는 양식이 만들어집니다.\n(작성 후 업로드하면 없는 값을 확인하고 한 번에 등록할 수 있습니다) 계속할까요?'))return;
+    const wb=new ExcelJS.Workbook();
+    const H1={type:'pattern',pattern:'solid',fgColor:{argb:'FF4F46E5'}};
+    const thin={style:'thin',color:{argb:'FFCBD5E1'}},BD={top:thin,left:thin,bottom:thin,right:thin};
+    const hdr=c=>{c.fill=H1;c.font={bold:true,color:{argb:'FFFFFFFF'}};c.alignment={horizontal:'center',vertical:'middle',wrapText:true};c.border=BD;};
+    const wi=wb.addWorksheet('기본정보');
+    const writeDate=detail&&detail.version.writeDate?detail.version.writeDate:new Date().toISOString().substring(0,10);
+    [['판매계획 업로드 양식',''],['사업부',div],['작성일 (yyyy-mm-dd)',writeDate],['',''],['작성 규칙',''],
+     ['1','시트 이름·머리글은 바꾸지 마세요. 행은 추가/삭제해도 됩니다. 한 줄에 한 건(년월 · 판매구분 · 제품유형 · 지종 · 판매량)을 적습니다.'],
+     ['2','합계·소계 행은 적지 않습니다 — 합계는 시스템이 계산합니다. 같은 년월·판매구분·제품유형·지종은 한 줄로 합쳐서 적습니다.'],
+     ['3','판매량은 톤 단위 0 이상 숫자. 금액·단가는 적지 않습니다. 판매량이 0이면 줄을 생략해도 됩니다 (없는 줄 = 0).'],
+     ['4','판매구분·제품유형·지종·국가는 드롭다운 값만 사용합니다. 새 값이 필요하면 화면의 [판매 코드]·[판매 지종] 탭에 먼저 등록하세요.'],
+     ['','   · 드롭다운에 없는 값을 적어 올리면 업로드가 거부되고, 없는 값 목록을 확인한 뒤 기준정보에 한 번에 등록할 수 있습니다.'],
+     ['5','[국가별] 시트: 국가별 입력 판매구분(예: 수출)만 적습니다. 판매구분별 국가 합계가 [판매계획] 시트 합계와 다르면 경고합니다.'],
+     ['6','대상 기간 = 적힌 년월 중 처음 ~ 마지막 달. 같은 사업부·같은 시작월로 이미 올린 내용이 있으면 다시 올릴지 확인 후 교체합니다.']
+    ].forEach(r=>wi.addRow(r));
+    wi.getCell('A1').font={bold:true,size:14};wi.getCell('A5').font={bold:true};wi.getColumn(1).width=22;wi.getColumn(2).width=120;wi.getCell('B3').numFmt='@';
+    const cols=[sts,pts,cts,gns,ctySts];
+    const rng=(ci,n)=>"'목록'!$"+String.fromCharCode(65+ci)+'$2:$'+String.fromCharCode(65+ci)+'$'+Math.max(2,n+1);
+    const listDv=(ws,addr,ci)=>{const n=cols[ci].length;if(!n)return;ws.dataValidations.add(addr,{type:'list',allowBlank:true,formulae:[rng(ci,n)],showErrorMessage:true,errorStyle:'stop',errorTitle:'허용되지 않은 값',error:'드롭다운 목록의 값만 입력할 수 있습니다. 새 값은 화면 기준정보에 먼저 등록하세요.'});};
+    const qtyDv=(ws,addr)=>ws.dataValidations.add(addr,{type:'decimal',operator:'greaterThanOrEqual',allowBlank:true,formulae:[0],showErrorMessage:true,errorTitle:'판매량 확인',error:'0 이상의 숫자(톤)만 입력하세요.'});
+    const sheet=(name,head,widths,data,qCol)=>{
+        const ws=wb.addWorksheet(name,{views:[{state:'frozen',ySplit:1}]});
+        head.forEach((t,i)=>{const c=ws.getCell(1,i+1);c.value=t;hdr(c);});ws.getRow(1).height=36;widths.forEach((w,i)=>ws.getColumn(i+1).width=w);
+        const last=Math.max(500,data.length+100);
+        for(let r=2;r<=last;r++){const row=ws.getRow(r),src=data[r-2];if(src)src.forEach((v,i)=>{if(v!=null&&v!=='')row.getCell(i+1).value=v;});
+            row.getCell(1).numFmt='@';row.getCell(qCol).numFmt='#,##0.0##';for(let c=1;c<=head.length;c++)row.getCell(c).border=BD;}
+        return {ws,last};
+    };
+    const R=detail?(detail.rows||[]):[],C=detail?(detail.countries||[]):[];
+    const p=sheet('판매계획',SAL_HEAD,[12,12,12,18,12,40],R.map(r=>[purYmDot(r.ym),r.salesType,r.productType,r.gradeName,Number(r.qtyTon),r.note||null]),5);
+    listDv(p.ws,'B2:B'+p.last,0);listDv(p.ws,'C2:C'+p.last,1);listDv(p.ws,'D2:D'+p.last,3);qtyDv(p.ws,'E2:E'+p.last);
+    const c=sheet('국가별',SAL_C_HEAD,[12,12,16,12,40],C.map(r=>[purYmDot(r.ym),r.salesType,r.country,Number(r.qtyTon),r.note||null]),4);
+    listDv(c.ws,'B2:B'+c.last,4);listDv(c.ws,'C2:C'+c.last,2);qtyDv(c.ws,'D2:D'+c.last);
+    const wl=wb.addWorksheet('목록',{state:'hidden'});
+    wl.getRow(1).values=['판매구분','제품유형','국가','지종('+div+')','국가별 입력 판매구분'];
+    cols.forEach((arr,ci)=>arr.forEach((v,ri)=>{wl.getCell(ri+2,ci+1).value=v;}));
+    const buf=await wb.xlsx.writeBuffer();
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+    a.download='판매계획_'+div+(detail?'_'+detail.version.startYm+'_v'+versionId:'_양식')+'.xlsx';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+}
+
+// ── 업로드 ──
+function salParse(wb){
+    const out={division:null,writeDate:null,rows:[],countries:[],problems:[]};
+    const wi=wb.Sheets['기본정보'],wp=wb.Sheets['판매계획'],wc=wb.Sheets['국가별'];
+    if(!wp){out.problems.push('판매계획 시트가 없습니다 — [양식 다운로드]로 받은 파일을 사용하세요');return out;}
+    if(wi)XLSX.utils.sheet_to_json(wi,{header:1,defval:'',raw:true}).forEach(r=>{const k=purStrip(r[0]);if(k.startsWith('사업부'))out.division=String(r[1]??'').trim().toUpperCase()||null;else if(k.startsWith('작성일'))out.writeDate=excelDateToYmd(r[1])||null;});
+    const read=(ws,sheet,keys,labels,target)=>{
+        const a=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});const h=(a[0]||[]).map(purStrip);
+        const idx=labels.map(l=>h.findIndex(x=>x.startsWith(l)));
+        const missing=labels.filter((l,i)=>idx[i]<0&&l!=='비고');
+        if(missing.length){out.problems.push(sheet+' 시트 머리글을 찾지 못했습니다: '+missing.join(', '));return;}
+        for(let i=1;i<a.length;i++){const r=a[i]||[];
+            const vals=idx.map(c=>c<0?'':r[c]);
+            if(vals.slice(0,labels.length-1).every(v=>String(v??'').trim()===''))continue; // 빈 줄
+            const e={row:i+1};keys.forEach((k,j)=>{const v=vals[j];
+                if(k==='ym')e.ym=salYm(v);else if(k==='qty')e.qty=(v===''||v==null)?null:v;else e[k]=String(v??'').trim();});
+            target.push(e);}
+    };
+    read(wp,'판매계획',['ym','salesType','productType','gradeName','qty','note'],['년월','판매구분','제품유형','지종','판매량','비고'],out.rows);
+    if(wc)read(wc,'국가별',['ym','salesType','country','qty','note'],['년월','판매구분','국가','판매량','비고'],out.countries);
+    return out;
+}
+async function salUpload(input){
+    const file=input.files&&input.files[0];input.value='';if(!file)return;
+    const box=document.getElementById('salResult');SAL.pending=null;
+    box.innerHTML='<div style="font-size:11px;color:#64748b;"><i class="fas fa-spinner fa-spin mr-1"></i>'+purEsc(file.name)+' 확인 중...</div>';
+    let p;try{p=salParse(XLSX.read(await file.arrayBuffer(),{type:'array'}));}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;">엑셀 읽기 실패: '+purEsc(e.message)+'</div>';return;}
+    const div=getDiv();
+    if(p.division&&p.division!==div)p.problems.push('파일 사업부('+p.division+')와 화면 사업부('+div+')가 다릅니다 — 상단 사업부를 바꾸거나 기본정보 시트의 사업부를 고치세요');
+    if(!p.problems.length&&!p.rows.length)p.problems.push('판매계획 시트에 데이터가 없습니다');
+    if(p.problems.length){box.innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다',p.problems,'#b91c1c','#fef2f2','#fecaca');return;}
+    await salSubmit({division:div,writeDate:p.writeDate,fileName:file.name,rows:p.rows,countries:p.countries});
+}
+async function salSubmit(body){
+    const box=document.getElementById('salResult');
+    box.innerHTML='<div style="font-size:11px;color:#64748b;"><i class="fas fa-spinner fa-spin mr-1"></i>검사·저장 중... ('+body.rows.length+'행'+(body.countries.length?' + 국가 '+body.countries.length+'행':'')+')</div>';
+    let res;try{res=await purSend(SAL_API+'/upload','POST',body);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;">업로드 실패: '+purEsc(e.message)+'</div>';return;}
+    if(res&&res.needConfirm){const ex=res.existing||{};
+        if(!confirm(body.division+' '+purYmDot(res.startYm)+' 시작 판매계획이 이미 있습니다.\n(기존: '+purYmDot(ex.startYm)+' ~ '+purYmDot(ex.endYm)+', '+String(ex.createdAt||'').replace('T',' ').substring(0,16)+' '+(ex.createdBy||'')+')\n\n다시 올리시겠습니까? 기존 버전은 \'교체됨\'으로 바뀝니다.')){box.innerHTML='<div style="font-size:11px;color:#64748b;">업로드를 취소했습니다.</div>';return;}
+        body.replace=true;
+        try{res=await purSend(SAL_API+'/upload','POST',body);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;">업로드 실패: '+purEsc(e.message)+'</div>';return;}}
+    if(!res||!res.ok){
+        let h=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다 — 오류를 고친 뒤 다시 올려 주세요.',res&&res.errors||['알 수 없는 오류'],'#b91c1c','#fef2f2','#fecaca');
+        const ms=res&&res.missing;
+        if(ms&&((ms.codes||[]).length||(ms.grades||[]).length)){SAL.pending={body,missing:ms};
+            const byType=t=>(ms.codes||[]).filter(c=>c.codeType===t).map(c=>purEsc(c.codeName)+(c.countryYn==='Y'?' <span style="color:#4f46e5;">(국가별 입력)</span>':''));
+            let li='';SAL_TYPES.forEach(([t,l])=>{const a=byType(t);if(a.length)li+='<div>· '+l+': '+a.join(', ')+'</div>';});
+            if((ms.grades||[]).length)li+='<div>· '+purEsc(ms.division)+' 판매 지종: '+ms.grades.map(g=>purEsc(g.productType)+' / '+purEsc(g.gradeName)).join(', ')+'</div>';
+            h='<div style="margin-top:8px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;font-size:11px;color:#3730a3;"><div style="font-weight:700;margin-bottom:4px;"><i class="fas fa-question-circle mr-1"></i>기준정보에 없는 값이 있습니다 — 맞는 값이면 등록 후 다시 올릴 수 있습니다</div>'+li
+              +'<div style="color:#64748b;margin-top:4px;">오타라면 등록하지 말고 파일을 고쳐 주세요 · 연결 생산 지종은 비워서 등록됩니다 ([판매 지종] 탭에서 나중에 지정)</div>'
+              +'<div style="margin-top:8px;display:flex;gap:6px;"><button class="btn-p" style="font-size:11px;padding:4px 12px;" onclick="salRegisterMissing()"><i class="fas fa-plus mr-1"></i>기준정보에 등록하고 다시 올리기</button><button class="btn-g" style="font-size:11px;padding:4px 12px;" onclick="SAL.pending=null;this.closest(\'div[style*=eef2ff]\').remove();">등록 안 함</button></div></div>'+h;}
+        box.innerHTML=h;return;}
+    const v=res.version||{};const w=res.warnings||[];
+    box.innerHTML='<div style="padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:11px;color:#166534;"><i class="fas fa-check-circle mr-1"></i><b>업로드 완료</b> · '+purEsc(v.division)+' '+purYmDot(v.startYm)+' ~ '+purYmDot(v.endYm)+' · 지종 '+(v.gradeRows??0)+'행 · 국가 '+(v.countryRows??0)+'행'+(res.replaced?' · 기존 '+res.replaced+'건 교체됨':'')+'</div>'+(w.length?purMsgList('경고',w,'#d97706','#fffbeb','#fde68a'):'');
+    SAL.detailId=v.versionId;salLoadVersions();
+}
+async function salRegisterMissing(){
+    const p=SAL.pending;if(!p)return;const ms=p.missing;
+    const n=(ms.codes||[]).length+(ms.grades||[]).length;
+    if(!confirm('기준정보에 '+n+'건을 등록합니다.\n'+(ms.codes||[]).map(c=>'· '+salTypeLbl(c.codeType)+': '+c.codeName).concat((ms.grades||[]).map(g=>'· '+ms.division+' 지종: '+g.productType+' / '+g.gradeName)).slice(0,30).join('\n')+(n>30?'\n… 외 '+(n-30)+'건':'')+'\n\n등록하고 다시 올릴까요?'))return;
+    try{const r=await purSend(SAL_API+'/masters/bulk','POST',ms);SAL.codes=[];
+        document.getElementById('salResult').innerHTML='<div style="font-size:11px;color:#4f46e5;"><i class="fas fa-check mr-1"></i>기준정보 등록: 코드 '+(r.codeAdded||0)+'건 · 지종 '+(r.gradeAdded||0)+'건 — 다시 올리는 중...</div>';}
+    catch(e){alert('기준정보 등록 실패: '+e.message);return;}
+    SAL.pending=null;await salSubmit(p.body);
 }
 
 // ── Init ──
