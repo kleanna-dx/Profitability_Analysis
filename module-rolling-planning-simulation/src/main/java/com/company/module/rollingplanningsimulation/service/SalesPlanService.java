@@ -297,8 +297,7 @@ public class SalesPlanService {
         if (plans.isEmpty() && errors.isEmpty()) errors.add("판매계획 시트에 업로드할 데이터가 없습니다");
         if (!errors.isEmpty()) {
             res.put("ok", false);
-            res.put("errors", groupErrors(errors));
-            res.put("errorRows", errors.size());
+            res.put("errors", errors);
             // 미등록 값 — 화면에서 사용자가 확인하면 /masters/bulk 로 등록 (자동 등록 안 함)
             List<Map<String, Object>> mc = new ArrayList<>();
             missing.forEach((t, set) -> set.forEach(n -> {
@@ -369,34 +368,6 @@ public class SalesPlanService {
         res.put("replaced", existing.size());
         res.put("warnings", warnings);
         return res;
-    }
-
-    private static final java.util.regex.Pattern ROW_MSG = java.util.regex.Pattern.compile("^(\\S+) (\\d+|\\?)행: (.*)$", java.util.regex.Pattern.DOTALL);
-
-    /**
-     * 같은 시트·같은 내용의 오류는 한 줄로 묶음 (예: 같은 국가가 매달 나오면 14줄 → 1줄 + 행 번호 목록).
-     * 순서는 처음 나온 순서 유지
-     */
-    static List<String> groupErrors(List<String> errors) {
-        Map<String, List<String>> rowsByKey = new LinkedHashMap<>();
-        Map<String, String[]> parts = new HashMap<>();
-        for (String e : errors) {
-            java.util.regex.Matcher m = ROW_MSG.matcher(e);
-            if (!m.matches()) { rowsByKey.computeIfAbsent(e, k -> new ArrayList<>()); continue; }
-            String key = m.group(1) + "\u0000" + m.group(3);
-            parts.putIfAbsent(key, new String[]{m.group(1), m.group(3)});
-            rowsByKey.computeIfAbsent(key, k -> new ArrayList<>()).add(m.group(2));
-        }
-        List<String> out = new ArrayList<>();
-        rowsByKey.forEach((key, rows) -> {
-            String[] p = parts.get(key);
-            if (p == null) { out.add(key); return; }
-            if (rows.size() == 1) { out.add(p[0] + " " + rows.get(0) + "행: " + p[1]); return; }
-            int show = Math.min(rows.size(), 8);
-            out.add(p[0] + " " + rows.size() + "건: " + p[1] + " — " + String.join(", ", rows.subList(0, show)) + "행"
-                    + (rows.size() > show ? " 외 " + (rows.size() - show) + "건" : ""));
-        });
-        return out;
     }
 
     private static void checkCode(List<String> errors, Set<String> missing, String sheet, Object row, Map<String, SalesCode> map, String v, String label) {
