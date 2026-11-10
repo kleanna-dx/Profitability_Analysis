@@ -4646,7 +4646,7 @@ async function salSubmit(body){
         body.replace=true;
         try{res=await purSend(SAL_API+'/upload','POST',body);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;">업로드 실패: '+purEsc(e.message)+'</div>';return;}}
     if(!res||!res.ok){
-        let h=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다 — 오류를 고친 뒤 다시 올려 주세요.',res&&res.errors||['알 수 없는 오류'],'#b91c1c','#fef2f2','#fecaca');
+        let h=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다 — 오류를 고친 뒤 다시 올려 주세요.'+(res&&res.errorRows?' (오류 '+res.errorRows+'행 · 같은 내용은 한 줄로 묶음)':''),res&&res.errors||['알 수 없는 오류'],'#b91c1c','#fef2f2','#fecaca');
         const ms=res&&res.missing;
         if(ms&&((ms.codes||[]).length||(ms.grades||[]).length)){SAL.pending={body,missing:ms};
             const byType=t=>(ms.codes||[]).filter(c=>c.codeType===t).map(c=>purEsc(c.codeName)+(c.countryYn==='Y'?' <span style="color:#4f46e5;">(국가별 입력)</span>':''));
