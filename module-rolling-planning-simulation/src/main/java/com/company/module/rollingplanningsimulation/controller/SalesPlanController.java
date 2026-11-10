@@ -128,14 +128,14 @@ public class SalesPlanController {
         java.util.Set<String> haveCodes = new java.util.HashSet<>();
         Map<String, Integer> maxSort = new java.util.HashMap<>();
         for (SalesCode c : codeRepo.findAllByOrderByCodeTypeAscSortOrderAscCodeNameAsc()) {
-            haveCodes.add(c.getCodeType() + "|" + c.getCodeName());
+            haveCodes.add((c.getCodeType() + "|" + c.getCodeName()).toLowerCase());
             if (c.getSortOrder() != null) maxSort.merge(c.getCodeType(), c.getSortOrder(), Math::max);
         }
         int codeAdded = 0, gradeAdded = 0;
         // 제품유형을 먼저 등록해야 지종 검증을 통과함
         for (Map<String, Object> c : codes) {
             String type = str(c.get("codeType"));
-            String key = type + "|" + str(c.get("codeName"));
+            String key = (type + "|" + str(c.get("codeName"))).toLowerCase(); // 대소문자만 다른 값은 건너뜀 (덮어쓰기 방지)
             if (haveCodes.contains(key)) continue;
             Map<String, Object> m = new java.util.HashMap<>(c);
             if (str(m.get("sortOrder")) == null) { int next = maxSort.getOrDefault(type, 0) + 10; m.put("sortOrder", next); maxSort.put(type, next); }
@@ -146,11 +146,11 @@ public class SalesPlanController {
         java.util.Set<String> haveGrades = new java.util.HashSet<>();
         int gradeMax = 0;
         for (SalesGrade g : gradeRepo.findByDivisionOrderBySortOrderAscGradeNameAsc(division)) {
-            haveGrades.add(g.getProductType() + "|" + g.getGradeName());
+            haveGrades.add((g.getProductType() + "|" + g.getGradeName()).toLowerCase());
             if (g.getSortOrder() != null) gradeMax = Math.max(gradeMax, g.getSortOrder());
         }
         for (Map<String, Object> g : grades) {
-            String key = str(g.get("productType")) + "|" + str(g.get("gradeName"));
+            String key = (str(g.get("productType")) + "|" + str(g.get("gradeName"))).toLowerCase();
             if (haveGrades.contains(key)) continue;
             Map<String, Object> m = new java.util.HashMap<>(g);
             m.put("division", division);

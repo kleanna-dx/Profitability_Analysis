@@ -238,7 +238,13 @@ public class SalesPlanService {
             if (gn == null) errors.add(rowMsg(sh, row, "지종이 비어 있습니다"));
             else if (pt != null) {
                 SalesGrade g = grades.get(pt + "|" + gn);
-                if (g == null) { errors.add(rowMsg(sh, row, division + " 판매 지종 기준정보에 없는 지종입니다: " + pt + " / " + gn + " ([판매 지종] 탭에서 등록)")); missingGrades.add(pt + "|" + gn); }
+                if (g == null) {
+                    // DB 정렬규칙(utf8mb4_general_ci)은 대소문자를 구분하지 않음 → 대소문자만 다르면 새로 등록하지 않고 오류로 안내
+                    String lk = (pt + "|" + gn).toLowerCase();
+                    SalesGrade near = grades.entrySet().stream().filter(en -> en.getKey().toLowerCase().equals(lk)).map(Map.Entry::getValue).findFirst().orElse(null);
+                    if (near != null) errors.add(rowMsg(sh, row, "지종 대소문자가 기준정보와 다릅니다: '" + gn + "' → '" + near.getGradeName() + "' 로 고쳐 주세요"));
+                    else { errors.add(rowMsg(sh, row, division + " 판매 지종 기준정보에 없는 지종입니다: " + pt + " / " + gn + " ([판매 지종] 탭에서 등록)")); missingGrades.add(pt + "|" + gn); }
+                }
                 else if (!"Y".equals(g.getUseYn())) errors.add(rowMsg(sh, row, "미사용 지종입니다: " + pt + " / " + gn));
             }
             if (str(r.get("qty")) == null) errors.add(rowMsg(sh, row, "판매량(톤)이 비어 있습니다"));
@@ -367,7 +373,12 @@ public class SalesPlanService {
     private static void checkCode(List<String> errors, Set<String> missing, String sheet, Object row, Map<String, SalesCode> map, String v, String label) {
         if (v == null) { errors.add(rowMsg(sheet, row, label + "이(가) 비어 있습니다")); return; }
         SalesCode c = map.get(v);
-        if (c == null) { errors.add(rowMsg(sheet, row, "판매 코드 기준정보에 없는 " + label + "입니다: " + v + " ([판매 코드] 탭에서 등록)")); missing.add(v); }
+        if (c == null) {
+            // 대소문자만 다른 값은 새로 등록하지 않음 (DB 정렬규칙이 대소문자 무시 → 등록 시 기존 값을 덮어씀)
+            String near = map.keySet().stream().filter(k -> k.equalsIgnoreCase(v)).findFirst().orElse(null);
+            if (near != null) errors.add(rowMsg(sheet, row, label + " 대소문자가 기준정보와 다릅니다: '" + v + "' → '" + near + "' 로 고쳐 주세요"));
+            else { errors.add(rowMsg(sheet, row, "판매 코드 기준정보에 없는 " + label + "입니다: " + v + " ([판매 코드] 탭에서 등록)")); missing.add(v); }
+        }
         else if (!"Y".equals(c.getUseYn())) errors.add(rowMsg(sheet, row, "미사용 " + label + "입니다: " + v));
     }
 }
