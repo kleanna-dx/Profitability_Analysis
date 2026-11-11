@@ -40,6 +40,7 @@ public class PowerSimService {
     private final PwSimPriceRepository priceRepo;
     private final PwSimAdjustRepository adjustRepo;
     private final PwSimScenarioRepository scenarioRepo;
+    private final PwLineKwRepository lineKwRepo;
     private final AuditSupport auditSupport;
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -379,7 +380,15 @@ public class PowerSimService {
             if (str(r.get("lineCode")) != null) req.put(str(r.get("lineCode")), r);
         Price price = priceRepo.findFirstByDivisionAndYm(div, ym).map(PowerSimService::toPrice).orElse(null);
         List<Adjust> adjusts = adjustRepo.findByDivisionAndYmOrderByAdjustIdAsc(div, ym).stream().map(PowerSimService::toAdjust).toList();
-        return compute(div, ym, v, basis, req, price, adjusts);
+        return compute(div, ym, v, basis, req, price, adjusts, monthKw(div, ym));
+    }
+
+    /** 기준정보 › 호기별 전력 kW (월별) — 계산월 값만 (다른 달 값으로 채우지 않음). key = 호기코드 소문자 */
+    Map<String, PwLineKw> monthKw(String div, String ym) {
+        Map<String, PwLineKw> m = new HashMap<>();
+        for (PwLineKw k : lineKwRepo.findByYearAndMonthAndDivisionOrderByMachineCodeAsc(Integer.parseInt(ym.substring(0, 4)), Integer.parseInt(ym.substring(4)), div))
+            m.put(k.getMachineCode().toLowerCase(Locale.ROOT), k);
+        return m;
     }
 
     static Price toPrice(PwSimPrice p) {
@@ -393,6 +402,19 @@ public class PowerSimService {
     @SuppressWarnings("unchecked")
     static Map<String, Object> compute(String div, String ym, PwSimBasisVersion v, List<PwSimBasisLine> basis,
                                        Map<String, Map<String, Object>> req, Price price, List<Adjust> adjusts) {
+        return compute(div, ym, v, basis, req, price, adjusts, Map.of());
+    }
+
+    /**
+     * kW 적용 순서: 화면 임시 변경 > 기준정보 › 호기별 전력 kW(계산월) > 전력 기준정보 버전 값.
+     * 월별 kW 는 가동/운휴 각각 따로 적용 (월별에 가동만 있으면 운휴는 버전 값). 출처는 lineInfo.kwSource 에 표시.
+     */
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> compute(String div, String ym, PwSimBasisVersion v, List<PwSimBasisLine> basis,
+                                       Map<String, Map<String, Object>> req, Price price, List<Adjust> adjusts,
+                                       Map<String, PwLineKw> monthKw) {
+        if (monthKw == null) monthKw = Map.of();
+        List<String> noMonthKw = new ArrayList<>();
         int y = Integer.parseInt(ym.substring(0, 4)), m = Integer.parseInt(ym.substring(4));
         List<Line> base = new ArrayList<>(), sim = new ArrayList<>();
         List<Map<String, Object>> lineInfo = new ArrayList<>();
@@ -407,8 +429,13 @@ public class PowerSimService {
             String pb = overridden.contains("productivityBasis") ? str(ov.get("productivityBasis")).toUpperCase(Locale.ROOT) : b.getProductivityBasis();
             String pu = overridden.contains("productivityUnit") ? str(ov.get("productivityUnit")) : b.getProductivityUnit();
             BigDecimal dh = overridden.contains("dayBasisHours") ? nonNeg(ov.get("dayBasisHours"), b.getLineCode() + " 1일 기준시간") : b.getDayBasisHours();
-            BigDecimal rk = overridden.contains("runKw") ? nonNeg(ov.get("runKw"), b.getLineCode() + " 가동 평균전력") : b.getRunKw();
-            BigDecimal ik = overridden.contains("idleKw") ? nonNeg(ov.get("idleKw"), b.getLineCode() + " 운휴 평균전력") : b.getIdleKw();
+            PwLineKw mk = monthKw.get(b.getLineCode().toLowerCase(Locale.ROOT));
+            BigDecimal mRun = mk == null ? null : mk.getRunKw(), mIdle = mk == null ? null : mk.getIdleKw();
+            String runSrc = overridden.contains("runKw") ? "OVERRIDE" : mRun != null ? "MONTH" : "VERSION";
+            String idleSrc = overridden.contains("idleKw") ? "OVERRIDE" : mIdle != null ? "MONTH" : "VERSION";
+            BigDecimal rk = overridden.contains("runKw") ? nonNeg(ov.get("runKw"), b.getLineCode() + " 가동 평균전력") : mRun != null ? mRun : b.getRunKw();
+            BigDecimal ik = overridden.contains("idleKw") ? nonNeg(ov.get("idleKw"), b.getLineCode() + " 운휴 평균전력") : mIdle != null ? mIdle : b.getIdleKw();
+            if (!monthKw.isEmpty() && mk == null && (b.getRunKw() != null || b.getIdleKw() != null)) noMonthKw.add(b.getLineCode());
             BigDecimal adj = num(r.get("adjKwh"), b.getLineCode() + " 사용량 조정값");
             String reason = str(r.get("adjReason"));
             BigDecimal qty = num(r.get("qty"), b.getLineCode() + " 생산량");
@@ -423,6 +450,10 @@ public class PowerSimService {
             Map<String, Object> info = new LinkedHashMap<>();
             info.put("lineCode", b.getLineCode());
             info.put("overridden", overridden);
+            info.put("runKwSource", runSrc);
+            info.put("idleKwSource", idleSrc);
+            info.put("runKwApplied", rk);
+            info.put("idleKwApplied", ik);
             info.put("scopeMemo", b.getScopeMemo());
             info.put("sourceNote", b.getSourceNote());
             info.put("fixedKwh", b.getFixedKwh());
@@ -436,6 +467,13 @@ public class PowerSimService {
             info.put("basis", bv);
             lineInfo.add(info);
         }
+        String ymTxt = ym.substring(0, 4) + "." + ym.substring(4);
+        if (monthKw.isEmpty()) warnings.add(ymTxt + " 호기별 전력 kW(월별 기준정보)가 없어 전력 기준정보 버전의 kW로 계산했습니다");
+        else if (!noMonthKw.isEmpty()) warnings.add(ymTxt + " 호기별 전력 kW(월별)에 없는 호기는 전력 기준정보 버전의 kW로 계산했습니다: " + String.join(", ", noMonthKw));
+        Set<String> basisCodes = new HashSet<>();
+        basis.forEach(b -> basisCodes.add(b.getLineCode().toLowerCase(Locale.ROOT)));
+        List<String> extraKw = monthKw.values().stream().map(PwLineKw::getMachineCode).filter(c -> !basisCodes.contains(c.toLowerCase(Locale.ROOT))).sorted().toList();
+        if (!extraKw.isEmpty()) warnings.add("호기별 전력 kW(월별)에는 있지만 전력 기준정보 버전에 없는 호기 — 계산에 쓰지 않음: " + String.join(", ", extraKw));
         if (!v.isApproved()) warnings.add("검토용 초기값(미승인 기준정보 '" + v.getVersionName() + "')으로 계산했습니다 — 현업 승인 전에는 확정값이 아닙니다");
         if (v.getApplyYm() != null && !v.getApplyYm().equals(ym))
             warnings.add("기준정보 적용월(" + v.getApplyYm().substring(0, 4) + "." + v.getApplyYm().substring(4) + ")과 계산월(" + ym.substring(0, 4) + "." + ym.substring(4) + ")이 다릅니다 — 버전 선택을 확인하세요");
@@ -590,7 +628,7 @@ public class PowerSimService {
         PlReq pr = plRequest(basis, mt.get("base"), mt.get("sim"), warnings);
         Price price = priceRepo.findFirstByDivisionAndYm(div, ym).map(PowerSimService::toPrice).orElse(null);
         List<Adjust> adjusts = adjustRepo.findByDivisionAndYmOrderByAdjustIdAsc(div, ym).stream().map(PowerSimService::toAdjust).toList();
-        Map<String, Object> calc = compute(div, ym, v, basis, pr.req(), price, adjusts);
+        Map<String, Object> calc = compute(div, ym, v, basis, pr.req(), price, adjusts, monthKw(div, ym));
         warnings.addAll((List<String>) calc.get("warnings"));
         calc.put("warnings", warnings);
         calc.put("available", true);
