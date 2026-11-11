@@ -86,4 +86,34 @@ class PowerSimPlLinkTest {
         assertSame(other, PowerSimService.pickVersion(List.of(other), "202606"));
         assertNull(PowerSimService.pickVersion(List.of(), "202606"));
     }
+
+    // ---------------- STEP3 확정(잠금) 호기 = 확정 생산계획 그대로 / 미확정 호기 = P/L 입력 생산량
+    static Map<String, Object> rowL(String mc, String prod, String ton, int locked) { Map<String, Object> m = row(mc, prod, ton); m.put("LOCKED", locked); return m; }
+
+    @Test void lockedMachine_keepsConfirmedPlan_unlockedUsesPl() {
+        // PM2 확정(SC 100), PM3 미확정(SC 300). P/L SC 400 → 480 (×1.2) → PM2 100 그대로, PM3 360
+        List<Map<String, Object>> plan = List.of(rowL("PM2", "SC", "100", 1), rowL("PM3", "SC", "300", 0));
+        Map<String, Map<String, BigDecimal>> mt = PowerSimService.machineTonFromProducts(plan,
+                List.of(new PowerSimService.ProductSim("SC", d("400"), d("480"))), "ALL", new ArrayList<>());
+        assertEquals(0, d("100").compareTo(mt.get("sim").get("PM2")), "확정 호기는 P/L 입력과 무관");
+        assertEquals(0, d("360").compareTo(mt.get("sim").get("PM3")));
+        Map<String, Object> src = PowerSimService.qtySource(plan, true);
+        assertEquals("MIXED", src.get("code"));
+        assertEquals(List.of("PM2"), src.get("lockedMachines"));
+        assertEquals(List.of("PM3"), src.get("unlockedMachines"));
+    }
+
+    @Test void qtySource_codes() {
+        assertEquals("NONE", PowerSimService.qtySource(List.of(), true).get("code"));
+        assertEquals("LOCKED", PowerSimService.qtySource(List.of(rowL("PM2", "SC", "1", 1), rowL("PM3", "SC", "1", 1)), true).get("code"));
+        assertEquals("PL", PowerSimService.qtySource(List.of(rowL("PM2", "SC", "1", 0)), true).get("code"));
+        assertEquals("PLAN", PowerSimService.qtySource(List.of(rowL("PM2", "SC", "1", 0)), false).get("code"));
+        // 한 호기 안에서 일부 지종만 확정이면 미확정으로 봄
+        assertEquals(List.of("PM2"), PowerSimService.qtySource(List.of(rowL("PM2", "SC", "1", 1), rowL("PM2", "KL", "1", 0)), true).get("unlockedMachines"));
+    }
+
+    @Test void isLocked_variants() {
+        assertTrue(PowerSimService.isLocked(1)); assertTrue(PowerSimService.isLocked(true)); assertTrue(PowerSimService.isLocked("1"));
+        assertFalse(PowerSimService.isLocked(0)); assertFalse(PowerSimService.isLocked(null)); assertFalse(PowerSimService.isLocked("N"));
+    }
 }

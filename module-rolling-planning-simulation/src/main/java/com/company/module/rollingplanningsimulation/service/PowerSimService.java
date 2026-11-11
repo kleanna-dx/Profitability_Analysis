@@ -585,7 +585,9 @@ public class PowerSimService {
             BigDecimal t = r.get("TON") == null ? BigDecimal.ZERO : new BigDecimal(String.valueOf(r.get("TON")));
             base.merge(mc, t, BigDecimal::add);
             // P/L 에서 호기를 하나 골랐으면 그 호기에만 지종 비율 적용 (다른 호기는 생산계획 그대로)
-            boolean apply = machine == null || "ALL".equalsIgnoreCase(machine) || machine.equalsIgnoreCase(mc);
+            // STEP3 에서 확정(잠금)한 호기는 확정 생산계획 그대로 — P/L 입력 생산량을 적용하지 않음
+            boolean locked = isLocked(r.get("LOCKED"));
+            boolean apply = !locked && (machine == null || "ALL".equalsIgnoreCase(machine) || machine.equalsIgnoreCase(mc));
             sim.merge(mc, apply ? t.multiply(ratio.getOrDefault(prod, BigDecimal.ONE), PowerSimCalculator.MC) : t, BigDecimal::add);
         }
         Map<String, Map<String, BigDecimal>> out = new LinkedHashMap<>();
@@ -593,13 +595,44 @@ public class PowerSimService {
         return out;
     }
 
+
+    static boolean isLocked(Object v) {
+        if (v == null) return false;
+        if (v instanceof Boolean b) return b;
+        if (v instanceof Number n) return n.intValue() == 1;
+        String x = v.toString().trim();
+        return "1".equals(x) || "true".equalsIgnoreCase(x) || "Y".equalsIgnoreCase(x);
+    }
+
+    /** 호기별 생산량 출처 — 호기 전체가 확정이면 LOCKED, 하나라도 미확정이면 UNLOCKED */
+    static Map<String, Object> qtySource(List<Map<String, Object>> planRows, boolean hasPlInput) {
+        Map<String, Boolean> lockByMc = new TreeMap<>();
+        for (Map<String, Object> r : planRows) lockByMc.merge(str(r.get("MACHINE_CODE")), isLocked(r.get("LOCKED")), Boolean::logicalAnd);
+        List<String> locked = new ArrayList<>(), unlocked = new ArrayList<>();
+        lockByMc.forEach((k, v) -> (v ? locked : unlocked).add(k));
+        String code, label;
+        if (planRows.isEmpty()) { code = "NONE"; label = "생산계획 없음"; }
+        else if (unlocked.isEmpty()) { code = "LOCKED"; label = "STEP3 확정 생산계획"; }
+        else if (locked.isEmpty()) { code = hasPlInput ? "PL" : "PLAN"; label = hasPlInput ? "P/L 시뮬레이터 생산량 (생산계획 미확정)" : "생산계획 (미확정)"; }
+        else { code = "MIXED"; label = "확정 호기 = STEP3 확정 생산계획 / 미확정 호기 = " + (hasPlInput ? "P/L 시뮬레이터 생산량" : "생산계획(미확정)"); }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("code", code); m.put("label", label); m.put("lockedMachines", locked); m.put("unlockedMachines", unlocked);
+        return m;
+    }
+
+    record ProdQty(PwSimBasisVersion version, List<PwSimBasisLine> basis, Map<String, Map<String, BigDecimal>> machineTon,
+                   PlReq req, Map<String, Object> source, List<String> warnings) {}
+
     /**
-     * P/L 전력비 — P/L 지종별 시뮬 생산량 → 호기별 생산량(ton) → 전력비 계산 (기준정보 kW·생산성·단가 사용). 저장하지 않음.
-     * body: {division, ym, machine(ALL/호기), products:[{product, plan, sim}]}  (톤)
-     * 생산량 = P/L 과 같은 기준인 총생산량 = 양품 ÷ (1 − 손지율) → P/L 시뮬 생산량 합계 = 호기 시뮬 생산량 합계
+     * 전력비 생산량 결정 (P/L 전력비 · 전력비 시뮬레이션 탭 공통).
+     * <ul>
+     *   <li>STEP3 생산계획을 확정(잠금)한 호기 → 확정 생산계획 그대로</li>
+     *   <li>미확정 호기 → P/L 시뮬레이터 지종별 입력 생산량을 생산계획 호기×지종 비중으로 나눈 값 (P/L 입력이 없으면 생산계획 그대로)</li>
+     *   <li>생산량 = 총생산량 = 양품 ÷ (1 − 손지율) — P/L 생산량과 같은 기준</li>
+     * </ul>
+     * body: {division, ym, machine(ALL/호기), versionId(선택 — 없으면 자동 선택), products:[{product, plan, sim}]} (톤)
      */
-    @SuppressWarnings("unchecked")
-    public Map<String, Object> plCost(Map<String, Object> body) {
+    ProdQty prodQty(Map<String, Object> body) {
         String div = division(body.get("division")), ym = ym(body.get("ym"));
         List<ProductSim> products = new ArrayList<>();
         if (body.get("products") instanceof List<?> l)
@@ -608,34 +641,76 @@ public class PowerSimService {
                 if (sim != null && sim.signum() < 0) throw new IllegalArgumentException("시뮬 생산량은 0 이상이어야 합니다: " + m.get("product"));
                 products.add(new ProductSim(str(m.get("product")), num(m.get("plan"), "지종 생산계획"), sim));
             }
-        PwSimBasisVersion v = pickVersion(versionRepo.findByDivisionOrderByVersionIdDesc(div), ym);
-        if (v == null) {
+        PwSimBasisVersion v;
+        if (body.get("versionId") != null && str(body.get("versionId")) != null) {
+            v = version(Long.valueOf(String.valueOf(body.get("versionId"))));
+            if (!div.equals(v.getDivision())) throw new IllegalArgumentException("다른 사업부의 기준정보입니다: " + v.getDivision());
+        } else v = pickVersion(versionRepo.findByDivisionOrderByVersionIdDesc(div), ym);
+        if (v == null) return new ProdQty(null, List.of(), Map.of(), null, Map.of(), List.of());
+        List<PwSimBasisLine> basis = lineRepo.findByVersionIdOrderBySortOrderAscLineCodeAsc(v.getVersionId());
+        String expr = com.company.module.rollingplanningsimulation.support.RawMaterialSql.PLAN_PRODUCT_EXPR;
+        List<Map<String, Object>> planRows = jdbc.queryForList(
+                "SELECT MACHINE_CODE, " + expr + " AS PRODUCT, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS TON," +
+                " MIN(CASE WHEN COALESCE(IS_LOCKED,0) = 1 THEN 1 ELSE 0 END) AS LOCKED" +
+                " FROM rpsim_production_plan WHERE DIVISION = ? AND `YEAR` = ? AND `MONTH` = ? AND DELETED_YN = 'N'" +
+                " AND COALESCE(GOOD_TON,0) > 0 AND COALESCE(WASTE_RATE_PCT,0) < 100" +
+                " GROUP BY MACHINE_CODE, " + expr,
+                div, Integer.parseInt(ym.substring(0, 4)), Integer.parseInt(ym.substring(4)));
+        List<String> warnings = new ArrayList<>();
+        String ymTxt = ym.substring(0, 4) + "." + ym.substring(4);
+        boolean hasPl = products.stream().anyMatch(p -> p.sim() != null);
+        Map<String, Object> src = qtySource(planRows, hasPl);
+        if (planRows.isEmpty()) warnings.add(ymTxt + " STEP3 생산계획이 없습니다 — 모든 호기를 생산량 0(운휴 전력만)으로 계산했습니다");
+        else if (!((List<?>) src.get("unlockedMachines")).isEmpty())
+            warnings.add(ymTxt + " STEP3 생산계획 미확정 호기: " + String.join(", ", (List<String>) src.get("unlockedMachines"))
+                    + (hasPl ? " — P/L 시뮬레이터 생산량으로 계산했습니다" : " — 미확정 생산계획으로 계산했습니다") + " (확정하면 확정 생산계획으로 바뀝니다)");
+        Map<String, Map<String, BigDecimal>> mt = machineTonFromProducts(planRows, products, str(body.get("machine")), warnings);
+        PlReq pr = plRequest(basis, mt.get("base"), mt.get("sim"), warnings);
+        return new ProdQty(v, basis, mt, pr, src, warnings);
+    }
+
+    /** 전력비 시뮬레이션 탭 — 호기별 기준·시뮬 생산량 (전력 기준정보 생산량 단위로 변환). 계산·저장하지 않음 */
+    public Map<String, Object> productionQty(Map<String, Object> body) {
+        ProdQty q = prodQty(body);
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("division", division(body.get("division"))); res.put("ym", ym(body.get("ym")));
+        if (q.version() == null) { res.put("available", false); res.put("reason", "전력비 기준정보가 없습니다"); return res; }
+        res.put("available", true);
+        res.put("versionId", q.version().getVersionId());
+        res.put("source", q.source());
+        res.put("lines", q.req().req().values());
+        res.put("machineBaseTon", q.machineTon().get("base"));
+        res.put("machineSimTon", q.machineTon().get("sim"));
+        res.put("warnings", q.warnings());
+        return res;
+    }
+
+    /**
+     * P/L 전력비 — {@link #prodQty} 생산량 → 전력비 계산 (기준정보 kW·생산성·단가 사용). 저장하지 않음.
+     * body: {division, ym, machine(ALL/호기), products:[{product, plan, sim}]}  (톤)
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> plCost(Map<String, Object> body) {
+        String div = division(body.get("division")), ym = ym(body.get("ym"));
+        ProdQty q = prodQty(body);
+        if (q.version() == null) {
             Map<String, Object> res = new LinkedHashMap<>();
             res.put("division", div); res.put("ym", ym); res.put("available", false);
             res.put("reason", div + " 전력비 기준정보가 없습니다");
             return res;
         }
-        List<PwSimBasisLine> basis = lineRepo.findByVersionIdOrderBySortOrderAscLineCodeAsc(v.getVersionId());
-        List<Map<String, Object>> planRows = jdbc.queryForList(
-                "SELECT MACHINE_CODE, " + com.company.module.rollingplanningsimulation.support.RawMaterialSql.PLAN_PRODUCT_EXPR + " AS PRODUCT, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS TON" +
-                " FROM rpsim_production_plan WHERE DIVISION = ? AND `YEAR` = ? AND `MONTH` = ? AND DELETED_YN = 'N'" +
-                " AND COALESCE(GOOD_TON,0) > 0 AND COALESCE(WASTE_RATE_PCT,0) < 100" +
-                " GROUP BY MACHINE_CODE, " + com.company.module.rollingplanningsimulation.support.RawMaterialSql.PLAN_PRODUCT_EXPR,
-                div, Integer.parseInt(ym.substring(0, 4)), Integer.parseInt(ym.substring(4)));
-        List<String> warnings = new ArrayList<>();
-        if (planRows.isEmpty()) warnings.add(ym.substring(0, 4) + "." + ym.substring(4) + " 생산계획이 없습니다 — 모든 호기를 생산량 0(운휴 전력만)으로 계산했습니다");
-        Map<String, Map<String, BigDecimal>> mt = machineTonFromProducts(planRows, products, str(body.get("machine")), warnings);
-        PlReq pr = plRequest(basis, mt.get("base"), mt.get("sim"), warnings);
+        List<String> warnings = new ArrayList<>(q.warnings());
         Price price = priceRepo.findFirstByDivisionAndYm(div, ym).map(PowerSimService::toPrice).orElse(null);
         List<Adjust> adjusts = adjustRepo.findByDivisionAndYmOrderByAdjustIdAsc(div, ym).stream().map(PowerSimService::toAdjust).toList();
-        Map<String, Object> calc = compute(div, ym, v, basis, pr.req(), price, adjusts, monthKw(div, ym));
+        Map<String, Object> calc = compute(div, ym, q.version(), q.basis(), q.req().req(), price, adjusts, monthKw(div, ym));
         warnings.addAll((List<String>) calc.get("warnings"));
         calc.put("warnings", warnings);
         calc.put("available", true);
-        calc.put("machineBaseTon", mt.get("base"));
-        calc.put("machineSimTon", mt.get("sim"));
-        calc.put("matched", pr.matched());
-        calc.put("unusedPlanCodes", pr.unusedPlanCodes());
+        calc.put("source", q.source());
+        calc.put("machineBaseTon", q.machineTon().get("base"));
+        calc.put("machineSimTon", q.machineTon().get("sim"));
+        calc.put("matched", q.req().matched());
+        calc.put("unusedPlanCodes", q.req().unusedPlanCodes());
         calc.remove("simInput"); calc.remove("baseInput");
         return calc;
     }
