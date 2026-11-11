@@ -81,6 +81,8 @@
 
         /* Ref sub-tabs */
         .ref-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px;}
+        .pws-in-demo{display:inline-block;padding:0 6px;border:1px solid #fcd34d;background:#fffbeb;border-radius:4px;}
+        .pws-auto-demo{display:inline-block;padding:0 6px;border:1px solid #e2e8f0;background:#f1f5f9;color:#64748b;border-radius:4px;}
         .ref-tab{padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;border-radius:8px;border:1px solid #e2e8f0;color:#64748b;background:#fff;transition:all .15s;}
         .ref-tab:hover{border-color:#a5b4fc;color:#4f46e5;}
         .ref-tab.active{background:#4338ca;color:#fff;border-color:#4338ca;}
@@ -506,6 +508,7 @@
         <div class="sub-tab" onclick="subTab(4,'prodsim')">지종별 손익 시뮬</div>
         <div class="sub-tab" onclick="subTab(4,'energy')">에너지비 시뮬레이션</div>
         <div class="sub-tab" onclick="subTab(4,'matfc')">원부재료비</div>
+        <div class="sub-tab" onclick="subTab(4,'pwsim')">전력비 시뮬레이션</div>
     </div>
 
     <!-- 4-1 P/L 시뮬레이터 -->
@@ -729,6 +732,93 @@
             </div>
         </div>
     </div>
+    <!-- 4-6 전력비 (호기별 생산량 기반) -->
+    <div id="s4-pwsim" style="display:none;">
+        <div class="ref-tabs" id="pwsTabs">
+            <div class="ref-tab active" onclick="pwsTab('sim')"><i class="fas fa-bolt mr-1"></i>시뮬레이션</div>
+            <div class="ref-tab" onclick="pwsTab('basis')"><i class="fas fa-industry mr-1"></i>전력 기준정보</div>
+            <div class="ref-tab" onclick="pwsTab('price')"><i class="fas fa-won-sign mr-1"></i>월 평균단가</div>
+            <div class="ref-tab" onclick="pwsTab('adj')"><i class="fas fa-plus-minus mr-1"></i>기타 가산·차감</div>
+            <div class="ref-tab" onclick="pwsTab('scn')"><i class="fas fa-save mr-1"></i>저장 시나리오</div>
+        </div>
+        <div class="sc" style="padding:8px 14px;margin-bottom:12px;font-size:10px;color:#475569;line-height:1.7;background:#f8fafc;">
+            <div><i class="fas fa-info-circle mr-1 text-indigo-500"></i><b>자동 계산</b>: 계획 생산량 → 가동시간(생산량 ÷ 시간당 생산성) → 운휴시간(월 전체시간 − 가동시간) → 사용량(가동h × 가동kW + 운휴h × 운휴kW + 조정값) → × 월 평균단가 → 호기·공정·공장 전력비</div>
+            <div><i class="fas fa-user-edit mr-1 text-amber-500"></i><b>현업 입력</b>: 생산성 · 가동/운휴 평균전력 · 월 평균단가(+산정범위) · 사용량 조정값(사유) · 기타 가산·차감 &nbsp; <span class="pws-in-demo">입력 칸</span> <span class="pws-auto-demo">자동 계산(수정 불가)</span></div>
+            <div><i class="fas fa-file-excel mr-1 text-emerald-600"></i><b>엑셀 연결</b>: [전력 기준정보] → [엑셀 가져오기]에 「전력비 이동계획」 파일을 올리면 05.이동계획 시트에서 선택한 월의 호기별 가동·운휴 kW, 생산량, 가동시간, 단가(O열), SPC·DR·복합보일러·삼성보상금(H~K열)을 읽어 옵니다 — 가동시간은 생산팀 통보값, 생산성은 그 달 생산량 ÷ (가동시간 ÷ 24)로 역산한 값입니다</div>
+            <div style="color:#b45309;"><i class="fas fa-exclamation-triangle mr-1"></i>월 평균단가를 적용한 <b>추정값</b>입니다 — 실제 한전 청구금액이나 증분비용이 아닙니다. 부하별(경·중·최대부하) 요금·기본요금·역률·전력기금은 단가에 포함된 값을 쓰고 다시 계산하지 않습니다. SPC·DR·복합보일러·삼성보상금은 [기타 가산·차감]에 월 금액으로 넣습니다.</div>
+        </div>
+        <!-- 시뮬레이션 -->
+        <div id="pws-sim">
+            <div class="sc" style="padding:12px 16px;margin-bottom:12px;">
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                    <span style="font-size:12px;font-weight:700;color:#1e293b;"><i class="fas fa-bolt text-indigo-500 mr-1"></i>계산월 <span id="pwsYm" style="color:#4f46e5;"></span> · <span id="pwsDiv" style="color:#4f46e5;"></span></span>
+                    <label style="font-size:11px;color:#64748b;">기준정보 버전</label>
+                    <select id="pwsVerSel" onchange="pwsSelectVersion(this.value)" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;min-width:240px;"></select>
+                    <div style="margin-left:auto;display:flex;gap:6px;">
+                        <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="pwsFillPlan()"><i class="fas fa-download mr-1"></i>생산계획 생산량 불러오기</button>
+                        <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="pwsClearRows()"><i class="fas fa-eraser mr-1"></i>입력 비우기</button>
+                        <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="pwsCalc()"><i class="fas fa-calculator mr-1"></i>계산</button>
+                        <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="pwsSaveScenario()"><i class="fas fa-save mr-1"></i>시나리오 저장</button>
+                    </div>
+                </div>
+                <div id="pwsVerNote" style="margin-top:6px;font-size:10px;"></div>
+            </div>
+            <div class="sc" style="overflow:hidden;margin-bottom:12px;">
+                <div style="padding:9px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:12px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-keyboard text-amber-500 mr-1"></i>입력 <span style="font-size:10px;color:#94a3b8;font-weight:400;">빈칸 = 미입력(0과 다름) · 생산량이 없으면 0을 입력 · 기준정보 값은 [임시 변경]으로 이 계산에만 바꿀 수 있습니다(원본 불변)</span></h3></div>
+                <div style="overflow-x:auto;"><table class="st" style="font-size:11px;white-space:nowrap;"><thead><tr><th>호기</th><th>공정</th><th>단위</th><th class="r">기준 생산량</th><th class="r">기준 가동h</th><th class="r" style="background:#fef3c7;">시뮬 생산량</th><th class="r" style="background:#fef3c7;">시뮬 가동h<br><span style="font-weight:400;font-size:9px;">비우면 생산성으로 계산</span></th><th class="r">생산성(/일)</th><th class="r">가동 kW</th><th class="r">운휴 kW</th><th class="r">고정 kWh</th><th class="r">조정 kWh</th><th>조정 사유</th></tr></thead><tbody id="pwsInTb"></tbody></table></div>
+            </div>
+            <div id="pwsSimRes"></div>
+        </div>
+        <!-- 전력 기준정보 -->
+        <div id="pws-basis" style="display:none;">
+            <div class="sc" style="overflow:hidden;margin-bottom:12px;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-layer-group text-indigo-500 mr-1"></i>기준정보 버전 <span style="font-size:10px;color:#94a3b8;font-weight:400;">검토용 초기값(미승인) → 현업 승인 시 잠김 · 수정하려면 [복사] · 월마다 값이 다르면 적용월별 버전을 따로 만드세요</span></h3>
+                    <div style="display:flex;gap:6px;">
+                        <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="pwsDownloadTemplate()"><i class="fas fa-file-download mr-1"></i>표준 양식 다운로드</button>
+                        <label class="btn-g" style="font-size:10px;padding:4px 10px;cursor:pointer;margin:0;"><i class="fas fa-file-upload mr-1"></i>엑셀 가져오기(이동계획·표준양식)<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="pwsImport(this)"></label>
+                        <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsVersionModal(null)"><i class="fas fa-plus mr-1"></i>새 버전</button>
+                    </div>
+                </div>
+                <div id="pwsImportRes" style="padding:0 16px;"></div>
+                <div style="overflow-x:auto;max-height:240px;"><table class="st" style="font-size:11px;"><thead><tr><th>상태</th><th>버전 이름</th><th>적용월</th><th>출처</th><th class="r">호기</th><th>승인</th><th>메모</th><th style="width:200px;">관리</th></tr></thead><tbody id="pwsVerTb"></tbody></table></div>
+            </div>
+            <div id="pwsLines"></div>
+        </div>
+        <!-- 월 평균단가 -->
+        <div id="pws-price" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-won-sign text-indigo-500 mr-1"></i>월 평균 전력단가 <span id="pwsPriceYear" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:600;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">사업장·월별 공통 단가(원/kWh) · 산정범위(부가세·기본요금·ESS·정산금 포함 여부)와 설명 필수</span></h3>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsPriceModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
+                <div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>적용월</th><th class="r">평균단가(원/kWh)</th><th>부가세</th><th>기본요금</th><th>ESS</th><th>정산금</th><th>산정범위 설명</th><th>메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="pwsPriceTb"></tbody></table></div>
+            </div>
+        </div>
+        <!-- 기타 가산·차감 -->
+        <div id="pws-adj" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-plus-minus text-indigo-500 mr-1"></i>기타 가산·차감 <span id="pwsAdjYm" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:600;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">현업 입력값 그대로 반영 (세금 계산·호기 배부 없음 — 공장 전체 조정 항목)</span></h3>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsAdjModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
+                <div style="padding:6px 16px;font-size:10px;color:#b45309;background:#fffbeb;border-bottom:1px solid #fde68a;"><i class="fas fa-exclamation-triangle mr-1"></i>평균단가에 이미 포함된 비용·환급(예: 단가에 ESS 포함)을 여기에 다시 입력하면 <b>중복 반영</b>됩니다 — 단가 산정범위와 다른 항목은 계산에서 오류로 표시합니다.</div>
+                <div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>항목명</th><th>구분</th><th class="r">금액(원)</th><th>항목 구분</th><th>부가세</th><th>입력 근거/메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="pwsAdjTb"></tbody></table></div>
+            </div>
+        </div>
+        <!-- 저장 시나리오 -->
+        <div id="pws-scn" style="display:none;">
+            <div class="sc" style="overflow:hidden;margin-bottom:12px;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-save text-indigo-500 mr-1"></i>저장 시나리오 <span style="font-size:10px;color:#94a3b8;font-weight:400;">저장 당시 입력·기준값·결과를 그대로 보관 — 기준정보가 바뀌어도 결과는 바뀌지 않습니다 · 최신 기준 계산은 [최신 기준 재계산]</span></h3>
+                    <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="pwsLoadScenarios()"><i class="fas fa-sync-alt mr-1"></i>새로고침</button>
+                </div>
+                <div style="overflow-x:auto;max-height:280px;"><table class="st" style="font-size:11px;"><thead><tr><th>시나리오</th><th>계산월</th><th>기준정보</th><th>상태</th><th class="r">사용량(kWh)</th><th class="r">공장 최종(원)</th><th>저장</th><th style="width:210px;">관리</th></tr></thead><tbody id="pwsScnTb"></tbody></table></div>
+            </div>
+            <div id="pwsScnView"></div>
+        </div>
+    </div>
+
     <!-- 4-5 원부재료비 (전월 실적 → 차월 예상) -->
     <div id="s4-matfc" style="display:none;">
         <div class="sc" style="padding:16px 20px;margin-bottom:14px;">
@@ -929,6 +1019,7 @@ async function onFilterChange(){
     {const ss=document.getElementById('s1-sales');if(ss&&ss.style.display!=='none')salOnShow(true);} // 판매계획 — 사업부별
     if(!hasCostSteps())return; // HL 등: 데이터 준비만 — 원가·생산 데이터는 불러오지 않음
     if(document.getElementById('s4-matfc')&&document.getElementById('s4-matfc').style.display!=='none')loadMaterialForecast();
+    {PWS.vid=null;PWS.rows={};PWS.imp=null;const pw=document.getElementById('s4-pwsim');if(pw&&pw.style.display!=='none')pwsOnShow();} // 전력비 — 사업부·월별
     await loadCostUnitRates();
     await loadOptimeFromAPI();
     await loadWasteRates();
@@ -959,7 +1050,7 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','ref','itf','purchase','sales'],2:[],4:['plsim','causal','prodsim','energy','matfc']};
+const SUB_MAP={1:['ready','ref','itf','purchase','sales'],2:[],4:['plsim','causal','prodsim','energy','matfc','pwsim']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
@@ -968,6 +1059,7 @@ function subTab(step,key){
     if(step===4&&key==='matfc'&&(MF.stale||!MF.data))loadMaterialForecast();
     if(step===1&&key==='purchase')purOnShow();
     if(step===1&&key==='sales')salOnShow(false);
+    if(step===4&&key==='pwsim')pwsOnShow();
 }
 
 // ── P/L Simulator (원가 중심 — 매출 없음, 총원가 기준) ──
@@ -4711,6 +4803,406 @@ async function doLogout(){try{await fetch('/api/logout',{method:'POST'});}catch(
         initAll();
     }catch(e){console.warn('[init]',e.message);initAll();}
 })();
+
+// ================================================================
+// STEP 4 · 전력비 시뮬레이션 (호기별 생산량 기반) — 서버 PowerSimController
+//   생산량 → 가동시간(생산팀 통보값 또는 생산량 ÷ 생산성) → 운휴시간 → 사용량(+고정 사용량) → × 월 평균단가 → + 가산 − 차감
+//   엑셀 「전력비 이동계획」 05.이동계획 시트를 읽어 기준정보(DRAFT)·단가·가산차감 초기값으로 등록
+// ================================================================
+const PWS_API=API+'/power-sim';
+let PWS={tab:'sim',versions:[],vid:null,detail:null,rows:{},lastCalc:null,prices:[],adjusts:[],scenarios:[],editVid:null};
+const PWS_CAT={BASE_FEE:'기본요금',ESS:'ESS',SETTLEMENT:'정산금(DR·복합보일러 등)',OTHER:'기타'};
+function pwsN(v,d){if(v==null||v==='')return '<span style="color:#cbd5e1;">-</span>';const n=Number(v);if(!isFinite(n))return purEsc(v);return n.toLocaleString('ko-KR',{maximumFractionDigits:d==null?0:d});}
+function pwsRaw(v){return v==null?'':String(v);}
+function pwsYmDot(ym){return ym&&ym.length===6?ym.slice(0,4)+'.'+ym.slice(4):(ym||'');}
+function pwsStatusBadge(s){return s==='APPROVED'?'<span style="font-size:9px;padding:1px 6px;border-radius:6px;background:#dcfce7;color:#15803d;font-weight:700;">승인</span>':'<span style="font-size:9px;padding:1px 6px;border-radius:6px;background:#fef3c7;color:#b45309;font-weight:700;">검토용</span>';}
+function pwsOnShow(){const y=document.getElementById('pwsYm');if(y)y.textContent=pwsYmDot(getYm());const dv=document.getElementById('pwsDiv');if(dv)dv.textContent=getDiv();pwsTab(PWS.tab||'sim');}
+function pwsTab(k){
+    PWS.tab=k;const keys=['sim','basis','price','adj','scn'];
+    keys.forEach(x=>{const el=document.getElementById('pws-'+x);if(el)el.style.display=x===k?'':'none';});
+    document.querySelectorAll('#pwsTabs .ref-tab').forEach((t,i)=>t.classList.toggle('active',keys[i]===k));
+    if(k==='sim')pwsLoadVersions(true);else if(k==='basis')pwsLoadVersions(false);else if(k==='price')pwsLoadPrices();else if(k==='adj')pwsLoadAdjusts();else pwsLoadScenarios();
+}
+
+// ── 기준정보 버전 ──
+async function pwsLoadVersions(forSim){
+    try{PWS.versions=await purGet(PWS_API+'/versions?division='+getDiv())||[];}
+    catch(e){const m='<div style="color:#dc2626;font-size:11px;padding:10px;">불러오기 실패: '+purEsc(e.message)+' — 전력비 테이블(rpsim_pw_sim_*)이 만들어졌는지 확인하세요</div>';if(forSim)document.getElementById('pwsSimRes').innerHTML=m;else document.getElementById('pwsVerTb').innerHTML='<tr><td colspan="8">'+m+'</td></tr>';return;}
+    if(forSim)pwsRenderVerSel();else pwsRenderVersions();
+}
+function pwsPickDefaultVid(){
+    const ym=getYm();const vs=PWS.versions;if(!vs.length)return null;
+    if(PWS.vid&&vs.some(v=>v.versionId===PWS.vid))return PWS.vid;
+    return (vs.find(v=>v.applyYm===ym&&v.status==='APPROVED')||vs.find(v=>v.applyYm===ym)||vs.find(v=>v.status==='APPROVED')||vs[0]).versionId;
+}
+function pwsRenderVerSel(){
+    const sel=document.getElementById('pwsVerSel');if(!sel)return;
+    if(!PWS.versions.length){sel.innerHTML='<option value="">(기준정보 없음)</option>';document.getElementById('pwsInTb').innerHTML='<tr><td colspan="13" style="text-align:center;padding:24px;color:#94a3b8;">'+getDiv()+' 전력 기준정보가 없습니다 — [전력 기준정보] 탭에서 엑셀(전력비 이동계획)을 가져오거나 새 버전을 만드세요</td></tr>';document.getElementById('pwsSimRes').innerHTML='';PWS.detail=null;return;}
+    const vid=pwsPickDefaultVid();
+    sel.innerHTML=PWS.versions.map(v=>'<option value="'+v.versionId+'"'+(v.versionId===vid?' selected':'')+'>'+(v.status==='APPROVED'?'[승인] ':'[검토용] ')+purEsc(v.versionName)+(v.applyYm?' · '+pwsYmDot(v.applyYm):'')+' ('+v.lineCount+'호기)</option>').join('');
+    pwsSelectVersion(vid);
+}
+async function pwsSelectVersion(vid){
+    vid=vid?Number(vid):null;if(!vid)return;
+    if(PWS.vid!==vid)PWS.rows={};
+    PWS.vid=vid;
+    try{PWS.detail=await purGet(PWS_API+'/versions/'+vid);}catch(e){alert('기준정보 불러오기 실패: '+e.message);return;}
+    const v=PWS.detail,ym=getYm(),nt=document.getElementById('pwsVerNote');
+    const notes=[];
+    if(v.status!=='APPROVED')notes.push('<span style="color:#b45309;"><i class="fas fa-exclamation-triangle mr-1"></i>검토용 초기값(미승인) — 현업 확인 후 [전력 기준정보]에서 승인하세요</span>');
+    if(v.applyYm&&v.applyYm!==ym)notes.push('<span style="color:#dc2626;"><i class="fas fa-calendar-times mr-1"></i>기준정보 적용월 '+pwsYmDot(v.applyYm)+' ≠ 계산월 '+pwsYmDot(ym)+'</span>');
+    if(v.sourceFile)notes.push('<span style="color:#64748b;"><i class="fas fa-file-excel mr-1"></i>'+purEsc(v.sourceFile)+'</span>');
+    if(nt)nt.innerHTML=notes.join(' &nbsp; ');
+    (v.lines||[]).forEach(l=>{if(!PWS.rows[l.lineCode])PWS.rows[l.lineCode]={baseQty:pwsRaw(l.refQty),baseRunHours:pwsRaw(l.refRunHours),qty:pwsRaw(l.refQty),runHours:'',adjKwh:'',adjReason:''};});
+    pwsRenderInputs();
+    if((v.lines||[]).length)pwsCalc();else document.getElementById('pwsSimRes').innerHTML='';
+}
+function pwsInp(code,f,w){const r=PWS.rows[code]||{};return '<input class="pws-in" data-code="'+purEsc(code)+'" data-f="'+f+'" value="'+purEsc(r[f]??'')+'" oninput="pwsOnInput(this)" style="width:'+(w||90)+'px;padding:3px 6px;border:1px solid #fcd34d;background:#fffbeb;border-radius:5px;font-size:11px;text-align:'+(f==='adjReason'?'left':'right')+';">';}
+function pwsOnInput(el){const c=el.dataset.code;PWS.rows[c]=PWS.rows[c]||{};PWS.rows[c][el.dataset.f]=el.value.replace(/,/g,'').trim();}
+function pwsRenderInputs(){
+    const tb=document.getElementById('pwsInTb');if(!tb)return;const ls=(PWS.detail&&PWS.detail.lines)||[];
+    if(!ls.length){tb.innerHTML='<tr><td colspan="13" style="text-align:center;padding:24px;color:#94a3b8;">이 버전에 호기가 없습니다</td></tr>';return;}
+    tb.innerHTML=ls.map(l=>{
+        const prod=l.productivityValue!=null?pwsN(l.productivityValue,1)+' '+purEsc(l.productivityUnit||'')+(l.productivityBasis==='HOUR'?'/h':'/일'):'<span style="color:#cbd5e1;">-</span>';
+        return '<tr><td style="font-weight:700;">'+purEsc(l.lineName||l.lineCode)+'</td><td>'+purEsc(l.processName||'')+'</td><td>'+purEsc(l.prodUnit||'')+'</td>'
+        +'<td class="r">'+pwsInp(l.lineCode,'baseQty',100)+'</td><td class="r">'+pwsInp(l.lineCode,'baseRunHours',64)+'</td>'
+        +'<td class="r">'+pwsInp(l.lineCode,'qty',100)+'</td><td class="r">'+pwsInp(l.lineCode,'runHours',64)+'</td>'
+        +'<td class="r" style="color:#475569;">'+prod+'</td><td class="r">'+pwsN(l.runKw,1)+'</td><td class="r">'+pwsN(l.idleKw,1)+'</td>'
+        +'<td class="r" title="'+purEsc(l.fixedNote||'')+'">'+(l.fixedKwh!=null&&Number(l.fixedKwh)!==0?pwsN(l.fixedKwh,0):'<span style="color:#cbd5e1;">-</span>')+'</td>'
+        +'<td class="r">'+pwsInp(l.lineCode,'adjKwh',70)+'</td><td>'+pwsInp(l.lineCode,'adjReason',120)+'</td></tr>';
+    }).join('');
+}
+function pwsClearRows(){if(!confirm('시뮬 생산량·가동시간·조정값을 비웁니다 (기준 생산량은 엑셀 참고값으로 되돌림). 계속할까요?'))return;PWS.rows={};pwsSelectVersion(PWS.vid);}
+function pwsRequest(){
+    const ls=(PWS.detail&&PWS.detail.lines)||[];
+    return {division:getDiv(),ym:getYm(),versionId:PWS.vid,lines:ls.map(l=>{const r=PWS.rows[l.lineCode]||{};return {lineCode:l.lineCode,baseQty:r.baseQty||null,baseRunHours:r.baseRunHours||null,qty:r.qty||null,runHours:r.runHours||null,adjKwh:r.adjKwh||null,adjReason:r.adjReason||null};})};
+}
+async function pwsCalc(){
+    if(!PWS.vid){alert('기준정보 버전을 선택하세요');return;}
+    const box=document.getElementById('pwsSimRes');box.innerHTML='<div style="padding:16px;color:#94a3b8;font-size:11px;"><i class="fas fa-spinner fa-spin mr-1"></i>계산 중</div>';
+    let d;try{d=await purSend(PWS_API+'/calculate','POST',pwsRequest());}catch(e){box.innerHTML='<div class="sc" style="padding:12px;color:#dc2626;font-size:11px;">계산 실패: '+purEsc(e.message)+'</div>';return;}
+    PWS.lastCalc=d;box.innerHTML=pwsResultHtml(d,false);
+}
+async function pwsFillPlan(){
+    if(!PWS.detail){alert('기준정보 버전을 먼저 선택하세요');return;}
+    let d;try{d=await purGet(PWS_API+'/plan-qty?ym='+getYm()+'&division='+getDiv());}catch(e){alert('생산계획 불러오기 실패: '+e.message);return;}
+    const q=d.qty||{},keys=Object.keys(q),hit=[],miss=[];
+    const MASS={ton:1000,t:1000,'톤':1000,kg:1,g:0.001};
+    (PWS.detail.lines||[]).forEach(l=>{
+        const k=keys.find(x=>x.toLowerCase()===String(l.lineCode).toLowerCase());if(k==null)return;
+        const u=String(l.prodUnit||'').toLowerCase();if(!(u in MASS)){miss.push(l.lineCode+'(단위 '+(l.prodUnit||'미입력')+' — ton 생산계획을 변환할 수 없음)');return;}
+        PWS.rows[l.lineCode]=PWS.rows[l.lineCode]||{};PWS.rows[l.lineCode].qty=String(Number(q[k])*1000/MASS[u]);PWS.rows[l.lineCode].runHours='';hit.push(l.lineCode);
+    });
+    const unused=keys.filter(k=>!(PWS.detail.lines||[]).some(l=>String(l.lineCode).toLowerCase()===k.toLowerCase()));
+    pwsRenderInputs();
+    let msg='생산계획('+pwsYmDot(d.ym)+') 반영: '+(hit.length?hit.join(', '):'없음');
+    if(unused.length)msg+='\n\n전력 기준정보에 없는 생산계획 호기코드: '+unused.join(', ')+'\n→ 호기코드가 다르면 반영되지 않습니다 (기준정보 호기코드를 생산계획 호기코드와 맞추거나 직접 입력하세요). 다른 호기의 시뮬 생산량은 그대로입니다.';
+    if(miss.length)msg+='\n\n단위 문제: '+miss.join(', ');
+    if((d.warnings||[]).length)msg+='\n\n'+d.warnings.join('\n');
+    alert(msg);if(hit.length)pwsCalc();
+}
+// ── 계산 결과 표시 (계산·저장 시나리오 공통) ──
+function pwsMsgs(arr,color,icon){return (arr||[]).length?'<div style="font-size:10px;color:'+color+';line-height:1.6;">'+arr.map(x=>'<div><i class="fas '+icon+' mr-1"></i>'+purEsc(x)+'</div>').join('')+'</div>':'';}
+function pwsCard(lbl,val,sub,color){return '<div class="sc" style="padding:10px 12px;"><div style="font-size:10px;color:#64748b;font-weight:600;">'+lbl+'</div><div style="font-size:17px;font-weight:800;color:'+(color||'#1e293b')+';margin-top:2px;">'+val+'</div>'+(sub?'<div style="font-size:9px;color:#94a3b8;margin-top:2px;">'+sub+'</div>':'')+'</div>';}
+function pwsSigned(v,d){if(v==null)return '<span style="color:#cbd5e1;">-</span>';const n=Number(v);const c=n>0?'#dc2626':n<0?'#2563eb':'#64748b';return '<span style="color:'+c+';">'+(n>0?'+':n<0?'△':'')+Math.abs(n).toLocaleString('ko-KR',{maximumFractionDigits:d==null?0:d})+'</span>';}
+function pwsResultHtml(d,saved){
+    const s=d.sim||{},b=d.base,dl=d.delta,info={};(d.lineInfo||[]).forEach(i=>info[i.lineCode]=i);
+    const dlm={};((dl&&dl.lines)||[]).forEach(x=>dlm[x.lineCode]=x);
+    let h='<div class="sc" style="padding:8px 14px;margin-bottom:10px;font-size:10px;line-height:1.6;'+(s.complete?'background:#f0fdf4;border-color:#bbf7d0;':'background:#fef2f2;border-color:#fecaca;')+'">'
+        +'<div style="font-weight:700;color:'+(s.complete?'#15803d':'#dc2626')+';"><i class="fas '+(s.complete?'fa-check-circle':'fa-times-circle')+' mr-1"></i>'+(s.complete?'계산 완료':'계산 미완료 — 아래 오류를 해결해야 공장 합계가 나옵니다')+' · '+pwsYmDot(d.ym)+' · 월 '+pwsN(s.monthHours)+'h · 단가 '+(s.priceKrwPerKwh!=null?pwsN(s.priceKrwPerKwh,4)+'원/kWh':'<b>미등록</b>')+'</div>'
+        +pwsMsgs(s.errors,'#dc2626','fa-times')+pwsMsgs(d.warnings,'#b45309','fa-exclamation-triangle')+pwsMsgs(s.warnings,'#b45309','fa-exclamation-triangle')
+        +'<div style="color:#64748b;"><i class="fas fa-info-circle mr-1"></i>'+purEsc(d.notice||'')+'</div></div>';
+    h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:10px;">'
+        +pwsCard('전력사용량 합계',s.totalKwh!=null?pwsN(s.totalKwh)+' kWh':'계산 미완료',dl&&dl.available?'기준 대비 '+pwsSigned(dl.kwh)+' kWh':'')
+        +pwsCard('호기 전력비 합계',s.lineCostSum!=null?pwsN(Number(s.lineCostSum)/1e6,1)+' 백만원':'계산 미완료','사용량 × 평균단가 (호기별 원 단위 반올림 합)')
+        +pwsCard('기타 가산 / 차감',s.addTotal!=null?'+'+pwsN(Number(s.addTotal)/1e6,1)+' / △'+pwsN(Number(s.deductTotal)/1e6,1):'오류','백만원 · 생산량과 무관한 월 금액')
+        +pwsCard('공장 최종 예상비용',s.finalCost!=null?pwsN(Number(s.finalCost)/1e6,1)+' 백만원':'계산 미완료',s.finalCost!=null?pwsN(s.finalCost)+' 원':'','#4f46e5')
+        +pwsCard('기준 대비 증감',dl&&dl.available?pwsSigned(Number(dl.finalCost)/1e6,1)+' 백만원':'-',dl?(dl.available?pwsSigned(dl.finalCost)+' 원 (+ 증가 / △ 감소)':purEsc(dl.reason||'')):'기준 생산량을 입력하면 비교합니다')
+        +'</div>';
+    h+='<div class="sc" style="overflow:hidden;margin-bottom:10px;"><div style="padding:8px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:12px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-industry text-indigo-500 mr-1"></i>호기별 계산 <span style="font-size:10px;color:#94a3b8;font-weight:400;">가동h: <b>입력</b>=생산팀 통보값 · <b>계산</b>=생산량 ÷ 생산성 · 운휴h = 월 전체시간 − 가동h · 회색 = 자동 계산</span></h3></div><div style="overflow-x:auto;"><table class="st" style="font-size:11px;white-space:nowrap;"><thead><tr><th>호기</th><th>공정</th><th class="r">생산량</th><th class="r">가동h</th><th class="r">운휴h</th><th class="r">가동 kWh</th><th class="r">운휴 kWh</th><th class="r">고정 kWh</th><th class="r">조정 kWh</th><th class="r">합계 kWh</th><th class="r">비율</th><th class="r">전력비(원)</th><th class="r">기준 대비(원)</th><th>상태</th></tr></thead><tbody>';
+    (s.lines||[]).forEach(l=>{
+        const ok=l.status==='OK',x=dlm[l.lineCode],ratio=ok&&s.totalKwh?Number(l.totalKwh)/Number(s.totalKwh)*100:null;
+        const src=l.runHoursSource==='INPUT'?'<span style="font-size:8px;padding:0 4px;border-radius:4px;background:#fef3c7;color:#b45309;">입력</span>':'<span style="font-size:8px;padding:0 4px;border-radius:4px;background:#e0e7ff;color:#4338ca;">계산</span>';
+        const st=ok?(l.warnings&&l.warnings.length?'<span style="color:#b45309;" title="'+purEsc(l.warnings.join('\n'))+'"><i class="fas fa-exclamation-triangle"></i> '+purEsc(l.warnings[0]).slice(0,60)+'</span>':'<span style="color:#15803d;"><i class="fas fa-check"></i></span>')
+            :'<span style="color:#dc2626;white-space:normal;display:inline-block;max-width:320px;">'+(l.status==='CAPACITY_EXCEEDED'?'<b>생산 불가</b> ':'')+purEsc((l.errors||[]).join(' / '))+'</span>';
+        h+='<tr'+(ok?'':' style="background:#fef2f2;"')+'><td style="font-weight:700;">'+purEsc(l.lineName||l.lineCode)+'</td><td>'+purEsc(l.processName||'')+'</td><td class="r">'+pwsN(l.qty)+' <span style="color:#94a3b8;font-size:9px;">'+purEsc(l.prodUnit||'')+'</span></td>'
+            +'<td class="r">'+pwsN(l.runHours,1)+' '+(l.runHours!=null?src:'')+'</td><td class="r">'+pwsN(l.idleHours,1)+'</td><td class="r">'+pwsN(l.runKwh)+'</td><td class="r">'+pwsN(l.idleKwh)+'</td>'
+            +'<td class="r">'+(l.fixedKwh!=null&&Number(l.fixedKwh)!==0?pwsN(l.fixedKwh):'<span style="color:#cbd5e1;">-</span>')+'</td><td class="r">'+(Number(l.adjKwh||0)!==0?pwsN(l.adjKwh):'<span style="color:#cbd5e1;">-</span>')+'</td>'
+            +'<td class="r" style="font-weight:700;">'+pwsN(l.totalKwh)+'</td><td class="r">'+(ratio!=null?ratio.toFixed(1)+'%':'-')+'</td><td class="r" style="font-weight:700;">'+pwsN(l.costKrw)+'</td><td class="r">'+(x?pwsSigned(x.costKrw):'-')+'</td><td>'+st+'</td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+    h+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">';
+    h+='<div class="sc" style="flex:1;min-width:320px;overflow:hidden;"><div style="padding:8px 16px;border-bottom:1px solid #f1f5f9;font-size:12px;font-weight:700;"><i class="fas fa-layer-group text-indigo-500 mr-1"></i>공정별</div><table class="st" style="font-size:11px;"><thead><tr><th>공정</th><th class="r">호기</th><th class="r">사용량 kWh</th><th class="r">전력비(백만원)</th></tr></thead><tbody>'
+        +(s.processes||[]).map(p=>'<tr><td style="font-weight:700;">'+purEsc(p.processName)+'</td><td class="r">'+p.lineCount+'</td><td class="r">'+pwsN(p.totalKwh)+'</td><td class="r">'+(p.complete?pwsN(Number(p.costKrw)/1e6,1):'<span style="color:#dc2626;">미완료</span>')+'</td></tr>').join('')+'</tbody></table></div>';
+    h+='<div class="sc" style="flex:1;min-width:320px;overflow:hidden;"><div style="padding:8px 16px;border-bottom:1px solid #f1f5f9;font-size:12px;font-weight:700;"><i class="fas fa-plus-minus text-indigo-500 mr-1"></i>기타 가산·차감 <span style="font-size:10px;color:#94a3b8;font-weight:400;">'+pwsYmDot(d.ym)+'</span></div><table class="st" style="font-size:11px;"><thead><tr><th>항목</th><th>구분</th><th class="r">금액(원)</th><th>확인</th></tr></thead><tbody>'
+        +((s.adjusts||[]).length?(s.adjusts||[]).map(a=>'<tr><td>'+purEsc(a.itemName)+'</td><td>'+(a.direction==='ADD'?'<span style="color:#dc2626;">가산</span>':'<span style="color:#2563eb;">차감</span>')+'</td><td class="r">'+pwsN(a.amountKrw)+'</td><td>'+((a.errors||[]).length?'<span style="color:#dc2626;">'+purEsc(a.errors.join(' / '))+'</span>':'<i class="fas fa-check" style="color:#15803d;"></i>')+'</td></tr>').join(''):'<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:12px;">없음 — SPC·DR·복합보일러 등은 [기타 가산·차감]에 등록</td></tr>')
+        +'</tbody></table></div></div>';
+    if(saved&&d.version)h+='<div style="font-size:10px;color:#64748b;">기준정보: '+purEsc(d.version.versionName||'')+' ('+(d.version.status==='APPROVED'?'승인':'검토용')+')</div>';
+    return h;
+}
+
+// ── 시나리오 저장 ──
+async function pwsSaveScenario(){
+    if(!PWS.vid){alert('기준정보 버전을 선택하세요');return;}
+    const name=prompt('시나리오 이름 (예: '+pwsYmDot(getYm())+' 제지3 생산 +10%)');if(name==null)return;if(!name.trim()){alert('이름을 입력하세요');return;}
+    const memo=prompt('메모 (선택)')||'';
+    try{await purSend(PWS_API+'/scenarios','POST',Object.assign(pwsRequest(),{scenarioName:name.trim(),memo}));}catch(e){alert('저장 실패: '+e.message);return;}
+    alert('저장했습니다 — [저장 시나리오] 탭에서 볼 수 있습니다. 저장 당시 입력·기준값·결과가 그대로 보관됩니다.');
+}
+async function pwsLoadScenarios(){
+    const tb=document.getElementById('pwsScnTb');if(!tb)return;
+    try{PWS.scenarios=await purGet(PWS_API+'/scenarios?division='+getDiv())||[];}catch(e){tb.innerHTML='<tr><td colspan="8" style="color:#dc2626;padding:12px;">불러오기 실패: '+purEsc(e.message)+'</td></tr>';return;}
+    tb.innerHTML=PWS.scenarios.length?PWS.scenarios.map(s=>'<tr><td style="font-weight:700;">'+purEsc(s.scenarioName)+(s.memo?'<div style="font-size:9px;color:#94a3b8;font-weight:400;">'+purEsc(s.memo)+'</div>':'')+'</td><td>'+pwsYmDot(s.ym)+'</td><td>'+purEsc(s.basisVersionName||'')+' '+pwsStatusBadge(s.basisStatus)+'</td><td>'+(s.complete?'<span style="color:#15803d;">완료</span>':'<span style="color:#dc2626;">미완료</span>')+'</td><td class="r">'+pwsN(s.totalKwh)+'</td><td class="r">'+pwsN(s.finalCostKrw)+'</td><td style="font-size:10px;">'+purEsc(s.savedBy||'')+'<br>'+purEsc((s.savedAt||'').replace('T',' ').slice(0,16))+'</td>'
+        +'<td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="pwsViewScenario('+s.scenarioId+')">보기</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="pwsRecalc('+s.scenarioId+')">최신 기준 재계산</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="pwsDelScenario('+s.scenarioId+')">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="8" style="text-align:center;padding:24px;color:#94a3b8;">저장한 시나리오가 없습니다 — [시뮬레이션]에서 계산 후 [시나리오 저장]</td></tr>';
+}
+async function pwsViewScenario(id){
+    const box=document.getElementById('pwsScnView');let s;try{s=await purGet(PWS_API+'/scenarios/'+id);}catch(e){alert('불러오기 실패: '+e.message);return;}
+    const r=s.result||{};
+    box.innerHTML='<div style="font-size:12px;font-weight:700;margin:6px 0 8px;"><i class="fas fa-lock text-slate-400 mr-1"></i>'+purEsc(s.scenarioName)+' <span style="font-size:10px;color:#94a3b8;font-weight:400;">저장 당시 결과 (다시 계산하지 않음) · '+purEsc((s.savedAt||'').replace('T',' ').slice(0,16))+'</span></div>'
+        +pwsResultHtml({ym:s.ym,sim:r.sim,base:r.base,delta:r.delta,warnings:r.warnings,notice:r.notice,lineInfo:(s.input||{}).lineInfo,version:(s.input||{}).version},true);
+}
+async function pwsRecalc(id){
+    const box=document.getElementById('pwsScnView');let d;try{d=await purSend(PWS_API+'/scenarios/'+id+'/recalculate','POST');}catch(e){alert('재계산 실패: '+e.message);return;}
+    box.innerHTML='<div style="font-size:12px;font-weight:700;margin:6px 0 8px;color:#b45309;"><i class="fas fa-sync-alt mr-1"></i>최신 기준 재계산 — '+purEsc((d.fromScenario||{}).scenarioName||'')+' <span style="font-size:10px;color:#94a3b8;font-weight:400;">저장된 생산량·조정값 + 현재 기준정보·단가·가산차감 (저장하지 않음 — 저장된 결과는 그대로)</span></div>'+pwsResultHtml(d,false);
+}
+async function pwsDelScenario(id){if(!confirm('시나리오를 삭제할까요?'))return;try{await purSend(PWS_API+'/scenarios/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}document.getElementById('pwsScnView').innerHTML='';pwsLoadScenarios();}
+
+// ── 전력 기준정보: 버전 목록 / 호기 ──
+function pwsRenderVersions(){
+    const tb=document.getElementById('pwsVerTb');if(!tb)return;
+    tb.innerHTML=PWS.versions.length?PWS.versions.map(v=>'<tr'+(PWS.editVid===v.versionId?' style="background:#eef2ff;"':'')+'><td>'+pwsStatusBadge(v.status)+'</td><td style="font-weight:700;">'+purEsc(v.versionName)+'</td><td>'+(v.applyYm?pwsYmDot(v.applyYm):'<span style="color:#cbd5e1;">-</span>')+'</td><td style="font-size:10px;">'+(v.source==='EXCEL'?'<i class="fas fa-file-excel text-emerald-600 mr-1"></i>'+purEsc(v.sourceFile||'엑셀'):'직접 입력')+'</td><td class="r">'+v.lineCount+'</td><td style="font-size:10px;">'+(v.approvedBy?purEsc(v.approvedBy)+'<br>'+purEsc((v.approvedAt||'').replace('T',' ').slice(0,16)):'-')+'</td><td style="font-size:10px;max-width:220px;white-space:normal;">'+purEsc(v.memo||'')+'</td>'
+        +'<td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="pwsShowLines('+v.versionId+')">호기</button> '
+        +(v.status!=='APPROVED'?'<button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="pwsVersionModal('+v.versionId+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#15803d;" onclick="pwsApprove('+v.versionId+')">승인</button> ':'')
+        +'<button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="pwsCopy('+v.versionId+')">복사</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="pwsDelVersion('+v.versionId+')">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="8" style="text-align:center;padding:24px;color:#94a3b8;">'+getDiv()+' 전력 기준정보가 없습니다 — [엑셀 가져오기]로 「전력비 이동계획」 파일을 올리거나 [새 버전]으로 직접 만드세요</td></tr>';
+    if(PWS.editVid&&PWS.versions.some(v=>v.versionId===PWS.editVid))pwsShowLines(PWS.editVid);else document.getElementById('pwsLines').innerHTML='';
+}
+async function pwsShowLines(vid){
+    PWS.editVid=vid;const box=document.getElementById('pwsLines');let v;
+    try{v=await purGet(PWS_API+'/versions/'+vid);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;">불러오기 실패: '+purEsc(e.message)+'</div>';return;}
+    PWS.editDetail=v;const draft=v.status!=='APPROVED';
+    document.querySelectorAll('#pwsVerTb tr').forEach(tr=>tr.style.background='');
+    box.innerHTML='<div class="sc" style="overflow:hidden;"><div style="padding:9px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;"><h3 style="font-size:12px;font-weight:700;margin:0;"><i class="fas fa-industry text-indigo-500 mr-1"></i>'+purEsc(v.versionName)+' '+pwsStatusBadge(v.status)+' <span style="font-size:10px;color:#94a3b8;font-weight:400;">'+(draft?'수정 가능 — 현업 확인 후 [승인]':'승인됨 — 잠김 (수정하려면 [복사])')+'</span></h3>'
+        +(draft?'<button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsLineModal(null)"><i class="fas fa-plus mr-1"></i>호기 추가</button>':'')+'</div>'
+        +'<div style="overflow-x:auto;"><table class="st" style="font-size:11px;white-space:nowrap;"><thead><tr><th>호기코드</th><th>호기명</th><th>공정</th><th>생산량 단위</th><th class="r">생산성</th><th>기준</th><th class="r">가동 kW</th><th class="r">운휴 kW</th><th class="r">고정 kWh</th><th class="r">엑셀 생산량</th><th class="r">엑셀 가동h</th><th>근거·범위</th>'+(draft?'<th></th>':'')+'</tr></thead><tbody>'
+        +((v.lines||[]).length?(v.lines||[]).map((l,i)=>'<tr><td style="font-weight:700;">'+purEsc(l.lineCode)+'</td><td>'+purEsc(l.lineName||'')+'</td><td>'+purEsc(l.processName||'')+'</td><td>'+purEsc(l.prodUnit||'')+'</td><td class="r">'+pwsN(l.productivityValue,2)+' '+purEsc(l.productivityUnit||'')+'</td><td>'+(l.productivityBasis==='DAY'?'일당('+pwsN(l.dayBasisHours,1)+'h)':l.productivityBasis==='HOUR'?'시간당':'-')+'</td><td class="r">'+pwsN(l.runKw,2)+'</td><td class="r">'+pwsN(l.idleKw,2)+'</td><td class="r" title="'+purEsc(l.fixedNote||'')+'">'+pwsN(l.fixedKwh)+'</td><td class="r">'+pwsN(l.refQty)+'</td><td class="r">'+pwsN(l.refRunHours,1)+'</td><td style="font-size:10px;max-width:260px;white-space:normal;">'+purEsc([l.fixedNote,l.scopeMemo,l.sourceNote].filter(Boolean).join(' · '))+'</td>'
+            +(draft?'<td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="pwsLineModal('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="pwsDelLine('+l.lineId+')">삭제</button></td>':'')+'</tr>').join('')
+            :'<tr><td colspan="13" style="text-align:center;padding:20px;color:#94a3b8;">호기가 없습니다</td></tr>')+'</tbody></table></div></div>';
+}
+function pwsVersionModal(vid){
+    const v=vid==null?{}:PWS.versions.find(x=>x.versionId===vid)||{};
+    let h='<h3><i class="fas fa-layer-group text-indigo-500"></i> 전력 기준정보 버전 '+(vid==null?'만들기':'수정')+'</h3>';
+    h+='<label>버전 이름</label><input name="versionName" value="'+purEsc(v.versionName||'')+'" maxlength="100" placeholder="예: 2026.06 이동계획 기준">';
+    h+='<label>적용월 (yyyy.mm, 선택) <span style="font-size:10px;color:#94a3b8;">가동·운휴 kW가 월마다 다르면 적용월별 버전을 만드세요</span></label><input name="applyYm" value="'+purEsc(v.applyYm?pwsYmDot(v.applyYm):'')+'" placeholder="2026.06">';
+    h+='<label>메모</label><input name="memo" value="'+purEsc(v.memo||'')+'">';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="pwsSaveVersion('+(vid==null?'null':vid)+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+function pwsModalBody(){const b={};document.querySelectorAll('.modal-box [name]').forEach(el=>{b[el.name]=el.value.trim();});return b;}
+async function pwsSaveVersion(vid){
+    const b=Object.assign(pwsModalBody(),{division:getDiv()});
+    try{const d=await purSend(PWS_API+'/versions'+(vid!=null?'/'+vid:''),vid!=null?'PUT':'POST',b);if(vid==null&&d)PWS.editVid=d.versionId;}catch(e){alert('저장 실패: '+e.message);return;}
+    closeModal();pwsLoadVersions(false);
+}
+async function pwsApprove(vid){
+    if(!confirm('승인하면 이 기준정보는 잠겨서 수정할 수 없습니다 (수정하려면 복사).\n현업(전력 담당)이 값을 확인했나요?'))return;
+    try{await purSend(PWS_API+'/versions/'+vid+'/approve','POST');}catch(e){alert('승인 실패: '+e.message);return;}pwsLoadVersions(false);
+}
+async function pwsCopy(vid){const n=prompt('새 버전 이름 (비우면 "(복사)" 붙임)');if(n==null)return;try{const d=await purSend(PWS_API+'/versions/'+vid+'/copy','POST',{versionName:n.trim()||null});if(d)PWS.editVid=d.versionId;}catch(e){alert('복사 실패: '+e.message);return;}pwsLoadVersions(false);}
+async function pwsDelVersion(vid){if(!confirm('이 기준정보 버전을 삭제할까요?\n(저장된 시나리오는 스냅샷이라 영향 없음)'))return;try{await purSend(PWS_API+'/versions/'+vid,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}if(PWS.editVid===vid)PWS.editVid=null;if(PWS.vid===vid){PWS.vid=null;PWS.rows={};}pwsLoadVersions(false);}
+function pwsLineModal(i){
+    const l=i==null?{productivityBasis:'DAY',dayBasisHours:24}:PWS.editDetail.lines[i];
+    const f=(n,lbl,ph)=>'<label>'+lbl+'</label><input name="'+n+'" value="'+purEsc(l[n]??'')+'"'+(ph?' placeholder="'+ph+'"':'')+'>';
+    let h='<h3><i class="fas fa-industry text-indigo-500"></i> 호기 '+(i==null?'추가':'수정')+'</h3><div style="font-size:10px;color:#64748b;">빈칸 = 미입력 (0으로 바꾸지 않음)</div>';
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">'+f('lineCode','호기코드 * <span style="font-size:9px;color:#94a3b8;">생산계획 호기코드와 같게</span>','PM3')+f('lineName','호기명','제지3')+f('processName','공정','제지')+f('prodUnit','생산량 단위','kg / ton / ea')
+        +f('productivityValue','생산성','952.5')+'<label>생산성 기준</label><select name="productivityBasis"><option value="">(미입력)</option><option value="DAY"'+(l.productivityBasis==='DAY'?' selected':'')+'>일당</option><option value="HOUR"'+(l.productivityBasis==='HOUR'?' selected':'')+'>시간당</option></select>'
+        +f('productivityUnit','생산성 단위','ton / ea')+f('dayBasisHours','1일 기준시간(h) <span style="font-size:9px;color:#94a3b8;">일당일 때</span>','24')
+        +f('runKw','가동 중 평균전력 (kW)')+f('idleKw','운휴 중 평균전력 (kW)')+f('fixedKwh','고정 사용량 (kWh/월, 음수 가능)')+f('fixedNote','고정 사용량 근거')
+        +f('refQty','엑셀 생산량 (참고)')+f('refRunHours','엑셀 가동시간 (참고)')+f('sortOrder','정렬순서')+'</div>'+f('scopeMemo','평균전력 포함 범위 메모','예: 제지2·3 동시가동 기준, 원료처리 공용설비 포함');
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="pwsSaveLine('+(i==null?'null':l.lineId)+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+async function pwsSaveLine(id){
+    const vid=PWS.editVid;try{const d=await purSend(PWS_API+'/versions/'+vid+'/lines'+(id!=null?'/'+id:''),id!=null?'PUT':'POST',pwsModalBody());if(d&&d.upserted)alert('같은 호기코드가 있어 기존 행을 덮어썼습니다.');}catch(e){alert('저장 실패: '+e.message);return;}
+    closeModal();if(PWS.vid===vid)PWS.rows={};pwsLoadVersions(false);
+}
+async function pwsDelLine(id){if(!confirm('호기를 삭제할까요?'))return;try{await purSend(PWS_API+'/versions/'+PWS.editVid+'/lines/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}pwsLoadVersions(false);}
+// ── 월 평균단가 ──
+async function pwsLoadPrices(){
+    const y=getYm().slice(0,4),tb=document.getElementById('pwsPriceTb');document.getElementById('pwsPriceYear').textContent=y+'년 · '+getDiv();
+    try{PWS.prices=await purGet(PWS_API+'/prices?division='+getDiv()+'&year='+y)||[];}catch(e){tb.innerHTML='<tr><td colspan="9" style="color:#dc2626;padding:12px;">불러오기 실패: '+purEsc(e.message)+'</td></tr>';return;}
+    const yn=v=>v==='Y'?'<span style="color:#15803d;font-weight:700;">포함</span>':'<span style="color:#64748b;">별도</span>';
+    tb.innerHTML=PWS.prices.length?PWS.prices.map((p,i)=>'<tr><td style="font-weight:700;">'+pwsYmDot(p.ym)+'</td><td class="r" style="font-weight:700;">'+pwsN(p.priceKrwPerKwh,4)+'</td><td>'+yn(p.vatIncludedYn)+'</td><td>'+yn(p.baseFeeIncludedYn)+'</td><td>'+yn(p.essIncludedYn)+'</td><td>'+yn(p.settlementIncludedYn)+'</td><td style="font-size:10px;max-width:320px;white-space:normal;">'+purEsc(p.scopeDesc||'')+'</td><td style="font-size:10px;">'+purEsc(p.memo||'')+'</td><td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="pwsPriceModal('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="pwsDelPrice('+p.priceId+')">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="9" style="text-align:center;padding:24px;color:#94a3b8;">'+y+'년 평균단가가 없습니다 — 단가가 없는 월은 계산 미완료로 표시됩니다 (엑셀 가져오기 또는 [등록])</td></tr>';
+}
+function pwsPriceModal(i){
+    const p=i==null?{ym:getYm()}:PWS.prices[i];
+    const ynSel=(n,l)=>'<label>'+l+'</label><select name="'+n+'"><option value="">(선택)</option><option value="Y"'+(p[n]==='Y'?' selected':'')+'>포함</option><option value="N"'+(p[n]==='N'?' selected':'')+'>별도</option></select>';
+    let h='<h3><i class="fas fa-won-sign text-indigo-500"></i> 월 평균 전력단가 '+(i==null?'등록':'수정')+' · '+getDiv()+'</h3>';
+    h+='<label>적용월 (yyyy.mm)</label><input name="ym" value="'+purEsc(pwsYmDot(p.ym))+'"><label>평균단가 (원/kWh)</label><input name="priceKrwPerKwh" value="'+purEsc(p.priceKrwPerKwh??'')+'">';
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">'+ynSel('vatIncludedYn','부가세')+ynSel('baseFeeIncludedYn','기본요금')+ynSel('essIncludedYn','ESS 요금')+ynSel('settlementIncludedYn','정산금(DR·복합보일러 등)')+'</div>';
+    h+='<label>산정범위 설명 *</label><input name="scopeDesc" value="'+purEsc(p.scopeDesc||'')+'" placeholder="예: 한전 고지서 (모고객+ESS 요금) ÷ 사용량 — 부가세 별도, SPC·DR 별도"><label>메모</label><input name="memo" value="'+purEsc(p.memo||'')+'">';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="pwsSavePrice('+(i==null?'null':p.priceId)+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+async function pwsSavePrice(id){try{const d=await purSend(PWS_API+'/prices'+(id!=null?'/'+id:''),id!=null?'PUT':'POST',Object.assign(pwsModalBody(),{division:getDiv()}));if(d&&d.upserted)alert('같은 월 단가가 있어 덮어썼습니다.');}catch(e){alert('저장 실패: '+e.message);return;}closeModal();pwsLoadPrices();}
+async function pwsDelPrice(id){if(!confirm('단가를 삭제할까요? (이 월은 계산 미완료가 됩니다)'))return;try{await purSend(PWS_API+'/prices/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}pwsLoadPrices();}
+
+// ── 기타 가산·차감 ──
+async function pwsLoadAdjusts(){
+    const ym=getYm(),tb=document.getElementById('pwsAdjTb');document.getElementById('pwsAdjYm').textContent=pwsYmDot(ym)+' · '+getDiv();
+    try{PWS.adjusts=await purGet(PWS_API+'/adjusts?division='+getDiv()+'&ym='+ym)||[];}catch(e){tb.innerHTML='<tr><td colspan="7" style="color:#dc2626;padding:12px;">불러오기 실패: '+purEsc(e.message)+'</td></tr>';return;}
+    tb.innerHTML=PWS.adjusts.length?PWS.adjusts.map((a,i)=>'<tr><td style="font-weight:700;">'+purEsc(a.itemName)+'</td><td>'+(a.direction==='ADD'?'<span style="color:#dc2626;">가산</span>':'<span style="color:#2563eb;">차감</span>')+'</td><td class="r">'+pwsN(a.amountKrw)+'</td><td>'+purEsc(PWS_CAT[a.category]||a.category)+'</td><td>'+(a.vatIncludedYn==='Y'?'포함':'별도')+'</td><td style="font-size:10px;max-width:320px;white-space:normal;">'+purEsc(a.memo||'')+'</td><td><button class="btn-g" style="font-size:10px;padding:2px 6px;" onclick="pwsAdjModal('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 6px;color:#dc2626;" onclick="pwsDelAdj('+a.adjustId+')">삭제</button></td></tr>').join('')
+        :'<tr><td colspan="7" style="text-align:center;padding:24px;color:#94a3b8;">'+pwsYmDot(ym)+' 가산·차감 항목이 없습니다 — 예: SPC지급금(가산), DR정산금·복합보일러 차감비·삼성보상금(차감)</td></tr>';
+}
+function pwsAdjModal(i){
+    const a=i==null?{direction:'DEDUCT',category:'SETTLEMENT',vatIncludedYn:'N',ym:getYm()}:PWS.adjusts[i];
+    let h='<h3><i class="fas fa-plus-minus text-indigo-500"></i> 기타 가산·차감 '+(i==null?'등록':'수정')+' · '+getDiv()+'</h3>';
+    h+='<label>적용월 (yyyy.mm)</label><input name="ym" value="'+purEsc(pwsYmDot(a.ym))+'"><label>항목명</label><input name="itemName" value="'+purEsc(a.itemName||'')+'" placeholder="예: DR정산금">';
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;"><div><label>구분</label><select name="direction"><option value="ADD"'+(a.direction==='ADD'?' selected':'')+'>가산 (+)</option><option value="DEDUCT"'+(a.direction==='DEDUCT'?' selected':'')+'>차감 (−)</option></select></div><div><label>금액 (원, 0 이상)</label><input name="amountKrw" value="'+purEsc(a.amountKrw??'')+'"></div>'
+        +'<div><label>항목 구분</label><select name="category">'+Object.entries(PWS_CAT).map(([k,l])=>'<option value="'+k+'"'+(a.category===k?' selected':'')+'>'+l+'</option>').join('')+'</select></div><div><label>부가세</label><select name="vatIncludedYn"><option value="N"'+(a.vatIncludedYn==='N'?' selected':'')+'>별도</option><option value="Y"'+(a.vatIncludedYn==='Y'?' selected':'')+'>포함</option></select></div></div>';
+    h+='<label>입력 근거 / 메모 *</label><input name="memo" value="'+purEsc(a.memo||'')+'" placeholder="예: 전력팀 통보 DR 연간 계획 중 6월분">';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="pwsSaveAdj('+(i==null?'null':a.adjustId)+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+async function pwsSaveAdj(id){try{await purSend(PWS_API+'/adjusts'+(id!=null?'/'+id:''),id!=null?'PUT':'POST',Object.assign(pwsModalBody(),{division:getDiv()}));}catch(e){alert('저장 실패: '+e.message);return;}closeModal();pwsLoadAdjusts();}
+async function pwsDelAdj(id){if(!confirm('항목을 삭제할까요?'))return;try{await purSend(PWS_API+'/adjusts/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}pwsLoadAdjusts();}
+
+// ── 엑셀 가져오기 ──
+//   (1) 「전력비 이동계획」 05.이동계획 시트: 28행 구역 제목 + 29행 호기명으로 열을 찾음(열 위치가 바뀌어도 동작), 30행~ 월별 데이터
+//   (2) 표준 양식 [전력기준정보] 시트: 한 줄 = 호기 1개
+const PWS_STD_COLS=[['lineCode','호기코드'],['lineName','호기명'],['processName','공정'],['prodUnit','생산량단위'],['productivityValue','생산성'],['productivityBasis','생산성기준(일당/시간당)'],['productivityUnit','생산성단위'],['dayBasisHours','1일기준시간(h)'],['runKw','가동kW'],['idleKw','운휴kW'],['fixedKwh','고정사용량(kWh/월)'],['fixedNote','고정사용량근거'],['refQty','참고생산량'],['refRunHours','참고가동시간(h)'],['scopeMemo','평균전력 포함범위 메모']];
+function pwsDownloadTemplate(){
+    const wb=XLSX.utils.book_new();
+    const ws=XLSX.utils.aoa_to_sheet([PWS_STD_COLS.map(c=>c[1])]);ws['!cols']=PWS_STD_COLS.map(()=>({wch:16}));
+    XLSX.utils.book_append_sheet(wb,ws,'전력기준정보');
+    const guide=[['항목','설명'],['호기코드','필수 · 생산계획 호기코드와 같게 쓰면 [생산계획 생산량 불러오기]가 자동 반영됩니다'],['생산량단위','kg / ton / ea 등 — 생산성 단위와 같거나 질량 단위(ton↔kg)여야 합니다'],['생산성기준','일당 또는 시간당 · 일당이면 1일기준시간(h) 필수 (24로 간주하지 않음)'],['가동kW / 운휴kW','시간당 평균 전력사용량 (kW) — 전력팀 통보값'],['고정사용량','생산과 무관한 월 사용량 kWh (음수 가능: 다른 호기로 분리한 양) · 넣으면 근거 필수'],['참고생산량 / 참고가동시간','시뮬 화면의 기준 생산량·가동시간 초기값 (선택)'],['빈칸','미입력 — 0으로 바꾸지 않습니다. 생산량이 있는 호기는 생산성 또는 가동시간이 있어야 계산됩니다']];
+    const wg=XLSX.utils.aoa_to_sheet(guide);wg['!cols']=[{wch:22},{wch:90}];XLSX.utils.book_append_sheet(wb,wg,'설명');
+    XLSX.writeFile(wb,'전력기준정보_표준양식.xlsx');
+}
+function pwsCell(v){if(v==null)return '';return String(v).replace(/\s+/g,' ').trim();}
+function pwsNum(v){if(v==null||v==='')return null;const n=typeof v==='number'?v:Number(String(v).replace(/,/g,''));return isFinite(n)?n:null;}
+function pwsParseMovePlan(ws){
+    // 시트 범위가 B1부터 시작해도 배열 index = 실제 열 번호(A=0)·행 번호(1행=0)가 되도록 A1부터 읽음
+    const rg=XLSX.utils.decode_range(ws['!ref']||'A1');rg.s.r=0;rg.s.c=0;
+    const A=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null,blankrows:true,range:rg});
+    let r28=-1;for(let r=0;r<Math.min(A.length,80);r++){if((A[r]||[]).some(c=>pwsCell(c).startsWith('호기 별 가동시간'))){r28=r;break;}}
+    if(r28<0)throw new Error('05.이동계획 시트에서 "호기 별 가동시간 [Hr]" 제목 행을 찾지 못했습니다');
+    const H=A[r28]||[],N=A[r28+1]||[],W=Math.max(H.length,N.length);
+    const secStart=t=>{for(let c=0;c<W;c++)if(pwsCell(H[c]).startsWith(t))return c;return -1;};
+    const secCols=t=>{const s=secStart(t);if(s<0)return null;const m={};for(let c=s;c<W;c++){if(c>s&&pwsCell(H[c]))break;const n=pwsCell(N[c]);if(n)m[n]=c;}return m;};
+    const S={run:secCols('호기 별 가동시간'),idle:secCols('호기 별 운휴시간'),rk:secCols('호기 별 시간 당 전력사용량 [kWh] (가동'),ik:secCols('호기 별 시간 당 전력사용량 [kWh] (운휴'),qty:secCols('호기 별 생산량'),use:secCols('호기 별 전력사용량'),lam:secCols('라미네이팅')};
+    const miss=Object.entries(S).filter(([k,v])=>!v&&k!=='lam').map(([k])=>({run:'가동시간',idle:'운휴시간',rk:'시간당 전력사용량(가동)',ik:'시간당 전력사용량(운휴)',qty:'생산량',use:'호기 별 전력사용량'}[k]));
+    if(miss.length)throw new Error('구역을 찾지 못했습니다: '+miss.join(', '));
+    const top={};for(let c=0;c<W;c++){const n=pwsCell(N[c]);if(n&&!(n in top))top[n]=c;}
+    const col=k=>{const key=Object.keys(top).find(n=>n.startsWith(k));return key==null?-1:top[key];};
+    const C={E:col('합계 [①+②]'),O:col('전력단가 (한전고지서'),Q:col('전력단가 (회계비용'),H:col('③ SPC'),I:col('④ DR'),J:col('⑤ 복합보일러'),K:col('⑥ 삼성보상금'),N:col('회계비용')};
+    const lines=Object.keys(S.run);
+    const months=[];
+    for(let r=r28+2;r<A.length;r++){
+        const m=/^(\d{4})\s*년\s*(\d{1,2})\s*월$/.exec(pwsCell((A[r]||[])[1]));if(!m){if(months.length)break;continue;} // B열 'yyyy년 m월' 연속 구간만
+        const row=A[r],g=c=>c>=0?pwsNum(row[c]):null,ym=m[1]+String(m[2]).padStart(2,'0');
+        const days=new Date(Number(m[1]),Number(m[2]),0).getDate(),mh=days*24;
+        const ls=lines.map(n=>{
+            const h=pwsNum(row[S.run[n]]),ih=pwsNum(row[S.idle[n]]),rk=pwsNum(row[S.rk[n]]),ik=pwsNum(row[S.ik[n]]),q=S.qty[n]!=null?pwsNum(row[S.qty[n]]):null,u=S.use[n]!=null?pwsNum(row[S.use[n]]):null;
+            const mass=/^(제지|화장지)/.test(n);
+            const fixed=u!=null?u-((h||0)*(rk||0)+(ih!=null?ih:mh-(h||0))*(ik||0)):null;
+            const prod=q!=null&&q>0&&h>0?(mass?q/1000:q)/(h/24):null;
+            const warn=[];if(ih!=null&&Math.abs((h||0)+ih-mh)>0.01)warn.push('가동h+운휴h('+((h||0)+ih)+')≠월 전체시간('+mh+')');
+            return {lineCode:n,lineName:n,processName:n.replace(/\d+$/,''),prodUnit:mass?'kg':'ea',productivityValue:prod,productivityBasis:prod!=null?'DAY':null,productivityUnit:prod!=null?(mass?'ton':'ea'):null,dayBasisHours:prod!=null?24:null,
+                runKw:rk,idleKw:ik,fixedKwh:fixed!=null&&Math.abs(fixed)>=0.5?Math.round(fixed*1000)/1000:null,refQty:q,refRunHours:h==null?0:h,use:u,warn};
+        });
+        const lamCol=S.lam?Object.values(S.lam)[0]:null,lam=lamCol!=null?pwsNum(row[lamCol]):null;
+        months.push({ym,label:pwsCell(row[1]),days,lines:ls,lam,E:g(C.E),O:g(C.O),Q:g(C.Q),SPC:g(C.H),DR:g(C.I),BOILER:g(C.J),SAMSUNG:g(C.K),N:g(C.N)});
+    }
+    if(!months.length)throw new Error('월별 데이터 행(B열 "yyyy년 m월")을 찾지 못했습니다');
+    return {lines,months,colsFound:C};
+}
+function pwsParseStd(ws){
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});const hd=(rows[0]||[]).map(pwsCell);
+    const idx={};PWS_STD_COLS.forEach(([k,l])=>{const i=hd.indexOf(l);if(i>=0)idx[k]=i;});
+    if(idx.lineCode==null)throw new Error('[전력기준정보] 시트 1행에 "호기코드" 열이 없습니다 — 표준 양식을 사용하세요');
+    const out=[];rows.slice(1).forEach((r,i)=>{if(!r||r.every(c=>c==null||pwsCell(c)===''))return;const o={row:i+2};Object.entries(idx).forEach(([k,c])=>{const v=r[c];o[k]=v==null?null:(typeof v==='number'?v:pwsCell(v));});out.push(o);});
+    return out;
+}
+async function pwsImport(input){
+    const file=input.files&&input.files[0];input.value='';if(!file)return;
+    const box=document.getElementById('pwsImportRes');box.innerHTML='<div style="padding:8px;font-size:11px;color:#94a3b8;"><i class="fas fa-spinner fa-spin mr-1"></i>엑셀 읽는 중</div>';
+    let wb;try{wb=XLSX.read(await file.arrayBuffer(),{type:'array'});}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px;">엑셀 읽기 실패: '+purEsc(e.message)+'</div>';return;}
+    const mp=wb.SheetNames.find(n=>n.replace(/\s/g,'')==='05.이동계획');
+    try{
+        if(mp){PWS.imp={file:file.name,kind:'move',data:pwsParseMovePlan(wb.Sheets[mp])};pwsRenderImport();}
+        else if(wb.SheetNames.includes('전력기준정보')){PWS.imp={file:file.name,kind:'std',rows:pwsParseStd(wb.Sheets['전력기준정보'])};pwsRenderImport();}
+        else throw new Error('"05.이동계획" 시트(전력비 이동계획) 또는 "전력기준정보" 시트(표준 양식)가 없습니다. 시트: '+wb.SheetNames.join(', '));
+    }catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px;"><i class="fas fa-times-circle mr-1"></i>'+purEsc(e.message)+'</div>';}
+}
+function pwsRenderImport(){
+    const box=document.getElementById('pwsImportRes'),I=PWS.imp;if(!I){box.innerHTML='';return;}
+    if(I.kind==='std'){
+        box.innerHTML='<div style="margin:8px 0;padding:10px;border:1px solid #c7d2fe;background:#eef2ff;border-radius:8px;font-size:11px;"><b>'+purEsc(I.file)+'</b> · 표준 양식 '+I.rows.length+'개 호기 → 새 검토용 버전<div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;"><label>버전 이름</label><input id="pwsImpName" value="'+purEsc(I.file.replace(/\.xlsx?$/i,''))+'" style="padding:3px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:11px;width:240px;"><label>적용월</label><input id="pwsImpYm" value="'+pwsYmDot(getYm())+'" style="padding:3px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:11px;width:80px;"><button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsDoImport()">가져오기</button><button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="PWS.imp=null;pwsRenderImport()">취소</button></div></div>';
+        return;
+    }
+    const d=I.data,cur=getYm();const mi=Math.max(0,d.months.findIndex(m=>m.ym===cur));I.mi=I.mi==null?mi:I.mi;const m=d.months[I.mi];
+    let calcE=(m.lam||0);m.lines.forEach(l=>{const mh=m.days*24,h=l.refRunHours||0;calcE+=h*(l.runKw||0)+(mh-h)*(l.idleKw||0)+(l.fixedKwh||0);});
+    const diffE=m.E!=null?calcE-m.E:null;
+    const warns=[];m.lines.forEach(l=>l.warn.forEach(w=>warns.push(l.lineCode+': '+w)));
+    m.lines.filter(l=>(l.refQty||0)>0&&!(l.refRunHours>0)).forEach(l=>warns.push(l.lineCode+': 생산량이 있는데 가동시간이 0 — 생산성을 만들 수 없음'));
+    if(m.O==null)warns.push('전력단가(한전고지서 기준) 열을 찾지 못했습니다 — 단가는 등록하지 않습니다');
+    const adj=[['SPC지급금','ADD','OTHER',m.SPC,'엑셀 H열 ③ SPC지급금 (에너지K ESS 비용 대금)'],['DR정산금','DEDUCT','SETTLEMENT',m.DR,'엑셀 I열 ④ DR정산금 (신뢰성 수요반응 환급)'],['복합보일러 차감비','DEDUCT','SETTLEMENT',m.BOILER,'엑셀 J열 ⑤ 복합보일러 차감비 (대기전력 × 월 일수 × 단가)'],['삼성보상금(기타)','DEDUCT','OTHER',m.SAMSUNG,'엑셀 K열 ⑥ 기타 보상금 (고객부하차단 계약금 등)']].filter(a=>a[3]!=null&&a[3]!==0);
+    I.adj=adj;I.month=m;
+    let h='<div style="margin:8px 0;padding:10px 12px;border:1px solid #a7f3d0;background:#ecfdf5;border-radius:8px;font-size:11px;line-height:1.6;">'
+        +'<div style="font-weight:700;"><i class="fas fa-file-excel text-emerald-600 mr-1"></i>'+purEsc(I.file)+' · 05.이동계획 · 호기 '+d.lines.length+'개 + 라미네이팅 · 월 '+d.months.length+'개</div>'
+        +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;"><label>가져올 월</label><select onchange="PWS.imp.mi=Number(this.value);pwsRenderImport()" style="padding:3px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:11px;">'+d.months.map((x,i)=>'<option value="'+i+'"'+(i===I.mi?' selected':'')+'>'+purEsc(x.label)+'</option>').join('')+'</select>'
+        +'<label>버전 이름</label><input id="pwsImpName" value="'+purEsc(pwsYmDot(m.ym)+' 전력비 이동계획')+'" style="padding:3px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:11px;width:200px;">'
+        +(m.ym!==cur?'<span style="color:#dc2626;"><i class="fas fa-calendar-times mr-1"></i>상단 기준월('+pwsYmDot(cur)+')과 다른 월입니다 — 단가·가산차감은 '+pwsYmDot(m.ym)+'로 등록됩니다</span>':'')+'</div>'
+        +'<div style="margin-top:4px;">재현 검증: 가동h×가동kW + 운휴h×운휴kW + 고정 사용량 = <b>'+pwsN(calcE)+'</b> kWh / 엑셀 합계(E열) <b>'+pwsN(m.E)+'</b> kWh '+(diffE!=null&&Math.abs(diffE)<1?'<span style="color:#15803d;font-weight:700;"><i class="fas fa-check"></i> 일치</span>':'<span style="color:#dc2626;font-weight:700;">차이 '+pwsN(diffE,1)+'</span>')
+        +' · 회계비용(N열) '+pwsN(m.N)+'원</div>'
+        +'<div style="overflow-x:auto;margin-top:6px;"><table class="st" style="font-size:10px;white-space:nowrap;background:#fff;"><thead><tr><th>호기</th><th class="r">생산량</th><th class="r">가동h</th><th class="r">생산성(/일, 역산)</th><th class="r">가동kW</th><th class="r">운휴kW</th><th class="r">고정kWh</th></tr></thead><tbody>'
+        +m.lines.map(l=>'<tr><td style="font-weight:700;">'+purEsc(l.lineCode)+'</td><td class="r">'+pwsN(l.refQty)+' '+l.prodUnit+'</td><td class="r">'+pwsN(l.refRunHours,1)+'</td><td class="r">'+(l.productivityValue!=null?pwsN(l.productivityValue,2)+' '+l.productivityUnit:'-')+'</td><td class="r">'+pwsN(l.runKw,2)+'</td><td class="r">'+pwsN(l.idleKw,2)+'</td><td class="r">'+pwsN(l.fixedKwh)+'</td></tr>').join('')
+        +'<tr><td style="font-weight:700;">라미네이팅</td><td colspan="5" style="color:#94a3b8;">생산과 무관한 월 고정 사용량</td><td class="r">'+pwsN(m.lam)+'</td></tr></tbody></table></div>'
+        +'<div style="margin-top:6px;"><b>같이 등록할 값 ('+pwsYmDot(m.ym)+' · '+getDiv()+')</b><br>· 월 평균단가: '+(m.O!=null?pwsN(m.O,4)+' 원/kWh (O열 한전 고지서 기준 = (모고객 요금 + ESS 요금) ÷ 사용량)':'없음')
+        +'<br>· 기타 가산·차감: '+(adj.length?adj.map(a=>a[0]+' '+(a[1]==='ADD'?'+':'−')+pwsN(Math.abs(a[3]))).join(' / '):'없음')+' <span style="color:#64748b;">(같은 이름 항목이 있으면 덮어씀)</span></div>'
+        +(warns.length?'<div style="color:#b45309;margin-top:4px;">'+warns.map(w=>'<div><i class="fas fa-exclamation-triangle mr-1"></i>'+purEsc(w)+'</div>').join('')+'</div>':'')
+        +'<div style="color:#64748b;margin-top:4px;"><i class="fas fa-info-circle mr-1"></i>호기코드는 엑셀 호기명(제지2·제지3 …) 그대로 등록됩니다 — 생산계획 호기코드(PM2·PM3 등)와 다르면 [호기] 수정에서 바꾸세요. 가져온 기준정보는 <b>검토용(미승인)</b>으로 시작합니다.</div>'
+        +'<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="pwsImpPrice" '+(m.O!=null?'checked':'disabled')+'> 단가 등록</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="pwsImpAdj" '+(adj.length?'checked':'disabled')+'> 가산·차감 등록</label>'
+        +'<button class="btn-p" style="font-size:10px;padding:4px 12px;margin-left:auto;" onclick="pwsDoImport()"><i class="fas fa-check mr-1"></i>가져오기</button><button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="PWS.imp=null;pwsRenderImport()">취소</button></div></div>';
+    box.innerHTML=h;
+}
+async function pwsDoImport(){
+    const I=PWS.imp;if(!I)return;const name=(document.getElementById('pwsImpName')||{}).value||'';
+    const box=document.getElementById('pwsImportRes');const done=[];
+    try{
+        if(I.kind==='std'){
+            const r=await purSend(PWS_API+'/versions/import','POST',{division:getDiv(),versionName:name,applyYm:(document.getElementById('pwsImpYm')||{}).value||null,sourceFile:I.file,lines:I.rows});
+            if(!r.ok){box.innerHTML='<div style="margin:8px 0;padding:10px;border:1px solid #fecaca;background:#fef2f2;border-radius:8px;font-size:11px;color:#dc2626;"><b>가져오지 못했습니다</b> (아무것도 저장 안 됨)'+(r.errors||[]).map(e=>'<div>· '+purEsc(e)+'</div>').join('')+'</div>';return;}
+            done.push('기준정보 '+r.lineCount+'개 호기');PWS.editVid=r.version.versionId;
+        }else{
+            const m=I.month,lines=m.lines.map((l,i)=>({row:i+1,lineCode:l.lineCode,lineName:l.lineName,processName:l.processName,prodUnit:l.prodUnit,productivityValue:l.productivityValue,productivityBasis:l.productivityBasis,productivityUnit:l.productivityUnit,dayBasisHours:l.dayBasisHours,runKw:l.runKw,idleKw:l.idleKw,fixedKwh:l.fixedKwh,fixedNote:l.fixedKwh!=null?'엑셀 05.이동계획 호기 사용량 − (가동h×가동kW + 운휴h×운휴kW) — 유틸리티 배분·라미네이팅 분리 등':null,refQty:l.refQty,refRunHours:l.refRunHours,sourceNote:I.file+' · '+m.label+(l.productivityValue!=null?' · 생산성 = 생산량 ÷ (가동h ÷ 24) 역산':'')}));
+            if(m.lam!=null&&m.lam!==0)lines.push({row:lines.length+1,lineCode:'라미네이팅',lineName:'라미네이팅',processName:'라미네이팅',prodUnit:'ea',runKw:0,idleKw:0,fixedKwh:m.lam,fixedNote:'엑셀 05.이동계획 라미네이팅 월 전력사용량',refQty:0,refRunHours:0,sourceNote:I.file+' · '+m.label});
+            const r=await purSend(PWS_API+'/versions/import','POST',{division:getDiv(),versionName:name,applyYm:m.ym,sourceFile:I.file,memo:'05.이동계획 '+m.label+' · 엑셀 합계 '+Math.round(m.E||0).toLocaleString('ko-KR')+'kWh / 회계비용 '+Math.round(m.N||0).toLocaleString('ko-KR')+'원',lines});
+            if(!r.ok){box.innerHTML='<div style="margin:8px 0;padding:10px;border:1px solid #fecaca;background:#fef2f2;border-radius:8px;font-size:11px;color:#dc2626;"><b>가져오지 못했습니다</b> (아무것도 저장 안 됨)'+(r.errors||[]).map(e=>'<div>· '+purEsc(e)+'</div>').join('')+'</div>';return;}
+            done.push('기준정보 '+r.lineCount+'개 호기 (검토용)');PWS.editVid=r.version.versionId;
+            if(document.getElementById('pwsImpPrice')?.checked&&m.O!=null){
+                await purSend(PWS_API+'/prices','POST',{division:getDiv(),ym:m.ym,priceKrwPerKwh:m.O,vatIncludedYn:'N',baseFeeIncludedYn:'Y',essIncludedYn:'Y',settlementIncludedYn:'N',scopeDesc:'엑셀 05.이동계획 O열 = (한전 모고객 요금 F + ESS 요금 G) ÷ 사용량 E — 기본요금·부하별 요금·역률·전력기금·ESS 요금 포함, 부가세 별도, SPC·DR·복합보일러·기타보상금 별도(가산·차감)',memo:I.file+' · '+m.label});
+                done.push('단가 '+pwsN(m.O,2)+'원/kWh');
+            }
+            if(document.getElementById('pwsImpAdj')?.checked&&I.adj.length){
+                const ex=await purGet(PWS_API+'/adjusts?division='+getDiv()+'&ym='+m.ym)||[];
+                for(const a of I.adj){
+                    const amt=Math.abs(a[3]),dir=a[3]<0?(a[1]==='ADD'?'DEDUCT':'ADD'):a[1];
+                    const body={division:getDiv(),ym:m.ym,itemName:a[0],direction:dir,amountKrw:amt,category:a[2],vatIncludedYn:'N',memo:a[4]+' · '+I.file+' '+m.label};
+                    const same=ex.find(x=>x.itemName===a[0]);
+                    await purSend(PWS_API+'/adjusts'+(same?'/'+same.adjustId:''),same?'PUT':'POST',body);
+                }
+                done.push('가산·차감 '+I.adj.length+'건');
+            }
+        }
+    }catch(e){box.innerHTML='<div style="margin:8px 0;padding:10px;border:1px solid #fecaca;background:#fef2f2;border-radius:8px;font-size:11px;color:#dc2626;">가져오기 실패: '+purEsc(e.message)+(done.length?'<div>이미 저장됨: '+purEsc(done.join(', '))+'</div>':'')+'</div>';return;}
+    PWS.imp=null;box.innerHTML='<div style="margin:8px 0;padding:8px 10px;border:1px solid #bbf7d0;background:#f0fdf4;border-radius:8px;font-size:11px;color:#15803d;"><i class="fas fa-check-circle mr-1"></i>가져왔습니다: '+purEsc(done.join(' · '))+' — 아래 호기 값을 현업과 확인한 뒤 [승인]하세요</div>';
+    pwsLoadVersions(false);
+}
+
 </script>
 </body>
 </html>
