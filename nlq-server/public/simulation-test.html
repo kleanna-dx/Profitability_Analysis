@@ -5136,15 +5136,17 @@ async function pwsDelAdj(id){if(!confirm('항목을 삭제할까요?'))return;tr
 //   공장 공통 금액(SPC·DR·복합보일러·삼성보상금)은 사업부 사용량 비율로 나눔 (엑셀 배부 방식)
 function pwsNormName(v){return String(v==null?'':v).replace(/\s+/g,'').replace(/호기/g,'').toLowerCase();}
 async function pwsLoadUnitMap(){
-    let units=[];try{units=(await purGet(API+'/units'))||[];}catch(_){units=[];}
-    units=units.filter(u=>u.isActive!==false);
+    let all=[];try{all=(await purGet(API+'/units'))||[];}catch(_){all=[];}
+    const units=all.filter(u=>u.isActive!==false);
     const prev={}; // 엑셀 호기명 → {code, division} (사업부별 최근 엑셀 버전)
     for(const dv of PWS_DIVISIONS){
         try{const vs=(await purGet(PWS_API+'/versions?division='+dv))||[];const v=vs.find(x=>x.source==='EXCEL');if(!v)continue;
             const det=await purGet(PWS_API+'/versions/'+v.versionId);(det.lines||[]).forEach(l=>{const k=pwsNormName(l.lineName);if(k&&!prev[k])prev[k]={code:l.lineCode,division:dv};});}catch(_){}
     }
-    return {units,prev};
+    return {units,all,prev};
 }
+// 공정명 = 호기명에서 숫자·'호기'를 뺀 앞부분 (예: 화장지3 → 화장지). 사업부 기본값을 기존 호기 마스터에서 찾는 데만 사용 (고정 분류 없음)
+function pwsPrefix(v){return pwsNormName(v).replace(/[0-9#\-_.]+$/,'');}
 function pwsDefaultMap(name,isLam,U){
     const k=pwsNormName(name),pv=U.prev[k];
     if(pv){const u=U.units.find(x=>x.unitCode===pv.code);if(u)return 'U:'+u.unitCode;if(isLam)return 'FIX:'+pv.division;}
@@ -5224,6 +5226,48 @@ async function pwsImport(input){
         else throw new Error('"05.이동계획" 시트(전력비 이동계획) 또는 "전력기준정보" 시트(표준 양식)가 없습니다. 시트: '+wb.SheetNames.join(', '));
     }catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px;"><i class="fas fa-times-circle mr-1"></i>'+purEsc(e.message)+'</div>';}
 }
+// ── 엑셀에만 있고 호기 마스터에 없는 호기 → 확인 후 호기 마스터(rpsim_unit)에 등록 (판매계획 미등록 값 등록과 같은 방식) ──
+//   기본값: 호기코드·호기명 = 엑셀 호기명, 사업부 = 상단 사업부 — 모두 화면에서 고칠 수 있음. 등록은 사용자가 [등록]을 눌렀을 때만
+function pwsRegHtml(names,div){
+    const I=PWS.imp;I.reg=I.reg||{};I.regNames=names;
+    names.forEach(n=>{if(!I.reg[n]){const px=pwsPrefix(n),same=px?I.U.units.filter(u=>pwsPrefix(u.unitName)===px):[];const dvs=[...new Set(same.map(u=>u.division))];
+        I.reg[n]={on:false,code:n,name:n,division:dvs.length===1?dvs[0]:''};}});
+    const inp=(ix,f,w)=>'<input value="'+purEsc(I.reg[names[ix]][f])+'" oninput="pwsRegSet('+ix+',\''+f+'\',this.value)" maxlength="'+(f==='code'?20:100)+'" style="width:'+w+'px;padding:2px 5px;border:1px solid #fcd34d;background:#fffbeb;border-radius:4px;font-size:10px;">';
+    return '<div style="margin-top:8px;padding:8px 10px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;">'
+        +'<div style="font-weight:700;color:#1d4ed8;"><i class="fas fa-plus-circle mr-1"></i>호기 마스터에 없는 호기 등록 <span style="font-weight:400;color:#64748b;">'+names.length+'개 · 등록할 호기만 체크하고 사업부를 고르세요 · 기존 호기와 같은 설비면 등록하지 말고 위 표에서 그 호기를 고르세요</span></div>'
+        +'<div style="margin-top:2px;color:#475569;">현재 호기 마스터: '+(I.U.units.length?I.U.units.map(u=>'<b>'+purEsc(u.unitCode)+'</b>('+purEsc(u.unitName)+'·'+purEsc(u.division)+')').join(', '):'없음')+'</div>'
+        +'<table class="st" style="font-size:10px;white-space:nowrap;background:#fff;margin-top:4px;"><thead><tr><th>등록</th><th>엑셀 호기</th><th>호기코드 *</th><th>호기명 *</th><th>사업부 *</th></tr></thead><tbody>'
+        +names.map((n,ix)=>{const r=I.reg[n];return '<tr><td style="text-align:center;"><input type="checkbox"'+(r.on?' checked':'')+' onchange="pwsRegSet('+ix+',\'on\',this.checked)"></td><td style="font-weight:700;">'+purEsc(n)+'</td><td>'+inp(ix,'code',90)+'</td><td>'+inp(ix,'name',110)+'</td><td><select onchange="pwsRegSet('+ix+',\'division\',this.value)" style="padding:2px 4px;border:1px solid #fcd34d;background:#fffbeb;border-radius:4px;font-size:10px;">'+'<option value="">(선택)</option>'+PWS_DIVISIONS.map(d=>'<option value="'+d+'"'+(r.division===d?' selected':'')+'>'+d+'</option>').join('')+'</select></td></tr>';}).join('')
+        +'</tbody></table>'
+        +'<div style="margin-top:4px;color:#64748b;">호기코드는 생산계획·SAP 생산호기 코드와 같게 쓰는 것이 좋습니다 (나중에 생산량이 자동 연결됨). 등록 후에도 [기준정보 › 호기 마스터]에서 고칠 수 있습니다.</div>'
+        +'<div style="margin-top:6px;text-align:right;"><button class="btn-p" style="font-size:10px;padding:4px 12px;" onclick="pwsRegisterUnits()"><i class="fas fa-check mr-1"></i>선택한 호기를 호기 마스터에 등록하고 연결</button></div></div>';
+}
+function pwsRegSet(ix,f,v){const I=PWS.imp;if(!I||!I.regNames)return;const r=I.reg[I.regNames[ix]];if(!r)return;r[f]=v;if(f==='division'&&v)r.on=true;if(f==='division'||f==='on')pwsRenderImport();}
+async function pwsRegisterUnits(){
+    const I=PWS.imp;if(!I)return;
+    const names=(I.regNames||[]).filter(n=>I.reg[n]&&I.reg[n].on);
+    if(!names.length){alert('등록할 호기를 선택하세요');return;}
+    const errs=[],seen=new Set();
+    names.forEach(n=>{const r=I.reg[n];r.code=String(r.code||'').trim();r.name=String(r.name||'').trim();const lc=r.code.toLowerCase();
+        if(!r.code)errs.push(n+': 호기코드를 입력하세요');else if(r.code.length>20)errs.push(n+': 호기코드는 20자 이하입니다');
+        if(!r.name)errs.push(n+': 호기명을 입력하세요');
+        if(!PWS_DIVISIONS.includes(r.division))errs.push(n+': 사업부를 선택하세요');
+        if(r.code&&seen.has(lc))errs.push(n+': 같은 호기코드를 두 번 입력했습니다 ('+r.code+')');seen.add(lc);
+        {const ex=(I.U.all||I.U.units).find(u=>String(u.unitCode).toLowerCase()===lc);if(r.code&&ex)errs.push(n+': 호기 마스터에 이미 있는 코드입니다 ('+r.code+(ex.isActive===false?', 비활성':'')+') — 위 표에서 그 호기를 고르거나 다른 코드를 쓰세요');}});
+    if(errs.length){alert('등록할 수 없습니다:\n\n'+errs.join('\n'));return;}
+    if(!confirm('호기 마스터에 '+names.length+'개 호기를 등록합니다.\n\n'+names.map(n=>{const r=I.reg[n];return '· '+n+' → '+r.code+' ('+r.name+') · '+r.division;}).join('\n')+'\n\n계속할까요?'))return;
+    const done=[];
+    try{
+        for(const n of names){const r=I.reg[n];
+            await purSend(API+'/units','POST',{unitCode:r.code,unitName:r.name,division:r.division,description:'전력비 이동계획 엑셀 호기 「'+n+'」에서 등록 ('+I.file+')',isActive:true});
+            done.push(n);I.map[n]='U:'+r.code;delete I.reg[n];}
+    }catch(e){alert('등록 실패: '+e.message+(done.length?'\n\n이미 등록됨: '+done.join(', '):''));}
+    try{I.U.all=(await purGet(API+'/units'))||[];I.U.units=I.U.all.filter(u=>u.isActive!==false);}catch(_){}
+    done.forEach(n=>{const c=I.map[n].slice(2);if(!I.U.units.some(u=>u.unitCode===c))I.map[n]='SKIP';});
+    try{await loadMasterOptions();}catch(_){} // 다른 화면의 호기 선택 목록도 갱신
+    pwsRenderImport();
+    if(done.length)alert(done.length+'개 호기를 호기 마스터에 등록하고 연결했습니다. 아래 내용을 확인하고 [가져오기]를 누르세요.');
+}
 function pwsSetMap(ix,val){const I=PWS.imp;if(!I)return;const keys=I.data.lines.concat(['__LAM__']);I.map[keys[ix]]=val;pwsRenderImport();}
 function pwsRenderImport(){
     const box=document.getElementById('pwsImportRes'),I=PWS.imp;if(!I){box.innerHTML='';return;}
@@ -5250,7 +5294,7 @@ function pwsRenderImport(){
     m.lines.filter(l=>(l.refQty||0)>0&&!(l.refRunHours>0)).forEach(l=>warns.push(l.lineCode+': 생산량이 있는데 가동시간이 0 — 생산성을 만들 수 없음'));
     if(m.O==null)warns.push('전력단가(한전고지서 기준) 열을 찾지 못했습니다 — 단가는 등록하지 않습니다');
     if(!U.units.length)warns.push('호기 마스터를 불러오지 못했거나 비어 있습니다 — [기준정보 › 호기 마스터]에 호기(코드·이름·사업부)를 먼저 등록하세요');
-    if(unmapped.length)warns.push('호기 마스터와 연결 안 된 엑셀 호기 — 어느 사업부에도 가져오지 않음: '+unmapped.join(', ')+' (아래 [호기 마스터 연결]에서 선택)');
+    if(unmapped.length)warns.push('호기 마스터와 연결 안 된 엑셀 호기 — 어느 사업부에도 가져오지 않음: '+unmapped.join(', ')+' ([호기 마스터 연결]에서 기존 호기를 고르거나, [호기 마스터에 없는 호기 등록]에서 새로 등록)');
     if(share==null)warns.push('엑셀 사용량 합계(E열)가 없어 공장 공통 금액(SPC·DR 등)을 나눌 수 없습니다 — 가산·차감은 등록하지 않습니다');
     const sh=v=>v==null||share==null?null:v*share;
     const adj=[['SPC지급금','ADD','OTHER',sh(m.SPC),'엑셀 H열 ③ SPC지급금 (에너지K ESS 비용 대금)'],['DR정산금','DEDUCT','SETTLEMENT',sh(m.DR),'엑셀 I열 ④ DR정산금 (신뢰성 수요반응 환급)'],['복합보일러 차감비','DEDUCT','SETTLEMENT',sh(m.BOILER),'엑셀 J열 ⑤ 복합보일러 차감비 (대기전력 × 월 일수 × 단가)'],['삼성보상금(기타)','DEDUCT','OTHER',sh(m.SAMSUNG),'엑셀 K열 ⑥ 기타 보상금 (고객부하차단 계약금 등)']].filter(a=>a[3]!=null&&a[3]!==0);
@@ -5268,6 +5312,7 @@ function pwsRenderImport(){
                 +'<option value="SKIP"'+(cur==='SKIP'?' selected':'')+'>(가져오지 않음)</option>';
             return '<tr'+(f.division===div?' style="background:#eef2ff;"':'')+'><td style="font-weight:700;">'+(isLam?'라미네이팅':purEsc(n))+'</td><td><select onchange="pwsSetMap('+ix+',this.value)" style="padding:2px 4px;border:1px solid '+(f.division?'#d1d5db':'#fca5a5')+';border-radius:4px;font-size:10px;">'+opts+'</select></td><td>'+(f.division?'<b'+(f.division===div?' style="color:#4f46e5;"':'')+'>'+purEsc(f.division)+'</b>':'<span style="color:#dc2626;">미연결</span>')+'</td><td class="r">'+pwsN(use)+'</td></tr>';}).join('')
         +'</tbody></table></div></div>'
+        +(unmapped.length?pwsRegHtml(unmapped,div):'')
         +'<div style="margin-top:4px;">재현 검증 ('+purEsc(div)+'): 가동h×가동kW + 운휴h×운휴kW + 고정 사용량 = <b>'+pwsN(calcE)+'</b> kWh / 엑셀 호기별 사용량 합 <b>'+pwsN(xlsUse)+'</b> kWh '+(Math.abs(diffE)<1?'<span style="color:#15803d;font-weight:700;"><i class="fas fa-check"></i> 일치</span>':'<span style="color:#dc2626;font-weight:700;">차이 '+pwsN(diffE,1)+'</span>')
         +'<br>공장 전체 사용량(E열) '+pwsN(m0.E)+' kWh 중 '+purEsc(div)+' <b>'+(share!=null?(share*100).toFixed(2)+'%':'-')+'</b> · 공장 회계비용(N열) '+pwsN(m0.N)+'원 → '+purEsc(div)+' 예상 <b>'+(share!=null&&m0.N!=null?pwsN(m0.N*share):'-')+'</b>원</div>'
         +'<div style="overflow-x:auto;margin-top:6px;"><table class="st" style="font-size:10px;white-space:nowrap;background:#fff;"><thead><tr><th>호기</th><th class="r">생산량</th><th class="r">가동h</th><th class="r">생산성(/일, 역산)</th><th class="r">가동kW</th><th class="r">운휴kW</th><th class="r">고정kWh</th></tr></thead><tbody>'
