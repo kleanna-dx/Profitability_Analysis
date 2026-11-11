@@ -565,20 +565,49 @@ public class PowerSimService {
      * 생산계획이 없는 지종에 시뮬 생산량이 있으면 어느 호기인지 알 수 없어 반영하지 않고 경고.
      */
     static Map<String, Map<String, BigDecimal>> machineTonFromProducts(List<Map<String, Object>> planRows, List<ProductSim> products, String machine, List<String> warnings) {
+        return machineTonFromProducts(planRows, products, machine, List.of(), null, warnings);
+    }
+
+    /**
+     * splitRows: 실적(rpsim_raw_material) 호기 × 지종 생산량 {MACHINE_CODE, PRODUCT, TON} — 생산계획에 없는 지종을 호기로 나눌 때만 사용.
+     * 생산계획에 없는 지종의 시뮬 생산량 → 실적 호기 비중으로 배분 (기준 = 생산계획 0). 실적에도 없으면 반영 안 함 + 경고.
+     * P/L 에서 호기 하나를 골랐으면 그 호기에 전부 배분.
+     */
+    static Map<String, Map<String, BigDecimal>> machineTonFromProducts(List<Map<String, Object>> planRows, List<ProductSim> products, String machine,
+                                                                       List<Map<String, Object>> splitRows, String splitLabel, List<String> warnings) {
         Map<String, BigDecimal> ratio = new HashMap<>();
         Set<String> planProducts = new HashSet<>();
         for (Map<String, Object> r : planRows) planProducts.add(str(r.get("PRODUCT")));
-        List<String> noPlan = new ArrayList<>();
+        boolean oneMachine = machine != null && !"ALL".equalsIgnoreCase(machine);
+        // 실적 지종별 호기 비중
+        Map<String, Map<String, BigDecimal>> split = new LinkedHashMap<>();
+        for (Map<String, Object> r : splitRows == null ? List.<Map<String, Object>>of() : splitRows) {
+            String mc = str(r.get("MACHINE_CODE")), prod = str(r.get("PRODUCT"));
+            if (mc == null || prod == null || r.get("TON") == null) continue;
+            BigDecimal t = new BigDecimal(String.valueOf(r.get("TON")));
+            if (t.signum() > 0) split.computeIfAbsent(prod, k -> new LinkedHashMap<>()).merge(mc, t, BigDecimal::add);
+        }
+        List<String> noPlan = new ArrayList<>(), bySplit = new ArrayList<>();
+        Map<String, BigDecimal> extra = new LinkedHashMap<>();   // 생산계획에 없는 지종 → 호기별 시뮬 생산량
         for (ProductSim p : products) {
             if (p.product() == null || p.sim() == null) continue;
-            if (p.plan() == null || p.plan().signum() <= 0) {
-                if (p.sim().signum() > 0) noPlan.add(p.product());
+            if (p.plan() == null || p.plan().signum() <= 0 || !planProducts.contains(p.product())) {
+                if (p.sim().signum() <= 0) continue;
+                if (oneMachine) { extra.merge(machine, p.sim(), BigDecimal::add); bySplit.add(p.product()); continue; }
+                Map<String, BigDecimal> sp = split.get(p.product());
+                BigDecimal tot = sp == null ? BigDecimal.ZERO : sp.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+                if (tot.signum() <= 0) { noPlan.add(p.product()); continue; }
+                for (Map.Entry<String, BigDecimal> e : sp.entrySet())
+                    extra.merge(e.getKey(), p.sim().multiply(e.getValue(), PowerSimCalculator.MC).divide(tot, PowerSimCalculator.MC), BigDecimal::add);
+                bySplit.add(p.product());
                 continue;
             }
             ratio.put(p.product(), p.sim().divide(p.plan(), PowerSimCalculator.MC));
         }
+        if (!bySplit.isEmpty())
+            warnings.add("생산계획에 없는 지종은 " + (oneMachine ? "선택한 호기 " + machine + "에" : (splitLabel == null ? "실적" : splitLabel) + " 호기 비중으로") + " 나눠 전력비에 반영했습니다: " + String.join(", ", bySplit));
         if (!noPlan.isEmpty())
-            warnings.add("생산계획이 없는 지종의 시뮬 생산량은 어느 호기인지 알 수 없어 전력비에 반영하지 않았습니다: " + String.join(", ", noPlan));
+            warnings.add("생산계획·실적 모두 없는 지종의 시뮬 생산량은 어느 호기인지 알 수 없어 전력비에 반영하지 않았습니다: " + String.join(", ", noPlan));
         Map<String, BigDecimal> base = new LinkedHashMap<>(), sim = new LinkedHashMap<>();
         for (Map<String, Object> r : planRows) {
             String mc = str(r.get("MACHINE_CODE")), prod = str(r.get("PRODUCT"));
@@ -589,6 +618,11 @@ public class PowerSimService {
             boolean locked = isLocked(r.get("LOCKED"));
             boolean apply = !locked && (machine == null || "ALL".equalsIgnoreCase(machine) || machine.equalsIgnoreCase(mc));
             sim.merge(mc, apply ? t.multiply(ratio.getOrDefault(prod, BigDecimal.ONE), PowerSimCalculator.MC) : t, BigDecimal::add);
+        }
+        // 생산계획에 없는 지종 몫 — 기준(생산계획)은 0, 시뮬만 더함
+        for (Map.Entry<String, BigDecimal> e : extra.entrySet()) {
+            base.putIfAbsent(e.getKey(), BigDecimal.ZERO);
+            sim.merge(e.getKey(), e.getValue(), BigDecimal::add);
         }
         Map<String, Map<String, BigDecimal>> out = new LinkedHashMap<>();
         out.put("base", base); out.put("sim", sim);
@@ -658,15 +692,48 @@ public class PowerSimService {
                 div, Integer.parseInt(ym.substring(0, 4)), Integer.parseInt(ym.substring(4)));
         List<String> warnings = new ArrayList<>();
         String ymTxt = ym.substring(0, 4) + "." + ym.substring(4);
-        boolean hasPl = products.stream().anyMatch(p -> p.sim() != null);
+        boolean hasPl = products.stream().anyMatch(p -> p.sim() != null && p.sim().signum() > 0);
         Map<String, Object> src = qtySource(planRows, hasPl);
-        if (planRows.isEmpty()) warnings.add(ymTxt + " STEP3 생산계획이 없습니다 — 모든 호기를 생산량 0(운휴 전력만)으로 계산했습니다");
+        // 생산계획에 없는 지종 → 실적 호기 비중 (기준월 실적, 없으면 전월 실적)
+        Set<String> planProds = new HashSet<>();
+        planRows.forEach(r -> planProds.add(str(r.get("PRODUCT"))));
+        boolean needSplit = products.stream().anyMatch(p -> p.sim() != null && p.sim().signum() > 0 && (p.plan() == null || p.plan().signum() <= 0 || !planProds.contains(p.product())));
+        List<Map<String, Object>> splitRows = List.of();
+        String splitLabel = null;
+        if (needSplit) {
+            for (String sy : List.of(ym, com.company.module.rollingplanningsimulation.support.RawMaterialSql.prevYm(ym))) {
+                splitRows = actualSplit(sy, div);
+                if (!splitRows.isEmpty()) { splitLabel = sy.substring(0, 4) + "." + sy.substring(4) + " 실적"; break; }
+            }
+        }
+        if (planRows.isEmpty()) {
+            if (hasPl) {
+                src.put("code", "PL"); src.put("label", "P/L 시뮬레이터 생산량 (STEP3 생산계획 없음" + (splitLabel != null ? " · 호기 배분 = " + splitLabel + " 비중" : "") + ")");
+                warnings.add(ymTxt + " STEP3 생산계획이 없습니다 — 기준 생산량 0, 시뮬은 P/L 시뮬레이터 생산량으로 계산했습니다");
+            } else warnings.add(ymTxt + " STEP3 생산계획이 없습니다 — 모든 호기를 생산량 0(운휴 전력만)으로 계산했습니다");
+        }
         else if (!((List<?>) src.get("unlockedMachines")).isEmpty())
             warnings.add(ymTxt + " STEP3 생산계획 미확정 호기: " + String.join(", ", (List<String>) src.get("unlockedMachines"))
                     + (hasPl ? " — P/L 시뮬레이터 생산량으로 계산했습니다" : " — 미확정 생산계획으로 계산했습니다") + " (확정하면 확정 생산계획으로 바뀝니다)");
-        Map<String, Map<String, BigDecimal>> mt = machineTonFromProducts(planRows, products, str(body.get("machine")), warnings);
+        Map<String, Map<String, BigDecimal>> mt = machineTonFromProducts(planRows, products, str(body.get("machine")), splitRows, splitLabel, warnings);
         PlReq pr = plRequest(basis, mt.get("base"), mt.get("sim"), warnings);
         return new ProdQty(v, basis, mt, pr, src, warnings);
+    }
+
+    /** 실적(rpsim_raw_material) 호기 × 지종 총생산량(톤) — P/L 지종 분류와 같은 규칙 (RawMaterialSql) */
+    List<Map<String, Object>> actualSplit(String ym, String div) {
+        com.company.module.rollingplanningsimulation.support.RawMaterialSql.validateYm(ym);
+        try {
+            return jdbc.queryForList(
+                    "SELECT MACHINE_CODE, PRODUCT, SUM(prod_kg) / 1000 AS TON FROM (" +
+                    "  SELECT BIC_ZMACHINE AS MACHINE_CODE, " + com.company.module.rollingplanningsimulation.support.RawMaterialSql.PRODUCT_EXPR + " AS PRODUCT," +
+                    "         MAX(" + com.company.module.rollingplanningsimulation.support.RawMaterialSql.PROD_QTY_COL + ") AS prod_kg" +
+                    "    FROM rpsim_raw_material WHERE CALMONTH = ?" + com.company.module.rollingplanningsimulation.support.RawMaterialSql.DIV_SCOPE +
+                    "   GROUP BY BIC_ZMACHINE, PRODH4, PRODH2_NM) t" +
+                    " WHERE PRODUCT IS NOT NULL GROUP BY MACHINE_CODE, PRODUCT HAVING SUM(prod_kg) > 0", ym, div);
+        } catch (org.springframework.dao.DataAccessException e) {
+            return List.of();
+        }
     }
 
     /** 전력비 시뮬레이션 탭 — 호기별 기준·시뮬 생산량 (전력 기준정보 생산량 단위로 변환). 계산·저장하지 않음 */
