@@ -21,7 +21,7 @@ class PowerSimPlLinkTest {
 
     @Test void tonToKg_andRatioScaling() {
         List<String> w = new ArrayList<>();
-        var pr = PowerSimService.plRequest(List.of(line("PM3", "kg", "20000")), Map.of("PM3", d("20000")), d("1.1"), w);
+        var pr = PowerSimService.plRequest(List.of(line("PM3", "kg", "20000")), Map.of("PM3", d("20000")), Map.of("PM3", d("22000")), w);
         assertEquals(0, d("20000000").compareTo(new BigDecimal((String) pr.req().get("PM3").get("baseQty"))));
         assertEquals(0, d("22000000").compareTo(new BigDecimal((String) pr.req().get("PM3").get("qty"))));
         assertEquals(List.of("PM3"), pr.matched());
@@ -29,13 +29,13 @@ class PowerSimPlLinkTest {
     }
 
     @Test void caseInsensitiveMatch() {
-        var pr = PowerSimService.plRequest(List.of(line("pm3", "ton", "1")), Map.of("PM3", d("10")), BigDecimal.ONE, new ArrayList<>());
+        var pr = PowerSimService.plRequest(List.of(line("pm3", "ton", "1")), Map.of("PM3", d("10")), Map.of(), new ArrayList<>());
         assertEquals(0, d("10").compareTo(new BigDecimal((String) pr.req().get("pm3").get("baseQty"))));
     }
 
     @Test void noPlan_isZeroWithWarning_andUnusedPlanWarned() {
         List<String> w = new ArrayList<>();
-        var pr = PowerSimService.plRequest(List.of(line("제지2", "kg", "6000"), line("라미네이팅", "ea", "0")), Map.of("PM2", d("100")), BigDecimal.ONE, w);
+        var pr = PowerSimService.plRequest(List.of(line("제지2", "kg", "6000"), line("라미네이팅", "ea", "0")), Map.of("PM2", d("100")), Map.of(), w);
         assertEquals("0", pr.req().get("제지2").get("baseQty"));
         assertEquals("0", pr.req().get("라미네이팅").get("baseQty"));
         assertEquals(List.of("PM2"), pr.unusedPlanCodes());
@@ -46,9 +46,37 @@ class PowerSimPlLinkTest {
 
     @Test void unitNotConvertible_isNull_notZero() {
         List<String> w = new ArrayList<>();
-        var pr = PowerSimService.plRequest(List.of(line("가공3", "ea", "100")), Map.of("가공3", d("5")), BigDecimal.ONE, w);
+        var pr = PowerSimService.plRequest(List.of(line("가공3", "ea", "100")), Map.of("가공3", d("5")), Map.of(), w);
         assertNull(pr.req().get("가공3").get("baseQty"));
         assertFalse(w.isEmpty());
+    }
+
+    static Map<String, Object> row(String mc, String prod, String ton) { Map<String, Object> m = new HashMap<>(); m.put("MACHINE_CODE", mc); m.put("PRODUCT", prod); m.put("TON", d(ton)); return m; }
+
+    @Test void productSim_drivesMachineTon() {
+        // PM2: SC 100톤 + KL 50톤, PM3: SC 300톤. P/L 에서 SC 400 → 480 (×1.2), KL 50 → 50, 백판 = 생산계획 없음 → 30톤 입력
+        List<Map<String, Object>> plan = List.of(row("PM2", "SC", "100"), row("PM2", "KL", "50"), row("PM3", "SC", "300"));
+        List<String> w = new ArrayList<>();
+        var mt = PowerSimService.machineTonFromProducts(plan, List.of(
+                new PowerSimService.ProductSim("SC", d("400"), d("480")),
+                new PowerSimService.ProductSim("KL", d("50"), d("50")),
+                new PowerSimService.ProductSim("백판", d("0"), d("30"))), "ALL", w);
+        assertEquals(0, d("150").compareTo(mt.get("base").get("PM2")));
+        assertEquals(0, d("170").compareTo(mt.get("sim").get("PM2")));   // 100×1.2 + 50
+        assertEquals(0, d("360").compareTo(mt.get("sim").get("PM3")));   // 300×1.2
+        assertTrue(w.stream().anyMatch(x -> x.contains("백판")), "생산계획 없는 지종 경고");
+    }
+
+    @Test void productNotInPl_keepsPlan() {
+        var mt = PowerSimService.machineTonFromProducts(List.of(row("PM2", "SC", "100")), List.of(), "ALL", new ArrayList<>());
+        assertEquals(0, d("100").compareTo(mt.get("sim").get("PM2")));
+    }
+
+    @Test void machineSelected_appliesRatioOnlyToThatMachine() {
+        List<Map<String, Object>> plan = List.of(row("PM2", "SC", "100"), row("PM3", "SC", "300"));
+        var mt = PowerSimService.machineTonFromProducts(plan, List.of(new PowerSimService.ProductSim("SC", d("100"), d("120"))), "PM2", new ArrayList<>());
+        assertEquals(0, d("120").compareTo(mt.get("sim").get("PM2")));
+        assertEquals(0, d("300").compareTo(mt.get("sim").get("PM3")));
     }
 
     @Test void pickVersion_order() {
