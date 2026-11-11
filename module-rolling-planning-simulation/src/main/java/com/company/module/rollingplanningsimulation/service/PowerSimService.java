@@ -463,6 +463,91 @@ public class PowerSimService {
         return res;
     }
 
+    // ================================================================ P/L 전력비 연결
+
+    /** P/L 이 쓸 기준정보 버전: 계산월 승인 → 계산월 검토용 → 최신 승인 → 최신 (없으면 null) */
+    static PwSimBasisVersion pickVersion(List<PwSimBasisVersion> vs, String ym) {
+        if (vs == null || vs.isEmpty()) return null;
+        for (PwSimBasisVersion v : vs) if (ym.equals(v.getApplyYm()) && v.isApproved()) return v;
+        for (PwSimBasisVersion v : vs) if (ym.equals(v.getApplyYm())) return v;
+        for (PwSimBasisVersion v : vs) if (v.isApproved()) return v;
+        return vs.get(0);
+    }
+
+    record PlReq(Map<String, Map<String, Object>> req, List<String> matched, List<String> unusedPlanCodes) {}
+
+    /**
+     * 생산계획 호기별 양품량(ton) → 전력비 계산 요청. 기준 = 생산계획 그대로, 시뮬 = 생산계획 × ratio (P/L 시뮬 생산량 ÷ 생산계획 생산량).
+     * 가동시간은 넣지 않음 → 생산량 ÷ 생산성으로 계산. 생산계획이 없는 호기 = 생산량 0(운휴만) + 경고 (가짜 값 없음)
+     */
+    static PlReq plRequest(List<PwSimBasisLine> basis, Map<String, BigDecimal> planTon, BigDecimal ratio, List<String> warnings) {
+        Map<String, String> lower = new HashMap<>();
+        planTon.keySet().forEach(k -> lower.put(k.toLowerCase(Locale.ROOT), k));
+        Set<String> used = new HashSet<>();
+        List<String> matched = new ArrayList<>(), noPlan = new ArrayList<>();
+        Map<String, Map<String, Object>> req = new HashMap<>();
+        for (PwSimBasisLine b : basis) {
+            String key = lower.get(b.getLineCode().toLowerCase(Locale.ROOT));
+            BigDecimal base;
+            if (key == null) {
+                base = BigDecimal.ZERO;
+                if (b.getRunKw() != null && b.getRunKw().signum() > 0) noPlan.add(b.getLineCode());
+            } else {
+                used.add(key);
+                BigDecimal t = planTon.get(key) == null ? BigDecimal.ZERO : planTon.get(key);
+                BigDecimal f = PowerSimCalculator.unitFactor("ton", b.getProdUnit());
+                if (f == null) {
+                    base = null;
+                    warnings.add(b.getLineCode() + ": 생산계획(ton)을 생산량 단위 '" + b.getProdUnit() + "'(으)로 바꿀 수 없습니다 — 계산 미완료");
+                } else { base = t.multiply(f, PowerSimCalculator.MC); matched.add(b.getLineCode()); }
+            }
+            Map<String, Object> r = new HashMap<>();
+            r.put("lineCode", b.getLineCode());
+            r.put("baseQty", base == null ? null : base.toPlainString());
+            r.put("qty", base == null ? null : base.multiply(ratio, PowerSimCalculator.MC).toPlainString());
+            req.put(b.getLineCode(), r);
+        }
+        if (!noPlan.isEmpty())
+            warnings.add("생산계획이 없는 호기는 생산량 0(운휴 전력만)으로 계산했습니다: " + String.join(", ", noPlan) + " — 전력 기준정보 호기코드가 생산계획 호기코드와 같은지 확인하세요");
+        List<String> unused = planTon.keySet().stream().filter(k -> !used.contains(k)).sorted().toList();
+        if (!unused.isEmpty()) warnings.add("전력 기준정보에 없는 생산계획 호기 — 전력비 0으로 계산: " + String.join(", ", unused));
+        return new PlReq(req, matched, unused);
+    }
+
+    /** P/L 전력비 — 생산계획 생산량 기준(base)과 × ratio(sim) 를 전력비 시뮬레이션 엔진으로 계산. 저장하지 않음 */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> plCost(String divisionRaw, String ymRaw, String ratioRaw) {
+        String div = division(divisionRaw), ym = ym(ymRaw);
+        BigDecimal ratio = num(ratioRaw, "생산량 비율");
+        if (ratio == null) ratio = BigDecimal.ONE;
+        if (ratio.signum() < 0) throw new IllegalArgumentException("생산량 비율은 0 이상이어야 합니다");
+        PwSimBasisVersion v = pickVersion(versionRepo.findByDivisionOrderByVersionIdDesc(div), ym);
+        if (v == null) {
+            Map<String, Object> res = new LinkedHashMap<>();
+            res.put("division", div); res.put("ym", ym); res.put("available", false);
+            res.put("reason", div + " 전력비 시뮬레이션 기준정보가 없습니다");
+            return res;
+        }
+        List<PwSimBasisLine> basis = lineRepo.findByVersionIdOrderBySortOrderAscLineCodeAsc(v.getVersionId());
+        Map<String, Object> pq = planQty(ym, div);
+        Map<String, BigDecimal> ton = new LinkedHashMap<>();
+        ((Map<String, Object>) pq.get("qty")).forEach((k, q) -> ton.put(k, q == null ? null : new BigDecimal(String.valueOf(q))));
+        List<String> warnings = new ArrayList<>((List<String>) pq.get("warnings"));
+        if (ton.isEmpty()) warnings.add(ym.substring(0, 4) + "." + ym.substring(4) + " 생산계획이 없습니다 — 모든 호기를 생산량 0(운휴 전력만)으로 계산했습니다");
+        PlReq pr = plRequest(basis, ton, ratio, warnings);
+        Price price = priceRepo.findFirstByDivisionAndYm(div, ym).map(PowerSimService::toPrice).orElse(null);
+        List<Adjust> adjusts = adjustRepo.findByDivisionAndYmOrderByAdjustIdAsc(div, ym).stream().map(PowerSimService::toAdjust).toList();
+        Map<String, Object> calc = compute(div, ym, v, basis, pr.req(), price, adjusts);
+        warnings.addAll((List<String>) calc.get("warnings"));
+        calc.put("warnings", warnings);
+        calc.put("available", true);
+        calc.put("ratio", ratio);
+        calc.put("matched", pr.matched());
+        calc.put("unusedPlanCodes", pr.unusedPlanCodes());
+        calc.remove("simInput"); calc.remove("baseInput");
+        return calc;
+    }
+
     // ================================================================ 시나리오
 
     /** 저장 — 서버에서 다시 계산한 결과를 입력과 함께 스냅샷 저장 (화면이 보낸 결과는 믿지 않음) */
