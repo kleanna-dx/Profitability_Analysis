@@ -92,6 +92,10 @@ public class PowerSimController {
     public ResponseEntity<ApiResponse<Map<String, Object>>> planQty(@RequestParam String ym, @RequestParam String division) { return ok(service.planQty(ym, division)); }
 
     /** P/L 전력비 연결 — P/L 지종별 시뮬 생산량 → 호기별 생산량(ton) → 전력비 */
+    /** 전력비 생산량 — STEP3 확정 호기 = 확정 생산계획, 미확정 호기 = P/L 시뮬레이터 생산량 */
+    @PostMapping("/production-qty")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> productionQty(@RequestBody Map<String, Object> b) { return ok(service.productionQty(b)); }
+
     @PostMapping("/pl-cost")
     public ResponseEntity<ApiResponse<Map<String, Object>>> plCost(@RequestBody Map<String, Object> b) { return ok(service.plCost(b)); }
 

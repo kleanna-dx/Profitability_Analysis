@@ -755,7 +755,7 @@
                     <label style="font-size:11px;color:#64748b;">기준정보 버전</label>
                     <select id="pwsVerSel" onchange="pwsSelectVersion(this.value)" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;min-width:240px;"></select>
                     <div style="margin-left:auto;display:flex;gap:6px;">
-                        <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="pwsFillPlan()"><i class="fas fa-download mr-1"></i>생산계획 생산량 불러오기</button>
+                        <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="pwsLoadQty(true)" title="STEP3 확정 호기 = 확정 생산계획 / 미확정 호기 = P/L 시뮬레이터 생산량"><i class="fas fa-sync-alt mr-1"></i>생산량 다시 불러오기</button>
                         <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="pwsClearRows()"><i class="fas fa-eraser mr-1"></i>입력 비우기</button>
                         <button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="pwsCalc()"><i class="fas fa-calculator mr-1"></i>계산</button>
                         <button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="pwsSaveScenario()"><i class="fas fa-save mr-1"></i>시나리오 저장</button>
@@ -1332,7 +1332,7 @@ function plApplyPowerSim(rows,pt){
     const bt=d.machineBaseTon||{},st=d.machineSimTon||{},mcs=Object.keys(bt);
     const tonTxt=mcs.length?mcs.map(k=>{const b0=Number(bt[k]||0),s0=Number(st[k]??b0),dd=s0-b0;return '<b>'+purEsc(k)+'</b> '+fmtI(s0)+'톤'+(Math.abs(dd)>=0.5?' <span style="color:'+(dd>0?'#dc2626':'#2563eb')+';">('+(dd>0?'+':'△')+fmtI(Math.abs(dd))+')</span>':'');}).join(' · '):'생산계획 없음';
     el.style.display='';el.style.color='#475569';
-    el.innerHTML='<i class="fas fa-bolt mr-1" style="color:#f59e0b;"></i>전력비 = <b>생산량 기반</b>: 위 지종별 시뮬 생산량 → 호기별 생산량 '+tonTxt
+    el.innerHTML='<i class="fas fa-bolt mr-1" style="color:#f59e0b;"></i>전력비 = <b>생산량 기반</b>'+(d.source&&d.source.label?' <span style="padding:1px 6px;border-radius:6px;background:'+(d.source.code==='LOCKED'?'#dcfce7;color:#15803d':'#fef3c7;color:#b45309')+';font-weight:700;"><i class="fas '+(d.source.code==='LOCKED'?'fa-lock':'fa-unlock')+' mr-1"></i>'+purEsc(d.source.label)+'</span>':'')+': 호기별 생산량 '+tonTxt
         +' → 가동시간(생산량 ÷ 생산성) × 가동kW + 운휴시간 × 운휴kW → × 평균단가 + 가산 − 차감'
         +' <span style="color:#94a3b8;">(기준정보 '+purEsc(v.versionName||'')+(v.status==='APPROVED'?'':' · <span style="color:#b45309;">검토용</span>')+(mc!=='ALL'?' · 호기 '+purEsc(mc)+' = 호기 전력비 + 가산·차감 × 사용량 비율':'')+')</span>'+(PWPL.pending?' <i class="fas fa-spinner fa-spin"></i>':'')
         +(msgs.length?'<div style="color:#b45309;">'+msgs.map(m=>'<div><i class="fas fa-exclamation-triangle mr-1"></i>'+m+'</div>').join('')+'</div>':'');
@@ -4917,10 +4917,33 @@ async function pwsSelectVersion(vid){
     if(v.status!=='APPROVED')notes.push('<span style="color:#b45309;"><i class="fas fa-exclamation-triangle mr-1"></i>검토용 초기값(미승인) — 현업 확인 후 [전력 기준정보]에서 승인하세요</span>');
     if(v.applyYm&&v.applyYm!==ym)notes.push('<span style="color:#dc2626;"><i class="fas fa-calendar-times mr-1"></i>기준정보 적용월 '+pwsYmDot(v.applyYm)+' ≠ 계산월 '+pwsYmDot(ym)+'</span>');
     if(v.sourceFile)notes.push('<span style="color:#64748b;"><i class="fas fa-file-excel mr-1"></i>'+purEsc(v.sourceFile)+'</span>');
-    if(nt)nt.innerHTML=notes.join(' &nbsp; ');
-    (v.lines||[]).forEach(l=>{if(!PWS.rows[l.lineCode])PWS.rows[l.lineCode]={baseQty:pwsRaw(l.refQty),baseRunHours:pwsRaw(l.refRunHours),qty:pwsRaw(l.refQty),runHours:'',adjKwh:'',adjReason:''};});
+    PWS.verNotes=notes;
+    // 처음 열었거나, P/L 시뮬레이터 생산량·기준월·사업부가 바뀌었으면 생산량 다시 불러옴 (입력한 가동시간·조정값은 유지)
+    const fresh=!(v.lines||[]).some(l=>PWS.rows[l.lineCode])||PWS.qkey!==pwsQtyKey();
+    if(fresh)await pwsLoadQty(false);else pwsRenderVerNote();
     pwsRenderInputs();
     if((v.lines||[]).length)pwsCalc();else document.getElementById('pwsSimRes').innerHTML='';
+}
+// 생산량 출처: STEP3 확정 호기 = 확정 생산계획 / 미확정 호기 = P/L 시뮬레이터 지종별 생산량 (서버 /production-qty — P/L 전력비와 같은 규칙)
+const PWS_QSRC={LOCKED:['#dcfce7','#15803d','fa-lock'],PL:['#fef3c7','#b45309','fa-sliders-h'],PLAN:['#fef3c7','#b45309','fa-unlock'],MIXED:['#e0e7ff','#4338ca','fa-adjust'],NONE:['#fef2f2','#dc2626','fa-times-circle']};
+function pwsRenderVerNote(){
+    const nt=document.getElementById('pwsVerNote');if(!nt)return;const q=PWS.qsrc,notes=(PWS.verNotes||[]).slice();
+    if(q&&q.code){const c=PWS_QSRC[q.code]||PWS_QSRC.NONE;
+        notes.unshift('<span style="padding:2px 8px;border-radius:6px;background:'+c[0]+';color:'+c[1]+';font-weight:700;"><i class="fas '+c[2]+' mr-1"></i>생산량: '+purEsc(q.label)+'</span>'
+            +((q.lockedMachines||[]).length&&(q.unlockedMachines||[]).length?' <span style="color:#64748b;">확정 '+purEsc(q.lockedMachines.join(', '))+' / 미확정 '+purEsc(q.unlockedMachines.join(', '))+'</span>':'')
+            +(q.code==='PL'||q.code==='PLAN'||q.code==='MIXED'?' <span style="color:#64748b;">(STEP3에서 확정하면 확정 생산계획으로 바뀝니다)</span>':''));}
+    nt.innerHTML=notes.join(' &nbsp; ');
+}
+function pwsQtyKey(){return JSON.stringify([getDiv(),getYm(),PWS.vid,(typeof PL_PROD!=='undefined'?PL_PROD:[]).map(x=>[x.p,x.sim])]);}
+async function pwsLoadQty(ask){
+    if(!PWS.vid)return;
+    const products=(typeof PL_PROD!=='undefined'?PL_PROD:[]).map(x=>({product:x.p,plan:x.plan,sim:x.sim}));
+    let d;try{d=await purSend(PWS_API+'/production-qty','POST',{division:getDiv(),ym:getYm(),machine:(typeof getMc==='function'?getMc():'ALL'),versionId:PWS.vid,products});}
+    catch(e){PWS.qsrc={code:'NONE',label:'생산량 불러오기 실패 — '+e.message};pwsRenderVerNote();return;}
+    if(!d||d.available===false){PWS.qsrc={code:'NONE',label:(d&&d.reason)||'생산량 없음'};pwsRenderVerNote();return;}
+    (d.lines||[]).forEach(l=>{const o=PWS.rows[l.lineCode]||{};PWS.rows[l.lineCode]=Object.assign(o,{baseQty:pwsRaw(l.baseQty),qty:pwsRaw(l.qty)});});
+    PWS.qkey=pwsQtyKey();PWS.qsrc=d.source||null;PWS.qwarn=d.warnings||[];pwsRenderVerNote();
+    if(ask){pwsRenderInputs();pwsCalc();}
 }
 function pwsInp(code,f,w){const r=PWS.rows[code]||{};return '<input class="pws-in" data-code="'+purEsc(code)+'" data-f="'+f+'" value="'+purEsc(r[f]??'')+'" oninput="pwsOnInput(this)" style="width:'+(w||90)+'px;padding:3px 6px;border:1px solid #fcd34d;background:#fffbeb;border-radius:5px;font-size:11px;text-align:'+(f==='adjReason'?'left':'right')+';">';}
 function pwsOnInput(el){const c=el.dataset.code;PWS.rows[c]=PWS.rows[c]||{};PWS.rows[c][el.dataset.f]=el.value.replace(/,/g,'').trim();}
@@ -4937,7 +4960,7 @@ function pwsRenderInputs(){
         +'<td class="r">'+pwsInp(l.lineCode,'adjKwh',70)+'</td><td>'+pwsInp(l.lineCode,'adjReason',120)+'</td></tr>';
     }).join('');
 }
-function pwsClearRows(){if(!confirm('시뮬 생산량·가동시간·조정값을 비웁니다 (기준 생산량은 엑셀 참고값으로 되돌림). 계속할까요?'))return;PWS.rows={};pwsSelectVersion(PWS.vid);}
+function pwsClearRows(){if(!confirm('입력한 가동시간·조정값을 비우고 생산량을 다시 불러옵니다 (STEP3 확정 생산계획 / 미확정이면 P/L 시뮬레이터 생산량). 계속할까요?'))return;PWS.rows={};pwsSelectVersion(PWS.vid);}
 function pwsRequest(){
     const ls=(PWS.detail&&PWS.detail.lines)||[];
     return {division:getDiv(),ym:getYm(),versionId:PWS.vid,lines:ls.map(l=>{const r=PWS.rows[l.lineCode]||{};return {lineCode:l.lineCode,baseQty:r.baseQty||null,baseRunHours:r.baseRunHours||null,qty:r.qty||null,runHours:r.runHours||null,adjKwh:r.adjKwh||null,adjReason:r.adjReason||null};})};
@@ -4947,24 +4970,6 @@ async function pwsCalc(){
     const box=document.getElementById('pwsSimRes');box.innerHTML='<div style="padding:16px;color:#94a3b8;font-size:11px;"><i class="fas fa-spinner fa-spin mr-1"></i>계산 중</div>';
     let d;try{d=await purSend(PWS_API+'/calculate','POST',pwsRequest());}catch(e){box.innerHTML='<div class="sc" style="padding:12px;color:#dc2626;font-size:11px;">계산 실패: '+purEsc(e.message)+'</div>';return;}
     PWS.lastCalc=d;box.innerHTML=pwsResultHtml(d,false);
-}
-async function pwsFillPlan(){
-    if(!PWS.detail){alert('기준정보 버전을 먼저 선택하세요');return;}
-    let d;try{d=await purGet(PWS_API+'/plan-qty?ym='+getYm()+'&division='+getDiv());}catch(e){alert('생산계획 불러오기 실패: '+e.message);return;}
-    const q=d.qty||{},keys=Object.keys(q),hit=[],miss=[];
-    const MASS={ton:1000,t:1000,'톤':1000,kg:1,g:0.001};
-    (PWS.detail.lines||[]).forEach(l=>{
-        const k=keys.find(x=>x.toLowerCase()===String(l.lineCode).toLowerCase());if(k==null)return;
-        const u=String(l.prodUnit||'').toLowerCase();if(!(u in MASS)){miss.push(l.lineCode+'(단위 '+(l.prodUnit||'미입력')+' — ton 생산계획을 변환할 수 없음)');return;}
-        PWS.rows[l.lineCode]=PWS.rows[l.lineCode]||{};PWS.rows[l.lineCode].qty=String(Number(q[k])*1000/MASS[u]);PWS.rows[l.lineCode].runHours='';hit.push(l.lineCode);
-    });
-    const unused=keys.filter(k=>!(PWS.detail.lines||[]).some(l=>String(l.lineCode).toLowerCase()===k.toLowerCase()));
-    pwsRenderInputs();
-    let msg='생산계획('+pwsYmDot(d.ym)+') 반영: '+(hit.length?hit.join(', '):'없음');
-    if(unused.length)msg+='\n\n전력 기준정보에 없는 생산계획 호기코드: '+unused.join(', ')+'\n→ 호기코드가 다르면 반영되지 않습니다 (기준정보 호기코드를 생산계획 호기코드와 맞추거나 직접 입력하세요). 다른 호기의 시뮬 생산량은 그대로입니다.';
-    if(miss.length)msg+='\n\n단위 문제: '+miss.join(', ');
-    if((d.warnings||[]).length)msg+='\n\n'+d.warnings.join('\n');
-    alert(msg);if(hit.length)pwsCalc();
 }
 // ── 계산 결과 표시 (계산·저장 시나리오 공통) ──
 function pwsMsgs(arr,color,icon){return (arr||[]).length?'<div style="font-size:10px;color:'+color+';line-height:1.6;">'+arr.map(x=>'<div><i class="fas '+icon+' mr-1"></i>'+purEsc(x)+'</div>').join('')+'</div>':'';}
