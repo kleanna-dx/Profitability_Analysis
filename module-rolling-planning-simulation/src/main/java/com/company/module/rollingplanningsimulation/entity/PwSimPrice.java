@@ -11,7 +11,7 @@ public class PwSimPrice extends BaseAuditEntity {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="PRICE_ID") private Long priceId;
     @Column(name="DIVISION",nullable=false,length=20) private String division;
     @Column(name="YM",nullable=false,length=6) private String ym;
-    @Column(name="PRICE_KRW_PER_KWH",nullable=false,precision=14,scale=4) private BigDecimal priceKrwPerKwh;
+    @Column(name="PRICE_KRW_PER_KWH",nullable=false,precision=20,scale=10) private BigDecimal priceKrwPerKwh;
     @Column(name="VAT_INCLUDED_YN",nullable=false,length=1) private String vatIncludedYn;
     @Column(name="BASE_FEE_INCLUDED_YN",nullable=false,length=1) private String baseFeeIncludedYn;
     @Column(name="ESS_INCLUDED_YN",nullable=false,length=1) private String essIncludedYn;
