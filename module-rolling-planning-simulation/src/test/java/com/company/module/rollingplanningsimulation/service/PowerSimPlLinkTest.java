@@ -116,4 +116,32 @@ class PowerSimPlLinkTest {
         assertTrue(PowerSimService.isLocked(1)); assertTrue(PowerSimService.isLocked(true)); assertTrue(PowerSimService.isLocked("1"));
         assertFalse(PowerSimService.isLocked(0)); assertFalse(PowerSimService.isLocked(null)); assertFalse(PowerSimService.isLocked("N"));
     }
+
+    // ---------------- 생산계획에 없는 지종 → 실적 호기 비중으로 배분
+    @Test void noPlan_productSplitByActual() {
+        // 생산계획 없음. 실적: SC저평량 PM2 300 / PM3 100 → P/L 시뮬 4,000 → PM2 3,000, PM3 1,000 (기준 0)
+        List<Map<String, Object>> actual = List.of(row("PM2", "SC저평량", "300"), row("PM3", "SC저평량", "100"));
+        List<String> w = new ArrayList<>();
+        Map<String, Map<String, BigDecimal>> mt = PowerSimService.machineTonFromProducts(List.of(),
+                List.of(new PowerSimService.ProductSim("SC저평량", d("0"), d("4000"))), "ALL", actual, "2026.10 실적", w);
+        assertEquals(0, d("3000").compareTo(mt.get("sim").get("PM2")));
+        assertEquals(0, d("1000").compareTo(mt.get("sim").get("PM3")));
+        assertEquals(0, BigDecimal.ZERO.compareTo(mt.get("base").get("PM2")), "기준 = 생산계획 0");
+        assertTrue(w.stream().anyMatch(x -> x.contains("2026.10 실적 호기 비중")));
+    }
+
+    @Test void noPlan_noActual_notReflected_warns() {
+        List<String> w = new ArrayList<>();
+        Map<String, Map<String, BigDecimal>> mt = PowerSimService.machineTonFromProducts(List.of(),
+                List.of(new PowerSimService.ProductSim("IV", null, d("600"))), "ALL", List.of(), null, w);
+        assertTrue(mt.get("sim").isEmpty());
+        assertTrue(w.stream().anyMatch(x -> x.contains("생산계획·실적 모두 없는 지종") && x.contains("IV")));
+    }
+
+    @Test void noPlan_machineSelected_allToThatMachine() {
+        List<String> w = new ArrayList<>();
+        Map<String, Map<String, BigDecimal>> mt = PowerSimService.machineTonFromProducts(List.of(),
+                List.of(new PowerSimService.ProductSim("IV", d("0"), d("600"))), "PM3", List.of(), null, w);
+        assertEquals(0, d("600").compareTo(mt.get("sim").get("PM3")));
+    }
 }
