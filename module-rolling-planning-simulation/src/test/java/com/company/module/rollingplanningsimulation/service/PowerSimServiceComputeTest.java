@@ -1,5 +1,6 @@
 package com.company.module.rollingplanningsimulation.service;
 
+import com.company.module.rollingplanningsimulation.entity.PwLineKw;
 import com.company.module.rollingplanningsimulation.entity.PwSimBasisLine;
 import com.company.module.rollingplanningsimulation.entity.PwSimBasisVersion;
 import com.company.module.rollingplanningsimulation.service.PowerSimCalculator.*;
@@ -108,5 +109,50 @@ class PowerSimServiceComputeTest {
 
     @Test void buildLine_negative_rejected() {
         assertThrows(IllegalArgumentException.class, () -> PowerSimService.buildLine(1L, Map.of("lineCode", "T1", "runKw", "-1"), 10));
+    }
+
+    // ---------------- 월별 호기 kW (rpsim_pw_line_kw) 우선 적용
+    static PwLineKw mkw(String code, String run, String idle) {
+        return PwLineKw.builder().year(2026).month(9).division("PS").machineCode(code)
+                .runKw(run == null ? null : d(run)).idleKw(idle == null ? null : d(idle)).build();
+    }
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> info0(Map<String, Object> res) { return ((List<Map<String, Object>>) res.get("lineInfo")).get(0); }
+
+    @Test void monthKw_overridesVersionKw() {
+        // 가동 500h × 1200 + 운휴 220h × 100 = 622,000 (버전 값 1000 대신 월별 1200)
+        Map<String, Object> res = PowerSimService.compute("PS", "202609", VER, List.of(basis("1000")), req(null, "1000", null), PRICE, List.of(),
+                Map.of("t1", mkw("t1", "1200", null)));
+        assertEquals(0, d("622000").compareTo(((Result) res.get("sim")).totalKwh()));
+        assertEquals("MONTH", info0(res).get("runKwSource"));
+        assertEquals("VERSION", info0(res).get("idleKwSource"), "월별에 운휴가 비면 버전 값 사용");
+    }
+
+    @Test void monthKw_idleOnly() {
+        // 가동 500h × 1000 + 운휴 220h × 200 = 544,000
+        Map<String, Object> res = PowerSimService.compute("PS", "202609", VER, List.of(basis("1000")), req(null, "1000", null), PRICE, List.of(),
+                Map.of("t1", mkw("T1", null, "200")));
+        assertEquals(0, d("544000").compareTo(((Result) res.get("sim")).totalKwh()));
+    }
+
+    @Test void overrideBeatsMonthKw() {
+        Map<String, Object> res = PowerSimService.compute("PS", "202609", VER, List.of(basis("1000")), req(null, "1000", Map.of("runKw", "1100")), PRICE, List.of(),
+                Map.of("t1", mkw("T1", "1200", null)));
+        assertEquals(0, d("572000").compareTo(((Result) res.get("sim")).totalKwh()));
+        assertEquals("OVERRIDE", info0(res).get("runKwSource"));
+    }
+
+    @Test void noMonthKw_warns_andUsesVersion() {
+        Map<String, Object> res = PowerSimService.compute("PS", "202609", VER, List.of(basis("1000")), req(null, "1000", null), PRICE, List.of(), Map.of());
+        assertEquals(0, d("522000").compareTo(((Result) res.get("sim")).totalKwh()));
+        assertTrue(((List<?>) res.get("warnings")).stream().anyMatch(w -> w.toString().contains("호기별 전력 kW(월별 기준정보)가 없어")));
+    }
+
+    @Test void monthKw_unknownMachine_warned() {
+        Map<String, Object> res = PowerSimService.compute("PS", "202609", VER, List.of(basis("1000")), req(null, "1000", null), PRICE, List.of(),
+                Map.of("x9", mkw("X9", "500", "50")));
+        List<?> w = (List<?>) res.get("warnings");
+        assertTrue(w.stream().anyMatch(x -> x.toString().contains("계산에 쓰지 않음: X9")));
+        assertTrue(w.stream().anyMatch(x -> x.toString().contains("월별)에 없는 호기") && x.toString().contains("T1")));
     }
 }
