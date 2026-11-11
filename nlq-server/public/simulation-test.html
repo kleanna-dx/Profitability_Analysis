@@ -1279,7 +1279,8 @@ function calcPL(){
     PL_SIM={sp,pt,total:T.sim,planTotal:T.plan,perTon:perT(T.sim),purMS,purG,cogs:S.cogs.sim,sga:S.sga.sim,mat:A('mat').sim,sub:A('sub').sim,pw:A('pw').sim,eng:A('eng').sim,log:A('log').sim,lab:A('lab').sim,dep:A('dep').sim,etc:A('sga').sim,steps};
     renderBridge(steps);
     try{document.getElementById('csCost').textContent=fmt(T.sim);document.getElementById('csProf').textContent=fmt(perT(T.sim));document.getElementById('csPurV').textContent=sgT(purMS+purG);
-        document.getElementById('csMatV').textContent=fmt(perT(A('mat').sim));document.getElementById('csPwV').textContent=PLK('pw').r>0?fmt(perT(A('pw').sim)):'-';document.getElementById('csEngV').textContent=PLK('eng').r>0?fmt(perT(A('eng').sim)):'-';}catch(_){}
+        document.getElementById('csMatV').textContent=fmt(perT(A('mat').sim));document.getElementById('csPwV').textContent=PLK('pw').r>0?fmt(perT(A('pw').sim)):'-';
+        {const st=document.getElementById('csPwStatus'),it=PLK('pw'),ps=PWPL.res&&PWPL.res.available;if(st){st.textContent=ps?(it.db?'전력비 시뮬레이션 연동':'전력비 시뮬 계산 미완료'):(it.db?'자동 연동':'기준정보 없음');st.style.color=ps&&it.db?'#16a34a':it.db?'#ef4444':'#94a3b8';}}document.getElementById('csEngV').textContent=PLK('eng').r>0?fmt(perT(A('eng').sim)):'-';}catch(_){}
     updateStep5();
 }
 
