@@ -182,7 +182,7 @@
     <!-- 1-4 기준정보 관리 -->
     <div id="s1-ref" style="display:none;">
         <div class="ref-tabs" id="refTabs"></div>
-        <div class="sc" style="overflow:hidden;">
+        <div class="sc" style="overflow:hidden;" id="refCard">
             <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
                 <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;" id="refTitle"><i class="fas fa-cog text-indigo-500 mr-1"></i>호기 마스터</h3>
                 <div id="refBtns" style="display:flex;gap:5px;flex-wrap:wrap;">
@@ -194,6 +194,46 @@
                 </div>
             </div>
             <div style="overflow-x:auto;max-height:450px;" id="refWrap"></div>
+        </div>
+        <!-- 전력비 기준정보 (전력비 이동계획 엑셀 항목) — STEP4 전력비 시뮬레이션이 사용 -->
+        <div id="refPwPanels" style="display:none;">
+        <!-- 전력 기준정보 -->
+        <div id="pws-basis" style="display:none;">
+            <div class="sc" style="overflow:hidden;margin-bottom:12px;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-layer-group text-indigo-500 mr-1"></i>기준정보 버전 <span style="font-size:10px;color:#94a3b8;font-weight:400;">검토용 초기값(미승인) → 현업 승인 시 잠김 · 수정하려면 [복사] · 월마다 값이 다르면 적용월별 버전을 따로 만드세요</span></h3>
+                    <div style="display:flex;gap:6px;">
+                        <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="pwsDownloadTemplate()"><i class="fas fa-file-download mr-1"></i>표준 양식 다운로드</button>
+                        <label class="btn-g" style="font-size:10px;padding:4px 10px;cursor:pointer;margin:0;"><i class="fas fa-file-upload mr-1"></i>엑셀 가져오기(이동계획·표준양식)<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="pwsImport(this)"></label>
+                        <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsVersionModal(null)"><i class="fas fa-plus mr-1"></i>새 버전</button>
+                    </div>
+                </div>
+                <div id="pwsImportRes" style="padding:0 16px;"></div>
+                <div style="overflow-x:auto;max-height:240px;"><table class="st" style="font-size:11px;"><thead><tr><th>상태</th><th>버전 이름</th><th>적용월</th><th>출처</th><th class="r">호기</th><th>승인</th><th>메모</th><th style="width:200px;">관리</th></tr></thead><tbody id="pwsVerTb"></tbody></table></div>
+            </div>
+            <div id="pwsLines"></div>
+        </div>
+        <!-- 월 평균단가 -->
+        <div id="pws-price" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-won-sign text-indigo-500 mr-1"></i>월 평균 전력단가 <span id="pwsPriceYear" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:600;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">사업장·월별 공통 단가(원/kWh) · 산정범위(부가세·기본요금·ESS·정산금 포함 여부)와 설명 필수</span></h3>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsPriceModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
+                <div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>적용월</th><th class="r">평균단가(원/kWh)</th><th>부가세</th><th>기본요금</th><th>ESS</th><th>정산금</th><th>산정범위 설명</th><th>메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="pwsPriceTb"></tbody></table></div>
+            </div>
+        </div>
+        <!-- 기타 가산·차감 -->
+        <div id="pws-adj" style="display:none;">
+            <div class="sc" style="overflow:hidden;">
+                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
+                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-plus-minus text-indigo-500 mr-1"></i>기타 가산·차감 <span id="pwsAdjYm" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:600;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">현업 입력값 그대로 반영 (세금 계산·호기 배부 없음 — 공장 전체 조정 항목)</span></h3>
+                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsAdjModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
+                </div>
+                <div style="padding:6px 16px;font-size:10px;color:#b45309;background:#fffbeb;border-bottom:1px solid #fde68a;"><i class="fas fa-exclamation-triangle mr-1"></i>평균단가에 이미 포함된 비용·환급(예: 단가에 ESS 포함)을 여기에 다시 입력하면 <b>중복 반영</b>됩니다 — 단가 산정범위와 다른 항목은 계산에서 오류로 표시합니다.</div>
+                <div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>항목명</th><th>구분</th><th class="r">금액(원)</th><th>항목 구분</th><th>부가세</th><th>입력 근거/메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="pwsAdjTb"></tbody></table></div>
+            </div>
+        </div>
         </div>
     </div>
 
@@ -736,16 +776,14 @@
     <div id="s4-pwsim" style="display:none;">
         <div class="ref-tabs" id="pwsTabs">
             <div class="ref-tab active" onclick="pwsTab('sim')"><i class="fas fa-bolt mr-1"></i>시뮬레이션</div>
-            <div class="ref-tab" onclick="pwsTab('basis')"><i class="fas fa-industry mr-1"></i>전력 기준정보</div>
-            <div class="ref-tab" onclick="pwsTab('price')"><i class="fas fa-won-sign mr-1"></i>월 평균단가</div>
-            <div class="ref-tab" onclick="pwsTab('adj')"><i class="fas fa-plus-minus mr-1"></i>기타 가산·차감</div>
             <div class="ref-tab" onclick="pwsTab('scn')"><i class="fas fa-save mr-1"></i>저장 시나리오</div>
+            <div class="ref-tab" onclick="goPwRef('_pwbasis')" style="margin-left:auto;color:#4f46e5;"><i class="fas fa-external-link-alt mr-1"></i>전력 기준정보 관리 (STEP 1)</div>
         </div>
         <div class="sc" style="padding:8px 14px;margin-bottom:12px;font-size:10px;color:#475569;line-height:1.7;background:#f8fafc;">
             <div><i class="fas fa-info-circle mr-1 text-indigo-500"></i><b>자동 계산</b>: 계획 생산량 → 가동시간(생산량 ÷ 시간당 생산성) → 운휴시간(월 전체시간 − 가동시간) → 사용량(가동h × 가동kW + 운휴h × 운휴kW + 조정값) → × 월 평균단가 → 호기·공정·공장 전력비</div>
             <div><i class="fas fa-user-edit mr-1 text-amber-500"></i><b>현업 입력</b>: 생산성 · 가동/운휴 평균전력 · 월 평균단가(+산정범위) · 사용량 조정값(사유) · 기타 가산·차감 &nbsp; <span class="pws-in-demo">입력 칸</span> <span class="pws-auto-demo">자동 계산(수정 불가)</span></div>
-            <div><i class="fas fa-file-excel mr-1 text-emerald-600"></i><b>엑셀 연결</b>: [전력 기준정보] → [엑셀 가져오기]에 「전력비 이동계획」 파일을 올리면 05.이동계획 시트에서 선택한 월의 호기별 가동·운휴 kW, 생산량, 가동시간, 단가(O열), SPC·DR·복합보일러·삼성보상금(H~K열)을 읽어 옵니다 — 가동시간은 생산팀 통보값, 생산성은 그 달 생산량 ÷ (가동시간 ÷ 24)로 역산한 값입니다</div>
-            <div style="color:#b45309;"><i class="fas fa-exclamation-triangle mr-1"></i>월 평균단가를 적용한 <b>추정값</b>입니다 — 실제 한전 청구금액이나 증분비용이 아닙니다. 부하별(경·중·최대부하) 요금·기본요금·역률·전력기금은 단가에 포함된 값을 쓰고 다시 계산하지 않습니다. SPC·DR·복합보일러·삼성보상금은 [기타 가산·차감]에 월 금액으로 넣습니다.</div>
+            <div><i class="fas fa-file-excel mr-1 text-emerald-600"></i><b>엑셀 연결</b>: [STEP 1 › 기준정보 관리 › 전력 기준정보(호기)] → [엑셀 가져오기]에 「전력비 이동계획」 파일을 올리면 05.이동계획 시트에서 선택한 월의 호기별 가동·운휴 kW, 생산량, 가동시간, 단가(O열), SPC·DR·복합보일러·삼성보상금(H~K열)을 읽어 옵니다 — 가동시간은 생산팀 통보값, 생산성은 그 달 생산량 ÷ (가동시간 ÷ 24)로 역산한 값입니다</div>
+            <div style="color:#b45309;"><i class="fas fa-exclamation-triangle mr-1"></i>월 평균단가를 적용한 <b>추정값</b>입니다 — 실제 한전 청구금액이나 증분비용이 아닙니다. 부하별(경·중·최대부하) 요금·기본요금·역률·전력기금은 단가에 포함된 값을 쓰고 다시 계산하지 않습니다. SPC·DR·복합보일러·삼성보상금은 [STEP 1 › 기준정보 관리 › 전력 가산·차감]에 월 금액으로 넣습니다.</div>
         </div>
         <!-- 시뮬레이션 -->
         <div id="pws-sim">
@@ -768,43 +806,6 @@
                 <div style="overflow-x:auto;"><table class="st" style="font-size:11px;white-space:nowrap;"><thead><tr><th>호기</th><th>공정</th><th>단위</th><th class="r">기준 생산량</th><th class="r">기준 가동h</th><th class="r" style="background:#fef3c7;">시뮬 생산량</th><th class="r" style="background:#fef3c7;">시뮬 가동h<br><span style="font-weight:400;font-size:9px;">비우면 생산성으로 계산</span></th><th class="r">생산성(/일)</th><th class="r">가동 kW</th><th class="r">운휴 kW</th><th class="r">고정 kWh</th><th class="r">조정 kWh</th><th>조정 사유</th></tr></thead><tbody id="pwsInTb"></tbody></table></div>
             </div>
             <div id="pwsSimRes"></div>
-        </div>
-        <!-- 전력 기준정보 -->
-        <div id="pws-basis" style="display:none;">
-            <div class="sc" style="overflow:hidden;margin-bottom:12px;">
-                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
-                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-layer-group text-indigo-500 mr-1"></i>기준정보 버전 <span style="font-size:10px;color:#94a3b8;font-weight:400;">검토용 초기값(미승인) → 현업 승인 시 잠김 · 수정하려면 [복사] · 월마다 값이 다르면 적용월별 버전을 따로 만드세요</span></h3>
-                    <div style="display:flex;gap:6px;">
-                        <button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="pwsDownloadTemplate()"><i class="fas fa-file-download mr-1"></i>표준 양식 다운로드</button>
-                        <label class="btn-g" style="font-size:10px;padding:4px 10px;cursor:pointer;margin:0;"><i class="fas fa-file-upload mr-1"></i>엑셀 가져오기(이동계획·표준양식)<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="pwsImport(this)"></label>
-                        <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsVersionModal(null)"><i class="fas fa-plus mr-1"></i>새 버전</button>
-                    </div>
-                </div>
-                <div id="pwsImportRes" style="padding:0 16px;"></div>
-                <div style="overflow-x:auto;max-height:240px;"><table class="st" style="font-size:11px;"><thead><tr><th>상태</th><th>버전 이름</th><th>적용월</th><th>출처</th><th class="r">호기</th><th>승인</th><th>메모</th><th style="width:200px;">관리</th></tr></thead><tbody id="pwsVerTb"></tbody></table></div>
-            </div>
-            <div id="pwsLines"></div>
-        </div>
-        <!-- 월 평균단가 -->
-        <div id="pws-price" style="display:none;">
-            <div class="sc" style="overflow:hidden;">
-                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
-                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-won-sign text-indigo-500 mr-1"></i>월 평균 전력단가 <span id="pwsPriceYear" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:600;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">사업장·월별 공통 단가(원/kWh) · 산정범위(부가세·기본요금·ESS·정산금 포함 여부)와 설명 필수</span></h3>
-                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsPriceModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
-                </div>
-                <div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>적용월</th><th class="r">평균단가(원/kWh)</th><th>부가세</th><th>기본요금</th><th>ESS</th><th>정산금</th><th>산정범위 설명</th><th>메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="pwsPriceTb"></tbody></table></div>
-            </div>
-        </div>
-        <!-- 기타 가산·차감 -->
-        <div id="pws-adj" style="display:none;">
-            <div class="sc" style="overflow:hidden;">
-                <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;">
-                    <h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-plus-minus text-indigo-500 mr-1"></i>기타 가산·차감 <span id="pwsAdjYm" style="font-size:9px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:600;"></span> <span style="font-size:10px;color:#94a3b8;font-weight:400;">현업 입력값 그대로 반영 (세금 계산·호기 배부 없음 — 공장 전체 조정 항목)</span></h3>
-                    <button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="pwsAdjModal(null)"><i class="fas fa-plus mr-1"></i>등록</button>
-                </div>
-                <div style="padding:6px 16px;font-size:10px;color:#b45309;background:#fffbeb;border-bottom:1px solid #fde68a;"><i class="fas fa-exclamation-triangle mr-1"></i>평균단가에 이미 포함된 비용·환급(예: 단가에 ESS 포함)을 여기에 다시 입력하면 <b>중복 반영</b>됩니다 — 단가 산정범위와 다른 항목은 계산에서 오류로 표시합니다.</div>
-                <div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>항목명</th><th>구분</th><th class="r">금액(원)</th><th>항목 구분</th><th>부가세</th><th>입력 근거/메모</th><th style="width:90px;">관리</th></tr></thead><tbody id="pwsAdjTb"></tbody></table></div>
-            </div>
         </div>
         <!-- 저장 시나리오 -->
         <div id="pws-scn" style="display:none;">
@@ -3018,7 +3019,7 @@ function recalcProdSim(){
 }
 
 // ── Ref Management ──
-const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'pw-line-kws',l:'호기별 전력 kW',i:'fa-plug',cols:['year','month','machineCode','runKw','idleKw','memo'],h:['연도','월','호기','가동kW','운휴kW','비고'],yearFilter:true,monthFilter:true},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true,pivotMonths:true},{k:'boiler-maintenances',l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','responsibility','maintName','startDate','endDate','maintHours','memo'],h:['연도','월','보일러','정비유형','귀책구분','정비명','시작일','종료일','정비시간(hr)','비고'],yearFilter:true,monthFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true,source:'에너지팀 DB'},{k:'steam-price-intervals',l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','month','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','월','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'cogen-deductions',l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','month','boilerCode','rateType','rateName','rateValue','rateUnit','factor'],h:['연도','월','보일러','단가유형','단가명','값','단위','FACTOR'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','month','machineCode','lngPerTon','memo'],h:['연도','월','호기','원단위(㎥/톤)','비고'],yearFilter:true,monthFilter:true},{k:'line-steam-ratios',l:'라인 스팀비중',i:'fa-chart-pie',cols:['year','machineCode','steamRatio','memo'],h:['연도','호기','스팀비중(%)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
+const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'_pwbasis',l:'전력 기준정보(호기)',i:'fa-bolt',custom:true,pw:'basis'},{k:'pw-line-kws',l:'호기별 전력 kW',i:'fa-plug',cols:['year','month','machineCode','runKw','idleKw','memo'],h:['연도','월','호기','가동kW','운휴kW','비고'],yearFilter:true,monthFilter:true},{k:'_pwprice',l:'월 평균 전력단가',i:'fa-won-sign',custom:true,pw:'price'},{k:'_pwadj',l:'전력 가산·차감',i:'fa-plus-minus',custom:true,pw:'adj'},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true,pivotMonths:true},{k:'boiler-maintenances',l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','responsibility','maintName','startDate','endDate','maintHours','memo'],h:['연도','월','보일러','정비유형','귀책구분','정비명','시작일','종료일','정비시간(hr)','비고'],yearFilter:true,monthFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true,source:'에너지팀 DB'},{k:'steam-price-intervals',l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','month','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','월','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'cogen-deductions',l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','month','boilerCode','rateType','rateName','rateValue','rateUnit','factor'],h:['연도','월','보일러','단가유형','단가명','값','단위','FACTOR'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','month','machineCode','lngPerTon','memo'],h:['연도','월','호기','원단위(㎥/톤)','비고'],yearFilter:true,monthFilter:true},{k:'line-steam-ratios',l:'라인 스팀비중',i:'fa-chart-pie',cols:['year','machineCode','steamRatio','memo'],h:['연도','호기','스팀비중(%)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
 let cRef=0,refData=[],refDataPrev=[];
 function renderRefTabs(){document.getElementById('refTabs').innerHTML=REFS.map((d,i)=>{const isActive=i===cRef;const badgeStyle=isActive?'background:rgba(255,255,255,.25);color:#fff;':'background:rgba(16,185,129,.15);color:#059669;';return '<div class="ref-tab'+(isActive?' active':'')+'" onclick="switchRef('+i+')"><i class="fas '+d.i+' mr-1"></i>'+d.l+(d.source?' <span style="font-size:8px;padding:1px 5px;border-radius:4px;'+badgeStyle+'font-weight:700;vertical-align:middle;">연동</span>':'')+'</div>';}).join('');}
 function switchRef(i){cRef=i;renderRefTabs();
@@ -3029,10 +3030,11 @@ function switchRef(i){cRef=i;renderRefTabs();
     if(d.source)badge+=' <span style="font-size:9px;padding:2px 8px;border-radius:6px;background:rgba(16,185,129,.12);color:#059669;font-weight:700;margin-left:4px;"><i class="fas fa-link" style="font-size:8px;margin-right:3px;"></i>'+d.source+' 연동</span>';
     document.getElementById('refTitle').innerHTML='<i class="fas '+d.i+' text-indigo-500 mr-1"></i>'+d.l+badge;
     const btns=document.getElementById('refBtns');
+    {const card=document.getElementById('refCard'),pp=document.getElementById('refPwPanels');if(card)card.style.display=d.pw?'none':'';if(pp)pp.style.display=d.pw?'':'none';}
     if(d.custom){btns.style.display='none';renderCustomRef(d.k);}
     else{btns.style.display='';loadRef();}
 }
-async function loadRef(){const d=REFS[cRef];const div=getDiv();const ymVal=getYm();const yr=ymVal.substring(0,4);
+async function loadRef(){if(REFS[cRef]&&REFS[cRef].custom){renderCustomRef(REFS[cRef].k);return;}const d=REFS[cRef];const div=getDiv();const ymVal=getYm();const yr=ymVal.substring(0,4);
     let url=API+'/'+d.k+'?division='+div;
     if(d.yearFilter)url+='&year='+yr;
     if((d.monthFilter&&!d.pivotMonths)||d.k==='daily-operations')url+='&month='+parseInt(ymVal.substring(4,6));
@@ -3087,7 +3089,14 @@ function renderRef(){const d=REFS[cRef];if(d.pivotMonths){renderBoilerPivot();re
     }
     document.getElementById('refWrap').innerHTML=h;}
 // ── 커스텀 기준정보 렌더링 (제지 생산 선속 / 가동시간) ──
+// 전력비 기준정보 패널 (전력비 이동계획 엑셀 항목: 호기 kW·생산성·고정 사용량 / 월 평균단가 / SPC·DR 등 가산·차감)
+function showPwRef(k){
+    ['basis','price','adj'].forEach(x=>{const el=document.getElementById('pws-'+x);if(el)el.style.display=x===k?'':'none';});
+    if(k==='basis')pwsLoadVersions(false);else if(k==='price')pwsLoadPrices();else pwsLoadAdjusts();
+}
+function goPwRef(key){const i=REFS.findIndex(r=>r.k===key);if(i<0)return;goStep(1);subTab(1,'ref');switchRef(i);}
 function renderCustomRef(key){
+    {const d=REFS.find(r=>r.k===key);if(d&&d.pw){showPwRef(d.pw);return;}}
     const wrap=document.getElementById('refWrap');
     if(key==='_optime'){
         wrap.innerHTML='<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;"><span style="font-size:11px;color:#64748b;">입력: 분(min/월) | 시간(h) 자동 환산 표시</span><button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="openOptModal()"><i class="fas fa-plus mr-1"></i>등록</button></div><table class="st"><thead><tr><th>연월</th><th>호기</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">가동소계</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th><th class="r">비가동소계</th><th class="r">총계</th></tr></thead><tbody id="optTb"></tbody></table>';
@@ -4883,10 +4892,12 @@ function pwsYmDot(ym){return ym&&ym.length===6?ym.slice(0,4)+'.'+ym.slice(4):(ym
 function pwsStatusBadge(s){return s==='APPROVED'?'<span style="font-size:9px;padding:1px 6px;border-radius:6px;background:#dcfce7;color:#15803d;font-weight:700;">승인</span>':'<span style="font-size:9px;padding:1px 6px;border-radius:6px;background:#fef3c7;color:#b45309;font-weight:700;">검토용</span>';}
 function pwsOnShow(){const y=document.getElementById('pwsYm');if(y)y.textContent=pwsYmDot(getYm());const dv=document.getElementById('pwsDiv');if(dv)dv.textContent=getDiv();pwsTab(PWS.tab||'sim');}
 function pwsTab(k){
-    PWS.tab=k;const keys=['sim','basis','price','adj','scn'];
+    // 전력 기준정보·월 평균단가·가산차감은 STEP1 › 기준정보 관리로 이동 — 예전 호출은 그쪽으로 보냄
+    if(k==='basis'||k==='price'||k==='adj'){goPwRef({basis:'_pwbasis',price:'_pwprice',adj:'_pwadj'}[k]);return;}
+    PWS.tab=k;const keys=['sim','scn'];
     keys.forEach(x=>{const el=document.getElementById('pws-'+x);if(el)el.style.display=x===k?'':'none';});
     document.querySelectorAll('#pwsTabs .ref-tab').forEach((t,i)=>t.classList.toggle('active',keys[i]===k));
-    if(k==='sim')pwsLoadVersions(true);else if(k==='basis')pwsLoadVersions(false);else if(k==='price')pwsLoadPrices();else if(k==='adj')pwsLoadAdjusts();else pwsLoadScenarios();
+    if(k==='sim')pwsLoadVersions(true);else pwsLoadScenarios();
 }
 
 // ── 기준정보 버전 ──
@@ -4902,7 +4913,7 @@ function pwsPickDefaultVid(){
 }
 function pwsRenderVerSel(){
     const sel=document.getElementById('pwsVerSel');if(!sel)return;
-    if(!PWS.versions.length){sel.innerHTML='<option value="">(기준정보 없음)</option>';document.getElementById('pwsInTb').innerHTML='<tr><td colspan="13" style="text-align:center;padding:24px;color:#94a3b8;">'+getDiv()+' 전력 기준정보가 없습니다 — [전력 기준정보] 탭에서 엑셀(전력비 이동계획)을 가져오거나 새 버전을 만드세요</td></tr>';document.getElementById('pwsSimRes').innerHTML='';PWS.detail=null;return;}
+    if(!PWS.versions.length){sel.innerHTML='<option value="">(기준정보 없음)</option>';document.getElementById('pwsInTb').innerHTML='<tr><td colspan="13" style="text-align:center;padding:24px;color:#94a3b8;">'+getDiv()+' 전력 기준정보가 없습니다 — [STEP 1 › 기준정보 관리 › 전력 기준정보(호기)]에서 엑셀(전력비 이동계획)을 가져오거나 새 버전을 만드세요</td></tr>';document.getElementById('pwsSimRes').innerHTML='';PWS.detail=null;return;}
     const vid=pwsPickDefaultVid();
     sel.innerHTML=PWS.versions.map(v=>'<option value="'+v.versionId+'"'+(v.versionId===vid?' selected':'')+'>'+(v.status==='APPROVED'?'[승인] ':'[검토용] ')+purEsc(v.versionName)+(v.applyYm?' · '+pwsYmDot(v.applyYm):'')+' ('+v.lineCount+'호기)</option>').join('');
     pwsSelectVersion(vid);
@@ -4914,7 +4925,7 @@ async function pwsSelectVersion(vid){
     try{PWS.detail=await purGet(PWS_API+'/versions/'+vid);}catch(e){alert('기준정보 불러오기 실패: '+e.message);return;}
     const v=PWS.detail,ym=getYm(),nt=document.getElementById('pwsVerNote');
     const notes=[];
-    if(v.status!=='APPROVED')notes.push('<span style="color:#b45309;"><i class="fas fa-exclamation-triangle mr-1"></i>검토용 초기값(미승인) — 현업 확인 후 [전력 기준정보]에서 승인하세요</span>');
+    if(v.status!=='APPROVED')notes.push('<span style="color:#b45309;"><i class="fas fa-exclamation-triangle mr-1"></i>검토용 초기값(미승인) — 현업 확인 후 [STEP 1 › 기준정보 관리 › 전력 기준정보(호기)]에서 승인하세요</span>');
     if(v.applyYm&&v.applyYm!==ym)notes.push('<span style="color:#dc2626;"><i class="fas fa-calendar-times mr-1"></i>기준정보 적용월 '+pwsYmDot(v.applyYm)+' ≠ 계산월 '+pwsYmDot(ym)+'</span>');
     if(v.sourceFile)notes.push('<span style="color:#64748b;"><i class="fas fa-file-excel mr-1"></i>'+purEsc(v.sourceFile)+'</span>');
     PWS.verNotes=notes;
