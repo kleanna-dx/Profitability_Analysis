@@ -39,6 +39,15 @@ dependencies {
     // SAP JCo 3.1 (libs/ 디렉토리에 sapjco3.jar 배치)
     // implementation으로 설정하여 bootJar에 포함 (런타임 ClassNotFoundException 방지)
     implementation fileTree(dir: 'libs', include: ['*.jar'])
+
+    // 테스트 (배포 빌드는 -x test 로 제외)
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging { events 'passed', 'failed'; exceptionFormat 'full' }
 }
 
 // [경영시뮬레이션] module-rolling-planning-simulation 소스를 module-profit.jar 에 함께 포함
@@ -48,6 +57,11 @@ sourceSets {
     main {
         java {
             srcDir '../module-rolling-planning-simulation/src/main/java'
+        }
+    }
+    test {
+        java {
+            srcDir '../module-rolling-planning-simulation/src/test/java'
         }
     }
 }
