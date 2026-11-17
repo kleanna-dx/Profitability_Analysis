@@ -1056,6 +1056,151 @@ const AREA_SUB_TABLE_MAP = {
 const MFG_ALLOWED_TABLES = new Set(['sys_aimd_cot015']);
 const MFG_FORBIDDEN_TABLES_RE = /\bsys_aimd_cot043\b/i;
 
+// ═════════════════════════════════════════════════════════════════
+// [2026-11-04] 자연어질의 영역 격리 Fail-Closed 가드
+// -----------------------------------------------------------------
+// 사용자 신고 (2026-11-03): 수익성분석 영역에서
+//   `깨끗한나라 제품 중 매출이 가장 높은 SKU 5개를 알려줘.`
+// 질문 시 SQL 에 `WHERE CALMONTH = '202610' AND ZCGUBUN = '실제원가'`
+// 가 섞여 들어가 `Unknown column 'ZCGUBUN'` 에러로 터짐.
+// ZCGUBUN 은 sys_aimd_cot015 (제조원가) 전용 컬럼인데 수익성분석
+// bw_profitability_data 쿼리에 유출되어 DB 레벨에서 실패.
+//
+// 사용자 요구:
+//   "SQL 실행 전 최종 컬럼 검증 추가 — 수익성분석 SQL 에 ZCGUBUN 발견
+//    → DB 실행 금지 → ER_BAD_FIELD_ERROR 로 터지면 안 됨"
+//
+// 설계 (fail-closed):
+//   - 영역별 "허용 테이블" + "금지 컬럼" 화이트/블랙리스트
+//   - SQL 실행 직전 호출: assertNlqSqlAreaIsolation(sql, areaKey)
+//   - 금지 컬럼 발견 → safe=false + reason → 호출부가 DB 실행 중단 + 에러 리턴
+//   - 영역 미지정 (areaKey=null/undefined) → no-op (하위호환, 기존 흐름)
+//
+// 영역별 정책:
+//   profitability (수익성분석, bw_profitability_data):
+//     - 허용 테이블: bw_profitability_data (+ 조회 보조 테이블은 현재 없음)
+//     - 금지 컬럼: ZCGUBUN, ZCGUBUN_D, KST001~KST039, KST_V, KST_F, LBKUM, BASE_UOM
+//       (= sys_aimd_cot015 전용 컬럼이 bw_profitability_data 에 존재하지 않음)
+//
+//   manufacturing-cost (제조원가, sys_aimd_cot015):
+//     - 허용 테이블: sys_aimd_cot015
+//     - 금지 테이블: sys_aimd_cot043 (기존 assertMfgSqlSafety 가 담당)
+//     - 금지 컬럼: bw_profitability_data 전용 컬럼 있으면 추가 가능 (후속 PR)
+//
+// 매칭 방식:
+//   - 컬럼 이름이 단어 경계 안에 등장 (= `/\bCOLNAME\b/i`)
+//   - 백틱 wrapping (`` `ZCGUBUN` ``) + alias prefix (`t.ZCGUBUN`) 모두 커버
+//   - 주석 안 (-- ...  /* ... */) 은 정규화로 제거 후 매칭 (방어)
+//   - 대소문자 무관 (i 플래그)
+//
+// 중요:
+//   이 가드는 "최후의 안전망" 역할. 상위 레이어 (CostBasisHint 영역 가드,
+//   tableWhitelist, ontology/synonym 필터 등) 가 모두 정상이면 절대
+//   발동하면 안 됨. 발동하면 상위 레이어 어딘가 버그라는 신호.
+// ═════════════════════════════════════════════════════════════════
+
+// 수익성분석 영역에서 "SQL 에 등장하면 즉시 차단" 되는 제조원가 전용 컬럼.
+//   sys_aimd_cot015 에만 존재하고 bw_profitability_data 에는 없는 컬럼들.
+const PROFITABILITY_FORBIDDEN_COLS = new Set([
+  'ZCGUBUN',      // 원가구분 (실제원가/표준원가/매출원가)
+  'ZCGUBUN_D',    // 표준원가추정 대구분 (입고-생산/소비-소비)
+  'LBKUM',        // 생산수량 (DECIMAL)
+  'BASE_UOM',     // 기본 단위
+  'KST_V',        // 변동비 합계
+  'KST_F',        // 고정비 합계
+  // KST001~KST039 전부 (20개 원가요소 — 실제 사용되는 번호만 나열, 미사용 번호도
+  //   제조원가 전용이므로 포함. 유지보수상 Set 보다 regex 가 간결).
+  'KST001', 'KST002', 'KST004', 'KST006', 'KST008',
+  'KST010', 'KST012', 'KST014', 'KST015', 'KST017',
+  'KST019', 'KST021', 'KST025', 'KST027', 'KST029',
+  'KST031', 'KST033', 'KST035', 'KST037', 'KST039',
+]);
+
+// 수익성분석 영역에서 "FROM/JOIN 에 등장하면 즉시 차단" 되는 테이블.
+//   bw_profitability_data 만 허용. sys_aimd_cot015 / cot043 는 금지.
+const PROFITABILITY_FORBIDDEN_TABLES_RE = /\b(sys_aimd_cot015|sys_aimd_cot043)\b/i;
+
+// ─── SQL 안전 정규화 ───
+//   주석 안의 ZCGUBUN 등 매칭 오탐 방지 (예: `-- ZCGUBUN 은 제조원가 전용`).
+//   /* ... */ 와 -- 뒤 줄 끝까지 제거.
+function _stripSqlComments(sql) {
+  if (!sql || typeof sql !== 'string') return '';
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')  // 블록 주석
+    .replace(/--[^\n\r]*/g, ' ');       // 라인 주석
+}
+
+/**
+ * NLQ 자연어질의 SQL 영역 격리 Fail-Closed 가드.
+ *
+ * @param {string} sql        LLM 이 생성/후처리한 최종 SQL (DB 실행 직전)
+ * @param {string|null} area  'profitability' | 'manufacturing-cost' | null
+ * @returns {{ safe: boolean, reason: string|null, violations: string[] }}
+ *   - safe=false: DB 실행 금지 (호출부가 에러 응답 리턴)
+ *   - violations: 발견된 금지 컬럼/테이블 리스트 (로그/에러 메시지용)
+ *
+ * 설계 원칙 (사용자 요구 #3 "fail-closed"):
+ *   - area 가 명확히 'profitability' 또는 'manufacturing-cost' 일 때만 엄격 검증
+ *   - area 미지정/알 수 없음 → no-op (safe=true) → 기존 흐름 유지 (하위호환)
+ *   - 금지 항목 발견 시 SQL 실행 전 차단, 사용자에게 명확한 에러 응답
+ */
+function assertNlqSqlAreaIsolation(sql, area) {
+  const empty = { safe: true, reason: null, violations: [] };
+  if (!sql || typeof sql !== 'string') return empty;
+  const areaKey = String(area || '').toLowerCase().trim();
+  if (!areaKey) return empty;  // 영역 미지정 시 no-op
+
+  // 주석 제거해서 "실제 SQL 토큰" 만 검사
+  const sqlNoComment = _stripSqlComments(sql);
+  const violations = [];
+
+  if (areaKey === 'profitability') {
+    // 1) 수익성분석에서 제조원가 테이블 (sys_aimd_cot015, cot043) 참조 금지
+    const tblMatch = sqlNoComment.match(PROFITABILITY_FORBIDDEN_TABLES_RE);
+    if (tblMatch) {
+      violations.push(`forbidden_table:${tblMatch[1]}`);
+    }
+    // 2) 수익성분석에서 제조원가 전용 컬럼 참조 금지
+    for (const col of PROFITABILITY_FORBIDDEN_COLS) {
+      // 단어 경계 매칭 (`\bCOLNAME\b` 대소문자 무관)
+      //   예: `WHERE ZCGUBUN = '실제원가'`, `t.ZCGUBUN`, `` `ZCGUBUN` `` 모두 매치
+      const re = new RegExp(`\\b${col}\\b`, 'i');
+      if (re.test(sqlNoComment)) {
+        violations.push(`forbidden_column:${col}`);
+      }
+    }
+    if (violations.length > 0) {
+      return {
+        safe: false,
+        reason: '수익성분석 자연어질의는 bw_profitability_data 테이블만 허용됩니다. ' +
+                '제조원가 전용 테이블/컬럼이 SQL 에 포함되어 실행이 차단되었습니다: ' +
+                violations.join(', '),
+        violations,
+      };
+    }
+    return empty;
+  }
+
+  if (areaKey === 'manufacturing-cost') {
+    // 기존 assertMfgSqlSafety 가 sys_aimd_cot043 차단 담당.
+    //   향후 수익성분석 전용 컬럼 금지 리스트도 추가 가능 (현재는 기존 로직 유지).
+    //   여기서는 중복 체크로 이중 안전망 제공.
+    if (MFG_FORBIDDEN_TABLES_RE.test(sqlNoComment)) {
+      violations.push('forbidden_table:sys_aimd_cot043');
+      return {
+        safe: false,
+        reason: '제조원가 자연어질의는 sys_aimd_cot015 단일 테이블만 허용됩니다. ' +
+                'LLM 이 sys_aimd_cot043 을 참조하는 SQL 을 생성하여 실행이 차단되었습니다.',
+        violations,
+      };
+    }
+    return empty;
+  }
+
+  // 알 수 없는 area → no-op (방어적)
+  return empty;
+}
+
 /**
  * area/subArea 조합을 안전하게 검증하고 정규화된 컨텍스트를 반환.
  * @param {string|null|undefined} rawArea
@@ -8057,6 +8202,23 @@ async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = nul
   //   - 실패 시 execRecord.baseTimedOut 플래그로 상위 호출자가 구분 가능.
   const t0 = Date.now();
   let baseRows = [];
+  // [2026-11-04] Fail-Closed 영역 격리 가드 — DB 실행 전 최종 검증
+  //   사용자 요구 (2026-11-03): 수익성분석 SQL 에 ZCGUBUN 등 제조원가 전용
+  //   컬럼이 섞여 들어가 ER_BAD_FIELD_ERROR 로 터지는 사고 방지.
+  //   areaCtx.area 가 명확히 지정된 경우에만 엄격 검증 (하위호환).
+  {
+    const _areaForGuard = (areaCtx && areaCtx.area) || null;
+    const _isolationCheck = assertNlqSqlAreaIsolation(baseSql, _areaForGuard);
+    if (!_isolationCheck.safe) {
+      console.error(`[NLQ:AreaGuard] base SQL 영역 격리 위반 차단 (area=${_areaForGuard}): ${_isolationCheck.reason}`);
+      console.error(`[NLQ:AreaGuard] 차단된 SQL: ${baseSql.substring(0, 500)}`);
+      execRecord.baseError = _isolationCheck.reason;
+      execRecord.baseAreaGuardViolation = _isolationCheck.violations;
+      execRecord.baseExecMs = Date.now() - t0;
+      execRecord.diagnostics.push(`base SQL 영역 격리 위반 (fail-closed): ${_isolationCheck.reason}`);
+      return execRecord;
+    }
+  }
   try {
     const [r] = await nlqPoolQueryWithTimeout(baseSql, null, NLQ_DB_QUERY_TIMEOUT_MS);
     baseRows = filterDummyRows(r);
@@ -8096,14 +8258,27 @@ async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = nul
       priorSql = applyForcedCostBasisFilter(priorSql, areaCtx.forcedCostBasis);
     }
     execRecord.priorSql = priorSql;
-    try {
-      // [2026-07-22 PR #247] prior 기간 SQL 도 동일 statement timeout 적용
-      const [pr] = await nlqPoolQueryWithTimeout(priorSql, null, NLQ_DB_QUERY_TIMEOUT_MS);
-      execRecord.priorRows = filterDummyRows(pr);
-    } catch (e) {
-      execRecord.priorError = e.message;
-      execRecord.priorTimedOut = isDbQueryTimeoutError(e);
-      execRecord.diagnostics.push(`prior SQL 실행 실패: ${e.message}`);
+    // [2026-11-04] Fail-Closed 영역 격리 가드 — prior SQL 에도 동일 검증
+    {
+      const _areaForGuard = (areaCtx && areaCtx.area) || null;
+      const _isolationCheck = assertNlqSqlAreaIsolation(priorSql, _areaForGuard);
+      if (!_isolationCheck.safe) {
+        console.error(`[NLQ:AreaGuard] prior SQL 영역 격리 위반 차단 (area=${_areaForGuard}): ${_isolationCheck.reason}`);
+        console.error(`[NLQ:AreaGuard] 차단된 prior SQL: ${priorSql.substring(0, 500)}`);
+        execRecord.priorError = _isolationCheck.reason;
+        execRecord.priorAreaGuardViolation = _isolationCheck.violations;
+        execRecord.diagnostics.push(`prior SQL 영역 격리 위반 (fail-closed): ${_isolationCheck.reason}`);
+      } else {
+        try {
+          // [2026-07-22 PR #247] prior 기간 SQL 도 동일 statement timeout 적용
+          const [pr] = await nlqPoolQueryWithTimeout(priorSql, null, NLQ_DB_QUERY_TIMEOUT_MS);
+          execRecord.priorRows = filterDummyRows(pr);
+        } catch (e) {
+          execRecord.priorError = e.message;
+          execRecord.priorTimedOut = isDbQueryTimeoutError(e);
+          execRecord.diagnostics.push(`prior SQL 실행 실패: ${e.message}`);
+        }
+      }
     }
   }
 
@@ -13168,6 +13343,30 @@ ${sqlValidation.reason}
     const startTime = Date.now();
     aggTimingSet('dbExecutionStartedAt', startTime);   // [PR #335]
     if (aggTimings) aggTimings.executionAttempt = 1;
+    // [2026-11-04] Fail-Closed 영역 격리 가드 — aggregate path DB 실행 전 최종 검증
+    //   사용자 신고 (2026-11-03) 재발 방지: 수익성분석 SQL 에 ZCGUBUN='실제원가'
+    //   섞여 들어가 ER_BAD_FIELD_ERROR 로 터지는 사고 차단.
+    //   이 지점이 /api/nlq aggregate path 의 유일한 SQL 실행 지점.
+    {
+      const _areaForGuard = (areaCtx && areaCtx.area) || null;
+      const _isolationCheck = assertNlqSqlAreaIsolation(sql, _areaForGuard);
+      if (!_isolationCheck.safe) {
+        console.error(`[NLQ:AreaGuard] aggregate SQL 영역 격리 위반 차단 (area=${_areaForGuard}): ${_isolationCheck.reason}`);
+        console.error(`[NLQ:AreaGuard] 차단된 SQL: ${sql.substring(0, 500)}`);
+        const violationsStr = Array.isArray(_isolationCheck.violations) ? _isolationCheck.violations.join(', ') : '';
+        return res.json({
+          success: false,
+          sql,
+          rows: [],
+          rowCount: 0,
+          answer: '죄송합니다. 쿼리에 현재 업무영역과 맞지 않는 컬럼이 포함되어 실행을 중단했습니다. 질문을 다시 입력해 주세요.',
+          explanation: `업무영역 격리 위반 (fail-closed 차단): ${_isolationCheck.reason}`,
+          error_user_friendly: true,
+          errorCode: 'AREA_ISOLATION_VIOLATION',
+          error_detail: { area: _areaForGuard, violations: _isolationCheck.violations },
+        });
+      }
+    }
     let rows;
     try {
       [rows] = await nlqPoolQueryWithTimeout(sql, null, NLQ_DB_QUERY_TIMEOUT_MS);
@@ -16547,6 +16746,22 @@ app.post('/api/nlq/rewrite-cost-basis', async (req, res) => {
       console.warn('[rewrite-cost-basis] applyForcedCostBasisFilter 가 SQL 을 변경하지 않음 → 원본으로 실행');
     }
     // 6) DB 실행 (기존 함수 재사용 — timeout 등 동일 정책)
+    // [2026-11-04] Fail-Closed 영역 격리 가드 — rewrite-cost-basis 경로도 중복 보안망
+    //   이 route 는 ZCGUBUN 치환 전용이므로 암묵적으로 'manufacturing-cost' 영역 고정.
+    //   newSql 안에 sys_aimd_cot043 같은 금지 테이블이 있으면 차단 (이중 안전망).
+    {
+      const _isolationCheck = assertNlqSqlAreaIsolation(newSql, 'manufacturing-cost');
+      if (!_isolationCheck.safe) {
+        console.error(`[NLQ:AreaGuard] rewrite-cost-basis SQL 영역 격리 위반 차단: ${_isolationCheck.reason}`);
+        console.error(`[NLQ:AreaGuard] 차단된 SQL: ${newSql.substring(0, 500)}`);
+        return res.status(400).json({
+          success: false,
+          error: _isolationCheck.reason,
+          errorCode: 'AREA_ISOLATION_VIOLATION',
+          error_detail: { area: 'manufacturing-cost', violations: _isolationCheck.violations },
+        });
+      }
+    }
     const startMs = Date.now();
     const [rows] = await nlqPoolQueryWithTimeout(newSql, null, NLQ_DB_QUERY_TIMEOUT_MS);
     const executionTimeMs = Date.now() - startMs;
