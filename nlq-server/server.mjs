@@ -2512,10 +2512,57 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 ■ SELECT/GROUP BY 목적으로는 DIVISION_NM 을 사용해도 됨 (표시용).
   단, WHERE 조건에서는 사용 금지.
 
-[★★★★★ 자재명/고객명 공백 무시 검색 규칙 (Name Search Rule) — 최상위 우선순위 ★★★★★]
+[★★★★★ 명칭(_NM) 컬럼 조건 생성 규칙 (Name Column Rule) — 최상위 우선순위 ★★★★★]
 
-🚨 MATERIAL_NM (자재명), CUSTOMER_NM (고객명) 컬럼을 WHERE 조건으로 사용할 때는
-   **반드시 REPLACE(컬럼, ' ', '') 로 공백을 제거한 뒤 비교** 하세요.
+🚨 **"_NM" 으로 끝나는 명칭 컬럼은 기본적으로 '=' 가 아니라 LIKE '%검색어%' 를 사용**하세요.
+   사용자 자연어 질의에서 입력된 값은 DB 실제 명칭과 완전히 동일하지 않을 수 있으므로
+   **부분 일치(LIKE)** 를 우선합니다. 코드/ID 컬럼(_NM 없음)만 기본 '=' 를 사용하세요.
+
+■ 핵심 원칙 (사용자 요구 — 반드시 준수):
+  1. **_NM 으로 끝나는 모든 컬럼** (PLANT_NM, MATL_TYPE_NM, SALES_OFF_NM, PROFIT_CTR_NM,
+     PRODH1_NM, PRODH2_NM, PRODH3_NM, PRODH4_NM, BIC_ZJPCODE_NM, BIC_ZBRAND_NM,
+     BIC_ZSBRAND_NM, BILL_TYPE_NM, INCOTERMS_NM, CUST_GROUP_NM, CUST_GRP1_NM,
+     ZZKVGR7_NM, COUNTRY_NM, BIC_ZKUNN2_NM, MATL_GROUP_NM, CO_AREA_NM, DISTR_CHAN_NM 등)
+     → WHERE 조건에 **기본 LIKE '%값%'** 사용.
+  2. **_NM 컬럼에 '=' 조건을 임의로 생성하지 마세요.**
+     사용자가 "정확히 '제품'" 처럼 명시적으로 완전일치를 요구한 경우에만 '=' 사용 가능.
+  3. **코드/ID 컬럼** (DIVISION, PLANT, MATERIAL, MATL_TYPE, PROFIT_CTR, SALES_OFF,
+     PRODH1~PRODH4, BIC_ZJPCODE, BIC_ZBRAND, BIC_ZSBRAND, BILL_TYPE, INCOTERMS,
+     CUST_GROUP, CUST_GRP1, ZZKVGR7, COUNTRY, BIC_ZKUNN2, CUSTOMER 등)
+     → 기본 '=' 사용 (표준 코드값이므로 완전일치).
+
+■ 이유:
+  DB 실제 값은 사용자 자연어와 완전히 일치하지 않는 경우가 많습니다.
+  예) 사용자 "깨끗한나라 제품 중" → MATL_TYPE_NM 실제값은
+      "반제품(깨끗한나라)", "상품(깨끗한나라)", "제품(깨끗한나라)" 처럼 저장됨.
+  - MATL_TYPE_NM = '제품' → 0건 (실제값이 "제품(깨끗한나라)" 이므로)
+  - MATL_TYPE_NM LIKE '%제품%' → 정확히 매칭 ✓
+
+■ 정답 패턴 (반드시 사용):
+  ✓ WHERE MATL_TYPE_NM LIKE '%제품%'           ← "제품" 류 (반제품/상품/제품)
+  ✓ WHERE PLANT_NM LIKE '%청주%'                ← "청주공장" / "청주 공장" 등 변형 대응
+  ✓ WHERE SALES_OFF_NM LIKE '%서울%'            ← "서울지점" / "서울지사" 등 변형 대응
+  ✓ WHERE PROFIT_CTR_NM LIKE '%제지%'           ← "제지사업부" 등
+  ✓ WHERE PRODH1_NM LIKE '%생리대%'             ← 제품군 표현 변형 대응
+  ✓ WHERE BIC_ZBRAND_NM LIKE '%순수%'           ← 브랜드명 부분일치
+
+■ 절대 금지 패턴 (_NM 컬럼에 = 를 임의 생성):
+  ✗ WHERE MATL_TYPE_NM = '제품'                 ← DB 값이 "제품(깨끗한나라)" 이면 0건
+  ✗ WHERE PLANT_NM = '청주공장'                 ← DB 값이 "청주" 이면 0건
+  ✗ WHERE SALES_OFF_NM = '서울지점'             ← DB 값이 "서울" 이면 0건
+  ✗ WHERE PROFIT_CTR_NM = '제지사업부'          ← DB 값 변형 시 0건
+
+■ 리터럴 값 정규화 (사용자 입력 → LIKE 검색어):
+  사용자 입력에서 **핵심 키워드만 추출** 하여 LIKE 검색어로 사용하세요.
+  예) 사용자: "깨끗한나라 제품"     → MATL_TYPE_NM LIKE '%제품%'  (+ MATERIAL_NM 조건 별도)
+       사용자: "청주공장"           → PLANT_NM LIKE '%청주%'
+       사용자: "제지사업부"         → PROFIT_CTR_NM LIKE '%제지%'
+
+─────────────────────────────────────────────────────────────────────
+[자재명/고객명 공백 무시 검색 규칙 — 특수 하위 규칙 (기존 유지)]
+
+🚨 MATERIAL_NM (자재명), CUSTOMER_NM (고객명) 컬럼은 추가로
+   **REPLACE(컬럼, ' ', '') 로 공백을 제거한 뒤 LIKE 비교** 하세요.
 
 ■ 이유:
   DB 저장 값은 공백을 포함하는 경우가 많지만 (예: "깨끗한나라 순수소프티 100매"),
@@ -2525,7 +2572,6 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
 ■ 정답 패턴 (반드시 사용):
   ✓ WHERE REPLACE(MATERIAL_NM, ' ', '') LIKE '%순수소프티100매%'
   ✓ WHERE REPLACE(CUSTOMER_NM, ' ', '') LIKE '%메디프렌즈%'
-  ✓ WHERE REPLACE(MATERIAL_NM, ' ', '') = '깨끗한나라순수소프티100매'
   ✓ WHERE REPLACE(x.MATERIAL_NM, ' ', '') LIKE '%값%'   (alias 도 동일)
 
 ■ 절대 금지 패턴 (자동 교정 후처리 대상):
@@ -2533,15 +2579,19 @@ const BASE_SYSTEM_PROMPT = `당신은 수익성 분석 데이터베이스 전문
   ✗ WHERE CUSTOMER_NM LIKE '%메디프렌즈%'         ← 동일
   ✗ WHERE MATERIAL_NM = '순수소프티 100매'        ← 사용자 입력에 공백 위치 다르면 0건
 
-■ 리터럴 값 정규화:
+■ 리터럴 값 정규화 (MATERIAL_NM/CUSTOMER_NM 전용):
   사용자 입력의 공백은 **모두 제거한 값을 리터럴로** 넣으세요.
   예) 사용자: "순수소프티 100매" → 리터럴: '순수소프티100매'
        사용자: "메디 프렌즈"     → 리터럴: '메디프렌즈'
 
-■ 적용 범위:
-  - MATERIAL_NM, CUSTOMER_NM 두 컬럼에만 적용 (다른 _NM 컬럼은 대상 아님)
-  - =, <>, !=, LIKE, NOT LIKE 모두 동일 규칙
-  - SELECT / GROUP BY / ORDER BY 목적으로는 원본 컬럼 그대로 사용 (표시용은 REPLACE 감쌈 불필요)
+─────────────────────────────────────────────────────────────────────
+[공통 적용 범위]
+  - **모든 _NM 컬럼**: 기본 LIKE '%값%' 사용 (= 조건 임의 생성 금지)
+  - **MATERIAL_NM, CUSTOMER_NM**: 추가로 REPLACE(컬럼,' ','') LIKE '%공백제거값%'
+  - **코드/ID 컬럼**: 기본 = 사용 (DIVISION, PLANT, MATERIAL 등)
+  - **SELECT / GROUP BY / ORDER BY**: 원본 컬럼 그대로 사용 (표시용, 가공 불필요)
+  - =, <>, !=, LIKE, NOT LIKE 모두 동일 원칙 (_NM 은 기본 LIKE)
+  - 사용자가 **명시적으로 완전일치** 를 요구한 경우에만 _NM 에 '=' 사용 가능
 
 [★★★ 최우선 규칙 — 컬럼명 사용 (절대 위반 금지) ★★★]
 
