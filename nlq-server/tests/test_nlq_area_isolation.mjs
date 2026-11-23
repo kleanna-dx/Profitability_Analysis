@@ -356,6 +356,105 @@ assertMatch(serverSrc,
     '5-2: AREA_SUB_TABLE_MAP 보존 (profitability + manufacturing-cost)');
 
 // ============================================================
+// 6. [2026-11-23 근본원인 수정] forcedCostBasis 영역 격리 검증
+// ------------------------------------------------------------
+// 배경: AreaGuard (섹션 2~3) 는 SQL 실행 직전 최종 방어선이지만, 애초에
+//   수익성분석 SQL 생성 단계에 ZCGUBUN 지시문이 LLM 프롬프트에 주입되면
+//   LLM 이 ZCGUBUN='실제원가' 를 포함한 SQL 을 생성 → AreaGuard 차단 →
+//   사용자는 "내부 호출 실패 (HTTP 200)" 에러만 봄 (실질적 처리 불가).
+//
+// 사용자 요구:
+//   - area === 'manufacturing-cost' 일 때만 forcedCostBasis 적용
+//   - area === 'profitability' 에서는 forcedCostBasis 수신 자체를 무시
+//   - 수익성분석에서는 CostBasisHint/CostBasisDirective/ZCGUBUN 관련
+//     프롬프트/후처리 로직을 아예 실행하지 말 것
+//   - 제조원가 → 수익성분석 영역 전환 시 이전 costBasis 값이 전파되지 않을 것
+//
+// 수정 지점 (5곳):
+//   #1. /api/nlq route 입구 (L11712~11754) forcedCostBasis 수신부
+//       → area!=='manufacturing-cost' 시 수신 무시 + 경고 로그
+//   #2. CostBasisDirective:Aggregate 프롬프트 주입 (L12657~12686)
+//       → area==='manufacturing-cost' 가드 추가
+//   #3a. costBasisDirective (RAG plan-phase, L6656~6687)
+//       → area==='manufacturing-cost' 가드 추가
+//   #3b. applyForcedCostBasisFilter 호출 base SQL (L8030)
+//       → area==='manufacturing-cost' 가드 추가
+//   #3c. applyForcedCostBasisFilter 호출 prior SQL (L8266)
+//       → area==='manufacturing-cost' 가드 추가
+//   #3d. async job 생성 (L14829) — 근본 중의 근본
+//       → selectedArea!=='manufacturing-cost' 시 forcedCostBasis=null 저장
+// ============================================================
+
+// 6-1: Fix #1 — route 입구 forcedCostBasis 수신부 area 가드 ("manufacturing-cost" 가드)
+//   조건: if (areaCtx.area !== 'manufacturing-cost' && req.body?.forcedCostBasis)
+//   → 수익성분석 영역에서 수신 시 경고 로그 출력하고 setter 건너뜀
+assertMatch(serverSrc,
+    /if\s*\(\s*areaCtx\.area\s*!==\s*['"]manufacturing-cost['"]\s*&&\s*req\.body\?\.forcedCostBasis\s*\)/,
+    '6-1a: Fix #1 route 입구 — area!==manufacturing-cost + forcedCostBasis 수신 시 경고 블록 존재');
+
+assertMatch(serverSrc,
+    /\[NLQ:CostBasisForced\][\s\S]{0,200}영역에서는\s*forcedCostBasis\s*수신을\s*무시/,
+    '6-1b: Fix #1 경고 로그 — 수익성분석 영역에서 forcedCostBasis 무시 메시지');
+
+assertMatch(serverSrc,
+    /if\s*\(\s*areaCtx\.area\s*===\s*['"]manufacturing-cost['"]\s*&&\s*req\.body\?\.forcedCostBasis\s*&&\s*typeof\s+req\.body\.forcedCostBasis\.value/,
+    '6-1c: Fix #1 route 입구 — 실제 areaCtx.forcedCostBasis 설정은 area==="manufacturing-cost" 가드 내에서만');
+
+// 6-2: Fix #2 — CostBasisDirective:Aggregate 프롬프트 주입 area 가드
+//   areaCtx.area === 'manufacturing-cost' && areaCtx.forcedCostBasis 조건 필수
+//   가드 블록과 로그 라인 사이에 긴 템플릿 리터럴(~14줄) 존재 → 넓은 범위 허용
+assertMatch(serverSrc,
+    /if\s*\(\s*areaCtx\s*&&\s*areaCtx\.area\s*===\s*['"]manufacturing-cost['"]\s*&&\s*areaCtx\.forcedCostBasis\s*&&\s*typeof\s+areaCtx\.forcedCostBasis\.value[\s\S]{0,3000}\[NLQ:CostBasisDirective:Aggregate\]/,
+    '6-2: Fix #2 CostBasisDirective:Aggregate — area==="manufacturing-cost" 가드 선행');
+
+// 6-3a: Fix #3a — costBasisDirective (RAG plan-phase) area 가드
+assertMatch(serverSrc,
+    /let\s+costBasisDirective\s*=\s*['"]['"];\s*\n\s*if\s*\(\s*areaCtx\s*&&\s*areaCtx\.area\s*===\s*['"]manufacturing-cost['"]\s*&&\s*areaCtx\.forcedCostBasis/,
+    '6-3a: Fix #3a RAG plan-phase costBasisDirective — area==="manufacturing-cost" 가드');
+
+// 6-3b: Fix #3b — applyForcedCostBasisFilter 호출 (base SQL) area 가드
+assertMatch(serverSrc,
+    /if\s*\(\s*areaCtx\s*&&\s*areaCtx\.area\s*===\s*['"]manufacturing-cost['"]\s*&&\s*areaCtx\.forcedCostBasis\s*\)\s*\{\s*\n\s*baseSql\s*=\s*applyForcedCostBasisFilter\s*\(/,
+    '6-3b: Fix #3b applyForcedCostBasisFilter (base SQL) — area==="manufacturing-cost" 가드');
+
+// 6-3c: Fix #3c — applyForcedCostBasisFilter 호출 (prior SQL) area 가드
+assertMatch(serverSrc,
+    /if\s*\(\s*areaCtx\s*&&\s*areaCtx\.area\s*===\s*['"]manufacturing-cost['"]\s*&&\s*areaCtx\.forcedCostBasis\s*\)\s*\{\s*\n\s*priorSql\s*=\s*applyForcedCostBasisFilter\s*\(/,
+    '6-3c: Fix #3c applyForcedCostBasisFilter (prior SQL) — area==="manufacturing-cost" 가드');
+
+// 6-3d: Fix #3d — async job 생성 지점 (selectedArea 기반 가드)
+//   forcedCostBasis: (selectedArea !== 'manufacturing-cost') ? null : (...)
+assertMatch(serverSrc,
+    /forcedCostBasis:\s*\(\s*selectedArea\s*!==\s*['"]manufacturing-cost['"]\s*\)\s*\?\s*null\s*:/,
+    '6-3d: Fix #3d async job 생성 — selectedArea !== "manufacturing-cost" 시 forcedCostBasis=null');
+
+// 6-4: 수정 주석 추적성 — 2026-11-23 근본원인 수정 마커
+const rootCauseFixMarkerCount = (serverSrc.match(/2026-11-23\s*근본원인\s*수정/g) || []).length;
+assert(rootCauseFixMarkerCount >= 5,
+    `6-4: [2026-11-23 근본원인 수정] 마커가 최소 5곳에 있어야 함 (Fix #1~#3d, 5개 지점) — 실제: ${rootCauseFixMarkerCount}`);
+
+// 6-5: 영역 가드 추적성 — 수익성분석에서 CostBasisDirective 주입 자체 차단 주석
+assertMatch(serverSrc,
+    /수익성분석\s*영역\s*격리/,
+    '6-5: "수익성분석 영역 격리" 설계 주석 (유지보수 추적성)');
+
+// 6-6: Fix #1 경고 로그 패턴 (console.warn 사용)
+assertMatch(serverSrc,
+    /console\.warn\s*\(\s*`\[NLQ:CostBasisForced\]\s*area=\$\{areaCtx\.area\}\s*영역에서는\s*forcedCostBasis\s*수신을\s*무시/,
+    '6-6: Fix #1 경고 로그 — console.warn 으로 영역 혼선 감지 가능');
+
+// 6-7: regression — 수정 전 패턴이 남아있지 않은지 확인
+//   (수정 전: `if (req.body?.forcedCostBasis && typeof req.body.forcedCostBasis.value === 'string') {`
+//    가 단독으로 area 가드 없이 존재했음. 현재는 area 가드로 감싸져야 함)
+//
+//   현재는 area==='manufacturing-cost' 조건이 선행되어 있는지 추가 검증
+//   (수정 전 pattern 은 정확히 재현하면 false positive 날 수 있으므로,
+//    대신 route 입구에서 areaCtx.forcedCostBasis = cb 라인 앞에 area 가드가 있는지 확인)
+assertMatch(serverSrc,
+    /if\s*\(\s*areaCtx\.area\s*===\s*['"]manufacturing-cost['"][\s\S]{0,2000}areaCtx\.forcedCostBasis\s*=\s*cb\s*;/,
+    '6-7: route 입구 — areaCtx.forcedCostBasis = cb 할당 전에 area==="manufacturing-cost" 가드 선행 (regression 방지)');
+
+// ============================================================
 // 결과 출력
 // ============================================================
 

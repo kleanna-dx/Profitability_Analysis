@@ -6658,8 +6658,12 @@ async function generateAnalysisPlan(query, activeDomain, dateCtx, conversationCo
   //   [실제원가]/[매출원가]/[표준원가] 버튼을 클릭해 확정한 값을 서버가
   //   결정적으로 주입한다는 사실을 LLM 에게 알림.
   //   서버 방어망은 applyForcedCostBasisFilter 가 담당하므로 부정 어휘는 안 넣음.
+  //
+  // [2026-11-23 근본원인 수정] area==='manufacturing-cost' 가드 추가 (수익성분석 영역 격리).
+  //   ZCGUBUN/ZCGUBUN_D 는 제조원가(sys_aimd_cot015) 전용. 수익성분석 analysis-plan phase 에서는
+  //   어떤 경우에도 ZCGUBUN 지시문을 LLM 에 주입하지 않도록 2중 방어.
   let costBasisDirective = '';
-  if (areaCtx && areaCtx.forcedCostBasis && typeof areaCtx.forcedCostBasis.value === 'string') {
+  if (areaCtx && areaCtx.area === 'manufacturing-cost' && areaCtx.forcedCostBasis && typeof areaCtx.forcedCostBasis.value === 'string') {
     const v = areaCtx.forcedCostBasis.value;
     const zd = (typeof areaCtx.forcedCostBasis.zcgubunD === 'string') ? areaCtx.forcedCostBasis.zcgubunD : '';
     // 표준원가 서브타입 명시 시 사용자 친화적 라벨
@@ -8023,7 +8027,12 @@ async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = nul
   //   - LLM 이 임의로 다른 ZCGUBUN 값 (예: 표준원가) 을 넣었어도 사용자 확정값으로 치환
   //   - sys_aimd_cot015 참조 SQL 이 아니면 자동 no-op
   //   - 요구사항 #4: 서로 다른 원가기준을 합산하지 않도록 단일 값 = 로 강제
-  if (areaCtx && areaCtx.forcedCostBasis) {
+  //
+  // [2026-11-23 근본원인 수정] area==='manufacturing-cost' 가드 추가 (수익성분석 영역 격리).
+  //   Fix #1 로 이미 수익성분석에서 forcedCostBasis 가 수신되지 않도록 차단했으므로 여기서는
+  //   방어선 강화 목적. applyForcedCostBasisFilter 내부에도 sys_aimd_cot015 가드가 있지만
+  //   호출 자체를 영역으로 한번 더 막음.
+  if (areaCtx && areaCtx.area === 'manufacturing-cost' && areaCtx.forcedCostBasis) {
     baseSql = applyForcedCostBasisFilter(baseSql, areaCtx.forcedCostBasis);
   }
 
@@ -8254,7 +8263,8 @@ async function executeAnalysisPlan(plan, activeDomain, query = '', areaCtx = nul
       priorSql = applyForcedCostCompFilter(priorSql, areaCtx.forcedCostComp);
     }
     // [2026-09-16] ZCGUBUN 명확화 강제 필터 (prior SQL 에도 동일 적용)
-    if (areaCtx && areaCtx.forcedCostBasis) {
+    // [2026-11-23 근본원인 수정] area==='manufacturing-cost' 가드 추가 (수익성분석 영역 격리 2중 방어).
+    if (areaCtx && areaCtx.area === 'manufacturing-cost' && areaCtx.forcedCostBasis) {
       priorSql = applyForcedCostBasisFilter(priorSql, areaCtx.forcedCostBasis);
     }
     execRecord.priorSql = priorSql;
@@ -11709,7 +11719,18 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
   //   - zcgubunD 는 '소비-소비' (매출원가 기준) / '입고-생산' (실제원가 기준) whitelist.
   //     표준원가는 zcgubunD 필수 (2차 clarification 결과 또는 "매출원가의 표준원가" 명시).
   //     실제원가/매출원가는 zcgubunD 생략 가능 (기존 흐름 유지).
-  if (req.body?.forcedCostBasis && typeof req.body.forcedCostBasis.value === 'string') {
+  //
+  // [2026-11-23 근본원인 수정] area==='manufacturing-cost' 가드 추가 (수익성분석 영역 격리).
+  //   배경: 프론트가 모든 /api/nlq 호출에 forcedCostBasis(default_fallback=실제원가) 를 넣어 보내는데,
+  //   area==='profitability' 영역에서도 받아서 areaCtx.forcedCostBasis 에 저장 → 하류의 CostBasisDirective
+  //   프롬프트 주입이 발동 → LLM 이 WHERE ZCGUBUN='실제원가' SQL 을 생성 → AreaGuard 에 의해 차단 → 사용자 에러.
+  //   수익성분석(bw_profitability_data) 에는 ZCGUBUN/ZCGUBUN_D 컬럼 자체가 없으므로 forcedCostBasis 는 의미가
+  //   없음. 영역 가드로 수신 자체를 차단하여 애초에 CostBasisDirective 가 발동하지 않도록 함.
+  //   (AreaGuard 는 SQL 실행 직전 최종 방어선으로 그대로 유지 → 2중 방어.)
+  if (areaCtx.area !== 'manufacturing-cost' && req.body?.forcedCostBasis) {
+    console.warn(`[NLQ:CostBasisForced] area=${areaCtx.area} 영역에서는 forcedCostBasis 수신을 무시합니다 (제조원가 전용 개념, value="${String(req.body.forcedCostBasis?.value || '').slice(0, 20)}" source="${String(req.body.forcedCostBasis?.source || '').slice(0, 30)}")`);
+  }
+  if (areaCtx.area === 'manufacturing-cost' && req.body?.forcedCostBasis && typeof req.body.forcedCostBasis.value === 'string') {
     const v = req.body.forcedCostBasis.value.trim();
     const rawZd = (typeof req.body.forcedCostBasis.zcgubunD === 'string')
       ? req.body.forcedCostBasis.zcgubunD.trim() : '';
@@ -12648,7 +12669,14 @@ app.post('/api/nlq', captureLogsMiddleware, async (req, res) => {
       //   서버가 SQL 에 결정적으로 WHERE ZCGUBUN='<값>' 주입한다고 LLM 에게 알림.
       //   analysis 라우트의 costBasisDirective 와 대칭.
       //   표준원가 서브타입 확정 시 ZCGUBUN_D 도 함께 주입 (사용자 요구사항 #4).
-      if (areaCtx && areaCtx.forcedCostBasis && typeof areaCtx.forcedCostBasis.value === 'string') {
+      //
+      // [2026-11-23 근본원인 수정] area==='manufacturing-cost' 가드 추가 (수익성분석 영역 격리).
+      //   ZCGUBUN/ZCGUBUN_D 는 제조원가(sys_aimd_cot015) 전용 컬럼이므로, 수익성분석(bw_profitability_data)
+      //   SQL 생성 시 LLM 에 이 지시문을 주입하면 ZCGUBUN='실제원가' 를 포함한 SQL 을 생성해 AreaGuard 에
+      //   의해 차단됨 → 사용자 에러. route 입구에서 이미 forcedCostBasis 수신을 차단했지만, 2중 방어로
+      //   여기서도 area 가드를 추가하여 어떤 경로로도 CostBasisDirective 가 수익성분석 프롬프트에 들어가지
+      //   않도록 함.
+      if (areaCtx && areaCtx.area === 'manufacturing-cost' && areaCtx.forcedCostBasis && typeof areaCtx.forcedCostBasis.value === 'string') {
         const _cb = areaCtx.forcedCostBasis.value;
         const _zd = (typeof areaCtx.forcedCostBasis.zcgubunD === 'string') ? areaCtx.forcedCostBasis.zcgubunD : '';
         const _subtypeLabel = (_cb === '표준원가' && _zd === '소비-소비') ? '매출원가의 표준원가'
@@ -14798,7 +14826,14 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
     //   value 는 실제원가 / 매출원가 / 표준원가 중 하나로만 허용 (whitelist).
     //   zcgubunD 는 '소비-소비' / '입고-생산' whitelist. 표준원가 서브타입 확정 시에만 존재.
     //   표준원가 + zcgubunD 미실림 → 위 clarification 게이트에서 이미 2차 응답 반환됨.
-    forcedCostBasis: confirmedForcedCostBasis || (() => {
+    //
+    // [2026-11-23 근본원인 수정] area==='manufacturing-cost' 가드 추가 (수익성분석 영역 격리).
+    //   async job 생성 단계에서부터 forcedCostBasis 를 영역으로 차단. 수익성분석(profitability) 에서는
+    //   어떤 source (confirmedForcedCostBasis / req.body.forcedCostBasis / req.body.sessionCostBasis) 든
+    //   무시하고 null 저장 → self-fetch body (라인 14106) 도 null → 2차 호출 /api/nlq 수신부도 null.
+    //   근본 중의 근본 차단: 프론트가 모든 요청에 default_fallback 을 넣어 보내도 수익성분석에서는 완전 무시.
+    //   (제조원가 → 수익성분석 영역 전환 시 이전 세션값 전파 방지도 여기서 처리됨.)
+    forcedCostBasis: (selectedArea !== 'manufacturing-cost') ? null : (confirmedForcedCostBasis || (() => {
       // 2순위: forcedCostBasis (명확화 재요청)
       const raw = req.body?.forcedCostBasis;
       if (raw && typeof raw.value === 'string') {
@@ -14817,7 +14852,7 @@ app.post('/api/nlq/async', captureLogsMiddleware, async (req, res) => {
       const sessionCb = normalizeSessionCostBasis(req.body?.sessionCostBasis);
       if (sessionCb) return sessionCb;
       return null;
-    })(),
+    })()),
     // [2026-09-13] body 로 전달된 UI 도메인 (self-fetch body 에도 다시 실어서 이중 방어)
     //   이미 위 [DomainSync] 블록에서 세션에 반영했지만, self-fetch 중 세션 상태가
     //   race condition 으로 흐트러질 가능성에 대비.
