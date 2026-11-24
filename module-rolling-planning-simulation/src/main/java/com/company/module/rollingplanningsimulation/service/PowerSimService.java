@@ -557,7 +557,7 @@ public class PowerSimService {
     }
 
     /** 지종별 생산 비율 — P/L 지종 {product, plan(톤), sim(톤)} → 시뮬 ÷ 생산계획 */
-    record ProductSim(String product, BigDecimal plan, BigDecimal sim) {}
+    public record ProductSim(String product, BigDecimal plan, BigDecimal sim) {}
 
     /**
      * 생산계획(호기 × 지종 양품 ton) + P/L 지종별 시뮬 생산량 → 호기별 기준·시뮬 생산량(ton).
@@ -691,10 +691,10 @@ public class PowerSimService {
     }
 
     /** 사업부·월 호기별 생산량 결과 — 전력비·에너지비(공장 통합) 공통 */
-    record DivQty(Map<String, BigDecimal> base, Map<String, BigDecimal> sim, Map<String, Object> source, List<String> warnings) {}
+    public record DivQty(Map<String, BigDecimal> base, Map<String, BigDecimal> sim, Map<String, Object> source, List<String> warnings) {}
 
     /** 생산계획(호기 × 지종 총생산량 ton, 확정 여부) — 양품 ÷ (1 − 손지율) */
-    List<Map<String, Object>> planRows(String div, String ym) {
+    public List<Map<String, Object>> planRows(String div, String ym) {
         String expr = com.company.module.rollingplanningsimulation.support.RawMaterialSql.PLAN_PRODUCT_EXPR;
         return jdbc.queryForList(
                 "SELECT MACHINE_CODE, " + expr + " AS PRODUCT, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS TON," +
@@ -711,7 +711,7 @@ public class PowerSimService {
      * 생산계획에 없는 지종 = 실적 호기 비중으로 배분
      */
     @SuppressWarnings("unchecked")
-    DivQty divisionQty(String div, String ym, List<ProductSim> products, String machine) {
+    public DivQty divisionQty(String div, String ym, List<ProductSim> products, String machine) {
         if (products == null) products = List.of();
         List<Map<String, Object>> planRows = planRows(div, ym);
         List<String> warnings = new ArrayList<>();
