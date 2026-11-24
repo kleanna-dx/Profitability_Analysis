@@ -78,6 +78,7 @@ public class EnergyDataSyncController {
             result.put("year", year);
             result.put("division", division);
             result.put("processCount", count);
+            result.put("message", String.join("\n", syncService.getLastUnitRateNotes()));
             result.put("historyId", hist.getHistoryId());
             return ResponseEntity.ok(ApiResponse.success(result));
         } catch (Exception e) {
@@ -104,6 +105,7 @@ public class EnergyDataSyncController {
             result.put("year", year);
             result.put("division", division);
             result.putAll(counts);
+            result.put("message", String.join("\n", syncService.getLastUnitRateNotes()));
             result.put("historyId", hist.getHistoryId());
             return ResponseEntity.ok(ApiResponse.success(result));
         } catch (Exception e) {

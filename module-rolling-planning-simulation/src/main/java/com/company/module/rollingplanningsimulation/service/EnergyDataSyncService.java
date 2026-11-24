@@ -7,6 +7,9 @@ import com.company.module.rollingplanningsimulation.entity.SteamUnitRate;
 import com.company.module.rollingplanningsimulation.repository.BoilerCostRateRepository;
 import com.company.module.rollingplanningsimulation.repository.SteamPriceIntervalRepository;
 import com.company.module.rollingplanningsimulation.repository.SteamUnitRateRepository;
+import com.company.module.rollingplanningsimulation.repository.UnitRepository;
+import com.company.module.rollingplanningsimulation.repository.PwSimBasisVersionRepository;
+import com.company.module.rollingplanningsimulation.repository.PwSimBasisLineRepository;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +38,12 @@ public class EnergyDataSyncService {
     private final SteamPriceIntervalRepository steamPriceIntervalRepo;
     private final SteamUnitRateRepository steamUnitRateRepo;
     private final AuditSupport auditSupport;
+    private final UnitRepository unitRepo;
+    private final PwSimBasisVersionRepository pwVersionRepo;
+    private final PwSimBasisLineRepository pwLineRepo;
+
+    /** 마지막 원단위 수신의 호기 연결 결과·경고 (화면 표시용) */
+    @Getter private final List<String> lastUnitRateNotes = Collections.synchronizedList(new ArrayList<>());
 
     // ================================================================
     // row_key → RPSIM 매핑 정의
@@ -58,36 +67,34 @@ public class EnergyDataSyncService {
         String unitRatePrefix;
     }
 
-    private static final Map<String, DivisionMapping> MAPPINGS = new LinkedHashMap<>();
+    /**
+     * 보일러 단가 = 공장 공통(PLANT). 사업부를 골라 수신해도 PLANT 로 저장 (보일러는 PS·HL 이 함께 씀)
+     * 원단위(t17) = 행마다 엑셀 호기명 → 호기 마스터/전력 기준정보 호기명으로 호기코드·사업부를 찾아 저장 (PS·HL 한 번에)
+     */
+    private static final DivisionMapping PLANT_MAPPING = new DivisionMapping();
+    /** t17 row_key → 대시보드 호기명. 소계 행(r03 제지 소계, r07 화장지 소계)은 받지 않음 */
+    static final Map<String, String> T17_ROWS = new LinkedHashMap<>();
     static {
-        // ── PS ──
-        DivisionMapping ps = new DivisionMapping();
-        ps.price.put("lng_unit",        new String[]{"BLR-LNG",   "FUEL_RATE",  "LNG 단가",         "원/㎥"});
-        ps.price.put("waste2_steam",    new String[]{"BLR-INCIN", "STEAM_RATE", "폐합성2호 스팀단가", "원/톤"});
-        ps.price.put("waste2_fixed_hr", new String[]{"BLR-INCIN", "FIXED_HR",   "폐합성2호 고정단가", "원/HR"});
-        ps.price.put("fluid_steam",     new String[]{"BLR-FLUID", "STEAM_RATE", "유동상 스팀단가",    "원/톤"});
-        ps.price.put("fluid_fixed_hr",  new String[]{"BLR-FLUID", "FIXED_HR",   "유동상 고정단가",    "원/HR"});
-        ps.cogenInterval = true;
-        ps.unitRatePrefix = "t17|";
-        ps.unitRate.put("t17|r01", "PM2");
-        ps.unitRate.put("t17|r02", "PM3");
-        MAPPINGS.put("PS", ps);
-        // ── HL ── 매핑 미정 (정해지면 여기에 추가)
+        PLANT_MAPPING.price.put("lng_unit",        new String[]{"BLR-LNG",   "FUEL_RATE",  "LNG 단가",         "원/㎥"});
+        PLANT_MAPPING.price.put("waste2_steam",    new String[]{"BLR-INCIN", "STEAM_RATE", "폐합성2호 스팀단가", "원/톤"});
+        PLANT_MAPPING.price.put("waste2_fixed_hr", new String[]{"BLR-INCIN", "FIXED_HR",   "폐합성2호 고정단가", "원/HR"});
+        PLANT_MAPPING.price.put("fluid_steam",     new String[]{"BLR-FLUID", "STEAM_RATE", "유동상 스팀단가",    "원/톤"});
+        PLANT_MAPPING.price.put("fluid_fixed_hr",  new String[]{"BLR-FLUID", "FIXED_HR",   "유동상 고정단가",    "원/HR"});
+        PLANT_MAPPING.cogenInterval = true;
+        PLANT_MAPPING.unitRatePrefix = "t17|";
+        T17_ROWS.put("t17|r01", "제지2");
+        T17_ROWS.put("t17|r02", "제지3");
+        T17_ROWS.put("t17|r04", "화장지3");
+        T17_ROWS.put("t17|r05", "화장지4");
+        T17_ROWS.put("t17|r06", "화장지5");
     }
+    public static final String PLANT = "PLANT";
 
-    /** 사업부 매핑 조회 — 없으면 수신 거부 */
-    private static DivisionMapping mappingOf(String division) {
-        String d = division == null ? "" : division.trim().toUpperCase();
-        DivisionMapping m = MAPPINGS.get(d);
-        if (m == null)
-            throw new IllegalArgumentException("사업부 " + d + "의 에너지팀 수신 매핑이 정의되지 않아 수신하지 않습니다. "
-                    + "(다른 사업부 단가·원단위가 " + d + "로 저장되는 것을 막기 위함)");
-        return m;
-    }
+    private static DivisionMapping mappingOf(String division) { return PLANT_MAPPING; }
 
     /** 수신 가능한 사업부인지 */
     public static boolean isSupported(String division) {
-        return division != null && MAPPINGS.containsKey(division.trim().toUpperCase());
+        return division != null && List.of("PS", "HL", PLANT).contains(division.trim().toUpperCase());
     }
 
     // ================================================================
@@ -143,13 +150,13 @@ public class EnergyDataSyncService {
                 if (val == null || val.compareTo(BigDecimal.ZERO) == 0) continue;
 
                 // 기존 데이터 삭제 후 INSERT (같은 year/month/boilerCode/rateType)
-                saveOrUpdateCostRate(year, mon, boilerCode, rateType, rateName, val, rateUnit, null, division);
+                saveOrUpdateCostRate(year, mon, boilerCode, rateType, rateName, val, rateUnit, null, PLANT);
                 count++;
             }
         }
 
         // 4) 복합보일러 구간단가 (BSC/ASC·보증량·FACTOR) — 해당 사업부 매핑에 있을 때만
-        if (mp.cogenInterval) count += syncIntervalPrices(dataMap, year, division);
+        if (mp.cogenInterval) count += syncIntervalPrices(dataMap, year, PLANT);
 
         log.info("[EnergySync] 단가 수신 완료 — {}건 처리", count);
         return count;
@@ -186,13 +193,13 @@ public class EnergyDataSyncService {
 
             // boiler_cost_rate에 INTERVAL 타입으로 BSC/ASC 월별 저장
             if (bscPrice.compareTo(BigDecimal.ZERO) > 0) {
-                saveOrUpdateCostRate(year, mon, "BLR-COGEN", "INTERVAL", "복합보일러 BSC 단가(초과구간)",
+                saveOrUpdateCostRate(year, mon, "BLR-COGEN", "INTERVAL", "복합보일러 BSC 기본단가(보증량까지)",
                         bscPrice, "원/톤", bscFactor, division);
                 count++;
             }
-            // ASC 단가도 별도 rateType으로 저장 (INTERVAL_ASC)
+            // ASC 초과단가는 별도 rateType 으로 저장 (INTERVAL_ASC)
             if (ascPrice.compareTo(BigDecimal.ZERO) > 0) {
-                saveOrUpdateCostRate(year, mon, "BLR-COGEN", "INTERVAL_ASC", "복합보일러 ASC 단가(기본구간)",
+                saveOrUpdateCostRate(year, mon, "BLR-COGEN", "INTERVAL_ASC", "복합보일러 ASC 초과단가(보증량 초과)",
                         ascPrice, "원/톤", ascFactor, division);
                 count++;
             }
@@ -212,27 +219,27 @@ public class EnergyDataSyncService {
             BigDecimal g = guaranteeData != null ? guaranteeData.getOrDefault(mon, BigDecimal.ZERO) : BigDecimal.ZERO;
             boolean hasG = g != null && g.compareTo(BigDecimal.ZERO) > 0;
 
-            // 기본구간(0~보증량) = ASC 단가 / 초과구간(보증량 초과) = BSC 단가
-            if (asc.compareTo(BigDecimal.ZERO) > 0) {
-                SteamPriceInterval ascInterval = SteamPriceInterval.builder()
-                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(1)
-                        .intervalName("기본구간 (ASC)")
-                        .minUsageTon(BigDecimal.ZERO).maxUsageTon(hasG ? g : null)
-                        .pricePerTon(asc).division(division).memo("에너지팀 자동수신")
-                        .build();
-                ascInterval.setCreatedBy("ENERGY_SYNC");
-                auditSupport.upsert(steamPriceIntervalRepo, ascInterval, INTERVAL_UK);
-                count++;
-            }
-            if (bsc.compareTo(BigDecimal.ZERO) > 0 && hasG) {
+            // 기본구간(0~보증량) = BSC 기본단가 / 초과구간(보증량 초과) = ASC 초과단가
+            if (bsc.compareTo(BigDecimal.ZERO) > 0) {
                 SteamPriceInterval bscInterval = SteamPriceInterval.builder()
-                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(2)
-                        .intervalName("초과구간 (BSC)")
-                        .minUsageTon(g).maxUsageTon(null)
+                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(1)
+                        .intervalName("기본구간 (BSC)")
+                        .minUsageTon(BigDecimal.ZERO).maxUsageTon(hasG ? g : null)
                         .pricePerTon(bsc).division(division).memo("에너지팀 자동수신")
                         .build();
                 bscInterval.setCreatedBy("ENERGY_SYNC");
                 auditSupport.upsert(steamPriceIntervalRepo, bscInterval, INTERVAL_UK);
+                count++;
+            }
+            if (asc.compareTo(BigDecimal.ZERO) > 0 && hasG) {
+                SteamPriceInterval ascInterval = SteamPriceInterval.builder()
+                        .contractYear(yearStr).month(mon).boilerCode("BLR-COGEN").intervalSeq(2)
+                        .intervalName("초과구간 (ASC)")
+                        .minUsageTon(g).maxUsageTon(null)
+                        .pricePerTon(asc).division(division).memo("에너지팀 자동수신")
+                        .build();
+                ascInterval.setCreatedBy("ENERGY_SYNC");
+                auditSupport.upsert(steamPriceIntervalRepo, ascInterval, INTERVAL_UK);
                 count++;
             }
         }
@@ -252,57 +259,83 @@ public class EnergyDataSyncService {
      */
     @Transactional
     public int syncUnitRateData(int year, String division) {
-        DivisionMapping mp = mappingOf(division);
-        if (mp.unitRate.isEmpty() || mp.unitRatePrefix == null) return 0;
         String yearStr = String.valueOf(year);
-        log.info("[EnergySync] 원단위 수신 시작 — year={}, division={}", year, division);
+        log.info("[EnergySync] 원단위 수신 시작 — year={} (PS·HL 호기 자동 연결)", year);
+        lastUnitRateNotes.clear();
 
-        // aiplatform.steam_cell_value에서 energy_fuel_ratio 조회 (사업부 매핑의 row_key 접두어)
-        // col_index: 2=1월 ~ 13=12월
+        // aiplatform.steam_cell_value energy_fuel_ratio t17 (기타 스팀량 포함). col_index: 2=1월 ~ 13=12월
         String sql = "SELECT row_key, col_index - 1 AS mon, CAST(cell_value AS DECIMAL(8,4)) AS val " +
                      "FROM aiplatform.steam_cell_value " +
                      "WHERE table_name = 'energy_fuel_ratio' AND month = ? " +
-                     "AND row_key LIKE ? AND col_index BETWEEN 2 AND 13";
+                     "AND row_key LIKE 't17|%' AND col_index BETWEEN 2 AND 13";
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, yearStr);
+        log.info("[EnergySync] energy_fuel_ratio t17 조회 결과: {}건", rows.size());
+        if (rows.isEmpty()) { lastUnitRateNotes.add(year + "년 에너지팀 t17 원단위가 없습니다 (연료비 배분비율 페이지가 저장된 적이 없을 수 있음)"); return 0; }
 
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, yearStr, mp.unitRatePrefix + "%");
-        log.info("[EnergySync] energy_fuel_ratio {} 조회 결과: {}건 (division={})", mp.unitRatePrefix, rows.size(), division);
-
-        if (rows.isEmpty()) return 0;
+        // 대시보드 호기명 → 호기 마스터 (호기명/코드 이름 비교 + 전력 기준정보 엑셀 호기명)
+        Map<String, String[]> match = new LinkedHashMap<>();   // row_key → {machineCode, division}
+        List<String> unmatched = new ArrayList<>();
+        for (Map.Entry<String, String> e : T17_ROWS.entrySet()) {
+            String[] m = matchUnit(e.getValue());
+            if (m == null) unmatched.add(e.getValue());
+            else { match.put(e.getKey(), m); lastUnitRateNotes.add(e.getValue() + " → " + m[1] + " " + m[0]); }
+        }
+        if (!unmatched.isEmpty())
+            lastUnitRateNotes.add("호기 마스터와 연결되지 않아 받지 않은 행: " + String.join(", ", unmatched)
+                    + " — [기준정보 › 호기 마스터]의 호기명을 대시보드 이름(예: 화장지3)과 같게 하거나, 전력비 엑셀 가져오기로 연결하세요");
 
         int count = 0;
         for (Map<String, Object> row : rows) {
             String rowKey = (String) row.get("row_key");
+            String[] m = match.get(rowKey);
+            if (m == null) continue;   // 소계 행·미연결 행
             int mon = ((Number) row.get("mon")).intValue();
             BigDecimal val = row.get("val") != null ? new BigDecimal(row.get("val").toString()) : BigDecimal.ZERO;
-
-            String machineCode = mp.unitRate.get(rowKey);
-            if (machineCode == null) continue;
-            if (val.compareTo(BigDecimal.ZERO) == 0) continue;
-
-            // 기존 데이터 확인 → 없으면 INSERT, 있으면 UPDATE
-            List<SteamUnitRate> existing = steamUnitRateRepo.findByYearAndMonthAndDivision(year, mon, division);
-            SteamUnitRate found = existing.stream()
-                    .filter(e -> machineCode.equals(e.getMachineCode()))
-                    .findFirst().orElse(null);
-
+            if (val.compareTo(BigDecimal.ZERO) == 0) continue;   // 빈 달은 저장하지 않음 (0으로 덮어쓰지 않음)
+            String machineCode = m[0], div = m[1];
+            SteamUnitRate found = steamUnitRateRepo.findByYearAndMonthAndDivision(year, mon, div).stream()
+                    .filter(x -> machineCode.equalsIgnoreCase(x.getMachineCode())).findFirst().orElse(null);
             if (found != null) {
-                found.update(val, found.getEtcUsageTon(), found.getLimitNote(), "에너지팀 자동수신");
+                found.update(val, found.getEtcUsageTon(), found.getLimitNote(), "에너지팀 자동수신 (t17 " + T17_ROWS.get(rowKey) + ")");
                 steamUnitRateRepo.save(found);
             } else {
                 SteamUnitRate newRate = SteamUnitRate.builder()
-                        .year(year).month(mon).machineCode(machineCode)
-                        .division(division).steamPerTon(val)
-                        .memo("에너지팀 자동수신")
+                        .year(year).month(mon).machineCode(machineCode).division(div).steamPerTon(val)
+                        .memo("에너지팀 자동수신 (t17 " + T17_ROWS.get(rowKey) + ")")
                         .build();
                 newRate.setCreatedBy("ENERGY_SYNC");
                 auditSupport.upsert(steamUnitRateRepo, newRate, "year", "month", "machineCode", "division");
             }
             count++;
         }
-
-        log.info("[EnergySync] 원단위 수신 완료 — {}건 처리", count);
+        log.info("[EnergySync] 원단위 수신 완료 — {}건 처리 / 연결 {}", count, lastUnitRateNotes);
         return count;
     }
+
+    static String norm(String v) { return v == null ? "" : v.replaceAll("\\s+", "").replace("호기", "").toLowerCase(Locale.ROOT); }
+
+    /**
+     * 대시보드 호기명(제지2, 화장지3 …) → {호기코드, 사업부}.
+     * 1) 호기 마스터 호기명/코드가 같은 호기  2) 전력 기준정보(엑셀 가져오기)의 엑셀 호기명이 같은 호기의 호기코드
+     */
+    String[] matchUnit(String name) {
+        String k = norm(name);
+        List<com.company.module.rollingplanningsimulation.entity.Unit> units = unitRepo.findByDeletedYnOrderByDivisionAscUnitCodeAsc("N");
+        for (var u : units) if (!Boolean.FALSE.equals(u.getIsActive()) && (k.equals(norm(u.getUnitName())) || k.equals(norm(u.getUnitCode()))))
+            return new String[]{u.getUnitCode(), u.getDivision()};
+        for (String dv : List.of("PS", "HL")) {
+            for (var v : pwVersionRepo.findByDivisionOrderByVersionIdDesc(dv)) {
+                for (var l : pwLineRepo.findByVersionIdOrderBySortOrderAscLineCodeAsc(v.getVersionId()))
+                    if (k.equals(norm(l.getLineName())))
+                        for (var u : units) if (u.getUnitCode().equalsIgnoreCase(l.getLineCode())) return new String[]{u.getUnitCode(), u.getDivision()};
+            }
+        }
+        // 3) 기존 고정 연결 (제지2 → PM2, 제지3 → PM3) — 호기 마스터에 그 코드가 있을 때만
+        String legacy = LEGACY_CODE.get(name);
+        if (legacy != null) for (var u : units) if (u.getUnitCode().equalsIgnoreCase(legacy)) return new String[]{u.getUnitCode(), u.getDivision()};
+        return null;
+    }
+    static final Map<String, String> LEGACY_CODE = Map.of("제지2", "PM2", "제지3", "PM3");
 
     // ================================================================
     // 헬퍼: boiler_cost_rate UPSERT (JdbcTemplate 직접 SQL)
