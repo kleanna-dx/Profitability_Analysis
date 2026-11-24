@@ -183,6 +183,8 @@ public class ItfExecutionService {
                 int unitCount = energySyncService.syncUnitRateData(year, division);
                 hist.appendLog("[에너지팀] 원단위 수신 완료: " + unitCount + "건");
                 result.put("unitRateCount", unitCount);
+                result.put("message", String.join("\n", energySyncService.getLastUnitRateNotes()));
+                hist.appendLog("[에너지팀] 호기 연결: " + String.join(" / ", energySyncService.getLastUnitRateNotes()));
                 int total = priceCount + unitCount;
                 result.put("totalCount", total);
                 completeHistory(hist, "success", total, 0, null);
@@ -193,6 +195,8 @@ public class ItfExecutionService {
             int count = energySyncService.syncUnitRateData(year, division);
             hist.appendLog("[에너지팀] 원단위 수신 완료: " + count + "건");
             result.put("unitRateCount", count);
+            result.put("message", String.join("\n", energySyncService.getLastUnitRateNotes()));
+            hist.appendLog("[에너지팀] 호기 연결: " + String.join(" / ", energySyncService.getLastUnitRateNotes()));
             completeHistory(hist, "success", count, 0, null);
         } else {
             hist.appendLog("[에너지팀] 알 수 없는 URL: " + rfcFuncOrUrl);

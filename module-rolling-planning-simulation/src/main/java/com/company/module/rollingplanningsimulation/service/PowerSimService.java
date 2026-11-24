@@ -557,7 +557,7 @@ public class PowerSimService {
     }
 
     /** 지종별 생산 비율 — P/L 지종 {product, plan(톤), sim(톤)} → 시뮬 ÷ 생산계획 */
-    record ProductSim(String product, BigDecimal plan, BigDecimal sim) {}
+    public record ProductSim(String product, BigDecimal plan, BigDecimal sim) {}
 
     /**
      * 생산계획(호기 × 지종 양품 ton) + P/L 지종별 시뮬 생산량 → 호기별 기준·시뮬 생산량(ton).
@@ -682,16 +682,40 @@ public class PowerSimService {
         } else v = pickVersion(versionRepo.findByDivisionOrderByVersionIdDesc(div), ym);
         if (v == null) return new ProdQty(null, List.of(), Map.of(), null, Map.of(), List.of());
         List<PwSimBasisLine> basis = lineRepo.findByVersionIdOrderBySortOrderAscLineCodeAsc(v.getVersionId());
+        DivQty q = divisionQty(div, ym, products, str(body.get("machine")));
+        List<String> warnings = new ArrayList<>(q.warnings());
+        PlReq pr = plRequest(basis, q.base(), q.sim(), warnings);
+        Map<String, Map<String, BigDecimal>> mt = new LinkedHashMap<>();
+        mt.put("base", q.base()); mt.put("sim", q.sim());
+        return new ProdQty(v, basis, mt, pr, q.source(), warnings);
+    }
+
+    /** 사업부·월 호기별 생산량 결과 — 전력비·에너지비(공장 통합) 공통 */
+    public record DivQty(Map<String, BigDecimal> base, Map<String, BigDecimal> sim, Map<String, Object> source, List<String> warnings) {}
+
+    /** 생산계획(호기 × 지종 총생산량 ton, 확정 여부) — 양품 ÷ (1 − 손지율) */
+    public List<Map<String, Object>> planRows(String div, String ym) {
         String expr = com.company.module.rollingplanningsimulation.support.RawMaterialSql.PLAN_PRODUCT_EXPR;
-        List<Map<String, Object>> planRows = jdbc.queryForList(
+        return jdbc.queryForList(
                 "SELECT MACHINE_CODE, " + expr + " AS PRODUCT, SUM(GOOD_TON * 100 / (100 - COALESCE(WASTE_RATE_PCT,0))) AS TON," +
                 " MIN(CASE WHEN COALESCE(IS_LOCKED,0) = 1 THEN 1 ELSE 0 END) AS LOCKED" +
                 " FROM rpsim_production_plan WHERE DIVISION = ? AND `YEAR` = ? AND `MONTH` = ? AND DELETED_YN = 'N'" +
                 " AND COALESCE(GOOD_TON,0) > 0 AND COALESCE(WASTE_RATE_PCT,0) < 100" +
                 " GROUP BY MACHINE_CODE, " + expr,
                 div, Integer.parseInt(ym.substring(0, 4)), Integer.parseInt(ym.substring(4)));
+    }
+
+    /**
+     * 사업부 호기별 기준·시뮬 생산량(ton).
+     * STEP3 확정 호기 = 확정 생산계획 / 미확정 호기 = P/L 지종별 입력 생산량(products, 없으면 생산계획) /
+     * 생산계획에 없는 지종 = 실적 호기 비중으로 배분
+     */
+    @SuppressWarnings("unchecked")
+    public DivQty divisionQty(String div, String ym, List<ProductSim> products, String machine) {
+        if (products == null) products = List.of();
+        List<Map<String, Object>> planRows = planRows(div, ym);
         List<String> warnings = new ArrayList<>();
-        String ymTxt = ym.substring(0, 4) + "." + ym.substring(4);
+        String ymTxt = div + " " + ym.substring(0, 4) + "." + ym.substring(4);
         boolean hasPl = products.stream().anyMatch(p -> p.sim() != null && p.sim().signum() > 0);
         Map<String, Object> src = qtySource(planRows, hasPl);
         // 생산계획에 없는 지종 → 실적 호기 비중 (기준월 실적, 없으면 전월 실적)
@@ -710,14 +734,13 @@ public class PowerSimService {
             if (hasPl) {
                 src.put("code", "PL"); src.put("label", "P/L 시뮬레이터 생산량 (STEP3 생산계획 없음" + (splitLabel != null ? " · 호기 배분 = " + splitLabel + " 비중" : "") + ")");
                 warnings.add(ymTxt + " STEP3 생산계획이 없습니다 — 기준 생산량 0, 시뮬은 P/L 시뮬레이터 생산량으로 계산했습니다");
-            } else warnings.add(ymTxt + " STEP3 생산계획이 없습니다 — 모든 호기를 생산량 0(운휴 전력만)으로 계산했습니다");
+            } else warnings.add(ymTxt + " STEP3 생산계획이 없습니다 — 모든 호기를 생산량 0으로 계산했습니다");
         }
         else if (!((List<?>) src.get("unlockedMachines")).isEmpty())
             warnings.add(ymTxt + " STEP3 생산계획 미확정 호기: " + String.join(", ", (List<String>) src.get("unlockedMachines"))
                     + (hasPl ? " — P/L 시뮬레이터 생산량으로 계산했습니다" : " — 미확정 생산계획으로 계산했습니다") + " (확정하면 확정 생산계획으로 바뀝니다)");
-        Map<String, Map<String, BigDecimal>> mt = machineTonFromProducts(planRows, products, str(body.get("machine")), splitRows, splitLabel, warnings);
-        PlReq pr = plRequest(basis, mt.get("base"), mt.get("sim"), warnings);
-        return new ProdQty(v, basis, mt, pr, src, warnings);
+        Map<String, Map<String, BigDecimal>> mt = machineTonFromProducts(planRows, products, machine, splitRows, splitLabel, warnings);
+        return new DivQty(mt.get("base"), mt.get("sim"), src, warnings);
     }
 
     /** 실적(rpsim_raw_material) 호기 × 지종 총생산량(톤) — P/L 지종 분류와 같은 규칙 (RawMaterialSql) */
