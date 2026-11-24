@@ -15222,9 +15222,23 @@ function buildAppliedCostBasisResponse(costBasis) {
 const NLQ_HISTORY_RETENTION_DAYS = 31;
 
 // 즐겨찾기 보호 WHERE 조건 (NLQ용)
-//   - 삭제 대상에서 "북마크된 세션에 속한 모든 행" 과 "북마크된 레거시 단일 행" 제외
-//   - DELETE 쿼리의 WHERE 절에 AND 로 이어 붙여 사용
+//   [2026-11-23 강화] 사용자 요구 (verbatim):
+//     "31일 경과 AND 즐겨찾기 아님" 인 데이터만 삭제해야 한다.
+//     "DB 삭제 자체를 막을 것"
+//   → 이중 방어선 구성:
+//     1) row 단위 1차 방어: `is_bookmarked = 0` (⭐ 북마크된 row 는 어떤 경우에도 삭제 안 됨)
+//     2) 세션 단위 2차 방어: 같은 session_id 내 어느 row 라도 is_bookmarked=1 이면 세션 전체 보호
+//        (세션 내 일부 row 만 삭제되면 사이드바 재조회 시 맥락이 깨짐 방지)
+//     3) 레거시 row (session_id IS NULL) 는 1)과 동일하게 row 단위 보호
+//
+//   사용자 신고 (2026-11-23): "한달 전 즐겨찾기 테스트해놨는데 사라졌음".
+//     추정 원인: 세션 보호 subquery 가 트랜잭션 isolation / race condition 에 민감할 수 있음.
+//     해결: row 단위 직접 조건으로 가장 단순하고 확실한 1차 방어선 추가.
+//     세션 단위 보호는 사이드바 UX 유지 목적으로 그대로 유지 (2차 방어).
+//
+//   DELETE 쿼리의 WHERE 절에 AND 로 이어 붙여 사용.
 const NLQ_BOOKMARK_PROTECT_SQL = `
+  AND is_bookmarked = 0
   AND NOT (
     (session_id IS NOT NULL AND session_id IN (
        SELECT session_id FROM (
@@ -15239,14 +15253,34 @@ const NLQ_BOOKMARK_PROTECT_SQL = `
 
 async function purgeExpiredNlqHistory() {
   try {
+    // [2026-11-23] 사용자 신고 ("즐겨찾기한 질의가 사라짐") 대응 — purge 전후 북마크 상태 명시적 로깅.
+    //   - 삭제 대상 미리 조회: 31일 경과 row 전체 → 어떤 row 가 삭제될지 투명하게 로깅
+    //   - 북마크된 row (보호 대상) 는 별도로 로깅 → 사용자 신고 시 즉시 역추적 가능
+    //   - 재현 가능성: 추후 "왜 이 row 가 지워졌는가" 질문에 로그 기반 설명 가능
+    const [preview] = await pool.query(
+      `SELECT id, user_id, session_id, is_bookmarked
+         FROM nl_query_history
+        WHERE created_at < (NOW() - INTERVAL ? DAY)
+        ORDER BY id
+        LIMIT 1000`,
+      [NLQ_HISTORY_RETENTION_DAYS]
+    );
+    const expiredTotal = preview.length;
+    const bookmarkedProtected = preview.filter(row => row.is_bookmarked === 1);
+    const bookmarkedCount = bookmarkedProtected.length;
+
     const [r] = await pool.query(
       `DELETE FROM nl_query_history
         WHERE created_at < (NOW() - INTERVAL ? DAY)
           ${NLQ_BOOKMARK_PROTECT_SQL}`,
       [NLQ_HISTORY_RETENTION_DAYS]
     );
-    if (r.affectedRows > 0) {
-      console.log(`[HistoryRetention] ${NLQ_HISTORY_RETENTION_DAYS}일 경과 이력 ${r.affectedRows}건 자동 삭제 (즐겨찾기 제외)`);
+    if (r.affectedRows > 0 || bookmarkedCount > 0) {
+      console.log(`[HistoryRetention] ${NLQ_HISTORY_RETENTION_DAYS}일 경과 총 ${expiredTotal}건 중: 삭제 ${r.affectedRows}건, 즐겨찾기 보호 ${bookmarkedCount}건`);
+      if (bookmarkedCount > 0) {
+        const protectedIds = bookmarkedProtected.slice(0, 20).map(r => `id=${r.id}(user=${r.user_id || 'null'},sess=${r.session_id ? r.session_id.slice(0, 8) : 'null'})`).join(', ');
+        console.log(`[HistoryRetention] 즐겨찾기 보호된 row (최대 20개): ${protectedIds}${bookmarkedCount > 20 ? ` ...+${bookmarkedCount - 20}건` : ''}`);
+      }
     }
     return r.affectedRows;
   } catch (e) {
@@ -15483,13 +15517,25 @@ app.patch('/api/history/session/:sessionKey/bookmark', async (req, res) => {
     const newVal = currentRows[0].is_bookmarked ? 0 : 1;
 
     // 세션 내 모든 row 일괄 업데이트
+    // [2026-11-23] 사용자 신고 ("즐겨찾기한 질의가 사라짐") 대응 — UPDATE 결과 검증 + 로깅 추가.
+    //   가설 3: 프론트가 별표 토글 API 호출 → 서버는 200 OK 반환 but UPDATE affected_rows=0 →
+    //           실제 DB 는 변경 안 됨 → 다음 purge 때 is_bookmarked=0 상태라 삭제됨.
+    //   방어: affected_rows 를 명시적으로 검증. 0건이면 경고 로그 + 404 응답.
+    //         (프론트는 404 받으면 UI 상태를 되돌릴 수 있음)
+    let updateResult;
     if (sessionKey.startsWith('legacy_')) {
       const id = parseInt(sessionKey.replace('legacy_', ''));
-      await pool.query('UPDATE nl_query_history SET is_bookmarked=? WHERE id=? AND user_id=?', [newVal, id, userId]);
+      [updateResult] = await pool.query('UPDATE nl_query_history SET is_bookmarked=? WHERE id=? AND user_id=?', [newVal, id, userId]);
     } else {
-      await pool.query('UPDATE nl_query_history SET is_bookmarked=? WHERE session_id=? AND user_id=?', [newVal, sessionKey, userId]);
+      [updateResult] = await pool.query('UPDATE nl_query_history SET is_bookmarked=? WHERE session_id=? AND user_id=?', [newVal, sessionKey, userId]);
     }
-    res.json({ success: true, is_bookmarked: newVal });
+    const affectedRows = updateResult?.affectedRows || 0;
+    if (affectedRows === 0) {
+      console.warn(`[Bookmark] UPDATE 0건! session=${sessionKey} user=${userId} newVal=${newVal} — 세션에 매칭 row 없음 (UI 토글만 반영, DB 미반영)`);
+      return res.status(404).json({ error: '세션을 찾을 수 없습니다 (UPDATE 0건).', affectedRows: 0 });
+    }
+    console.log(`[Bookmark] UPDATE ${affectedRows}건 적용. session=${sessionKey.slice(0, 20)} user=${userId} is_bookmarked=${newVal}`);
+    res.json({ success: true, is_bookmarked: newVal, affectedRows });
   } catch (err) {
     console.error('[PATCH /api/history/session/:sessionKey/bookmark] error:', err.message);
     res.status(500).json({ error: err.message });
