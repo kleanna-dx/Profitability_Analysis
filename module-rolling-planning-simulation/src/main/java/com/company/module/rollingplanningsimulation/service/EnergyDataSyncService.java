@@ -122,19 +122,14 @@ public class EnergyDataSyncService {
         if (cellTableOverride != null && !cellTableOverride.isBlank()) return validTable(cellTableOverride);
         String c = cellTableResolved;
         if (c != null) return c;
-        // 이름이 바뀌어도 찾도록 컬럼 구성으로 탐색: month · table_name · row_key · col_index · cell_value 를 모두 가진 테이블
-        // 우선순위: steam_cell_value(운영) → table_cell_value(개발서버 옛 이름) → aiplatform 스키마 → 현재 DB
+        // 운영 = steam_cell_value / 개발서버 = 옛 이름 table_cell_value (03_rename_steam_tables.sql 적용 전)
         List<Map<String, Object>> found = jdbcTemplate.queryForList(
-                "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.COLUMNS " +
-                "WHERE LOWER(COLUMN_NAME) IN ('month','table_name','row_key','col_index','cell_value') " +
-                "AND TABLE_SCHEMA NOT IN ('information_schema','mysql','performance_schema','sys') " +
-                "GROUP BY TABLE_SCHEMA, TABLE_NAME HAVING COUNT(DISTINCT LOWER(COLUMN_NAME)) = 5 " +
-                "ORDER BY (TABLE_NAME = 'steam_cell_value') DESC, (TABLE_NAME = 'table_cell_value') DESC, " +
-                "(TABLE_SCHEMA = 'aiplatform') DESC, (TABLE_SCHEMA = DATABASE()) DESC, TABLE_SCHEMA, TABLE_NAME");
+                "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES WHERE TABLE_NAME IN ('steam_cell_value', 'table_cell_value') " +
+                "ORDER BY (TABLE_NAME = 'steam_cell_value') DESC, (TABLE_SCHEMA = DATABASE()) DESC, (TABLE_SCHEMA = 'aiplatform') DESC, TABLE_SCHEMA");
         if (found.isEmpty())
-            throw new IllegalStateException("에너지 대시보드 셀 테이블을 찾지 못했습니다 — 이 서버 DB 계정에서 month·table_name·row_key·col_index·cell_value 컬럼을 가진 테이블이 보이지 않습니다. "
-                    + "aiplatform 에 테이블이 있다면 이 계정에 그 테이블 SELECT 권한이 있는지 확인하세요. "
-                    + "테이블 이름을 알면 application.yml 에 rpsim.energy.cell-table: aiplatform.테이블이름 으로 지정할 수 있습니다");
+            throw new IllegalStateException("에너지 대시보드 셀 테이블(steam_cell_value / 옛 이름 table_cell_value)을 찾지 못했습니다 — 이 서버 DB 계정에서 보이는 스키마에 없습니다. "
+                    + "대시보드 테이블이 같은 DB 서버에 있는지, 이 계정에 SELECT 권한이 있는지 확인하세요. "
+                    + "위치를 알면 application.yml 에 rpsim.energy.cell-table: 스키마.테이블 로 지정할 수 있습니다");
         if (found.size() > 1) log.warn("[EnergySync] 셀 테이블 후보가 여러 개입니다 {} — 첫 번째 사용", found);
         c = validTable(found.get(0).get("TABLE_SCHEMA") + "." + found.get(0).get("TABLE_NAME"));
         log.info("[EnergySync] 에너지 대시보드 셀 테이블 = {}", c);
