@@ -21,12 +21,14 @@ import java.math.BigDecimal;
 import java.util.*;
 
 /**
- * 에너지팀 시스템(aiplatform.steam_cell_value)에서 단가/원단위 데이터를 수신하여
- * RPSIM 기준정보 테이블에 동기화하는 서비스.
+ * 에너지팀 시스템에서 단가/원단위 데이터를 수신하여 RPSIM 기준정보 테이블에 동기화하는 서비스.
  *
- * <p>물리 테이블: aiplatform.steam_cell_value (공용 셀 저장소)</p>
- * <p>유니크 키: (month, table_name, row_key, col_index)</p>
- * <p>cell_value는 문자열 → 숫자 캐스팅 필요</p>
+ * <ul>
+ *   <li>원단위: {@value #UNIT_TABLE} — 연·월 1행 (YEAR_NO, MONTH_NO), 호기별 컬럼 UNIT_PM2 … UNIT_TM5
+ *       (에너지 회계비용 › 연료비 배분비율 › 스팀사용량 원단위(기타 스팀량 포함))</li>
+ *   <li>단가: {@value #PRICE_TABLE} — 연·월·항목 1행 (YEAR_NO, MONTH_NO, ITEM_CODE), 값 PRICE_VALUE
+ *       (원단위 일지 › 단가 입력)</li>
+ * </ul>
  */
 @Service
 @RequiredArgsConstructor
@@ -44,36 +46,48 @@ public class EnergyDataSyncService {
 
     /** 마지막 원단위 수신의 호기 연결 결과·경고 (화면 표시용) */
     @Getter private final List<String> lastUnitRateNotes = Collections.synchronizedList(new ArrayList<>());
+    /** 마지막 단가 수신의 미수신 항목·모르는 항목 코드 (화면 표시용) */
+    @Getter private final List<String> lastPriceNotes = Collections.synchronizedList(new ArrayList<>());
+
+    /** 에너지팀 DB 스키마 (기본 aiplatform) */
+    @org.springframework.beans.factory.annotation.Value("${rpsim.energy-sync.schema:aiplatform}")
+    private String energySchema = "aiplatform";
+
+    public static final String UNIT_TABLE = "steam_energy_ratio_steam_unit";
+    public static final String PRICE_TABLE = "steam_price";
+
+    /** 스키마 이름은 영문·숫자·밑줄만 허용 (SQL 에 직접 들어가므로) */
+    public String table(String name) {
+        String sc = energySchema == null ? "" : energySchema.trim();
+        if (!sc.matches("[A-Za-z0-9_]*")) throw new IllegalStateException("rpsim.energy-sync.schema 값이 올바르지 않습니다: " + sc);
+        return sc.isEmpty() ? name : sc + "." + name;
+    }
 
     // ================================================================
-    // row_key → RPSIM 매핑 정의
+    // 에너지팀 항목 → RPSIM 매핑 정의
     // ================================================================
 
     private static final String[] INTERVAL_UK = {"contractYear", "month", "boilerCode", "intervalSeq", "division"};
 
     /**
-     * 사업부별 수신 매핑 — 에너지팀 대시보드(steam_cell_value)에는 사업부 구분이 없고 row_key 로만 구분되므로
-     * 어떤 row_key 를 어느 사업부의 어떤 보일러/호기로 받을지 사업부마다 따로 정의한다.
-     * 매핑이 없는 사업부는 수신하지 않는다 (다른 사업부 값이 섞여 저장되는 것 방지).
+     * 수신 매핑 — 단가 ITEM_CODE → 보일러/단가 종류.
      */
     private static final class DivisionMapping {
-        /** 단가 row_key → [boilerCode, rateType, rateName, rateUnit] */
+        /** 단가 ITEM_CODE → [boilerCode, rateType, rateName, rateUnit] */
         final Map<String, String[]> price = new LinkedHashMap<>();
         /** 복합보일러 구간단가(comb_asc/comb_bsc/보증량/FACTOR) 수신 여부 */
         boolean cogenInterval;
-        /** 원단위 row_key → machineCode */
-        final Map<String, String> unitRate = new LinkedHashMap<>();
-        /** 원단위 조회 row_key 접두어 (예: t17|) */
-        String unitRatePrefix;
     }
 
     /**
      * 보일러 단가 = 공장 공통(PLANT). 사업부를 골라 수신해도 PLANT 로 저장 (보일러는 PS·HL 이 함께 씀)
-     * 원단위(t17) = 행마다 엑셀 호기명 → 호기 마스터/전력 기준정보 호기명으로 호기코드·사업부를 찾아 저장 (PS·HL 한 번에)
+     * 원단위 = 호기 컬럼마다 대시보드 호기명 → 호기 마스터/전력 기준정보 호기명으로 호기코드·사업부를 찾아 저장 (PS·HL 한 번에)
      */
     private static final DivisionMapping PLANT_MAPPING = new DivisionMapping();
-    /** t17 row_key → 대시보드 호기명. 소계 행(r03 제지 소계, r07 화장지 소계)은 받지 않음 */
-    static final Map<String, String> T17_ROWS = new LinkedHashMap<>();
+    /** 원단위 컬럼 → 대시보드 호기명. 소계 컬럼(UNIT_PAPER_SUBTOTAL, UNIT_TISSUE_SUBTOTAL)은 받지 않음 */
+    static final Map<String, String> UNIT_COLS = new LinkedHashMap<>();
+    /** 복합보일러 구간단가 항목 코드 */
+    static final List<String> INTERVAL_CODES = List.of("comb_bsc", "comb_asc", "comb_bsc_guarantee", "comb_bsc_factor", "comb_asc_factor");
     static {
         PLANT_MAPPING.price.put("lng_unit",        new String[]{"BLR-LNG",   "FUEL_RATE",  "LNG 단가",         "원/㎥"});
         PLANT_MAPPING.price.put("waste2_steam",    new String[]{"BLR-INCIN", "STEAM_RATE", "폐합성2호 스팀단가", "원/톤"});
@@ -81,12 +95,11 @@ public class EnergyDataSyncService {
         PLANT_MAPPING.price.put("fluid_steam",     new String[]{"BLR-FLUID", "STEAM_RATE", "유동상 스팀단가",    "원/톤"});
         PLANT_MAPPING.price.put("fluid_fixed_hr",  new String[]{"BLR-FLUID", "FIXED_HR",   "유동상 고정단가",    "원/HR"});
         PLANT_MAPPING.cogenInterval = true;
-        PLANT_MAPPING.unitRatePrefix = "t17|";
-        T17_ROWS.put("t17|r01", "제지2");
-        T17_ROWS.put("t17|r02", "제지3");
-        T17_ROWS.put("t17|r04", "화장지3");
-        T17_ROWS.put("t17|r05", "화장지4");
-        T17_ROWS.put("t17|r06", "화장지5");
+        UNIT_COLS.put("UNIT_PM2", "제지2");
+        UNIT_COLS.put("UNIT_PM3", "제지3");
+        UNIT_COLS.put("UNIT_TM3", "화장지3");
+        UNIT_COLS.put("UNIT_TM4", "화장지4");
+        UNIT_COLS.put("UNIT_TM5", "화장지5");
     }
     public static final String PLANT = "PLANT";
 
@@ -113,35 +126,30 @@ public class EnergyDataSyncService {
         String yearStr = String.valueOf(year);
         log.info("[EnergySync] 단가 수신 시작 — year={}, division={}", year, division);
 
-        // 1) aiplatform.steam_cell_value에서 unit_price_detail 조회
-        String sql = "SELECT row_key, col_index AS mon, CAST(cell_value AS DECIMAL(18,4)) AS val " +
-                     "FROM aiplatform.steam_cell_value " +
-                     "WHERE table_name = 'unit_price_detail' AND month = ? " +
-                     "AND col_index BETWEEN 1 AND 12";
+        lastPriceNotes.clear();
 
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, yearStr);
-        log.info("[EnergySync] unit_price_detail 조회 결과: {}건", rows.size());
+        // 1) 단가 입력 테이블 조회 — 연·월·항목 1행
+        String sql = "SELECT MONTH_NO AS mon, ITEM_CODE AS code, CAST(PRICE_VALUE AS DECIMAL(18,4)) AS val " +
+                     "FROM " + table(PRICE_TABLE) + " WHERE YEAR_NO = ? AND MONTH_NO BETWEEN 1 AND 12";
 
-        if (rows.isEmpty()) return 0;
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, year);
+        log.info("[EnergySync] {} 조회 결과: {}건", PRICE_TABLE, rows.size());
 
-        // 2) row_key별로 그룹핑: {row_key: {month: value}}
-        Map<String, Map<Integer, BigDecimal>> dataMap = new HashMap<>();
-        for (Map<String, Object> row : rows) {
-            String rowKey = (String) row.get("row_key");
-            int mon = ((Number) row.get("mon")).intValue();
-            BigDecimal val = row.get("val") != null ? new BigDecimal(row.get("val").toString()) : BigDecimal.ZERO;
-            dataMap.computeIfAbsent(rowKey, k -> new HashMap<>()).put(mon, val);
-        }
+        if (rows.isEmpty()) { lastPriceNotes.add(year + "년 에너지팀 단가(" + PRICE_TABLE + ")가 없습니다"); return 0; }
+
+        // 2) 항목 코드별로 그룹핑: {item_code: {month: value}}
+        Map<String, Map<Integer, BigDecimal>> dataMap = groupPrices(rows);
+        lastPriceNotes.addAll(priceNotes(dataMap.keySet(), mp));
 
         int count = 0;
 
         // 3) 일반 단가 매핑 → boiler_cost_rate에 월별 INSERT
         for (Map.Entry<String, String[]> entry : mp.price.entrySet()) {
-            String rowKey = entry.getKey();
+            String itemCode = entry.getKey();
             String[] mapping = entry.getValue();
             String boilerCode = mapping[0], rateType = mapping[1], rateName = mapping[2], rateUnit = mapping[3];
 
-            Map<Integer, BigDecimal> monthData = dataMap.get(rowKey);
+            Map<Integer, BigDecimal> monthData = dataMap.get(itemCode);
             if (monthData == null) continue;
 
             for (Map.Entry<Integer, BigDecimal> me : monthData.entrySet()) {
@@ -160,6 +168,33 @@ public class EnergyDataSyncService {
 
         log.info("[EnergySync] 단가 수신 완료 — {}건 처리", count);
         return count;
+    }
+
+    /** 단가 행 → {항목 코드(소문자): {월: 값}}. 값이 비어 있는 행은 건너뜀 */
+    static Map<String, Map<Integer, BigDecimal>> groupPrices(List<Map<String, Object>> rows) {
+        Map<String, Map<Integer, BigDecimal>> dataMap = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            Object c = row.get("code"), m = row.get("mon"), v = row.get("val");
+            if (c == null || m == null || v == null) continue;
+            String code = c.toString().trim().toLowerCase(Locale.ROOT);
+            if (code.isEmpty()) continue;
+            dataMap.computeIfAbsent(code, k -> new HashMap<>()).put(((Number) m).intValue(), new BigDecimal(v.toString()));
+        }
+        return dataMap;
+    }
+
+    /** 받은 항목 코드와 매핑 비교 → 매핑에 없어 저장하지 않은 코드 / 매핑에 있는데 받지 못한 코드 */
+    private static List<String> priceNotes(Set<String> codes, DivisionMapping mp) {
+        Set<String> known = new HashSet<>(mp.price.keySet());
+        if (mp.cogenInterval) known.addAll(INTERVAL_CODES);
+        List<String> notes = new ArrayList<>();
+        List<String> unknown = codes.stream().filter(c -> !known.contains(c)).sorted().toList();
+        List<String> missing = new ArrayList<>();
+        for (String k : mp.price.keySet()) if (!codes.contains(k)) missing.add(k + "(" + mp.price.get(k)[2] + ")");
+        if (mp.cogenInterval) for (String k : List.of("comb_bsc", "comb_asc", "comb_bsc_guarantee")) if (!codes.contains(k)) missing.add(k);
+        if (!missing.isEmpty()) notes.add("에너지팀 단가에 없어 받지 못한 항목: " + String.join(", ", missing));
+        if (!unknown.isEmpty()) notes.add("연결 규칙이 없어 저장하지 않은 항목 코드: " + String.join(", ", unknown));
+        return notes;
     }
 
     /**
@@ -263,45 +298,42 @@ public class EnergyDataSyncService {
         log.info("[EnergySync] 원단위 수신 시작 — year={} (PS·HL 호기 자동 연결)", year);
         lastUnitRateNotes.clear();
 
-        // aiplatform.steam_cell_value energy_fuel_ratio t17 (기타 스팀량 포함). col_index: 2=1월 ~ 13=12월
-        String sql = "SELECT row_key, col_index - 1 AS mon, CAST(cell_value AS DECIMAL(8,4)) AS val " +
-                     "FROM aiplatform.steam_cell_value " +
-                     "WHERE table_name = 'energy_fuel_ratio' AND month = ? " +
-                     "AND row_key LIKE 't17|%' AND col_index BETWEEN 2 AND 13";
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, yearStr);
-        log.info("[EnergySync] energy_fuel_ratio t17 조회 결과: {}건", rows.size());
-        if (rows.isEmpty()) { lastUnitRateNotes.add(year + "년 에너지팀 t17 원단위가 없습니다 (연료비 배분비율 페이지가 저장된 적이 없을 수 있음)"); return 0; }
+        // 스팀사용량 원단위(기타 스팀량 포함) — 연·월 1행, 호기별 컬럼
+        String sql = "SELECT MONTH_NO AS mon, " + String.join(", ", UNIT_COLS.keySet()) +
+                     " FROM " + table(UNIT_TABLE) + " WHERE YEAR_NO = ? AND MONTH_NO BETWEEN 1 AND 12";
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, year);
+        log.info("[EnergySync] {} 조회 결과: {}건", UNIT_TABLE, rows.size());
+        if (rows.isEmpty()) { lastUnitRateNotes.add(year + "년 에너지팀 스팀사용량 원단위(" + UNIT_TABLE + ")가 없습니다 (연료비 배분비율 페이지가 저장된 적이 없을 수 있음)"); return 0; }
 
         // 대시보드 호기명 → 호기 마스터 (호기명/코드 이름 비교 + 전력 기준정보 엑셀 호기명)
-        Map<String, String[]> match = new LinkedHashMap<>();   // row_key → {machineCode, division}
+        Map<String, String[]> match = new LinkedHashMap<>();   // 컬럼 → {machineCode, division}
         List<String> unmatched = new ArrayList<>();
-        for (Map.Entry<String, String> e : T17_ROWS.entrySet()) {
+        for (Map.Entry<String, String> e : UNIT_COLS.entrySet()) {
             String[] m = matchUnit(e.getValue());
             if (m == null) unmatched.add(e.getValue());
             else { match.put(e.getKey(), m); lastUnitRateNotes.add(e.getValue() + " → " + m[1] + " " + m[0]); }
         }
         if (!unmatched.isEmpty())
-            lastUnitRateNotes.add("호기 마스터와 연결되지 않아 받지 않은 행: " + String.join(", ", unmatched)
+            lastUnitRateNotes.add("호기 마스터와 연결되지 않아 받지 않은 호기: " + String.join(", ", unmatched)
                     + " — [기준정보 › 호기 마스터]의 호기명을 대시보드 이름(예: 화장지3)과 같게 하거나, 전력비 엑셀 가져오기로 연결하세요");
 
         int count = 0;
-        for (Map<String, Object> row : rows) {
-            String rowKey = (String) row.get("row_key");
-            String[] m = match.get(rowKey);
-            if (m == null) continue;   // 소계 행·미연결 행
-            int mon = ((Number) row.get("mon")).intValue();
-            BigDecimal val = row.get("val") != null ? new BigDecimal(row.get("val").toString()) : BigDecimal.ZERO;
-            if (val.compareTo(BigDecimal.ZERO) == 0) continue;   // 빈 달은 저장하지 않음 (0으로 덮어쓰지 않음)
+        for (UnitCell cell : unitCells(rows)) {
+            String[] m = match.get(cell.col());
+            if (m == null) continue;   // 미연결 호기
+            int mon = cell.month();
+            BigDecimal val = cell.value();
             String machineCode = m[0], div = m[1];
+            String memo = "에너지팀 자동수신 (스팀사용량 원단위 " + UNIT_COLS.get(cell.col()) + ")";
             SteamUnitRate found = steamUnitRateRepo.findByYearAndMonthAndDivision(year, mon, div).stream()
                     .filter(x -> machineCode.equalsIgnoreCase(x.getMachineCode())).findFirst().orElse(null);
             if (found != null) {
-                found.update(val, found.getEtcUsageTon(), found.getLimitNote(), "에너지팀 자동수신 (t17 " + T17_ROWS.get(rowKey) + ")");
+                found.update(val, found.getEtcUsageTon(), found.getLimitNote(), memo);
                 steamUnitRateRepo.save(found);
             } else {
                 SteamUnitRate newRate = SteamUnitRate.builder()
                         .year(year).month(mon).machineCode(machineCode).division(div).steamPerTon(val)
-                        .memo("에너지팀 자동수신 (t17 " + T17_ROWS.get(rowKey) + ")")
+                        .memo(memo)
                         .build();
                 newRate.setCreatedBy("ENERGY_SYNC");
                 auditSupport.upsert(steamUnitRateRepo, newRate, "year", "month", "machineCode", "division");
@@ -310,6 +342,33 @@ public class EnergyDataSyncService {
         }
         log.info("[EnergySync] 원단위 수신 완료 — {}건 처리 / 연결 {}", count, lastUnitRateNotes);
         return count;
+    }
+
+    /** 원단위 한 칸 (월·호기 컬럼·값) */
+    record UnitCell(int month, String col, BigDecimal value) {}
+
+    /**
+     * 원단위 행(연·월 1행) → 호기 컬럼별 칸. 소계 컬럼은 받지 않음.
+     * 빈 칸·0 은 저장하지 않음 (기존 값을 0으로 덮어쓰지 않음). 컬럼 이름 대소문자는 구분하지 않음.
+     */
+    static List<UnitCell> unitCells(List<Map<String, Object>> rows) {
+        List<UnitCell> out = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            Map<String, Object> r = new HashMap<>();
+            row.forEach((k, v) -> r.put(k.toUpperCase(Locale.ROOT), v));
+            Object m = r.get("MON");
+            if (m == null) continue;
+            int mon = ((Number) m).intValue();
+            for (String col : UNIT_COLS.keySet()) {
+                Object v = r.get(col);
+                if (v == null || v.toString().isBlank()) continue;
+                BigDecimal val;
+                try { val = new BigDecimal(v.toString().trim()); } catch (NumberFormatException e) { continue; }
+                if (val.compareTo(BigDecimal.ZERO) == 0) continue;
+                out.add(new UnitCell(mon, col, val));
+            }
+        }
+        return out;
     }
 
     static String norm(String v) { return v == null ? "" : v.replaceAll("\\s+", "").replace("호기", "").toLowerCase(Locale.ROOT); }
