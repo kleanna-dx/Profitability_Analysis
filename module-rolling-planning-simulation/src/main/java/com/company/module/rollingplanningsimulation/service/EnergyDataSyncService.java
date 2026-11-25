@@ -34,11 +34,6 @@ import java.util.*;
 public class EnergyDataSyncService {
 
     @Getter private final JdbcTemplate jdbcTemplate;
-
-    /** 에너지팀 셀 테이블 위치 직접 지정 (예: aiplatform.steam_cell_value). 비우면 자동으로 찾음 */
-    @org.springframework.beans.factory.annotation.Value("${rpsim.energy.cell-table:}")
-    private String cellTableOverride;
-    private volatile String cellTableResolved;
     private final BoilerCostRateRepository boilerCostRateRepo;
     private final SteamPriceIntervalRepository steamPriceIntervalRepo;
     private final SteamUnitRateRepository steamUnitRateRepo;
@@ -102,40 +97,6 @@ public class EnergyDataSyncService {
         return division != null && List.of("PS", "HL", PLANT).contains(division.trim().toUpperCase());
     }
 
-
-    // ================================================================
-    // 에너지팀 셀 테이블(steam_cell_value) 위치 — 스키마를 고정하지 않고 찾음
-    // ================================================================
-    static final java.util.regex.Pattern TABLE_NAME = java.util.regex.Pattern.compile("^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)?$");
-
-    static String validTable(String t) {
-        if (t == null || !TABLE_NAME.matcher(t.trim()).matches())
-            throw new IllegalArgumentException("rpsim.energy.cell-table 값이 올바르지 않습니다 (예: aiplatform.steam_cell_value): " + t);
-        return t.trim();
-    }
-
-    /**
-     * 1) 설정값 rpsim.energy.cell-table  2) 이 DB 계정에서 보이는 steam_cell_value — 현재 DB → aiplatform → 그 외 순서.
-     * 찾은 위치는 기억해 두고, 못 찾으면 원인과 확인 방법을 담아 오류
-     */
-    public String cellTable() {
-        if (cellTableOverride != null && !cellTableOverride.isBlank()) return validTable(cellTableOverride);
-        String c = cellTableResolved;
-        if (c != null) return c;
-        List<String> schemas = jdbcTemplate.queryForList(
-                "SELECT TABLE_SCHEMA FROM information_schema.TABLES WHERE TABLE_NAME = 'steam_cell_value' " +
-                "ORDER BY (TABLE_SCHEMA = DATABASE()) DESC, (TABLE_SCHEMA = 'aiplatform') DESC, TABLE_SCHEMA", String.class);
-        if (schemas.isEmpty())
-            throw new IllegalStateException("에너지팀 테이블 steam_cell_value 를 찾지 못했습니다 — 이 서버 DB 계정에서 보이는 스키마에 없습니다. "
-                    + "에너지팀 테이블이 같은 DB 서버에 있는지, 이 계정에 SELECT 권한이 있는지 확인하세요. "
-                    + "위치를 알면 application.yml 에 rpsim.energy.cell-table: 스키마.steam_cell_value 로 지정할 수 있습니다");
-        if (schemas.size() > 1) log.warn("[EnergySync] steam_cell_value 가 여러 스키마에 있습니다 {} — {} 사용", schemas, schemas.get(0));
-        c = validTable(schemas.get(0) + ".steam_cell_value");
-        log.info("[EnergySync] 에너지팀 셀 테이블 = {}", c);
-        cellTableResolved = c;
-        return c;
-    }
-
     // ================================================================
     // 1. 단가 수신 (unit_price_detail → boiler_cost_rate + steam_price_interval)
     // ================================================================
@@ -154,7 +115,7 @@ public class EnergyDataSyncService {
 
         // 1) aiplatform.steam_cell_value에서 unit_price_detail 조회
         String sql = "SELECT row_key, col_index AS mon, CAST(cell_value AS DECIMAL(18,4)) AS val " +
-                     "FROM " + cellTable() + " " +
+                     "FROM aiplatform.steam_cell_value " +
                      "WHERE table_name = 'unit_price_detail' AND month = ? " +
                      "AND col_index BETWEEN 1 AND 12";
 
@@ -304,7 +265,7 @@ public class EnergyDataSyncService {
 
         // aiplatform.steam_cell_value energy_fuel_ratio t17 (기타 스팀량 포함). col_index: 2=1월 ~ 13=12월
         String sql = "SELECT row_key, col_index - 1 AS mon, CAST(cell_value AS DECIMAL(8,4)) AS val " +
-                     "FROM " + cellTable() + " " +
+                     "FROM aiplatform.steam_cell_value " +
                      "WHERE table_name = 'energy_fuel_ratio' AND month = ? " +
                      "AND row_key LIKE 't17|%' AND col_index BETWEEN 2 AND 13";
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, yearStr);
