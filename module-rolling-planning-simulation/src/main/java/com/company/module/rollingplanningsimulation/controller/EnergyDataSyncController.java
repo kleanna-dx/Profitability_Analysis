@@ -15,7 +15,7 @@ import java.util.*;
 /**
  * 에너지팀 데이터 수신 API
  *
- * <p>aiplatform.steam_cell_value 테이블에서 단가/원단위를 읽어
+ * <p>에너지팀 단가(steam_price)·스팀사용량 원단위(steam_energy_ratio_steam_unit)를 읽어
  * RPSIM 기준정보 테이블에 동기화합니다.</p>
  *
  * <ul>
@@ -35,7 +35,7 @@ public class EnergyDataSyncController {
     private final RpsimItfHistoryRepository histRepo;
 
     /**
-     * 단가 수신 (unit_price_detail → boiler_cost_rate + steam_price_interval)
+     * 단가 수신 (steam_price → boiler_cost_rate + steam_price_interval)
      */
     @PostMapping("/prices")
     public ResponseEntity<ApiResponse<Map<String, Object>>> syncPrices(@RequestBody Map<String, Object> body) {
@@ -52,6 +52,7 @@ public class EnergyDataSyncController {
             result.put("year", year);
             result.put("division", division);
             result.put("processCount", count);
+            result.put("message", String.join("\n", syncService.getLastPriceNotes()));
             result.put("historyId", hist.getHistoryId());
             return ResponseEntity.ok(ApiResponse.success(result));
         } catch (Exception e) {
@@ -62,7 +63,7 @@ public class EnergyDataSyncController {
     }
 
     /**
-     * 원단위 수신 (energy_fuel_ratio → steam_unit_rate)
+     * 원단위 수신 (steam_energy_ratio_steam_unit → steam_unit_rate)
      */
     @PostMapping("/unit-rates")
     public ResponseEntity<ApiResponse<Map<String, Object>>> syncUnitRates(@RequestBody Map<String, Object> body) {
@@ -105,7 +106,9 @@ public class EnergyDataSyncController {
             result.put("year", year);
             result.put("division", division);
             result.putAll(counts);
-            result.put("message", String.join("\n", syncService.getLastUnitRateNotes()));
+            List<String> notes = new ArrayList<>(syncService.getLastPriceNotes());
+            notes.addAll(syncService.getLastUnitRateNotes());
+            result.put("message", String.join("\n", notes));
             result.put("historyId", hist.getHistoryId());
             return ResponseEntity.ok(ApiResponse.success(result));
         } catch (Exception e) {
@@ -122,7 +125,6 @@ public class EnergyDataSyncController {
     public ResponseEntity<ApiResponse<Map<String, Object>>> check(
             @RequestParam int year,
             @RequestParam(defaultValue = "PS") String division) {
-        String yearStr = String.valueOf(year);
         if (!EnergyDataSyncService.isSupported(division)) {
             Map<String, Object> r = new LinkedHashMap<>();
             r.put("year", year);
@@ -134,11 +136,11 @@ public class EnergyDataSyncController {
         }
         try {
             Long priceCount = syncService.getJdbcTemplate().queryForObject(
-                    "SELECT COUNT(*) FROM aiplatform.steam_cell_value WHERE table_name='unit_price_detail' AND month=?",
-                    Long.class, yearStr);
+                    "SELECT COUNT(*) FROM " + syncService.table(EnergyDataSyncService.PRICE_TABLE) + " WHERE YEAR_NO = ?",
+                    Long.class, year);
             Long unitRateCount = syncService.getJdbcTemplate().queryForObject(
-                    "SELECT COUNT(*) FROM aiplatform.steam_cell_value WHERE table_name='energy_fuel_ratio' AND month=? AND row_key LIKE 't17|%'",
-                    Long.class, yearStr);
+                    "SELECT COUNT(*) FROM " + syncService.table(EnergyDataSyncService.UNIT_TABLE) + " WHERE YEAR_NO = ?",
+                    Long.class, year);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("year", year);
             result.put("division", division);

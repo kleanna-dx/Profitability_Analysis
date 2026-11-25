@@ -177,7 +177,10 @@ public class ItfExecutionService {
         if (rfcFuncOrUrl.contains("/energy-sync/prices") || rfcFuncOrUrl.contains("/energy-sync/all")) {
             int priceCount = energySyncService.syncPriceData(year, division);
             hist.appendLog("[에너지팀] 단가 수신 완료: " + priceCount + "건");
+            if (!energySyncService.getLastPriceNotes().isEmpty())
+                hist.appendLog("[에너지팀] 단가 확인: " + String.join(" / ", energySyncService.getLastPriceNotes()));
             result.put("priceCount", priceCount);
+            result.put("priceMessage", String.join("\n", energySyncService.getLastPriceNotes()));
 
             if (rfcFuncOrUrl.contains("/energy-sync/all")) {
                 int unitCount = energySyncService.syncUnitRateData(year, division);
