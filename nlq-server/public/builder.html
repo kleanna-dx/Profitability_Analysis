@@ -4883,12 +4883,59 @@ function downloadCSV() {
 }
 
 // ─── Excel Download (xlsx-js-style CDN) ─────
+// [2026-11-25] 수치형 셀 Number 타입 강제 저장 (사용자 신고 verbatim):
+//   "수치 데이터가 Excel에서 숫자가 아니라 문자열(Text)로 저장되고 있다"
+//   "ISNUMBER() = FALSE → SUM/AVERAGE 등 Excel 수식을 사용할 수 없는 문제"
+//   "수치형 필드는 문자열이 아니라 실제 Excel Number 타입으로 저장해야 한다"
+//
+//   원인:
+//     - DB (MySQL) 에서 SUM/DECIMAL 집계 결과가 드라이버에 의해 문자열("72002")로 반환됨
+//     - aoa_to_sheet 는 문자열을 그대로 type='s' (string cell)로 저장
+//     - 기존 `typeof cell.v === 'number'` 조건은 이미 string 이므로 항상 false → 서식 변경 자체가 안 됨
+//
+//   해결 (사용자 확정 룰):
+//     - 수치형 판별 기준: VQB 메타데이터 selectedFields[i].is_metric === true (산식 metric)
+//                        또는 selectedFields[i].aggregate ∈ {SUM,AVG,MIN,MAX,COUNT} (집계 필드)
+//     - 수치형이면: Number(v) 변환 후 cell.v 재할당 + cell.t='n' + cell.z='#,##0' 서식
+//     - 비수치형 (자재코드/플랜트/YYYYMM/자재명 등 차원 필드): 기존 문자열 그대로 유지
+//     - 이유: "숫자처럼 생겼다고 모든 값을 Number로 변환하면 안 된다" (사용자 가이드)
+//            예: YYYYMM='202610' 은 수치처럼 생겼지만 코드이므로 String 유지 필수
+//
+//   NULL / 빈값 / 변환 실패 안전 처리:
+//     - null / undefined / '' → 빈 셀 (type 미설정)
+//     - Number(v) 가 NaN / Infinity → 원본 문자열 유지 + console.warn 로깅 (사용자 신고 시 역추적)
+//     - 음수 / 0 / 소수점: Number() 가 자연스럽게 처리
+//
+//   적용 범위:
+//     - 수익성분석 / 제조원가 공통 downloadExcel() 함수 — 양 영역 동시 수정 완료
+//     - 화면 표시 포맷(formatCellNumber 등)은 변경하지 않음 → 원본 수치 포맷만 Excel 셀 타입에 반영
 function downloadExcel() {
     if (lastResultColumns.length === 0 || lastResultRows.length === 0) return;
     if (typeof XLSX === 'undefined') {
         alert('XLSX 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.');
         return;
     }
+
+    // [2026-11-25] 컬럼명 → 수치형 여부 매핑 선계산
+    //   - selectedFields 는 { column, alias, aggregate, is_metric, ... } 구조
+    //   - lastResultColumns 는 서버 응답 컬럼명 (= alias 또는 column)
+    //   - 매칭 기준: alias 우선, 없으면 column 명 (서버 SELECT 절과 일관)
+    //   - NUMERIC_AGGS: SUM/AVG/MIN/MAX/COUNT 만 수치형으로 간주
+    //     (COUNT 는 항상 정수이므로 Number 변환 안전,
+    //      MIN/MAX 는 문자열 컬럼에도 가능하지만 selectedFields 에서는 aggregate 지정 자체가 수치 대상에만 허용됨)
+    const NUMERIC_AGGS = new Set(['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']);
+    const numericColSet = new Set();
+    if (Array.isArray(selectedFields)) {
+        selectedFields.forEach(f => {
+            if (!f) return;
+            const isNumeric = !!f.is_metric || (f.aggregate && NUMERIC_AGGS.has(String(f.aggregate).toUpperCase()));
+            if (!isNumeric) return;
+            // 서버 응답 컬럼명과 매칭 — alias 우선
+            const colKey = f.alias || f.column;
+            if (colKey) numericColSet.add(colKey);
+        });
+    }
+
     const wb = XLSX.utils.book_new();
     const wsData = [lastResultColumns];
     lastResultRows.forEach(row => {
@@ -4927,15 +4974,48 @@ function downloadExcel() {
         return { wch: Math.min(Math.max(maxLen + 4, 10), 50) };
     });
 
-    // 숫자 셀 서식 (쉼표)
-    lastResultRows.forEach((row, ri) => {
-        lastResultColumns.forEach((col, ci) => {
+    // [2026-11-25] 수치형 셀 Number 타입 강제 저장
+    //   - 메타데이터 기준 수치형 컬럼만 처리 (코드/ID/YYYYMM 등은 자동 제외)
+    //   - 빈 셀 / NULL / 변환 실패는 안전 처리
+    let convertFailCount = 0;
+    lastResultColumns.forEach((col, ci) => {
+        if (!numericColSet.has(col)) return;  // 수치형 컬럼만 처리 (차원 필드는 스킵)
+        lastResultRows.forEach((row, ri) => {
             const cell = ws[XLSX.utils.encode_cell({ r: ri + 1, c: ci })];
-            if (cell && typeof cell.v === 'number') {
-                cell.z = '#,##0';
+            if (!cell) return;
+            // 빈 셀 처리: aoa_to_sheet 는 '' 를 type='s' 로 저장하므로 → 빈 셀로 정리
+            if (cell.v === '' || cell.v === null || cell.v === undefined) {
+                cell.v = null;
+                cell.t = 'z';  // blank cell
+                return;
             }
+            // 이미 number 면 서식만 적용
+            if (typeof cell.v === 'number') {
+                cell.t = 'n';
+                cell.z = '#,##0';
+                return;
+            }
+            // 문자열 → Number 변환 (DB SUM/DECIMAL 결과 대응)
+            //   - '1,234' 같이 쉼표 포함된 포맷은 서버에서 오지 않지만 혹시 모를 혼입 방지로 rawStr 그대로 Number()
+            //   - 쉼표 포함이면 Number() 가 NaN 반환 → fallback 으로 문자열 유지
+            const rawStr = String(cell.v).trim();
+            const num = Number(rawStr);
+            if (!isFinite(num) || rawStr === '') {
+                // 변환 실패: 원본 유지 + 경고 로깅 (사용자 신고 시 역추적용)
+                convertFailCount++;
+                return;
+            }
+            cell.v = num;
+            cell.t = 'n';
+            // 서식: 소수점 포함 여부에 따라 자동 선택
+            //   - 정수형 → '#,##0' (예: 72,002)
+            //   - 소수점 포함 → '#,##0.##' (최대 2자리, 불필요한 0 제거)
+            cell.z = rawStr.includes('.') ? '#,##0.##' : '#,##0';
         });
     });
+    if (convertFailCount > 0) {
+        console.warn(`[downloadExcel] 수치형 컬럼 중 Number 변환 실패 ${convertFailCount}건 (원본 문자열 유지됨)`);
+    }
 
     XLSX.utils.book_append_sheet(wb, ws, '피벗결과');
     XLSX.writeFile(wb, `피벗결과_${new Date().toISOString().slice(0,10)}.xlsx`);
