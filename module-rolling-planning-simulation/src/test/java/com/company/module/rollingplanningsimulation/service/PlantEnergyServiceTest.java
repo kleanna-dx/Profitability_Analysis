@@ -44,4 +44,11 @@ class PlantEnergyServiceTest {
         assertEquals(EnergyDataSyncService.norm("화장지3"), EnergyDataSyncService.norm("화장지 3호기"));
         assertNotEquals(EnergyDataSyncService.norm("화장지3"), EnergyDataSyncService.norm("3호기"));
     }
+
+    @Test void cellTable_nameValidation() {
+        assertEquals("aiplatform.steam_cell_value", EnergyDataSyncService.validTable(" aiplatform.steam_cell_value "));
+        assertEquals("steam_cell_value", EnergyDataSyncService.validTable("steam_cell_value"));
+        assertThrows(IllegalArgumentException.class, () -> EnergyDataSyncService.validTable("x; DROP TABLE y"));
+        assertThrows(IllegalArgumentException.class, () -> EnergyDataSyncService.validTable("a.b.c"));
+    }
 }
