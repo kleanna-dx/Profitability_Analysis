@@ -4923,12 +4923,45 @@ function downloadExcel() {
     //   - NUMERIC_AGGS: SUM/AVG/MIN/MAX/COUNT 만 수치형으로 간주
     //     (COUNT 는 항상 정수이므로 Number 변환 안전,
     //      MIN/MAX 는 문자열 컬럼에도 가능하지만 selectedFields 에서는 aggregate 지정 자체가 수치 대상에만 허용됨)
+    //
+    // [2026-11-25 보강] is_metric 2중 방어선 (사용자 신고 verbatim):
+    //   "기존에 저장돼 있던 과거 즐겨찾기 불러오기 → 피벗 생성 → Excel 다운로드 → TRUE"
+    //   1차: applyHistoryToBuilder() 에서 allColumns 메타데이터로 is_metric hydrate
+    //   2차 (여기): selectedFields 에 is_metric 이 비어 있어도 allColumns 에서 재조회
+    //       → 복원 경로가 아닌 다른 경로로 들어와도 Excel 은 항상 정상 동작
+    //       → 향후 복원 로직 변경 / 다른 진입점 추가 시에도 회귀 방지
     const NUMERIC_AGGS = new Set(['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']);
     const numericColSet = new Set();
+
+    // allColumns 기반 보조 조회 맵 (방어선 2차용) — 매번 find 하지 않도록 캐시
+    const colMetaMap = new Map();
+    if (typeof allColumns !== 'undefined' && Array.isArray(allColumns)) {
+        allColumns.forEach(c => {
+            if (c && c.name) colMetaMap.set(c.name, c);
+        });
+    }
+
     if (Array.isArray(selectedFields)) {
         selectedFields.forEach(f => {
             if (!f) return;
-            const isNumeric = !!f.is_metric || (f.aggregate && NUMERIC_AGGS.has(String(f.aggregate).toUpperCase()));
+            // 1차 판별: selectedFields 자체의 메타정보 (addField 로 들어온 경우 정상 작동)
+            const aggUpper = f.aggregate ? String(f.aggregate).toUpperCase() : '';
+            // NOTE: addField 는 metric 필드에 aggregate='METRIC' 을 세팅하므로
+            //       NUMERIC_AGGS 에 'METRIC' 이 없어도 is_metric 분기로 커버됨.
+            //       NUMERIC_AGGS 는 SUM/AVG/... 집계에만 쓰임.
+            let isNumeric = !!f.is_metric
+                         || (aggUpper && NUMERIC_AGGS.has(aggUpper));
+
+            // 2차 판별 (방어선): is_metric 이 비어 있고 aggregate 도 수치 집계가 아니면
+            //   allColumns 메타데이터에서 재조회하여 metric 여부 확인.
+            //   → 과거 즐겨찾기 복원 경로 / 미래의 또 다른 복원 경로 모두 커버.
+            if (!isNumeric) {
+                const meta = colMetaMap.get(f.column);
+                if (meta && meta.is_metric) {
+                    isNumeric = true;
+                }
+            }
+
             if (!isNumeric) return;
             // 서버 응답 컬럼명과 매칭 — alias 우선
             const colKey = f.alias || f.column;
@@ -5643,12 +5676,72 @@ function applyHistoryToBuilder(item) {
     // 0. 이력 ID는 호출자가 설정 (restoreBuilderHistory → set, restoreSharedHistory → null)
 
     // 1. 필드 복원 (이력에 저장된 필드 그대로 — CALMONTH 자동 추가 없음)
-    selectedFields = (item.fields_json || []).map(f => ({
-        column: f.column,
-        alias: f.alias || f.column,
-        aggregate: f.aggregate || '',
-        type: (allColumns.find(c => c.name === f.column) || {}).type || 'text',
-    }));
+    //
+    // [2026-11-25] 이력 복원 시 metric 메타데이터 hydration (사용자 신고 verbatim):
+    //   "즐겨찾기에 등록했던 예전꺼 피벗생성해서 한게 그런거였네. 예전꺼여도 새로
+    //    [피벗생성]버튼 눌러서 나온 결과를 엑셀화하는건데 왜 예전꺼는 수치로 안되는거야?"
+    //
+    //   원인:
+    //     - 이력 저장 로직 (executeQuery → server 저장): metric 필드는
+    //       aggregate='' 로, 그리고 is_metric 자체를 저장하지 않음 (의도된 설계).
+    //       저장 포맷: { column: 'METRIC__UNIT_COST', aggregate: '', alias: '...' }
+    //     - metric 필드의 SQL 산식은 server 측에서 allColumns 메타데이터를 보고
+    //       런타임에 재조립됨 (저장 시점에 산식까지 persist 하지 않는 구조).
+    //     - 그런데 기존 복원 코드는 저장된 fields_json 을 그대로 사용하여
+    //       is_metric / formula / metric_code / category 가 모두 유실됨.
+    //     - 결과: 복원 → [피벗 생성] → DB 쿼리는 서버에서 정상 실행되지만,
+    //       프론트의 selectedFields 에는 is_metric 이 없음 → downloadExcel 이
+    //       "수치형 아님" 으로 오판 → Excel 셀이 문자열(type=s) 로 저장되어
+    //       ISNUMBER()=FALSE, SUM/AVERAGE 사용 불가.
+    //
+    //   해결 (사용자 확정 방향):
+    //     저장된 fields_json 의 각 항목을 현재 allColumns 메타데이터와 재매칭
+    //     하여 is_metric / formula / metric_code / category / type / db_type 등
+    //     metric 필드의 런타임 속성을 모두 복구 (hydrate).
+    //     - addField() L2897~2899 의 metric 필드 생성 패턴과 완전히 일관되도록 복구.
+    //     - 사용자 저장값(alias 사용자 변경 등)은 보존.
+    //     - allColumns 에 매칭되는 메타데이터가 없으면 (예: 과거 삭제된 metric 등)
+    //       저장값 그대로 유지 (기존 동작 보존 + 안전 fallback).
+    //
+    //   중요 제약 (사용자 verbatim):
+    //     - 기존 즐겨찾기 저장 로직 변경 금지 (executeQuery payload 구조 그대로)
+    //     - 기존 metric SQL 산식 생성 로직 변경 금지 (서버 측 산식 치환 로직 그대로)
+    //     - DB 데이터 / SQL 계산식 변경 금지
+    //     - 기존에 저장된 과거 즐겨찾기도 이 복원 로직만으로 정상화되어야 함
+    //       (DB 마이그레이션 없음 — 복원 시점에 메타데이터 참조로 복구)
+    selectedFields = (item.fields_json || []).map(f => {
+        const col = allColumns.find(c => c.name === f.column) || {};
+        const isMetric = !!col.is_metric;
+
+        if (isMetric) {
+            // Metric 필드: addField L2897~2899 패턴과 완전히 일관되게 재구성
+            //   - aggregate='METRIC' 로 복구 (저장된 ''' 덮어쓰기)
+            //   - is_metric / formula / metric_code / type='number' 복구
+            //   - alias 는 사용자 저장값 우선 (없으면 메타데이터 label 또는 metric_code)
+            return {
+                column: f.column,
+                alias: f.alias || col.label || col.metric_code || f.column,
+                aggregate: 'METRIC',
+                type: 'number',
+                is_metric: true,
+                formula: col.formula,
+                metric_code: col.metric_code,
+                category: col.category || 'metric',
+            };
+        }
+
+        // 일반 필드: 메타데이터에서 type / category 복구 (저장된 aggregate 그대로 유지)
+        //   - SUM/AVG/MIN/MAX/COUNT 등 집계 필드는 저장 시 aggregate 그대로 persist 되므로
+        //     기존 동작 변경 없음.
+        //   - 과거 즐겨찾기 중 allColumns 에 매칭 없는 필드도 저장값 그대로 유지 (안전 fallback).
+        return {
+            column: f.column,
+            alias: f.alias || f.column,
+            aggregate: f.aggregate || '',
+            type: col.type || 'text',
+            category: col.category,
+        };
+    });
     renderSelectedFields();
     updateOrderByOptions();
 
