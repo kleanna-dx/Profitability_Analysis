@@ -4931,6 +4931,21 @@ function downloadExcel() {
     //       → 복원 경로가 아닌 다른 경로로 들어와도 Excel 은 항상 정상 동작
     //       → 향후 복원 로직 변경 / 다른 진입점 추가 시에도 회귀 방지
     const NUMERIC_AGGS = new Set(['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']);
+
+    // [2026-11-25] Excel 수치형 셀 공통 서식 (사용자 신고 verbatim):
+    //   "정수는 소수점 없이 표시하고, 실제 소수값이 존재하는 경우에만 필요한 소수자리까지 표시"
+    //   "0.00, #,##0.0 처럼 소수점을 강제로 표시하는 포맷을 사용하지 않는 것"
+    //
+    //   Excel # 서식 특성: "자리가 있으면 보여주고 없으면 숨김"
+    //   → optional decimal 포맷으로 통일하면 정수/소수 자동 처리:
+    //     - 0         → '0'
+    //     - 15324     → '15,324'
+    //     - -71479.8  → '-71,479.8'
+    //     - 15324.25  → '15,324.25'
+    //   # 15개 = IEEE 754 double 정밀도 (약 15-17자리) 를 충분히 커버
+    //   Cell value 는 Number 그대로 유지 (ISNUMBER=TRUE, SUM/AVERAGE 전부 정상)
+    const NUMERIC_FORMAT = '#,##0.###############';
+
     const numericColSet = new Set();
 
     // allColumns 기반 보조 조회 맵 (방어선 2차용) — 매번 find 하지 않도록 캐시
@@ -5025,7 +5040,7 @@ function downloadExcel() {
             // 이미 number 면 서식만 적용
             if (typeof cell.v === 'number') {
                 cell.t = 'n';
-                cell.z = '#,##0';
+                cell.z = NUMERIC_FORMAT;
                 return;
             }
             // 문자열 → Number 변환 (DB SUM/DECIMAL 결과 대응)
@@ -5040,10 +5055,24 @@ function downloadExcel() {
             }
             cell.v = num;
             cell.t = 'n';
-            // 서식: 소수점 포함 여부에 따라 자동 선택
-            //   - 정수형 → '#,##0' (예: 72,002)
-            //   - 소수점 포함 → '#,##0.##' (최대 2자리, 불필요한 0 제거)
-            cell.z = rawStr.includes('.') ? '#,##0.##' : '#,##0';
+            // [2026-11-25] optional decimal 서식 통일 (사용자 신고 verbatim):
+            //   "정수는 소수점 없이 표시하고, 실제 소수값이 존재하는 경우에만 필요한 소수자리까지 표시"
+            //   "0.00, #,##0.0 처럼 소수점을 강제로 표시하는 포맷을 사용하지 않는 것"
+            //
+            //   기존 서식 '#,##0.##' 문제:
+            //     - DB DECIMAL(n,2) 는 정수값도 '15324.0' 같이 소수점 포함 문자열로 반환
+            //     - 과거 코드 `rawStr.includes('.')` 체크로 소수 서식 적용 → '15,324.' (끝에 점만 남음)
+            //
+            //   해결: NUMERIC_FORMAT 전역 서식 '#,##0.###############' 통일
+            //     - Excel # 서식 특성상 "소수부가 있으면 보여주고 없으면 숨김"
+            //     - 정수값 (15324)       → '15,324'      (점 없음)
+            //     - 소수값 (-71479.8)    → '-71,479.8'   (실제 소수부만 표시)
+            //     - 소수값 (15324.25)    → '15,324.25'
+            //     - 0                    → '0'           (끝에 '.' 안 붙음)
+            //     - Cell value 는 Number 그대로 (ISNUMBER=TRUE / SUM / AVERAGE 전부 정상)
+            //
+            //   # 15개 = IEEE 754 double 정밀도 (약 15-17자리) 를 충분히 커버
+            cell.z = NUMERIC_FORMAT;
         });
     });
     if (convertFailCount > 0) {
