@@ -134,10 +134,10 @@ public class EnergyDataSyncController {
         }
         try {
             Long priceCount = syncService.getJdbcTemplate().queryForObject(
-                    "SELECT COUNT(*) FROM aiplatform.steam_cell_value WHERE table_name='unit_price_detail' AND month=?",
+                    "SELECT COUNT(*) FROM " + syncService.cellTable() + " WHERE table_name='unit_price_detail' AND month=?",
                     Long.class, yearStr);
             Long unitRateCount = syncService.getJdbcTemplate().queryForObject(
-                    "SELECT COUNT(*) FROM aiplatform.steam_cell_value WHERE table_name='energy_fuel_ratio' AND month=? AND row_key LIKE 't17|%'",
+                    "SELECT COUNT(*) FROM " + syncService.cellTable() + " WHERE table_name='energy_fuel_ratio' AND month=? AND row_key LIKE 't17|%'",
                     Long.class, yearStr);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("year", year);
