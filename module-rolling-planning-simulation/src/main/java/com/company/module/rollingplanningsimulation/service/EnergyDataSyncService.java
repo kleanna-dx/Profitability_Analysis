@@ -122,17 +122,16 @@ public class EnergyDataSyncService {
         if (cellTableOverride != null && !cellTableOverride.isBlank()) return validTable(cellTableOverride);
         String c = cellTableResolved;
         if (c != null) return c;
-        // 운영 = steam_cell_value / 개발서버 = 옛 이름 table_cell_value (03_rename_steam_tables.sql 적용 전)
-        List<Map<String, Object>> found = jdbcTemplate.queryForList(
-                "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES WHERE TABLE_NAME IN ('steam_cell_value', 'table_cell_value') " +
-                "ORDER BY (TABLE_NAME = 'steam_cell_value') DESC, (TABLE_SCHEMA = DATABASE()) DESC, (TABLE_SCHEMA = 'aiplatform') DESC, TABLE_SCHEMA");
-        if (found.isEmpty())
-            throw new IllegalStateException("에너지 대시보드 셀 테이블(steam_cell_value / 옛 이름 table_cell_value)을 찾지 못했습니다 — 이 서버 DB 계정에서 보이는 스키마에 없습니다. "
-                    + "대시보드 테이블이 같은 DB 서버에 있는지, 이 계정에 SELECT 권한이 있는지 확인하세요. "
-                    + "위치를 알면 application.yml 에 rpsim.energy.cell-table: 스키마.테이블 로 지정할 수 있습니다");
-        if (found.size() > 1) log.warn("[EnergySync] 셀 테이블 후보가 여러 개입니다 {} — 첫 번째 사용", found);
-        c = validTable(found.get(0).get("TABLE_SCHEMA") + "." + found.get(0).get("TABLE_NAME"));
-        log.info("[EnergySync] 에너지 대시보드 셀 테이블 = {}", c);
+        List<String> schemas = jdbcTemplate.queryForList(
+                "SELECT TABLE_SCHEMA FROM information_schema.TABLES WHERE TABLE_NAME = 'steam_cell_value' " +
+                "ORDER BY (TABLE_SCHEMA = DATABASE()) DESC, (TABLE_SCHEMA = 'aiplatform') DESC, TABLE_SCHEMA", String.class);
+        if (schemas.isEmpty())
+            throw new IllegalStateException("에너지팀 테이블 steam_cell_value 를 찾지 못했습니다 — 이 서버 DB 계정에서 보이는 스키마에 없습니다. "
+                    + "에너지팀 테이블이 같은 DB 서버에 있는지, 이 계정에 SELECT 권한이 있는지 확인하세요. "
+                    + "위치를 알면 application.yml 에 rpsim.energy.cell-table: 스키마.steam_cell_value 로 지정할 수 있습니다");
+        if (schemas.size() > 1) log.warn("[EnergySync] steam_cell_value 가 여러 스키마에 있습니다 {} — {} 사용", schemas, schemas.get(0));
+        c = validTable(schemas.get(0) + ".steam_cell_value");
+        log.info("[EnergySync] 에너지팀 셀 테이블 = {}", c);
         cellTableResolved = c;
         return c;
     }
