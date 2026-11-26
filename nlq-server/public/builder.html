@@ -4883,12 +4883,120 @@ function downloadCSV() {
 }
 
 // ─── Excel Download (xlsx-js-style CDN) ─────
+// [2026-11-25] 수치형 셀 Number 타입 강제 저장 (사용자 신고 verbatim):
+//   "수치 데이터가 Excel에서 숫자가 아니라 문자열(Text)로 저장되고 있다"
+//   "ISNUMBER() = FALSE → SUM/AVERAGE 등 Excel 수식을 사용할 수 없는 문제"
+//   "수치형 필드는 문자열이 아니라 실제 Excel Number 타입으로 저장해야 한다"
+//
+//   원인:
+//     - DB (MySQL) 에서 SUM/DECIMAL 집계 결과가 드라이버에 의해 문자열("72002")로 반환됨
+//     - aoa_to_sheet 는 문자열을 그대로 type='s' (string cell)로 저장
+//     - 기존 `typeof cell.v === 'number'` 조건은 이미 string 이므로 항상 false → 서식 변경 자체가 안 됨
+//
+//   해결 (사용자 확정 룰):
+//     - 수치형 판별 기준: VQB 메타데이터 selectedFields[i].is_metric === true (산식 metric)
+//                        또는 selectedFields[i].aggregate ∈ {SUM,AVG,MIN,MAX,COUNT} (집계 필드)
+//     - 수치형이면: Number(v) 변환 후 cell.v 재할당 + cell.t='n' + cell.z='#,##0' 서식
+//     - 비수치형 (자재코드/플랜트/YYYYMM/자재명 등 차원 필드): 기존 문자열 그대로 유지
+//     - 이유: "숫자처럼 생겼다고 모든 값을 Number로 변환하면 안 된다" (사용자 가이드)
+//            예: YYYYMM='202610' 은 수치처럼 생겼지만 코드이므로 String 유지 필수
+//
+//   NULL / 빈값 / 변환 실패 안전 처리:
+//     - null / undefined / '' → 빈 셀 (type 미설정)
+//     - Number(v) 가 NaN / Infinity → 원본 문자열 유지 + console.warn 로깅 (사용자 신고 시 역추적)
+//     - 음수 / 0 / 소수점: Number() 가 자연스럽게 처리
+//
+//   적용 범위:
+//     - 수익성분석 / 제조원가 공통 downloadExcel() 함수 — 양 영역 동시 수정 완료
+//     - 화면 표시 포맷(formatCellNumber 등)은 변경하지 않음 → 원본 수치 포맷만 Excel 셀 타입에 반영
 function downloadExcel() {
     if (lastResultColumns.length === 0 || lastResultRows.length === 0) return;
     if (typeof XLSX === 'undefined') {
         alert('XLSX 라이브러리 로딩 중... 잠시 후 다시 시도해주세요.');
         return;
     }
+
+    // [2026-11-25] 컬럼명 → 수치형 여부 매핑 선계산
+    //   - selectedFields 는 { column, alias, aggregate, is_metric, ... } 구조
+    //   - lastResultColumns 는 서버 응답 컬럼명 (= alias 또는 column)
+    //   - 매칭 기준: alias 우선, 없으면 column 명 (서버 SELECT 절과 일관)
+    //   - NUMERIC_AGGS: SUM/AVG/MIN/MAX/COUNT 만 수치형으로 간주
+    //     (COUNT 는 항상 정수이므로 Number 변환 안전,
+    //      MIN/MAX 는 문자열 컬럼에도 가능하지만 selectedFields 에서는 aggregate 지정 자체가 수치 대상에만 허용됨)
+    //
+    // [2026-11-25 보강] is_metric 2중 방어선 (사용자 신고 verbatim):
+    //   "기존에 저장돼 있던 과거 즐겨찾기 불러오기 → 피벗 생성 → Excel 다운로드 → TRUE"
+    //   1차: applyHistoryToBuilder() 에서 allColumns 메타데이터로 is_metric hydrate
+    //   2차 (여기): selectedFields 에 is_metric 이 비어 있어도 allColumns 에서 재조회
+    //       → 복원 경로가 아닌 다른 경로로 들어와도 Excel 은 항상 정상 동작
+    //       → 향후 복원 로직 변경 / 다른 진입점 추가 시에도 회귀 방지
+    const NUMERIC_AGGS = new Set(['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']);
+
+    // [2026-11-25 v2] Excel 수치형 셀 조건부 서식 — 값에 따라 분기 (사용자 2차 신고):
+    //   1차 수정 (optional decimal '#,##0.###############') 후에도 일부 Excel 환경에서
+    //   정수값에 끝점('.') 이 남는 현상 발견 (사용자 스크린샷: '0.', '150,922.').
+    //   원인: 서식 문자열에 명시적 '.' 이 포함되어 있으면 Excel 버전/지역설정에 따라
+    //   빈 소수부 자리에 점만 남기는 경우가 있음.
+    //
+    //   해결 (사용자 확정 '옵션 A'): 값 기준 조건부 서식 분기
+    //     - 실제 정수 (num === Math.floor(num)): NUMERIC_FORMAT_INT = '#,##0'
+    //         → '150922'  → '150,922' (끝에 '.' 절대 안 남음)
+    //         → '0'       → '0'
+    //     - 실제 소수 (num !== Math.floor(num)): NUMERIC_FORMAT_DEC = '#,##0.###############'
+    //         → '-71479.8'  → '-71,479.8'
+    //         → '15324.25'  → '15,324.25'
+    //
+    //   중요: DB DECIMAL 반환값이 '15324.0' / '0.0' 처럼 소수점 포함 문자열이어도
+    //         Number(rawStr) 변환 후 Math.floor 체크하면 실제 정수인지 판별 가능:
+    //         Number('15324.0') === 15324 → Math.floor(15324) === 15324 → 정수 서식
+    //
+    //   Cell value 는 Number 그대로 유지 (ISNUMBER=TRUE, SUM/AVERAGE 전부 정상)
+    //   '#' 15개 = IEEE 754 double 정밀도 (약 15-17자리) 를 충분히 커버
+    const NUMERIC_FORMAT_INT = '#,##0';
+    const NUMERIC_FORMAT_DEC = '#,##0.###############';
+
+    // 값에 따라 적절한 서식 반환 (실제 소수부 유무로 분기)
+    //   - NaN / Infinity 는 호출 전 필터링되므로 여기서는 유한 수치만 처리
+    const pickNumericFormat = (n) => (n === Math.floor(n) ? NUMERIC_FORMAT_INT : NUMERIC_FORMAT_DEC);
+
+    const numericColSet = new Set();
+
+    // allColumns 기반 보조 조회 맵 (방어선 2차용) — 매번 find 하지 않도록 캐시
+    const colMetaMap = new Map();
+    if (typeof allColumns !== 'undefined' && Array.isArray(allColumns)) {
+        allColumns.forEach(c => {
+            if (c && c.name) colMetaMap.set(c.name, c);
+        });
+    }
+
+    if (Array.isArray(selectedFields)) {
+        selectedFields.forEach(f => {
+            if (!f) return;
+            // 1차 판별: selectedFields 자체의 메타정보 (addField 로 들어온 경우 정상 작동)
+            const aggUpper = f.aggregate ? String(f.aggregate).toUpperCase() : '';
+            // NOTE: addField 는 metric 필드에 aggregate='METRIC' 을 세팅하므로
+            //       NUMERIC_AGGS 에 'METRIC' 이 없어도 is_metric 분기로 커버됨.
+            //       NUMERIC_AGGS 는 SUM/AVG/... 집계에만 쓰임.
+            let isNumeric = !!f.is_metric
+                         || (aggUpper && NUMERIC_AGGS.has(aggUpper));
+
+            // 2차 판별 (방어선): is_metric 이 비어 있고 aggregate 도 수치 집계가 아니면
+            //   allColumns 메타데이터에서 재조회하여 metric 여부 확인.
+            //   → 과거 즐겨찾기 복원 경로 / 미래의 또 다른 복원 경로 모두 커버.
+            if (!isNumeric) {
+                const meta = colMetaMap.get(f.column);
+                if (meta && meta.is_metric) {
+                    isNumeric = true;
+                }
+            }
+
+            if (!isNumeric) return;
+            // 서버 응답 컬럼명과 매칭 — alias 우선
+            const colKey = f.alias || f.column;
+            if (colKey) numericColSet.add(colKey);
+        });
+    }
+
     const wb = XLSX.utils.book_new();
     const wsData = [lastResultColumns];
     lastResultRows.forEach(row => {
@@ -4927,15 +5035,64 @@ function downloadExcel() {
         return { wch: Math.min(Math.max(maxLen + 4, 10), 50) };
     });
 
-    // 숫자 셀 서식 (쉼표)
-    lastResultRows.forEach((row, ri) => {
-        lastResultColumns.forEach((col, ci) => {
+    // [2026-11-25] 수치형 셀 Number 타입 강제 저장
+    //   - 메타데이터 기준 수치형 컬럼만 처리 (코드/ID/YYYYMM 등은 자동 제외)
+    //   - 빈 셀 / NULL / 변환 실패는 안전 처리
+    let convertFailCount = 0;
+    lastResultColumns.forEach((col, ci) => {
+        if (!numericColSet.has(col)) return;  // 수치형 컬럼만 처리 (차원 필드는 스킵)
+        lastResultRows.forEach((row, ri) => {
             const cell = ws[XLSX.utils.encode_cell({ r: ri + 1, c: ci })];
-            if (cell && typeof cell.v === 'number') {
-                cell.z = '#,##0';
+            if (!cell) return;
+            // 빈 셀 처리: aoa_to_sheet 는 '' 를 type='s' 로 저장하므로 → 빈 셀로 정리
+            if (cell.v === '' || cell.v === null || cell.v === undefined) {
+                cell.v = null;
+                cell.t = 'z';  // blank cell
+                return;
             }
+            // 이미 number 면 서식만 적용
+            if (typeof cell.v === 'number') {
+                cell.t = 'n';
+                // [2026-11-25 v2] 값 기준 서식 분기 (정수 → '#,##0', 소수 → '#,##0.###############')
+                cell.z = pickNumericFormat(cell.v);
+                return;
+            }
+            // 문자열 → Number 변환 (DB SUM/DECIMAL 결과 대응)
+            //   - '1,234' 같이 쉼표 포함된 포맷은 서버에서 오지 않지만 혹시 모를 혼입 방지로 rawStr 그대로 Number()
+            //   - 쉼표 포함이면 Number() 가 NaN 반환 → fallback 으로 문자열 유지
+            const rawStr = String(cell.v).trim();
+            const num = Number(rawStr);
+            if (!isFinite(num) || rawStr === '') {
+                // 변환 실패: 원본 유지 + 경고 로깅 (사용자 신고 시 역추적용)
+                convertFailCount++;
+                return;
+            }
+            cell.v = num;
+            cell.t = 'n';
+            // [2026-11-25 v2] 값 기준 조건부 서식 분기 (사용자 2차 신고 verbatim):
+            //   "0. (X) -> 0    150,922. -> 150,922 (0) 이렇게 하라고"
+            //   "소수점 있는것만 소수점 노출되고 없으면 소수점 노출되게 하지말라고"
+            //
+            //   v1 수정 ('#,##0.###############' 통일) 후에도 사용자 Excel 환경에서
+            //   정수값에 끝점('.') 이 남는 현상 발생 (openpyxl 로는 재현 안 되지만
+            //   사용자님 Excel 설정/버전에서는 보임).
+            //
+            //   해결 ('옵션 A'): pickNumericFormat(num) 호출로 값 기준 서식 분기
+            //     - 실제 정수 (num === Math.floor(num)): '#,##0'
+            //         → 150922       → '150,922'  (끝에 '.' 절대 안 남음)
+            //         → 0            → '0'
+            //         → DB '15324.0' → Number 15324 → '15,324' (DB 가짜 소수 문제 해결)
+            //     - 실제 소수: '#,##0.###############'
+            //         → -71479.8     → '-71,479.8'
+            //         → 15324.25     → '15,324.25'
+            //
+            //   Cell value 는 Number 그대로 유지 (ISNUMBER=TRUE, SUM/AVERAGE 정상)
+            cell.z = pickNumericFormat(num);
         });
     });
+    if (convertFailCount > 0) {
+        console.warn(`[downloadExcel] 수치형 컬럼 중 Number 변환 실패 ${convertFailCount}건 (원본 문자열 유지됨)`);
+    }
 
     XLSX.utils.book_append_sheet(wb, ws, '피벗결과');
     XLSX.writeFile(wb, `피벗결과_${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -5563,12 +5720,72 @@ function applyHistoryToBuilder(item) {
     // 0. 이력 ID는 호출자가 설정 (restoreBuilderHistory → set, restoreSharedHistory → null)
 
     // 1. 필드 복원 (이력에 저장된 필드 그대로 — CALMONTH 자동 추가 없음)
-    selectedFields = (item.fields_json || []).map(f => ({
-        column: f.column,
-        alias: f.alias || f.column,
-        aggregate: f.aggregate || '',
-        type: (allColumns.find(c => c.name === f.column) || {}).type || 'text',
-    }));
+    //
+    // [2026-11-25] 이력 복원 시 metric 메타데이터 hydration (사용자 신고 verbatim):
+    //   "즐겨찾기에 등록했던 예전꺼 피벗생성해서 한게 그런거였네. 예전꺼여도 새로
+    //    [피벗생성]버튼 눌러서 나온 결과를 엑셀화하는건데 왜 예전꺼는 수치로 안되는거야?"
+    //
+    //   원인:
+    //     - 이력 저장 로직 (executeQuery → server 저장): metric 필드는
+    //       aggregate='' 로, 그리고 is_metric 자체를 저장하지 않음 (의도된 설계).
+    //       저장 포맷: { column: 'METRIC__UNIT_COST', aggregate: '', alias: '...' }
+    //     - metric 필드의 SQL 산식은 server 측에서 allColumns 메타데이터를 보고
+    //       런타임에 재조립됨 (저장 시점에 산식까지 persist 하지 않는 구조).
+    //     - 그런데 기존 복원 코드는 저장된 fields_json 을 그대로 사용하여
+    //       is_metric / formula / metric_code / category 가 모두 유실됨.
+    //     - 결과: 복원 → [피벗 생성] → DB 쿼리는 서버에서 정상 실행되지만,
+    //       프론트의 selectedFields 에는 is_metric 이 없음 → downloadExcel 이
+    //       "수치형 아님" 으로 오판 → Excel 셀이 문자열(type=s) 로 저장되어
+    //       ISNUMBER()=FALSE, SUM/AVERAGE 사용 불가.
+    //
+    //   해결 (사용자 확정 방향):
+    //     저장된 fields_json 의 각 항목을 현재 allColumns 메타데이터와 재매칭
+    //     하여 is_metric / formula / metric_code / category / type / db_type 등
+    //     metric 필드의 런타임 속성을 모두 복구 (hydrate).
+    //     - addField() L2897~2899 의 metric 필드 생성 패턴과 완전히 일관되도록 복구.
+    //     - 사용자 저장값(alias 사용자 변경 등)은 보존.
+    //     - allColumns 에 매칭되는 메타데이터가 없으면 (예: 과거 삭제된 metric 등)
+    //       저장값 그대로 유지 (기존 동작 보존 + 안전 fallback).
+    //
+    //   중요 제약 (사용자 verbatim):
+    //     - 기존 즐겨찾기 저장 로직 변경 금지 (executeQuery payload 구조 그대로)
+    //     - 기존 metric SQL 산식 생성 로직 변경 금지 (서버 측 산식 치환 로직 그대로)
+    //     - DB 데이터 / SQL 계산식 변경 금지
+    //     - 기존에 저장된 과거 즐겨찾기도 이 복원 로직만으로 정상화되어야 함
+    //       (DB 마이그레이션 없음 — 복원 시점에 메타데이터 참조로 복구)
+    selectedFields = (item.fields_json || []).map(f => {
+        const col = allColumns.find(c => c.name === f.column) || {};
+        const isMetric = !!col.is_metric;
+
+        if (isMetric) {
+            // Metric 필드: addField L2897~2899 패턴과 완전히 일관되게 재구성
+            //   - aggregate='METRIC' 로 복구 (저장된 ''' 덮어쓰기)
+            //   - is_metric / formula / metric_code / type='number' 복구
+            //   - alias 는 사용자 저장값 우선 (없으면 메타데이터 label 또는 metric_code)
+            return {
+                column: f.column,
+                alias: f.alias || col.label || col.metric_code || f.column,
+                aggregate: 'METRIC',
+                type: 'number',
+                is_metric: true,
+                formula: col.formula,
+                metric_code: col.metric_code,
+                category: col.category || 'metric',
+            };
+        }
+
+        // 일반 필드: 메타데이터에서 type / category 복구 (저장된 aggregate 그대로 유지)
+        //   - SUM/AVG/MIN/MAX/COUNT 등 집계 필드는 저장 시 aggregate 그대로 persist 되므로
+        //     기존 동작 변경 없음.
+        //   - 과거 즐겨찾기 중 allColumns 에 매칭 없는 필드도 저장값 그대로 유지 (안전 fallback).
+        return {
+            column: f.column,
+            alias: f.alias || f.column,
+            aggregate: f.aggregate || '',
+            type: col.type || 'text',
+            category: col.category,
+        };
+    });
     renderSelectedFields();
     updateOrderByOptions();
 
