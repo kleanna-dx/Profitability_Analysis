@@ -18,10 +18,11 @@ import java.util.*;
 /**
  * HL 판매계획(SKU별)·거래처별 장려금/마케팅비·마감.
  * <ul>
- *   <li>순매출 = BOX 수량 × BOX당 단가(장려금 제외) — 서버 계산</li>
- *   <li>영업팀은 화면에서 고름. 업로드 파일에 다른 년월·다른 팀 행이 있으면 저장하지 않음</li>
- *   <li>업로드 = 그 년월·팀 데이터를 파일 내용으로 통째 교체 (파일에 없는 행은 소프트 삭제)</li>
- *   <li>마감된 년월·팀·구분은 입력·수정·삭제·업로드 불가</li>
+ *   <li>순매출 = BOX 수량 × BOX당 단가 — 서버 계산</li>
+ *   <li>판매계획 = 영업팀이 입력. 영업팀은 화면에서 고름. 업로드 파일에 다른 년월·다른 팀 행이 있으면 저장하지 않음</li>
+ *   <li>장려금·마케팅비 = 기획팀이 년월 전체를 올림 (영업팀 구분 없음, 년월 × 거래처 = 1행)</li>
+ *   <li>업로드 = 그 범위(판매계획: 년월·팀 / 장려금·마케팅비: 년월) 데이터를 파일 내용으로 통째 교체 (파일에 없는 행은 소프트 삭제)</li>
+ *   <li>마감: 판매계획 = 년월·팀별 / 장려금·마케팅비 = 년월 전체. 마감되면 입력·수정·삭제·업로드 불가</li>
  * </ul>
  */
 @Service
@@ -34,7 +35,7 @@ public class HlSalesService {
     private final AuditSupport auditSupport;
 
     static final String[] UK_PLAN = {"ym", "salesTeam", "customerCode", "materialCode"};
-    static final String[] UK_EXPENSE = {"ym", "salesTeam", "customerCode"};
+    static final String[] UK_EXPENSE = {"ym", "customerCode"};
     static final List<String> CLOSE_TYPES = List.of(HlSalesClose.SALES, HlSalesClose.EXPENSE);
 
     // ================================================================ 공통 검사
@@ -76,7 +77,7 @@ public class HlSalesService {
         public boolean ok() { return errors.isEmpty(); }
     }
 
-    /** 한 행의 년월·영업팀이 화면에서 고른 값과 같은지 (비어 있으면 화면 값 사용) */
+    /** 한 행의 년월(·영업팀)이 화면에서 고른 값과 같은지 (비어 있으면 화면 값 사용). team=null 이면 영업팀 검사 안 함 */
     private static void checkScope(Map<String, Object> r, String ym, String team, String at, List<String> errors) {
         Object rYm = r.get("ym");
         if (str(rYm) != null) {
@@ -84,6 +85,7 @@ public class HlSalesService {
             if (n == null) errors.add(at + "년월 형식 오류: " + rYm);
             else if (!n.equals(ym)) errors.add(at + "년월(" + n + ")이 선택한 년월(" + ym + ")과 다릅니다");
         }
+        if (team == null) return;
         String rTeam = str(r.get("salesTeam"));
         if (rTeam != null && !rTeam.equals(team)) errors.add(at + "영업팀(" + rTeam + ")이 선택한 영업팀(" + team + ")과 다릅니다 — 다른 팀 행은 올릴 수 없습니다");
     }
@@ -139,8 +141,8 @@ public class HlSalesService {
         return new Checked<>(out, errors);
     }
 
-    /** 장려금·마케팅비 행 검사 (금액 비어 있으면 0) */
-    public static Checked<HlCustomerExpense> checkExpenses(String ym, String team, List<Map<String, Object>> rows) {
+    /** 장려금·마케팅비 행 검사 (금액 비어 있으면 0). 영업팀 구분 없음 — 년월 × 거래처 */
+    public static Checked<HlCustomerExpense> checkExpenses(String ym, List<Map<String, Object>> rows) {
         List<String> errors = new ArrayList<>();
         List<HlCustomerExpense> out = new ArrayList<>();
         Map<String, String> seen = new HashMap<>();
@@ -149,7 +151,7 @@ public class HlSalesService {
             Map<String, Object> r = rows.get(i);
             String at = rowAt(r, i);
             int before = errors.size();
-            checkScope(r, ym, team, at, errors);
+            checkScope(r, ym, null, at, errors);
             String cust = maxLen(r.get("customerCode"), 30, "거래처코드", at, errors);
             if (str(r.get("customerCode")) == null) errors.add(at + "거래처코드를 입력하세요");
             String custName = maxLen(r.get("customerName"), 200, "거래처명", at, errors);
@@ -161,7 +163,7 @@ public class HlSalesService {
                 if (prev != null) errors.add(at + "거래처 " + cust + " 가 " + prev.replace(": ", "") + "과 중복입니다");
             }
             if (errors.size() == before)
-                out.add(HlCustomerExpense.builder().ym(ym).salesTeam(team).customerCode(cust).customerName(custName)
+                out.add(HlCustomerExpense.builder().ym(ym).customerCode(cust).customerName(custName)
                         .incentiveAmt(inc).marketingAmt(mkt).note(note).build());
         }
         return new Checked<>(out, errors);
@@ -175,8 +177,13 @@ public class HlSalesService {
 
     private void assertOpen(String ym, String team, String type) {
         if (isClosed(ym, team, type))
-            throw new IllegalStateException(ym.substring(0, 4) + "." + ym.substring(4) + " " + team + " "
-                    + (HlSalesClose.SALES.equals(type) ? "판매계획" : "장려금·마케팅비") + "은 마감되었습니다 — 마감 해제 후 수정하세요");
+            throw new IllegalStateException(ym.substring(0, 4) + "." + ym.substring(4) + " "
+                    + (HlSalesClose.SALES.equals(type) ? team + " 판매계획" : "장려금·마케팅비") + "은 마감되었습니다 — 마감 해제 후 수정하세요");
+    }
+
+    /** 마감 단위의 영업팀 값 — 장려금·마케팅비는 년월 전체라 '전체' */
+    static String closeTeam(String type, Object teamRaw) {
+        return HlSalesClose.EXPENSE.equals(type) ? HlSalesClose.ALL_TEAMS : requireTeam(teamRaw);
     }
 
     public List<HlSalesClose> closeStatus(Object ymRaw) {
@@ -185,7 +192,7 @@ public class HlSalesService {
 
     @Transactional
     public HlSalesClose setClosed(Object ymRaw, Object teamRaw, Object typeRaw, boolean close) {
-        String ym = requireYm(ymRaw), team = requireTeam(teamRaw), type = requireType(typeRaw);
+        String ym = requireYm(ymRaw), type = requireType(typeRaw), team = closeTeam(type, teamRaw);
         HlSalesClose c = closeRepo.findFirstByYmAndSalesTeamAndCloseType(ym, team, type).orElse(null);
         if (c == null) {
             if (!close) throw new IllegalStateException("마감된 적이 없습니다");
@@ -196,6 +203,8 @@ public class HlSalesService {
             if (c.closed()) throw new IllegalStateException("이미 마감되었습니다");
             if (HlSalesClose.SALES.equals(type) && planRepo.findByYmAndSalesTeamOrderByCustomerCodeAscMaterialCodeAsc(ym, team).isEmpty())
                 throw new IllegalStateException("판매계획이 한 건도 없어 마감할 수 없습니다");
+            if (HlSalesClose.EXPENSE.equals(type) && expenseRepo.findByYmOrderByCustomerCodeAsc(ym).isEmpty())
+                throw new IllegalStateException("장려금·마케팅비가 한 건도 없어 마감할 수 없습니다");
             c.close(CurrentUser.get());
         } else {
             if (!c.closed()) throw new IllegalStateException("마감 상태가 아닙니다");
@@ -207,9 +216,7 @@ public class HlSalesService {
     // ================================================================ 판매계획
 
     public List<String> teams() {
-        TreeSet<String> s = new TreeSet<>(planRepo.findTeams());
-        s.addAll(expenseRepo.findTeams());
-        return new ArrayList<>(s);
+        return planRepo.findTeams();
     }
 
     public List<HlSalesPlan> plans(Object ymRaw, Object teamRaw) {
@@ -265,39 +272,37 @@ public class HlSalesService {
 
     // ================================================================ 장려금·마케팅비
 
-    public List<HlCustomerExpense> expenses(Object ymRaw, Object teamRaw) {
-        String ym = requireYm(ymRaw);
-        String team = str(teamRaw);
-        return team == null ? expenseRepo.findByYmOrderBySalesTeamAscCustomerCodeAsc(ym)
-                : expenseRepo.findByYmAndSalesTeamOrderByCustomerCodeAsc(ym, team);
+    public List<HlCustomerExpense> expenses(Object ymRaw) {
+        return expenseRepo.findByYmOrderByCustomerCodeAsc(requireYm(ymRaw));
     }
 
     @Transactional
     public HlCustomerExpense saveExpense(Long id, Map<String, Object> b) {
-        String ym = requireYm(b.get("ym")), team = requireTeam(b.get("salesTeam"));
-        assertOpen(ym, team, HlSalesClose.EXPENSE);
-        Checked<HlCustomerExpense> c = checkExpenses(ym, team, List.of(b));
+        String ym = requireYm(b.get("ym"));
+        assertOpen(ym, HlSalesClose.ALL_TEAMS, HlSalesClose.EXPENSE);
+        Checked<HlCustomerExpense> c = checkExpenses(ym, List.of(b));
         if (!c.ok()) throw new IllegalArgumentException(String.join(" / ", c.errors()).replace("1번째 행: ", ""));
         HlCustomerExpense in = c.rows().get(0);
         if (id == null) return auditSupport.upsert(expenseRepo, in, UK_EXPENSE);
         HlCustomerExpense e = expenseRepo.findById(id).orElseThrow(() -> new IllegalArgumentException("데이터를 찾을 수 없습니다: " + id));
-        if (!e.getYm().equals(ym) || !e.getSalesTeam().equals(team)) assertOpen(e.getYm(), e.getSalesTeam(), HlSalesClose.EXPENSE);
+        if (!e.getYm().equals(ym)) assertOpen(e.getYm(), HlSalesClose.ALL_TEAMS, HlSalesClose.EXPENSE);
         return auditSupport.updateById(expenseRepo, id, in, UK_EXPENSE);
     }
 
     @Transactional
     public void deleteExpense(Long id) {
         HlCustomerExpense e = expenseRepo.findById(id).orElseThrow(() -> new IllegalArgumentException("데이터를 찾을 수 없습니다: " + id));
-        assertOpen(e.getYm(), e.getSalesTeam(), HlSalesClose.EXPENSE);
+        assertOpen(e.getYm(), HlSalesClose.ALL_TEAMS, HlSalesClose.EXPENSE);
         auditSupport.softDelete(expenseRepo, id);
     }
 
+    /** 업로드 — 그 년월 장려금·마케팅비 전체를 파일 내용으로 교체 */
     @Transactional
     public Map<String, Object> uploadExpenses(Map<String, Object> body) {
-        String ym = requireYm(body.get("ym")), team = requireTeam(body.get("salesTeam"));
-        assertOpen(ym, team, HlSalesClose.EXPENSE);
+        String ym = requireYm(body.get("ym"));
+        assertOpen(ym, HlSalesClose.ALL_TEAMS, HlSalesClose.EXPENSE);
         @SuppressWarnings("unchecked") List<Map<String, Object>> rows = (List<Map<String, Object>>) body.get("rows");
-        Checked<HlCustomerExpense> c = checkExpenses(ym, team, rows);
+        Checked<HlCustomerExpense> c = checkExpenses(ym, rows);
         Map<String, Object> res = new LinkedHashMap<>();
         if (!c.ok()) { res.put("ok", false); res.put("errors", c.errors()); return res; }
         if (c.rows().isEmpty()) { res.put("ok", false); res.put("errors", List.of("올릴 행이 없습니다")); return res; }
@@ -305,7 +310,7 @@ public class HlSalesService {
         Set<String> keep = new HashSet<>();
         for (HlCustomerExpense x : c.rows()) { auditSupport.upsert(expenseRepo, x, UK_EXPENSE); keep.add(x.getCustomerCode()); }
         int removed = 0;
-        for (HlCustomerExpense old : expenseRepo.findByYmAndSalesTeamOrderByCustomerCodeAsc(ym, team))
+        for (HlCustomerExpense old : expenseRepo.findByYmOrderByCustomerCodeAsc(ym))
             if (!keep.contains(old.getCustomerCode())) { auditSupport.softDelete(expenseRepo, old.getExpenseId()); removed++; }
         res.put("ok", true);
         res.put("saved", c.rows().size());
@@ -315,11 +320,11 @@ public class HlSalesService {
 
     // ================================================================ 요약 (P/L 연결용)
 
-    /** 년월 요약 — 순매출·장려금·마케팅비, 팀별(마감 여부 포함)·카테고리별 */
+    /** 년월 요약 — 순매출·장려금·마케팅비(년월 전체), 영업팀별 순매출(판매계획 마감 여부 포함)·카테고리별 */
     public Map<String, Object> summary(Object ymRaw) {
         String ym = requireYm(ymRaw);
         List<HlSalesPlan> ps = planRepo.findByYmOrderBySalesTeamAscCustomerCodeAscMaterialCodeAsc(ym);
-        List<HlCustomerExpense> es = expenseRepo.findByYmOrderBySalesTeamAscCustomerCodeAsc(ym);
+        List<HlCustomerExpense> es = expenseRepo.findByYmOrderByCustomerCodeAsc(ym);
         return summarize(ym, ps, es, closeRepo.findByYmOrderBySalesTeamAsc(ym));
     }
 
@@ -335,17 +340,13 @@ public class HlSalesService {
             Map<String, Object> c = byCat.computeIfAbsent(cat, k -> { Map<String, Object> m = new LinkedHashMap<>(); m.put("category", k); m.put("boxQty", BigDecimal.ZERO); m.put("netSales", BigDecimal.ZERO); return m; });
             add(c, "boxQty", p.getBoxQty()); add(c, "netSales", p.getNetSales());
         }
-        for (HlCustomerExpense e : es) {
-            inc = inc.add(e.getIncentiveAmt()); mkt = mkt.add(e.getMarketingAmt());
-            add(team(byTeam, e.getSalesTeam()), "incentiveAmt", e.getIncentiveAmt());
-            add(team(byTeam, e.getSalesTeam()), "marketingAmt", e.getMarketingAmt());
-        }
+        for (HlCustomerExpense e : es) { inc = inc.add(e.getIncentiveAmt()); mkt = mkt.add(e.getMarketingAmt()); }
+        boolean expenseClosed = false;
         for (HlSalesClose c : closes) {
             if (!c.closed()) continue;
-            team(byTeam, c.getSalesTeam()).put(HlSalesClose.SALES.equals(c.getCloseType()) ? "salesClosed" : "expenseClosed", true);
+            if (HlSalesClose.EXPENSE.equals(c.getCloseType())) expenseClosed = true;
+            else team(byTeam, c.getSalesTeam()).put("salesClosed", true);
         }
-        for (Map<String, Object> t : byTeam.values())
-            t.put("netAfter", ((BigDecimal) t.get("netSales")).subtract((BigDecimal) t.get("incentiveAmt")).subtract((BigDecimal) t.get("marketingAmt")));
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("ym", ym);
         r.put("boxQty", box);
@@ -353,6 +354,7 @@ public class HlSalesService {
         r.put("incentiveAmt", inc);
         r.put("marketingAmt", mkt);
         r.put("netAfter", net.subtract(inc).subtract(mkt));
+        r.put("expenseClosed", expenseClosed);
         r.put("planRows", ps.size());
         r.put("expenseRows", es.size());
         r.put("teams", new ArrayList<>(byTeam.values()));
@@ -364,8 +366,8 @@ public class HlSalesService {
         return byTeam.computeIfAbsent(t, k -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("salesTeam", k);
-            for (String f : List.of("boxQty", "netSales", "incentiveAmt", "marketingAmt")) m.put(f, BigDecimal.ZERO);
-            m.put("salesClosed", false); m.put("expenseClosed", false);
+            for (String f : List.of("boxQty", "netSales")) m.put(f, BigDecimal.ZERO);
+            m.put("salesClosed", false);
             return m;
         });
     }

@@ -58,20 +58,27 @@ class HlSalesServiceTest {
         assertTrue(all.contains("5행: 거래처 C1 · 자재 M1 가 3행과 중복"), all);
     }
 
-    @Test void checkExpenses_blankAmountsZero_duplicateCustomer() {
-        var c = HlSalesService.checkExpenses("202701", "A팀", List.of(
-                row("customerCode", "C1", "incentiveAmt", "3,000,000"),
+    @Test void checkExpenses_noTeam_blankAmountsZero_duplicateCustomer() {
+        // 기획팀이 년월 전체를 올림 — 영업팀 칸이 있어도 검사하지 않음
+        var c = HlSalesService.checkExpenses("202701", List.of(
+                row("customerCode", "C1", "incentiveAmt", "3,000,000", "salesTeam", "아무팀"),
                 row("customerCode", "C2", "marketingAmt", 500)));
         assertTrue(c.ok(), c.errors().toString());
         assertEquals(0, d("3000000").compareTo(c.rows().get(0).getIncentiveAmt()));
         assertEquals(0, BigDecimal.ZERO.compareTo(c.rows().get(0).getMarketingAmt()));
         assertEquals(0, BigDecimal.ZERO.compareTo(c.rows().get(1).getIncentiveAmt()));
 
-        var dup = HlSalesService.checkExpenses("202701", "A팀", List.of(
-                row("rowNo", 2, "customerCode", "C1"), row("rowNo", 3, "customerCode", "C1", "salesTeam", "B팀")));
+        var dup = HlSalesService.checkExpenses("202701", List.of(
+                row("rowNo", 2, "customerCode", "C1"), row("rowNo", 3, "customerCode", "C1"), row("rowNo", 4, "customerCode", "C3", "ym", "202702")));
         String all = String.join("\n", dup.errors());
-        assertTrue(all.contains("3행: 영업팀(B팀)"), all);
         assertTrue(all.contains("3행: 거래처 C1 가 2행과 중복"), all);
+        assertTrue(all.contains("4행: 년월(202702)"), all);
+    }
+
+    @Test void closeTeam_expenseIsWholeMonth() {
+        assertEquals(HlSalesClose.ALL_TEAMS, HlSalesService.closeTeam(HlSalesClose.EXPENSE, null));
+        assertEquals("A팀", HlSalesService.closeTeam(HlSalesClose.SALES, "A팀"));
+        assertThrows(IllegalArgumentException.class, () -> HlSalesService.closeTeam(HlSalesClose.SALES, null));
     }
 
     @Test void requireYm_andType() {
@@ -87,18 +94,27 @@ class HlSalesServiceTest {
                 HlSalesPlan.builder().ym("202701").salesTeam("A팀").customerCode("C1").materialCode("M1").category("화장지").boxQty(d("10")).boxPrice(d("1000")).build(),
                 HlSalesPlan.builder().ym("202701").salesTeam("B팀").customerCode("C2").materialCode("M1").boxQty(d("5")).boxPrice(d("1000")).build());
         List<HlCustomerExpense> es = List.of(
-                HlCustomerExpense.builder().ym("202701").salesTeam("A팀").customerCode("C1").incentiveAmt(d("1000")).marketingAmt(d("500")).build());
+                HlCustomerExpense.builder().ym("202701").customerCode("C1").incentiveAmt(d("1000")).marketingAmt(d("500")).build());
         HlSalesClose cl = HlSalesClose.builder().ym("202701").salesTeam("A팀").closeType(HlSalesClose.SALES).build();
         cl.close("u1");
         Map<String, Object> s = HlSalesService.summarize("202701", ps, es, List.of(cl));
         assertEquals(0, d("15000").compareTo((BigDecimal) s.get("netSales")));
+        assertEquals(0, d("1000").compareTo((BigDecimal) s.get("incentiveAmt")));
         assertEquals(0, d("13500").compareTo((BigDecimal) s.get("netAfter")));
+        assertEquals(false, s.get("expenseClosed"));
         @SuppressWarnings("unchecked") List<Map<String, Object>> teams = (List<Map<String, Object>>) s.get("teams");
         assertEquals("A팀", teams.get(0).get("salesTeam"));
-        assertEquals(0, d("8500").compareTo((BigDecimal) teams.get(0).get("netAfter")));
+        assertEquals(0, d("10000").compareTo((BigDecimal) teams.get(0).get("netSales")));
         assertEquals(true, teams.get(0).get("salesClosed"));
-        assertEquals(false, teams.get(0).get("expenseClosed"));
+        assertFalse(teams.get(0).containsKey("incentiveAmt"));
         assertEquals(false, teams.get(1).get("salesClosed"));
+
+        HlSalesClose ex = HlSalesClose.builder().ym("202701").salesTeam(HlSalesClose.ALL_TEAMS).closeType(HlSalesClose.EXPENSE).build();
+        ex.close("u2");
+        Map<String, Object> s2 = HlSalesService.summarize("202701", ps, es, List.of(ex));
+        assertEquals(true, s2.get("expenseClosed"));
+        @SuppressWarnings("unchecked") List<Map<String, Object>> t2 = (List<Map<String, Object>>) s2.get("teams");
+        assertEquals(2, t2.size());   // '전체' 가 영업팀으로 끼지 않음
         @SuppressWarnings("unchecked") List<Map<String, Object>> cats = (List<Map<String, Object>>) s.get("categories");
         assertEquals(List.of("(미입력)", "화장지"), cats.stream().map(m -> m.get("category")).toList());
     }
