@@ -4932,19 +4932,32 @@ function downloadExcel() {
     //       → 향후 복원 로직 변경 / 다른 진입점 추가 시에도 회귀 방지
     const NUMERIC_AGGS = new Set(['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']);
 
-    // [2026-11-25] Excel 수치형 셀 공통 서식 (사용자 신고 verbatim):
-    //   "정수는 소수점 없이 표시하고, 실제 소수값이 존재하는 경우에만 필요한 소수자리까지 표시"
-    //   "0.00, #,##0.0 처럼 소수점을 강제로 표시하는 포맷을 사용하지 않는 것"
+    // [2026-11-25 v2] Excel 수치형 셀 조건부 서식 — 값에 따라 분기 (사용자 2차 신고):
+    //   1차 수정 (optional decimal '#,##0.###############') 후에도 일부 Excel 환경에서
+    //   정수값에 끝점('.') 이 남는 현상 발견 (사용자 스크린샷: '0.', '150,922.').
+    //   원인: 서식 문자열에 명시적 '.' 이 포함되어 있으면 Excel 버전/지역설정에 따라
+    //   빈 소수부 자리에 점만 남기는 경우가 있음.
     //
-    //   Excel # 서식 특성: "자리가 있으면 보여주고 없으면 숨김"
-    //   → optional decimal 포맷으로 통일하면 정수/소수 자동 처리:
-    //     - 0         → '0'
-    //     - 15324     → '15,324'
-    //     - -71479.8  → '-71,479.8'
-    //     - 15324.25  → '15,324.25'
-    //   # 15개 = IEEE 754 double 정밀도 (약 15-17자리) 를 충분히 커버
+    //   해결 (사용자 확정 '옵션 A'): 값 기준 조건부 서식 분기
+    //     - 실제 정수 (num === Math.floor(num)): NUMERIC_FORMAT_INT = '#,##0'
+    //         → '150922'  → '150,922' (끝에 '.' 절대 안 남음)
+    //         → '0'       → '0'
+    //     - 실제 소수 (num !== Math.floor(num)): NUMERIC_FORMAT_DEC = '#,##0.###############'
+    //         → '-71479.8'  → '-71,479.8'
+    //         → '15324.25'  → '15,324.25'
+    //
+    //   중요: DB DECIMAL 반환값이 '15324.0' / '0.0' 처럼 소수점 포함 문자열이어도
+    //         Number(rawStr) 변환 후 Math.floor 체크하면 실제 정수인지 판별 가능:
+    //         Number('15324.0') === 15324 → Math.floor(15324) === 15324 → 정수 서식
+    //
     //   Cell value 는 Number 그대로 유지 (ISNUMBER=TRUE, SUM/AVERAGE 전부 정상)
-    const NUMERIC_FORMAT = '#,##0.###############';
+    //   '#' 15개 = IEEE 754 double 정밀도 (약 15-17자리) 를 충분히 커버
+    const NUMERIC_FORMAT_INT = '#,##0';
+    const NUMERIC_FORMAT_DEC = '#,##0.###############';
+
+    // 값에 따라 적절한 서식 반환 (실제 소수부 유무로 분기)
+    //   - NaN / Infinity 는 호출 전 필터링되므로 여기서는 유한 수치만 처리
+    const pickNumericFormat = (n) => (n === Math.floor(n) ? NUMERIC_FORMAT_INT : NUMERIC_FORMAT_DEC);
 
     const numericColSet = new Set();
 
@@ -5040,7 +5053,8 @@ function downloadExcel() {
             // 이미 number 면 서식만 적용
             if (typeof cell.v === 'number') {
                 cell.t = 'n';
-                cell.z = NUMERIC_FORMAT;
+                // [2026-11-25 v2] 값 기준 서식 분기 (정수 → '#,##0', 소수 → '#,##0.###############')
+                cell.z = pickNumericFormat(cell.v);
                 return;
             }
             // 문자열 → Number 변환 (DB SUM/DECIMAL 결과 대응)
@@ -5055,24 +5069,25 @@ function downloadExcel() {
             }
             cell.v = num;
             cell.t = 'n';
-            // [2026-11-25] optional decimal 서식 통일 (사용자 신고 verbatim):
-            //   "정수는 소수점 없이 표시하고, 실제 소수값이 존재하는 경우에만 필요한 소수자리까지 표시"
-            //   "0.00, #,##0.0 처럼 소수점을 강제로 표시하는 포맷을 사용하지 않는 것"
+            // [2026-11-25 v2] 값 기준 조건부 서식 분기 (사용자 2차 신고 verbatim):
+            //   "0. (X) -> 0    150,922. -> 150,922 (0) 이렇게 하라고"
+            //   "소수점 있는것만 소수점 노출되고 없으면 소수점 노출되게 하지말라고"
             //
-            //   기존 서식 '#,##0.##' 문제:
-            //     - DB DECIMAL(n,2) 는 정수값도 '15324.0' 같이 소수점 포함 문자열로 반환
-            //     - 과거 코드 `rawStr.includes('.')` 체크로 소수 서식 적용 → '15,324.' (끝에 점만 남음)
+            //   v1 수정 ('#,##0.###############' 통일) 후에도 사용자 Excel 환경에서
+            //   정수값에 끝점('.') 이 남는 현상 발생 (openpyxl 로는 재현 안 되지만
+            //   사용자님 Excel 설정/버전에서는 보임).
             //
-            //   해결: NUMERIC_FORMAT 전역 서식 '#,##0.###############' 통일
-            //     - Excel # 서식 특성상 "소수부가 있으면 보여주고 없으면 숨김"
-            //     - 정수값 (15324)       → '15,324'      (점 없음)
-            //     - 소수값 (-71479.8)    → '-71,479.8'   (실제 소수부만 표시)
-            //     - 소수값 (15324.25)    → '15,324.25'
-            //     - 0                    → '0'           (끝에 '.' 안 붙음)
-            //     - Cell value 는 Number 그대로 (ISNUMBER=TRUE / SUM / AVERAGE 전부 정상)
+            //   해결 ('옵션 A'): pickNumericFormat(num) 호출로 값 기준 서식 분기
+            //     - 실제 정수 (num === Math.floor(num)): '#,##0'
+            //         → 150922       → '150,922'  (끝에 '.' 절대 안 남음)
+            //         → 0            → '0'
+            //         → DB '15324.0' → Number 15324 → '15,324' (DB 가짜 소수 문제 해결)
+            //     - 실제 소수: '#,##0.###############'
+            //         → -71479.8     → '-71,479.8'
+            //         → 15324.25     → '15,324.25'
             //
-            //   # 15개 = IEEE 754 double 정밀도 (약 15-17자리) 를 충분히 커버
-            cell.z = NUMERIC_FORMAT;
+            //   Cell value 는 Number 그대로 유지 (ISNUMBER=TRUE, SUM/AVERAGE 정상)
+            cell.z = pickNumericFormat(num);
         });
     });
     if (convertFailCount > 0) {
