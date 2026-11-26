@@ -9,6 +9,7 @@ import java.time.LocalDateTime;
  * <ul>
  *   <li>SALES(판매계획) = 년월 × 영업팀</li>
  *   <li>EXPENSE(장려금·마케팅비) = 년월 전체 (기획팀) — SALES_TEAM 은 {@link #ALL_TEAMS}</li>
+ *   <li>PRODUCTION(생산계획 확정) = 년월 전체 (현업) — SALES_TEAM 은 {@link #ALL_TEAMS}</li>
  * </ul>
  */
 @SQLRestriction("DELETED_YN = 'N'")
@@ -16,7 +17,8 @@ import java.time.LocalDateTime;
 public class HlSalesClose extends BaseAuditEntity {
     public static final String SALES = "SALES";
     public static final String EXPENSE = "EXPENSE";
-    /** 장려금·마케팅비 마감 행의 SALES_TEAM 값 (영업팀 구분 없음) */
+    public static final String PRODUCTION = "PRODUCTION";
+    /** 장려금·마케팅비·생산계획 마감 행의 SALES_TEAM 값 (영업팀 구분 없음) */
     public static final String ALL_TEAMS = "전체";
 
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="CLOSE_ID") private Long closeId;

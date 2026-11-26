@@ -2,6 +2,7 @@ package com.company.module.rollingplanningsimulation.controller;
 
 import com.company.core.common.response.ApiResponse;
 import com.company.module.rollingplanningsimulation.entity.HlCustomerExpense;
+import com.company.module.rollingplanningsimulation.entity.HlProductionPlan;
 import com.company.module.rollingplanningsimulation.entity.HlSalesClose;
 import com.company.module.rollingplanningsimulation.entity.HlSalesPlan;
 import com.company.module.rollingplanningsimulation.service.HlSalesService;
@@ -20,6 +21,8 @@ import java.util.Map;
  *   <li>POST/PUT/DELETE /hl-sales/plans[/{id}]      — 한 행 등록·수정·삭제</li>
  *   <li>POST /hl-sales/plans/upload                 — 엑셀 업로드 (년월·팀 통째 교체)</li>
  *   <li>같은 구성: /hl-sales/expenses?ym=           — 장려금·마케팅비 (기획팀, 년월 전체 · 영업팀 구분 없음)</li>
+ *   <li>같은 구성: /hl-sales/productions?ym=        — 생산계획 (현업, 년월 전체 → 확정 = closeType PRODUCTION)</li>
+ *   <li>GET  /hl-sales/machines                     — HL 호기 마스터 (생산 호기 드롭다운)</li>
  *   <li>GET  /hl-sales/close?ym= · POST /hl-sales/close · POST /hl-sales/reopen (EXPENSE 는 영업팀 없이 년월 전체)</li>
  *   <li>GET  /hl-sales/summary?ym=                  — 순매출·장려금·마케팅비 합계</li>
  * </ul>
@@ -78,6 +81,33 @@ public class HlSalesController {
     @PostMapping("/expenses/upload")
     public ResponseEntity<ApiResponse<Map<String, Object>>> uploadExpenses(@RequestBody Map<String, Object> b) {
         return ResponseEntity.ok(ApiResponse.success(service.uploadExpenses(b)));
+    }
+
+    // ── 생산계획 ──
+    @GetMapping("/machines")
+    public ResponseEntity<ApiResponse<List<Map<String, String>>>> machines() {
+        return ResponseEntity.ok(ApiResponse.success(service.hlMachines()));
+    }
+    @GetMapping("/productions")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> productions(@RequestParam String ym) {
+        return ResponseEntity.ok(ApiResponse.success(service.productions(ym)));
+    }
+    @PostMapping("/productions")
+    public ResponseEntity<ApiResponse<HlProductionPlan>> addProduction(@RequestBody Map<String, Object> b) {
+        return ResponseEntity.ok(ApiResponse.success(service.saveProduction(null, b)));
+    }
+    @PutMapping("/productions/{id}")
+    public ResponseEntity<ApiResponse<HlProductionPlan>> updateProduction(@PathVariable Long id, @RequestBody Map<String, Object> b) {
+        return ResponseEntity.ok(ApiResponse.success(service.saveProduction(id, b)));
+    }
+    @DeleteMapping("/productions/{id}")
+    public ResponseEntity<ApiResponse<Void>> deleteProduction(@PathVariable Long id) {
+        service.deleteProduction(id);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+    @PostMapping("/productions/upload")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> uploadProductions(@RequestBody Map<String, Object> b) {
+        return ResponseEntity.ok(ApiResponse.success(service.uploadProductions(b)));
     }
 
     // ── 마감 ──
