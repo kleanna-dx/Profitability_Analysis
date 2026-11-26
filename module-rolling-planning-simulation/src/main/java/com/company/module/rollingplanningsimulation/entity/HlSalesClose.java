@@ -4,12 +4,20 @@ import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDateTime;
 
-/** HL 마감 — 년월 × 영업팀 × 구분(SALES=판매계획 / EXPENSE=장려금·마케팅비). 마감되면 입력·업로드 불가 */
+/**
+ * HL 마감 — 마감되면 입력·업로드 불가
+ * <ul>
+ *   <li>SALES(판매계획) = 년월 × 영업팀</li>
+ *   <li>EXPENSE(장려금·마케팅비) = 년월 전체 (기획팀) — SALES_TEAM 은 {@link #ALL_TEAMS}</li>
+ * </ul>
+ */
 @SQLRestriction("DELETED_YN = 'N'")
 @Entity @Table(name="rpsim_hl_sales_close") @Getter @NoArgsConstructor(access=AccessLevel.PROTECTED)
 public class HlSalesClose extends BaseAuditEntity {
     public static final String SALES = "SALES";
     public static final String EXPENSE = "EXPENSE";
+    /** 장려금·마케팅비 마감 행의 SALES_TEAM 값 (영업팀 구분 없음) */
+    public static final String ALL_TEAMS = "전체";
 
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) @Column(name="CLOSE_ID") private Long closeId;
     @Column(name="YM",nullable=false,length=6) private String ym;

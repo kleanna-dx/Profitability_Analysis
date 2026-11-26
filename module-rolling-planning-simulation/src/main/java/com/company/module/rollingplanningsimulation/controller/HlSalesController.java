@@ -19,8 +19,8 @@ import java.util.Map;
  *   <li>GET  /hl-sales/plans?ym=&amp;team=           — 판매계획 (team 없으면 전체)</li>
  *   <li>POST/PUT/DELETE /hl-sales/plans[/{id}]      — 한 행 등록·수정·삭제</li>
  *   <li>POST /hl-sales/plans/upload                 — 엑셀 업로드 (년월·팀 통째 교체)</li>
- *   <li>같은 구성: /hl-sales/expenses               — 장려금·마케팅비</li>
- *   <li>GET  /hl-sales/close?ym= · POST /hl-sales/close · POST /hl-sales/reopen</li>
+ *   <li>같은 구성: /hl-sales/expenses?ym=           — 장려금·마케팅비 (기획팀, 년월 전체 · 영업팀 구분 없음)</li>
+ *   <li>GET  /hl-sales/close?ym= · POST /hl-sales/close · POST /hl-sales/reopen (EXPENSE 는 영업팀 없이 년월 전체)</li>
  *   <li>GET  /hl-sales/summary?ym=                  — 순매출·장려금·마케팅비 합계</li>
  * </ul>
  */
@@ -59,8 +59,8 @@ public class HlSalesController {
 
     // ── 장려금·마케팅비 ──
     @GetMapping("/expenses")
-    public ResponseEntity<ApiResponse<List<HlCustomerExpense>>> expenses(@RequestParam String ym, @RequestParam(required = false) String team) {
-        return ResponseEntity.ok(ApiResponse.success(service.expenses(ym, team)));
+    public ResponseEntity<ApiResponse<List<HlCustomerExpense>>> expenses(@RequestParam String ym) {
+        return ResponseEntity.ok(ApiResponse.success(service.expenses(ym)));
     }
     @PostMapping("/expenses")
     public ResponseEntity<ApiResponse<HlCustomerExpense>> addExpense(@RequestBody Map<String, Object> b) {
