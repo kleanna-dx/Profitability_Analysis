@@ -1,9 +1,12 @@
 package com.company.module.rollingplanningsimulation.service;
 
 import com.company.module.rollingplanningsimulation.entity.HlCustomerExpense;
+import com.company.module.rollingplanningsimulation.entity.HlProductionPlan;
 import com.company.module.rollingplanningsimulation.entity.HlSalesClose;
 import com.company.module.rollingplanningsimulation.entity.HlSalesPlan;
 import com.company.module.rollingplanningsimulation.repository.HlCustomerExpenseRepository;
+import com.company.module.rollingplanningsimulation.repository.HlProductionPlanRepository;
+import com.company.module.rollingplanningsimulation.repository.UnitRepository;
 import com.company.module.rollingplanningsimulation.repository.HlSalesCloseRepository;
 import com.company.module.rollingplanningsimulation.repository.HlSalesPlanRepository;
 import com.company.module.rollingplanningsimulation.support.AuditSupport;
@@ -22,7 +25,8 @@ import java.util.*;
  *   <li>판매계획 = 영업팀이 입력. 영업팀은 화면에서 고름. 업로드 파일에 다른 년월·다른 팀 행이 있으면 저장하지 않음</li>
  *   <li>장려금·마케팅비 = 기획팀이 년월 전체를 올림 (영업팀 구분 없음, 년월 × 거래처 = 1행)</li>
  *   <li>업로드 = 그 범위(판매계획: 년월·팀 / 장려금·마케팅비: 년월) 데이터를 파일 내용으로 통째 교체 (파일에 없는 행은 소프트 삭제)</li>
- *   <li>마감: 판매계획 = 년월·팀별 / 장려금·마케팅비 = 년월 전체. 마감되면 입력·수정·삭제·업로드 불가</li>
+ *   <li>생산계획 = 현업이 년월 전체를 입력 (년월 × 생산 호기 × 자재코드 = 월 생산량 EA) 후 확정</li>
+ *   <li>마감: 판매계획 = 년월·팀별 / 장려금·마케팅비·생산계획(확정) = 년월 전체. 마감되면 입력·수정·삭제·업로드 불가</li>
  * </ul>
  */
 @Service
@@ -32,11 +36,15 @@ public class HlSalesService {
     private final HlSalesPlanRepository planRepo;
     private final HlCustomerExpenseRepository expenseRepo;
     private final HlSalesCloseRepository closeRepo;
+    private final HlProductionPlanRepository prodRepo;
+    private final UnitRepository unitRepo;
     private final AuditSupport auditSupport;
 
     static final String[] UK_PLAN = {"ym", "salesTeam", "customerCode", "materialCode"};
     static final String[] UK_EXPENSE = {"ym", "customerCode"};
-    static final List<String> CLOSE_TYPES = List.of(HlSalesClose.SALES, HlSalesClose.EXPENSE);
+    static final String[] UK_PROD = {"ym", "machine", "materialCode"};
+    static final List<String> CLOSE_TYPES = List.of(HlSalesClose.SALES, HlSalesClose.EXPENSE, HlSalesClose.PRODUCTION);
+    public static final String HL = "HL";
 
     // ================================================================ 공통 검사
 
@@ -68,7 +76,7 @@ public class HlSalesService {
     static String requireType(Object v) {
         String t = str(v);
         if (t == null || !CLOSE_TYPES.contains(t.toUpperCase(Locale.ROOT)))
-            throw new IllegalArgumentException("마감 구분은 SALES(판매계획) / EXPENSE(장려금·마케팅비) 중 하나입니다: " + v);
+            throw new IllegalArgumentException("마감 구분은 SALES(판매계획) / EXPENSE(장려금·마케팅비) / PRODUCTION(생산계획) 중 하나입니다: " + v);
         return t.toUpperCase(Locale.ROOT);
     }
 
@@ -178,12 +186,14 @@ public class HlSalesService {
     private void assertOpen(String ym, String team, String type) {
         if (isClosed(ym, team, type))
             throw new IllegalStateException(ym.substring(0, 4) + "." + ym.substring(4) + " "
-                    + (HlSalesClose.SALES.equals(type) ? team + " 판매계획" : "장려금·마케팅비") + "은 마감되었습니다 — 마감 해제 후 수정하세요");
+                    + (HlSalesClose.SALES.equals(type) ? team + " 판매계획은 마감되었습니다 — 마감 해제 후 수정하세요"
+                    : HlSalesClose.PRODUCTION.equals(type) ? "생산계획은 확정되었습니다 — 확정 해제 후 수정하세요"
+                    : "장려금·마케팅비는 마감되었습니다 — 마감 해제 후 수정하세요"));
     }
 
-    /** 마감 단위의 영업팀 값 — 장려금·마케팅비는 년월 전체라 '전체' */
+    /** 마감 단위의 영업팀 값 — 장려금·마케팅비·생산계획은 년월 전체라 '전체' */
     static String closeTeam(String type, Object teamRaw) {
-        return HlSalesClose.EXPENSE.equals(type) ? HlSalesClose.ALL_TEAMS : requireTeam(teamRaw);
+        return HlSalesClose.SALES.equals(type) ? requireTeam(teamRaw) : HlSalesClose.ALL_TEAMS;
     }
 
     public List<HlSalesClose> closeStatus(Object ymRaw) {
@@ -195,19 +205,21 @@ public class HlSalesService {
         String ym = requireYm(ymRaw), type = requireType(typeRaw), team = closeTeam(type, teamRaw);
         HlSalesClose c = closeRepo.findFirstByYmAndSalesTeamAndCloseType(ym, team, type).orElse(null);
         if (c == null) {
-            if (!close) throw new IllegalStateException("마감된 적이 없습니다");
+            if (!close) throw new IllegalStateException(HlSalesClose.PRODUCTION.equals(type) ? "확정된 적이 없습니다" : "마감된 적이 없습니다");
             c = auditSupport.upsert(closeRepo, HlSalesClose.builder().ym(ym).salesTeam(team).closeType(type).build(),
                     "ym", "salesTeam", "closeType");
         }
         if (close) {
-            if (c.closed()) throw new IllegalStateException("이미 마감되었습니다");
+            if (c.closed()) throw new IllegalStateException(HlSalesClose.PRODUCTION.equals(type) ? "이미 확정되었습니다" : "이미 마감되었습니다");
             if (HlSalesClose.SALES.equals(type) && planRepo.findByYmAndSalesTeamOrderByCustomerCodeAscMaterialCodeAsc(ym, team).isEmpty())
                 throw new IllegalStateException("판매계획이 한 건도 없어 마감할 수 없습니다");
             if (HlSalesClose.EXPENSE.equals(type) && expenseRepo.findByYmOrderByCustomerCodeAsc(ym).isEmpty())
                 throw new IllegalStateException("장려금·마케팅비가 한 건도 없어 마감할 수 없습니다");
+            if (HlSalesClose.PRODUCTION.equals(type) && prodRepo.findByYmOrderByMachineAscMaterialCodeAsc(ym).isEmpty())
+                throw new IllegalStateException("생산계획이 한 건도 없어 확정할 수 없습니다");
             c.close(CurrentUser.get());
         } else {
-            if (!c.closed()) throw new IllegalStateException("마감 상태가 아닙니다");
+            if (!c.closed()) throw new IllegalStateException(HlSalesClose.PRODUCTION.equals(type) ? "확정 상태가 아닙니다" : "마감 상태가 아닙니다");
             c.reopen();
         }
         return closeRepo.save(c);
@@ -315,6 +327,119 @@ public class HlSalesService {
         res.put("ok", true);
         res.put("saved", c.rows().size());
         res.put("removed", removed);
+        return res;
+    }
+
+    // ================================================================ 생산계획 (현업, 년월 전체 → 확정)
+
+    /** 생산계획 행 검사 — 생산 호기·자재코드·월 생산량(EA) 필수, 같은 호기·자재코드 중복 금지 */
+    public static Checked<HlProductionPlan> checkProductions(String ym, List<Map<String, Object>> rows) {
+        List<String> errors = new ArrayList<>();
+        List<HlProductionPlan> out = new ArrayList<>();
+        Map<String, String> seen = new HashMap<>();
+        if (rows == null) rows = List.of();
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> r = rows.get(i);
+            String at = rowAt(r, i);
+            int before = errors.size();
+            checkScope(r, ym, null, at, errors);
+            String mc = maxLen(r.get("machine"), 50, "생산 호기", at, errors);
+            String mat = maxLen(r.get("materialCode"), 50, "자재코드", at, errors);
+            if (str(r.get("machine")) == null) errors.add(at + "생산 호기를 입력하세요");
+            if (str(r.get("materialCode")) == null) errors.add(at + "자재코드를 입력하세요");
+            String cat = maxLen(r.get("category"), 100, "카테고리 분류", at, errors);
+            String type = maxLen(r.get("prodType"), 100, "생산 분류", at, errors);
+            String matName = maxLen(r.get("materialName"), 200, "자재명", at, errors);
+            String note = maxLen(r.get("note"), 500, "기타", at, errors);
+            BigDecimal qty = nonNegative(r.get("qtyEa"), "월 생산량(EA)", at, errors, true);
+            if (mc != null && mat != null) {
+                String prev = seen.putIfAbsent(mc + "|" + mat, at);
+                if (prev != null) errors.add(at + "생산 호기 " + mc + " · 자재 " + mat + " 가 " + prev.replace(": ", "") + "과 중복입니다");
+            }
+            if (errors.size() == before)
+                out.add(HlProductionPlan.builder().ym(ym).category(cat).machine(mc).prodType(type)
+                        .materialCode(mat).materialName(matName).qtyEa(qty).note(note).build());
+        }
+        return new Checked<>(out, errors);
+    }
+
+    /** HL 호기 마스터 (사용중) — 화면 드롭다운·미등록 호기 경고용 */
+    public List<Map<String, String>> hlMachines() {
+        List<Map<String, String>> out = new ArrayList<>();
+        for (var u : unitRepo.findByDivisionAndDeletedYnOrderByUnitCode(HL, "N")) {
+            if (Boolean.FALSE.equals(u.getIsActive())) continue;
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("code", u.getUnitCode()); m.put("name", u.getUnitName());
+            out.add(m);
+        }
+        return out;
+    }
+
+    /** 호기 마스터(코드·이름)에 없는 생산 호기 — 공백·'호기' 무시, 대소문자 무시. 저장은 하되 경고 */
+    static List<String> unknownMachines(Collection<String> machines, List<Map<String, String>> master) {
+        Set<String> known = new HashSet<>();
+        for (Map<String, String> m : master) { known.add(EnergyDataSyncService.norm(m.get("code"))); known.add(EnergyDataSyncService.norm(m.get("name"))); }
+        known.remove("");
+        TreeSet<String> out = new TreeSet<>();
+        for (String mc : machines) if (mc != null && !known.contains(EnergyDataSyncService.norm(mc))) out.add(mc);
+        return new ArrayList<>(out);
+    }
+
+    private List<String> machineWarnings(Collection<String> machines) {
+        List<String> unknown = unknownMachines(machines, hlMachines());
+        return unknown.isEmpty() ? List.of()
+                : List.of("HL 호기 마스터에 없는 생산 호기: " + String.join(", ", unknown) + " — 저장은 했지만 전력비·에너지비 연결 때 호기를 찾지 못합니다. [기준정보 › 호기 마스터]에 등록하거나 호기 이름을 맞추세요");
+    }
+
+    public Map<String, Object> productions(Object ymRaw) {
+        List<HlProductionPlan> rows = prodRepo.findByYmOrderByMachineAscMaterialCodeAsc(requireYm(ymRaw));
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("rows", rows);
+        res.put("warnings", machineWarnings(rows.stream().map(HlProductionPlan::getMachine).toList()));
+        return res;
+    }
+
+    @Transactional
+    public HlProductionPlan saveProduction(Long id, Map<String, Object> b) {
+        String ym = requireYm(b.get("ym"));
+        assertOpen(ym, HlSalesClose.ALL_TEAMS, HlSalesClose.PRODUCTION);
+        Checked<HlProductionPlan> c = checkProductions(ym, List.of(b));
+        if (!c.ok()) throw new IllegalArgumentException(String.join(" / ", c.errors()).replace("1번째 행: ", ""));
+        HlProductionPlan in = c.rows().get(0);
+        if (id == null) return auditSupport.upsert(prodRepo, in, UK_PROD);
+        HlProductionPlan e = prodRepo.findById(id).orElseThrow(() -> new IllegalArgumentException("데이터를 찾을 수 없습니다: " + id));
+        if (!e.getYm().equals(ym)) assertOpen(e.getYm(), HlSalesClose.ALL_TEAMS, HlSalesClose.PRODUCTION);
+        return auditSupport.updateById(prodRepo, id, in, UK_PROD);
+    }
+
+    @Transactional
+    public void deleteProduction(Long id) {
+        HlProductionPlan e = prodRepo.findById(id).orElseThrow(() -> new IllegalArgumentException("데이터를 찾을 수 없습니다: " + id));
+        assertOpen(e.getYm(), HlSalesClose.ALL_TEAMS, HlSalesClose.PRODUCTION);
+        auditSupport.softDelete(prodRepo, id);
+    }
+
+    /** 업로드 — 그 년월 생산계획 전체를 파일 내용으로 교체. 호기 마스터에 없는 호기는 저장하고 경고 */
+    @Transactional
+    public Map<String, Object> uploadProductions(Map<String, Object> body) {
+        String ym = requireYm(body.get("ym"));
+        assertOpen(ym, HlSalesClose.ALL_TEAMS, HlSalesClose.PRODUCTION);
+        @SuppressWarnings("unchecked") List<Map<String, Object>> rows = (List<Map<String, Object>>) body.get("rows");
+        Checked<HlProductionPlan> c = checkProductions(ym, rows);
+        Map<String, Object> res = new LinkedHashMap<>();
+        if (!c.ok()) { res.put("ok", false); res.put("errors", c.errors()); return res; }
+        if (c.rows().isEmpty()) { res.put("ok", false); res.put("errors", List.of("올릴 행이 없습니다")); return res; }
+
+        Set<String> keep = new HashSet<>();
+        for (HlProductionPlan x : c.rows()) { auditSupport.upsert(prodRepo, x, UK_PROD); keep.add(x.getMachine() + "|" + x.getMaterialCode()); }
+        int removed = 0;
+        for (HlProductionPlan old : prodRepo.findByYmOrderByMachineAscMaterialCodeAsc(ym))
+            if (!keep.contains(old.getMachine() + "|" + old.getMaterialCode())) { auditSupport.softDelete(prodRepo, old.getProdId()); removed++; }
+        res.put("ok", true);
+        res.put("saved", c.rows().size());
+        res.put("removed", removed);
+        res.put("qtyEa", c.rows().stream().map(HlProductionPlan::getQtyEa).reduce(BigDecimal.ZERO, BigDecimal::add));
+        res.put("warnings", machineWarnings(c.rows().stream().map(HlProductionPlan::getMachine).toList()));
         return res;
     }
 

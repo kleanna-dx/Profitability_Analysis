@@ -118,4 +118,37 @@ class HlSalesServiceTest {
         @SuppressWarnings("unchecked") List<Map<String, Object>> cats = (List<Map<String, Object>>) s.get("categories");
         assertEquals(List.of("(미입력)", "화장지"), cats.stream().map(m -> m.get("category")).toList());
     }
+
+    @Test void checkProductions_ok_required_duplicate_negative() {
+        var ok = HlSalesService.checkProductions("202701", List.of(
+                row("category", "화장지", "machine", "TM3", "prodType", "롤", "materialCode", "M1", "materialName", "롤화장지", "qtyEa", "12,000", "note", "x"),
+                row("machine", "TM3", "materialCode", "M2", "qtyEa", 0)));
+        assertTrue(ok.ok(), ok.errors().toString());
+        assertEquals(0, d("12000").compareTo(ok.rows().get(0).getQtyEa()));
+        assertEquals("202701", ok.rows().get(0).getYm());
+
+        var bad = HlSalesService.checkProductions("202701", List.of(
+                row("rowNo", 2, "materialCode", "M1", "qtyEa", 1),
+                row("rowNo", 3, "machine", "TM3", "materialCode", "M1", "qtyEa", -5),
+                row("rowNo", 4, "machine", "TM3", "materialCode", "M1"),
+                row("rowNo", 5, "machine", "TM3", "materialCode", "M1", "qtyEa", 1),
+                row("rowNo", 6, "machine", "TM4", "materialCode", "M9", "qtyEa", 1, "ym", "202702")));
+        String all = String.join("\n", bad.errors());
+        assertTrue(all.contains("2행: 생산 호기를 입력하세요"), all);
+        assertTrue(all.contains("3행: 월 생산량(EA)는 0 이상"), all);
+        assertTrue(all.contains("4행: 월 생산량(EA)를 입력하세요"), all);
+        assertTrue(all.contains("5행: 생산 호기 TM3 · 자재 M1 가 3행과 중복"), all);
+        assertTrue(all.contains("6행: 년월(202702)"), all);
+    }
+
+    @Test void unknownMachines_matchCodeOrName_ignoreSpaceAndSuffix() {
+        List<Map<String, String>> master = List.of(Map.of("code", "TM3", "name", "화장지3"), Map.of("code", "TM4", "name", "화장지 4호기"));
+        assertEquals(List.of("TM9", "가공1"),
+                HlSalesService.unknownMachines(List.of("TM3", "화장지 3호기", "화장지4", "tm4", "TM9", "가공1"), master));
+    }
+
+    @Test void closeTeam_productionIsWholeMonth() {
+        assertEquals(HlSalesClose.ALL_TEAMS, HlSalesService.closeTeam(HlSalesClose.PRODUCTION, null));
+        assertEquals("PRODUCTION", HlSalesService.requireType("production"));
+    }
 }

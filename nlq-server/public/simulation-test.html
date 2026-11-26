@@ -162,6 +162,7 @@
         <div class="sub-tab" onclick="subTab(1,'purchase')">구매 이동계획</div>
         <div class="sub-tab" onclick="subTab(1,'sales')">판매계획</div>
         <div class="sub-tab" id="subTabHlExp" onclick="subTab(1,'hlexp')" style="display:none;">장려금·마케팅비</div>
+        <div class="sub-tab" id="subTabHlProd" onclick="subTab(1,'hlprod')" style="display:none;">생산계획</div>
     </div>
 
     <!-- 1-1 데이터 준비 현황 -->
@@ -474,6 +475,15 @@
             <div style="font-size:11px;color:#64748b;line-height:1.6;">기획팀이 그 달 전체를 거래처별 금액으로 올립니다 (영업팀 구분 없음) · 장려금 = 판매처에 꼭 내는 금액 · 비어 있으면 0<br>다시 올리면 그 달 전체가 파일 내용으로 바뀝니다 · 마감하면 수정·업로드가 막힙니다</div>
         </div>
         <div id="hl-exp"></div>
+    </div>
+
+    <!-- 1-8 생산계획 (HL 전용, 현업이 년월 전체 입력 → 확정) -->
+    <div id="s1-hlprod" style="display:none;">
+        <div class="sc" style="padding:12px 16px;margin-bottom:12px;">
+            <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 4px;"><i class="fas fa-industry text-indigo-500 mr-2"></i>HL 생산계획 <span id="hlProdYm" style="font-size:10px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;"></span></h3>
+            <div style="font-size:11px;color:#64748b;line-height:1.6;">현업이 그 달 생산계획을 입력합니다 — 한 줄 = 생산 호기 × 자재코드 · 월 생산량(EA)<br>다시 올리면 그 달 전체가 파일 내용으로 바뀝니다 · [확정]하면 수정·업로드가 막힙니다 · 생산 호기가 HL 호기 마스터에 없으면 저장은 되지만 경고합니다</div>
+        </div>
+        <div id="hl-prod"></div>
     </div>
 
 </div>
@@ -1059,8 +1069,10 @@ function applyDivisionLayout(){
     const nt=document.getElementById('divScopeNote');
     if(nt){nt.style.display=on?'none':'';nt.innerHTML='<i class="fas fa-info-circle mr-1"></i>'+getDiv()+' 사업부는 생산 최적화·원가 분석 화면이 없습니다 (별도 개발 예정). 데이터 준비와 STEP 4 [에너지비·전력비 시뮬레이션]만 사용할 수 있습니다.';}
     // 장려금·마케팅비 탭 — HL 전용
-    {const t=document.getElementById('subTabHlExp');const hl=getDiv()==='HL';if(t)t.style.display=hl?'':'none';
-     const p=document.getElementById('s1-hlexp');if(!hl&&p&&p.style.display!=='none')subTab(1,'ready');}
+    {const hl=getDiv()==='HL';
+     ['subTabHlExp','subTabHlProd'].forEach(id=>{const t=document.getElementById(id);if(t)t.style.display=hl?'':'none';});
+     const shown=['s1-hlexp','s1-hlprod'].some(id=>{const p=document.getElementById(id);return p&&p.style.display!=='none';});
+     if(!hl&&shown)subTab(1,'ready');}
     if(!stepAllowed(curStep))goStep(1);
     else if(!on&&curStep===4)subTab(4,'pwsim');
 }
@@ -1079,6 +1091,7 @@ async function onFilterChange(){
     {const sp=document.getElementById('s1-purchase');if(sp&&sp.style.display!=='none')purOnShow();} // 전사 공통 — 사업부 무관
     {const ss=document.getElementById('s1-sales');if(ss&&ss.style.display!=='none')salOnShow(true);} // 판매계획 — 사업부별
     {const he=document.getElementById('s1-hlexp');if(he&&he.style.display!=='none')hlExpOnShow();} // 장려금·마케팅비 — HL
+    {const hp=document.getElementById('s1-hlprod');if(hp&&hp.style.display!=='none')hlProdOnShow();} // 생산계획 — HL
     {PWS.vid=null;PWS.rows={};PWS.imp=null;PWPL.res=null;PWPL.key='';PWPL.pending=null;const pw=document.getElementById('s4-pwsim');if(pw&&pw.style.display!=='none'&&curStep===4)pwsOnShow();} // 전력비 — 사업부·월별
     {PE.res=null;PE.key='';PE.pending=null;if(peShown())peLoad(true);} // 에너지비 — 공장 통합 (사업부 무관 계산, 보고 있는 사업부 강조)
     if(!hasCostSteps())return; // HL 등: 데이터 준비(+전력비 시뮬레이션)만 — 원가·생산 데이터는 불러오지 않음
@@ -1113,7 +1126,7 @@ function goStep(n){
 }
 
 // ── Sub-tab Navigation ──
-const SUB_MAP={1:['ready','ref','itf','purchase','sales','hlexp'],2:[],4:['plsim','causal','prodsim','energy','matfc','pwsim']};
+const SUB_MAP={1:['ready','ref','itf','purchase','sales','hlexp','hlprod'],2:[],4:['plsim','causal','prodsim','energy','matfc','pwsim']};
 function subTab(step,key){
     const subs=SUB_MAP[step]||[];
     subs.forEach(k=>{const el=document.getElementById('s'+step+'-'+k);if(el)el.style.display=k===key?'':'none';});
@@ -1123,6 +1136,7 @@ function subTab(step,key){
     if(step===1&&key==='purchase')purOnShow();
     if(step===1&&key==='sales')salOnShow(false);
     if(step===1&&key==='hlexp')hlExpOnShow();
+    if(step===1&&key==='hlprod')hlProdOnShow();
     if(step===4&&key==='pwsim')pwsOnShow();
     if(step===4&&key==='energy')peLoad(false);
 }
@@ -4741,12 +4755,12 @@ function salOnShow(reset){
 //   장려금·마케팅비 = 기획팀 · 영업팀 구분 없이 년월 전체 업로드·마감 (마감 행 SALES_TEAM = '전체')
 // ================================================================
 const HL_API=API+'/hl-sales';
-let HL={tab:'plan',teams:[],plans:[],exps:[],closes:[],sum:null};
+let HL={tab:'plan',teams:[],plans:[],exps:[],prods:[],machines:[],closes:[],sum:null};
 const HL_PLAN_COLS=[['ym','년월'],['salesTeam','영업팀'],['customerCode','거래처코드'],['customerName','거래처명'],['category','카테고리'],['materialCode','자재코드'],['boxQty','BOX 수량'],['boxPrice','BOX당 단가'],['netSales','순매출'],['note','비고']];
 const HL_EXP_COLS=[['ym','년월'],['customerCode','거래처코드'],['customerName','거래처명'],['incentiveAmt','장려금'],['marketingAmt','마케팅비'],['note','비고']];
 function hlTeam(){return (document.getElementById('hlTeam')||{}).value?.trim()||'';}
 function hlN(v,d){if(v==null||v==='')return '<span style="color:#cbd5e1;">-</span>';const n=Number(v);return isFinite(n)?n.toLocaleString('ko-KR',{maximumFractionDigits:d==null?0:d}):purEsc(v);}
-function hlCloseKey(type){return type==='EXPENSE'?'전체':hlTeam();}
+function hlCloseKey(type){return type==='SALES'?hlTeam():'전체';}
 function hlClosed(type){const t=hlCloseKey(type);return HL.closes.some(c=>c.salesTeam===t&&c.closeType===type&&c.isClosed==='Y');}
 function hlCloseInfo(type){const t=hlCloseKey(type);return HL.closes.find(c=>c.salesTeam===t&&c.closeType===type&&c.isClosed==='Y');}
 async function hlOnShow(){
@@ -4761,7 +4775,8 @@ async function hlExpOnShow(){
     const y=document.getElementById('hlExpYm');if(y)y.textContent=purYmDot(getYm());
     await hlLoadCloses();hlLoadExps();
 }
-function hlReload(kind){return kind==='expenses'||kind==='EXPENSE'?hlExpOnShow():hlOnShow();}
+function hlReload(kind){return kind==='expenses'||kind==='EXPENSE'?hlExpOnShow():kind==='productions'||kind==='PRODUCTION'?hlProdOnShow():hlOnShow();}
+const HL_FN={SALES:'Plan',EXPENSE:'Exp',PRODUCTION:'Prod',plans:'Plan',expenses:'Exp',productions:'Prod'};
 async function hlLoadCloses(){try{HL.closes=await purGet(HL_API+'/close?ym='+getYm())||[];}catch(_){HL.closes=[];}}
 async function hlTab(k){
     if(k==='exp')k='plan';
@@ -4773,24 +4788,26 @@ async function hlTab(k){
 }
 function hlNeedTeam(box){box.innerHTML='<div class="sc" style="padding:24px;text-align:center;color:#94a3b8;font-size:12px;"><i class="fas fa-users mr-1"></i>위에서 영업팀을 선택하거나 새 팀 이름을 입력하세요</div>';}
 function hlToolbar(type,label,count,total){
-    const cl=hlCloseInfo(type),closed=!!cl,fn=type==='SALES'?'Plan':'Exp';
-    const badge=closed?'<span style="font-size:10px;padding:2px 8px;border-radius:6px;background:#fee2e2;color:#b91c1c;font-weight:700;"><i class="fas fa-lock mr-1"></i>마감 '+purEsc(String(cl.closedAt||'').replace('T',' ').substring(0,16))+' '+purEsc(cl.closedBy||'')+'</span>'
-        :'<span style="font-size:10px;padding:2px 8px;border-radius:6px;background:#dcfce7;color:#15803d;font-weight:700;"><i class="fas fa-lock-open mr-1"></i>입력 중</span>';
+    const cl=hlCloseInfo(type),closed=!!cl,fn=HL_FN[type],isProd=type==='PRODUCTION';
+    const lockWord=isProd?'확정':'마감',openWord=isProd?'작성 중':'입력 중';
+    const badge=closed?'<span style="font-size:10px;padding:2px 8px;border-radius:6px;background:#fee2e2;color:#b91c1c;font-weight:700;"><i class="fas fa-lock mr-1"></i>'+lockWord+' '+purEsc(String(cl.closedAt||'').replace('T',' ').substring(0,16))+' '+purEsc(cl.closedBy||'')+'</span>'
+        :'<span style="font-size:10px;padding:2px 8px;border-radius:6px;background:#dcfce7;color:#15803d;font-weight:700;"><i class="fas fa-lock-open mr-1"></i>'+openWord+'</span>';
     const dis=closed?' disabled style="font-size:11px;padding:5px 10px;opacity:.45;cursor:not-allowed;"':' style="font-size:11px;padding:5px 10px;"';
     return '<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">'
-        +'<h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;">'+label+' <span style="font-size:10px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;">'+(type==='SALES'?purEsc(hlTeam()):'기획팀 · 전체')+'</span> '+badge+' <span style="font-size:10px;color:#94a3b8;font-weight:400;">'+count+'건'+(total?' · '+total:'')+'</span></h3>'
+        +'<h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;">'+label+' <span style="font-size:10px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;">'+(type==='SALES'?purEsc(hlTeam()):isProd?'전체':'기획팀 · 전체')+'</span> '+badge+' <span style="font-size:10px;color:#94a3b8;font-weight:400;">'+count+'건'+(total?' · '+total:'')+'</span></h3>'
         +'<div style="display:flex;gap:6px;flex-wrap:wrap;">'
         +'<button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="hlTemplate'+fn+'()"><i class="fas fa-file-download mr-1"></i>양식 다운로드</button>'
         +(closed?'<button class="btn-g"'+dis+'><i class="fas fa-file-upload mr-1"></i>엑셀 업로드</button><button class="btn-g"'+dis+'><i class="fas fa-plus mr-1"></i>행 추가</button>'
             :'<label class="btn-g" style="font-size:11px;padding:5px 10px;cursor:pointer;margin:0;"><i class="fas fa-file-upload mr-1"></i>엑셀 업로드<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="hlUpload'+fn+'(this)"></label><button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="hlModal'+fn+'(null)"><i class="fas fa-plus mr-1"></i>행 추가</button>')
-        +(closed?'<button class="btn-g" style="font-size:11px;padding:5px 10px;color:#b91c1c;" onclick="hlSetClose(\''+type+'\',false)"><i class="fas fa-unlock mr-1"></i>마감 해제</button>'
-            :'<button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="hlSetClose(\''+type+'\',true)"><i class="fas fa-lock mr-1"></i>마감</button>')
+        +(closed?'<button class="btn-g" style="font-size:11px;padding:5px 10px;color:#b91c1c;" onclick="hlSetClose(\''+type+'\',false)"><i class="fas fa-unlock mr-1"></i>'+lockWord+' 해제</button>'
+            :'<button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="hlSetClose(\''+type+'\',true)"><i class="fas fa-lock mr-1"></i>'+lockWord+'</button>')
         +'</div></div><div id="hlRes'+fn+'" style="padding:0 16px;"></div>';
 }
 async function hlSetClose(type,close){
-    const t=type==='SALES'?hlTeam():'',nm=type==='SALES'?'판매계획':'장려금·마케팅비 (전체)';
-    if(!confirm(purYmDot(getYm())+(t?' '+t:'')+' '+nm+'을(를) '+(close?'마감':'마감 해제')+'하시겠습니까?'+(close?'\n마감하면 수정·업로드가 막힙니다.':'')))return;
-    try{await purSend(HL_API+(close?'/close':'/reopen'),'POST',{ym:getYm(),salesTeam:t,closeType:type});}catch(e){alert((close?'마감':'마감 해제')+' 실패: '+e.message);return;}
+    const t=type==='SALES'?hlTeam():'',nm=type==='SALES'?'판매계획':type==='PRODUCTION'?'생산계획 (전체)':'장려금·마케팅비 (전체)';
+    const w=type==='PRODUCTION'?'확정':'마감',act=close?w:w+' 해제';
+    if(!confirm(purYmDot(getYm())+(t?' '+t:'')+' '+nm+'을(를) '+act+'하시겠습니까?'+(close?'\n'+w+'하면 수정·업로드가 막힙니다.':'')))return;
+    try{await purSend(HL_API+(close?'/close':'/reopen'),'POST',{ym:getYm(),salesTeam:t,closeType:type});}catch(e){alert(act+' 실패: '+e.message);return;}
     hlReload(type);
 }
 
@@ -4871,7 +4888,7 @@ async function hlLoadSum(){
 }
 
 // ── 엑셀 양식·업로드 ──
-async function hlWriteTemplate(sheetName,cols,widths,data,numCols,formulaCol,rules,fileName,scopeLabel){
+async function hlWriteTemplate(sheetName,cols,widths,data,numCols,formulaCol,rules,fileName,scopeLabel,lists){
     try{await purLoadExcelJS();}catch(e){alert(e.message);return;}
     const wb=new ExcelJS.Workbook();
     const H1={type:'pattern',pattern:'solid',fgColor:{argb:'FF4F46E5'}},H2={type:'pattern',pattern:'solid',fgColor:{argb:'FF94A3B8'}};
@@ -4890,6 +4907,10 @@ async function hlWriteTemplate(sheetName,cols,widths,data,numCols,formulaCol,rul
             if(numCols.includes(i))cell.numFmt='#,##0.##';else cell.numFmt='@';
             if(src){const v=src[i];if(v!=null&&v!=='')cell.value=numCols.includes(i)?Number(v):String(v);}
             else if(c[0]==='ym')cell.value=purYmDot(getYm());else if(c[0]==='salesTeam')cell.value=hlTeam();});}
+    if(lists){const wl=wb.addWorksheet('목록',{state:'hidden'});let lc=0;
+        Object.keys(lists).forEach(ci=>{const vals=lists[ci]||[];if(!vals.length)return;const L=String.fromCharCode(65+lc);wl.getCell(1,lc+1).value=cols[ci][1];
+            vals.forEach((v,ri)=>{wl.getCell(ri+2,lc+1).value=v;});
+            ws.dataValidations.add(col(Number(ci))+'2:'+col(Number(ci))+last,{type:'list',allowBlank:true,formulae:["'목록'!$"+L+'$2:$'+L+'$'+(vals.length+1)],showErrorMessage:true,errorStyle:'warning',errorTitle:'호기 마스터에 없는 값',error:'HL 호기 마스터에 없는 호기입니다. 그대로 두면 저장은 되지만 경고가 표시됩니다.'});lc++;});}
     numCols.forEach(i=>ws.dataValidations.add(col(i)+'2:'+col(i)+last,{type:'decimal',operator:'greaterThanOrEqual',allowBlank:true,formulae:[0],showErrorMessage:true,errorTitle:'숫자 확인',error:'0 이상의 숫자만 입력하세요.'}));
     const buf=await wb.xlsx.writeBuffer();
     const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
@@ -4915,13 +4936,62 @@ function hlTemplateExp(){
         '업로드하면 그 년월 장려금·마케팅비 전체가 파일 내용으로 바뀝니다 (파일에 없는 거래처는 삭제 처리). 마감된 달은 올릴 수 없습니다.'],
         'HL장려금마케팅비_'+getYm()+'.xlsx',['담당','기획팀 (전체)']);
 }
+// ── 생산계획 (HL 전용 탭 · 현업 · 년월 전체 → 확정) ──
+const HL_PROD_COLS=[['ym','년월'],['category','카테고리 분류'],['machine','생산 호기'],['prodType','생산 분류'],['materialCode','자재코드'],['materialName','자재명'],['qtyEa','월 생산량(EA)'],['note','기타']];
+async function hlProdOnShow(){
+    const y=document.getElementById('hlProdYm');if(y)y.textContent=purYmDot(getYm());
+    try{HL.machines=await purGet(HL_API+'/machines')||[];}catch(_){HL.machines=[];}
+    await hlLoadCloses();hlLoadProds();
+}
+async function hlLoadProds(){
+    const box=document.getElementById('hl-prod');let d;
+    try{d=await purGet(HL_API+'/productions?ym='+getYm())||{};}catch(e){box.innerHTML='<div class="sc" style="padding:14px;color:#dc2626;font-size:11px;">불러오기 실패: '+purEsc(e.message)+' — rpsim_hl_production_plan 테이블과 서버 배포를 확인하세요</div>';return;}
+    HL.prods=d.rows||[];const closed=hlClosed('PRODUCTION');
+    const tot=HL.prods.reduce((a,r)=>a+Number(r.qtyEa||0),0);
+    let h='<div class="sc" style="overflow:hidden;">'+hlToolbar('PRODUCTION','<i class="fas fa-industry text-indigo-500 mr-1"></i>생산계획',HL.prods.length,'월 생산량 '+hlN(tot)+' EA');
+    if((d.warnings||[]).length)h+='<div style="padding:0 16px;">'+purMsgList('<i class="fas fa-exclamation-triangle mr-1"></i>확인 필요',d.warnings,'#b45309','#fffbeb','#fde68a')+'</div>';
+    h+='<div style="overflow-x:auto;max-height:520px;"><table class="st" style="font-size:11px;"><thead><tr><th>카테고리 분류</th><th>생산 호기</th><th>생산 분류</th><th>자재코드</th><th>자재명</th><th class="r">월 생산량(EA)</th><th>기타</th><th style="width:90px;">관리</th></tr></thead><tbody>';
+    if(!HL.prods.length)h+='<tr><td colspan="8" style="text-align:center;padding:18px;color:#94a3b8;">'+purYmDot(getYm())+' 생산계획이 없습니다 — [양식 다운로드] 후 작성해 [엑셀 업로드]하거나 [행 추가]하세요</td></tr>';
+    HL.prods.forEach((r,i)=>{h+='<tr><td>'+purEsc(r.category||'')+'</td><td style="font-weight:700;">'+purEsc(r.machine)+'</td><td>'+purEsc(r.prodType||'')+'</td><td>'+purEsc(r.materialCode)+'</td><td>'+purEsc(r.materialName||'')+'</td><td class="r" style="font-weight:700;">'+hlN(r.qtyEa,2)+'</td><td>'+purEsc(r.note||'')+'</td><td>'
+        +(closed?'<span style="color:#cbd5e1;font-size:10px;">확정</span>':'<button class="btn-g" style="font-size:10px;padding:2px 7px;" onclick="hlModalProd('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 7px;color:#dc2626;" onclick="hlDel(\'productions\','+r.prodId+')">삭제</button>')+'</td></tr>';});
+    if(HL.prods.length){
+        h+='<tr style="background:#f8fafc;font-weight:700;"><td colspan="5">합계</td><td class="r">'+hlN(tot,2)+'</td><td colspan="2"></td></tr>';
+        const byM={};HL.prods.forEach(r=>{byM[r.machine]=(byM[r.machine]||0)+Number(r.qtyEa||0);});
+        Object.keys(byM).sort().forEach(m=>{h+='<tr style="background:#f8fafc;color:#475569;"><td></td><td colspan="4">└ '+purEsc(m)+' 소계</td><td class="r">'+hlN(byM[m],2)+'</td><td colspan="2"></td></tr>';});
+    }
+    box.innerHTML=h+'</tbody></table></div></div>';
+}
+function hlModalProd(i){
+    const x=i==null?{}:HL.prods[i];
+    const f=(n,l,v,ro)=>'<label>'+l+'</label><input name="'+n+'" value="'+purEsc(v??'')+'"'+(ro?' readonly style="background:#f1f5f9;"':'')+'>';
+    const ms=HL.machines||[];
+    const mc=i!=null?f('machine','생산 호기',x.machine,true)
+        :'<label>생산 호기 <span style="font-size:10px;color:#94a3b8;">(HL 호기 마스터에서 고르거나 직접 입력)</span></label><input name="machine" list="hlMachineList" value=""><datalist id="hlMachineList">'+ms.map(m=>'<option value="'+purEsc(m.code)+'">'+purEsc(m.name||'')+'</option>').join('')+'</datalist>';
+    let h='<h3><i class="fas fa-industry text-indigo-500"></i> 생산계획 '+(i==null?'추가':'수정')+' <span style="font-size:11px;color:#64748b;">'+purYmDot(getYm())+'</span></h3>';
+    h+=f('category','카테고리 분류',x.category)+mc+f('prodType','생산 분류',x.prodType)+f('materialCode','자재코드',x.materialCode,i!=null)+f('materialName','자재명',x.materialName)+f('qtyEa','월 생산량 (EA)',x.qtyEa)+f('note','기타',x.note);
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="hlSaveModal(\'productions\','+(i==null?'null':x.prodId)+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+async function hlTemplateProd(){
+    if(!HL.machines||!HL.machines.length){try{HL.machines=await purGet(HL_API+'/machines')||[];}catch(_){HL.machines=[];}}
+    const data=(HL.prods||[]).map(r=>[purYmDot(r.ym),r.category,r.machine,r.prodType,r.materialCode,r.materialName,r.qtyEa,r.note]);
+    hlWriteTemplate('생산계획',HL_PROD_COLS,[10,16,14,16,16,30,16,30],data,[6],-1,[
+        '시트 이름·머리글은 바꾸지 마세요. 한 줄 = 생산 호기 × 자재코드 1건입니다. 같은 호기·자재코드는 한 줄로 합쳐 적습니다.',
+        '년월은 화면에서 고른 값('+purYmDot(getYm())+')만 올릴 수 있고, 비워 두면 화면 값으로 저장합니다.',
+        '생산 호기·자재코드·월 생산량(EA)은 필수입니다. 월 생산량은 0 이상 숫자(EA)입니다. 카테고리 분류·생산 분류·자재명·기타는 선택입니다.',
+        '생산 호기는 드롭다운(HL 호기 마스터)에서 고르는 것을 권장합니다 — 마스터에 없는 호기도 저장은 되지만 경고가 표시되고 전력비·에너지비 연결 때 호기를 찾지 못합니다.',
+        '업로드하면 그 년월 생산계획 전체가 파일 내용으로 바뀝니다 (파일에 없는 행은 삭제 처리). 확정된 달은 올릴 수 없습니다.'],
+        'HL생산계획_'+getYm()+'.xlsx',['담당','현업 (전체)'],{2:(HL.machines||[]).map(m=>m.code)});
+}
+function hlUploadProd(input){hlUploadGeneric(input,'productions','생산계획',HL_PROD_COLS,[],'생산계획');}
+
 function hlParse(wb,sheetName,cols,skipKeys){
     const ws=wb.Sheets[sheetName]||wb.Sheets[wb.SheetNames.find(n=>purStrip(n)===purStrip(sheetName))];
     if(!ws)return {problems:[sheetName+' 시트가 없습니다 — [양식 다운로드]로 받은 파일을 사용하세요'],rows:[]};
     const a=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});const h=(a[0]||[]).map(purStrip);
     const use=cols.filter(c=>!skipKeys.includes(c[0]));
     const idx=use.map(c=>h.findIndex(x=>x.startsWith(purStrip(c[1]))));
-    const missing=use.filter((c,i)=>idx[i]<0&&!['ym','salesTeam','note','customerName','category'].includes(c[0])).map(c=>c[1]);
+    const missing=use.filter((c,i)=>idx[i]<0&&!['ym','salesTeam','note','customerName','category','prodType','materialName'].includes(c[0])).map(c=>c[1]);
     if(missing.length)return {problems:[sheetName+' 시트 머리글을 찾지 못했습니다: '+missing.join(', ')],rows:[]};
     const rows=[];
     for(let i=1;i<a.length;i++){const r=a[i]||[];const e={rowNo:i+1};let any=false;
@@ -4933,19 +5003,19 @@ function hlParse(wb,sheetName,cols,skipKeys){
 }
 async function hlUploadGeneric(input,kind,sheetName,cols,skip,label){
     const file=input.files&&input.files[0];input.value='';if(!file)return;
-    const fn=kind==='plans'?'Plan':'Exp';const box=document.getElementById('hlRes'+fn);const t=kind==='plans'?hlTeam():'';
+    const fn=HL_FN[kind];const box=document.getElementById('hlRes'+fn);const t=kind==='plans'?hlTeam():'';
     box.innerHTML='<div style="font-size:11px;color:#64748b;padding:8px 0;"><i class="fas fa-spinner fa-spin mr-1"></i>'+purEsc(file.name)+' 확인 중...</div>';
     let p;try{p=hlParse(XLSX.read(await file.arrayBuffer(),{type:'array'}),sheetName,cols,skip);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px 0;">엑셀 읽기 실패: '+purEsc(e.message)+'</div>';return;}
     if(!p.problems.length&&!p.rows.length)p.problems.push(sheetName+' 시트에 데이터가 없습니다');
     if(p.problems.length){box.innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다',p.problems,'#b91c1c','#fef2f2','#fecaca');return;}
-    const old=kind==='plans'?HL.plans.length:HL.exps.length;
+    const old=kind==='plans'?HL.plans.length:kind==='productions'?HL.prods.length:HL.exps.length;
     if(old&&!confirm(purYmDot(getYm())+(t?' '+t:' 전체')+' '+label+' '+old+'건을 파일 내용('+p.rows.length+'건)으로 바꿉니다.\n파일에 없는 행은 삭제 처리됩니다. 계속할까요?')){box.innerHTML='';return;}
     const body={ym:getYm(),fileName:file.name,rows:p.rows};if(kind==='plans')body.salesTeam=t;
     let res;try{res=await purSend(HL_API+'/'+kind+'/upload','POST',body);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px 0;">업로드 실패: '+purEsc(e.message)+'</div>';return;}
     if(!res||!res.ok){box.innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다 — 오류를 고친 뒤 다시 올려 주세요.',res&&res.errors||['알 수 없는 오류'],'#b91c1c','#fef2f2','#fecaca');return;}
     await hlReload(kind);
     const b2=document.getElementById('hlRes'+fn);
-    if(b2)b2.innerHTML='<div style="margin:8px 0;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:11px;color:#15803d;"><i class="fas fa-check-circle mr-1"></i>'+purEsc(file.name)+' — '+res.saved+'건 저장'+(res.removed?' · 파일에 없던 '+res.removed+'건 삭제 처리':'')+(res.netSales!=null?' · 순매출 '+hlN(res.netSales)+'원':'')+'</div>';
+    if(b2)b2.innerHTML='<div style="margin:8px 0;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:11px;color:#15803d;"><i class="fas fa-check-circle mr-1"></i>'+purEsc(file.name)+' — '+res.saved+'건 저장'+(res.removed?' · 파일에 없던 '+res.removed+'건 삭제 처리':'')+(res.netSales!=null?' · 순매출 '+hlN(res.netSales)+'원':'')+(res.qtyEa!=null?' · 생산량 '+hlN(res.qtyEa)+' EA':'')+'</div>'+((res.warnings||[]).length?purMsgList('<i class="fas fa-exclamation-triangle mr-1"></i>확인 필요',res.warnings,'#b45309','#fffbeb','#fde68a'):'');
 }
 function hlUploadPlan(input){hlUploadGeneric(input,'plans','판매계획',HL_PLAN_COLS,['netSales'],'판매계획');}
 function hlUploadExp(input){hlUploadGeneric(input,'expenses','장려금·마케팅비',HL_EXP_COLS,[],'장려금·마케팅비');}
