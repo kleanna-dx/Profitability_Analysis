@@ -392,6 +392,30 @@
 
     <!-- 1-6 판매계획 (사업부별, 표준 양식) -->
     <div id="s1-sales" style="display:none;">
+        <!-- HL 판매계획 (SKU별) · 거래처별 장려금/마케팅비 · 마감 — HL 사업부일 때만 표시 -->
+        <div id="hlSales" style="display:none;">
+            <div class="sc" style="padding:12px 16px;margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+                    <div>
+                        <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 4px;"><i class="fas fa-store text-indigo-500 mr-2"></i>HL 판매계획 <span id="hlYm" style="font-size:10px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;"></span></h3>
+                        <div style="font-size:11px;color:#64748b;line-height:1.6;">SKU별 판매계획 · 순매출 = BOX 수량 × BOX당 단가(장려금 제외) — 시스템 계산 · 장려금·마케팅비는 거래처별 금액<br>영업팀을 고른 뒤 그 팀 것만 입력·업로드합니다 (파일에 다른 팀·다른 년월 행이 있으면 올라가지 않음) · 마감하면 수정·업로드가 막힙니다</div>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <label style="font-size:11px;font-weight:700;color:#475569;">영업팀</label>
+                        <input id="hlTeam" list="hlTeamList" placeholder="영업팀 선택·입력" onchange="hlTeamChanged()" style="padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;width:170px;">
+                        <datalist id="hlTeamList"></datalist>
+                    </div>
+                </div>
+            </div>
+            <div class="ref-tabs" id="hlTabs">
+                <div class="ref-tab active" onclick="hlTab('plan')"><i class="fas fa-boxes mr-1"></i>판매계획</div>
+                <div class="ref-tab" onclick="hlTab('exp')"><i class="fas fa-hand-holding-usd mr-1"></i>장려금·마케팅비</div>
+                <div class="ref-tab" onclick="hlTab('sum')"><i class="fas fa-table mr-1"></i>팀별 요약</div>
+            </div>
+            <div id="hl-plan"></div>
+            <div id="hl-exp" style="display:none;"></div>
+            <div id="hl-sum" style="display:none;"></div>
+        </div>
         <div class="ref-tabs" id="salTabs">
             <div class="ref-tab active" onclick="salTab('plan')"><i class="fas fa-chart-line mr-1"></i>판매계획 업로드·결과</div>
             <div class="ref-tab" onclick="salTab('code')"><i class="fas fa-list-ul mr-1"></i>판매 코드</div>
@@ -4688,7 +4712,219 @@ function salTab(k){
     document.querySelectorAll('.sal-div').forEach(e=>{e.textContent=getDiv();});
     if(k==='plan')salLoadVersions();else if(k==='code')salLoadCodes();else salLoadGrades();
 }
-function salOnShow(reset){if(reset){SAL.detailId=null;SAL.pending=null;const r=document.getElementById('salResult');if(r)r.innerHTML='';}salTab(SAL.tab||'plan');}
+function salOnShow(reset){
+    // HL = SKU별 판매계획 화면 / PS = 표준 양식 업로드 화면
+    const hl=getDiv()==='HL';
+    const hs=document.getElementById('hlSales');if(hs)hs.style.display=hl?'':'none';
+    const st=document.getElementById('salTabs');if(st)st.style.display=hl?'none':'';
+    if(hl){['plan','code','grade'].forEach(x=>{const el=document.getElementById('sal-'+x);if(el)el.style.display='none';});hlOnShow();return;}
+    if(reset){SAL.detailId=null;SAL.pending=null;const r=document.getElementById('salResult');if(r)r.innerHTML='';}salTab(SAL.tab||'plan');
+}
+
+// ================================================================
+// HL 판매계획 (SKU별) · 거래처별 장려금/마케팅비 · 마감 — 서버 HlSalesController
+//   순매출 = BOX 수량 × BOX당 단가(장려금 제외) — 서버 계산
+//   영업팀은 화면에서 고름 · 업로드 = 그 년월·팀 통째 교체 · 마감되면 수정·업로드 불가
+// ================================================================
+const HL_API=API+'/hl-sales';
+let HL={tab:'plan',teams:[],plans:[],exps:[],closes:[],sum:null};
+const HL_PLAN_COLS=[['ym','년월'],['salesTeam','영업팀'],['customerCode','거래처코드'],['customerName','거래처명'],['category','카테고리'],['materialCode','자재코드'],['boxQty','BOX 수량'],['boxPrice','BOX당 단가'],['netSales','순매출'],['note','비고']];
+const HL_EXP_COLS=[['ym','년월'],['salesTeam','영업팀'],['customerCode','거래처코드'],['customerName','거래처명'],['incentiveAmt','장려금'],['marketingAmt','마케팅비'],['note','비고']];
+function hlTeam(){return (document.getElementById('hlTeam')||{}).value?.trim()||'';}
+function hlN(v,d){if(v==null||v==='')return '<span style="color:#cbd5e1;">-</span>';const n=Number(v);return isFinite(n)?n.toLocaleString('ko-KR',{maximumFractionDigits:d==null?0:d}):purEsc(v);}
+function hlClosed(type){const t=hlTeam();return HL.closes.some(c=>c.salesTeam===t&&c.closeType===type&&c.isClosed==='Y');}
+function hlCloseInfo(type){const t=hlTeam();return HL.closes.find(c=>c.salesTeam===t&&c.closeType===type&&c.isClosed==='Y');}
+async function hlOnShow(){
+    const y=document.getElementById('hlYm');if(y)y.textContent=purYmDot(getYm());
+    try{HL.teams=await purGet(HL_API+'/teams')||[];}catch(e){HL.teams=[];document.getElementById('hl-plan').innerHTML='<div class="sc" style="padding:14px;color:#dc2626;font-size:11px;">불러오기 실패: '+purEsc(e.message)+' — rpsim_hl_* 테이블과 서버 배포를 확인하세요</div>';return;}
+    document.getElementById('hlTeamList').innerHTML=HL.teams.map(t=>'<option value="'+purEsc(t)+'">').join('');
+    hlTab(HL.tab||'plan');
+}
+function hlTeamChanged(){hlTab(HL.tab);}
+async function hlLoadCloses(){try{HL.closes=await purGet(HL_API+'/close?ym='+getYm())||[];}catch(_){HL.closes=[];}}
+async function hlTab(k){
+    HL.tab=k;['plan','exp','sum'].forEach(x=>{const el=document.getElementById('hl-'+x);if(el)el.style.display=x===k?'':'none';});
+    document.querySelectorAll('#hlTabs .ref-tab').forEach((t,i)=>t.classList.toggle('active',['plan','exp','sum'][i]===k));
+    await hlLoadCloses();
+    if(k==='plan')hlLoadPlans();else if(k==='exp')hlLoadExps();else hlLoadSum();
+}
+function hlNeedTeam(box){box.innerHTML='<div class="sc" style="padding:24px;text-align:center;color:#94a3b8;font-size:12px;"><i class="fas fa-users mr-1"></i>위에서 영업팀을 선택하거나 새 팀 이름을 입력하세요</div>';}
+function hlToolbar(type,label,count,total){
+    const cl=hlCloseInfo(type),closed=!!cl,fn=type==='SALES'?'Plan':'Exp';
+    const badge=closed?'<span style="font-size:10px;padding:2px 8px;border-radius:6px;background:#fee2e2;color:#b91c1c;font-weight:700;"><i class="fas fa-lock mr-1"></i>마감 '+purEsc(String(cl.closedAt||'').replace('T',' ').substring(0,16))+' '+purEsc(cl.closedBy||'')+'</span>'
+        :'<span style="font-size:10px;padding:2px 8px;border-radius:6px;background:#dcfce7;color:#15803d;font-weight:700;"><i class="fas fa-lock-open mr-1"></i>입력 중</span>';
+    const dis=closed?' disabled style="font-size:11px;padding:5px 10px;opacity:.45;cursor:not-allowed;"':' style="font-size:11px;padding:5px 10px;"';
+    return '<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">'
+        +'<h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;">'+label+' <span style="font-size:10px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;">'+purEsc(hlTeam())+'</span> '+badge+' <span style="font-size:10px;color:#94a3b8;font-weight:400;">'+count+'건'+(total?' · '+total:'')+'</span></h3>'
+        +'<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+        +'<button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="hlTemplate'+fn+'()"><i class="fas fa-file-download mr-1"></i>양식 다운로드</button>'
+        +(closed?'<button class="btn-g"'+dis+'><i class="fas fa-file-upload mr-1"></i>엑셀 업로드</button><button class="btn-g"'+dis+'><i class="fas fa-plus mr-1"></i>행 추가</button>'
+            :'<label class="btn-g" style="font-size:11px;padding:5px 10px;cursor:pointer;margin:0;"><i class="fas fa-file-upload mr-1"></i>엑셀 업로드<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="hlUpload'+fn+'(this)"></label><button class="btn-g" style="font-size:11px;padding:5px 10px;" onclick="hlModal'+fn+'(null)"><i class="fas fa-plus mr-1"></i>행 추가</button>')
+        +(closed?'<button class="btn-g" style="font-size:11px;padding:5px 10px;color:#b91c1c;" onclick="hlSetClose(\''+type+'\',false)"><i class="fas fa-unlock mr-1"></i>마감 해제</button>'
+            :'<button class="btn-p" style="font-size:11px;padding:5px 12px;" onclick="hlSetClose(\''+type+'\',true)"><i class="fas fa-lock mr-1"></i>마감</button>')
+        +'</div></div><div id="hlRes'+fn+'" style="padding:0 16px;"></div>';
+}
+async function hlSetClose(type,close){
+    const t=hlTeam(),nm=type==='SALES'?'판매계획':'장려금·마케팅비';
+    if(!confirm(purYmDot(getYm())+' '+t+' '+nm+'을(를) '+(close?'마감':'마감 해제')+'하시겠습니까?'+(close?'\n마감하면 수정·업로드가 막힙니다.':'')))return;
+    try{await purSend(HL_API+(close?'/close':'/reopen'),'POST',{ym:getYm(),salesTeam:t,closeType:type});}catch(e){alert((close?'마감':'마감 해제')+' 실패: '+e.message);return;}
+    hlTab(HL.tab);
+}
+
+// ── 판매계획 ──
+async function hlLoadPlans(){
+    const box=document.getElementById('hl-plan');const t=hlTeam();if(!t){hlNeedTeam(box);return;}
+    try{HL.plans=await purGet(HL_API+'/plans?ym='+getYm()+'&team='+encodeURIComponent(t))||[];}catch(e){box.innerHTML='<div class="sc" style="padding:14px;color:#dc2626;font-size:11px;">불러오기 실패: '+purEsc(e.message)+'</div>';return;}
+    const closed=hlClosed('SALES');
+    const box2=HL.plans.reduce((a,r)=>a+Number(r.boxQty||0),0),net=HL.plans.reduce((a,r)=>a+Number(r.netSales||0),0);
+    let h='<div class="sc" style="overflow:hidden;">'+hlToolbar('SALES','<i class="fas fa-boxes text-indigo-500 mr-1"></i>판매계획',HL.plans.length,'BOX '+hlN(box2)+' · 순매출 '+hlN(net)+'원');
+    h+='<div style="overflow-x:auto;max-height:520px;"><table class="st" style="font-size:11px;"><thead><tr><th>거래처코드</th><th>거래처명</th><th>카테고리</th><th>자재코드</th><th class="r">BOX 수량</th><th class="r">BOX당 단가</th><th class="r">순매출</th><th>비고</th><th style="width:90px;">관리</th></tr></thead><tbody>';
+    if(!HL.plans.length)h+='<tr><td colspan="9" style="text-align:center;padding:18px;color:#94a3b8;">'+purYmDot(getYm())+' '+purEsc(t)+' 판매계획이 없습니다 — [양식 다운로드] 후 작성해 [엑셀 업로드]하거나 [행 추가]하세요</td></tr>';
+    HL.plans.forEach((r,i)=>{h+='<tr><td>'+purEsc(r.customerCode)+'</td><td>'+purEsc(r.customerName||'')+'</td><td>'+purEsc(r.category||'')+'</td><td>'+purEsc(r.materialCode)+'</td><td class="r">'+hlN(r.boxQty,2)+'</td><td class="r">'+hlN(r.boxPrice,2)+'</td><td class="r" style="font-weight:700;">'+hlN(r.netSales)+'</td><td>'+purEsc(r.note||'')+'</td><td>'
+        +(closed?'<span style="color:#cbd5e1;font-size:10px;">마감</span>':'<button class="btn-g" style="font-size:10px;padding:2px 7px;" onclick="hlModalPlan('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 7px;color:#dc2626;" onclick="hlDel(\'plans\','+r.planId+')">삭제</button>')+'</td></tr>';});
+    if(HL.plans.length)h+='<tr style="background:#f8fafc;font-weight:700;"><td colspan="4">합계</td><td class="r">'+hlN(box2,2)+'</td><td></td><td class="r">'+hlN(net)+'</td><td colspan="2"></td></tr>';
+    box.innerHTML=h+'</tbody></table></div></div>';
+}
+function hlModalPlan(i){
+    const x=i==null?{}:HL.plans[i];
+    const f=(n,l,v,ro,hint)=>'<label>'+l+(hint?' <span style="font-size:10px;color:#94a3b8;">'+hint+'</span>':'')+'</label><input name="'+n+'" value="'+purEsc(v??'')+'"'+(ro?' readonly style="background:#f1f5f9;"':'')+'>';
+    let h='<h3><i class="fas fa-boxes text-indigo-500"></i> 판매계획 '+(i==null?'추가':'수정')+' <span style="font-size:11px;color:#64748b;">'+purYmDot(getYm())+' · '+purEsc(hlTeam())+'</span></h3>';
+    h+=f('customerCode','거래처코드',x.customerCode,i!=null)+f('customerName','거래처명',x.customerName)+f('category','카테고리',x.category)+f('materialCode','자재코드',x.materialCode,i!=null);
+    h+=f('boxQty','BOX 수량',x.boxQty)+f('boxPrice','BOX당 단가',x.boxPrice,false,'(원, 장려금 제외)')+f('note','비고',x.note);
+    h+='<div style="font-size:11px;color:#64748b;margin-top:6px;">순매출 = BOX 수량 × BOX당 단가 (저장 시 계산)</div>';
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="hlSaveModal(\'plans\','+(i==null?'null':x.planId)+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+async function hlSaveModal(kind,id){
+    const body={ym:getYm(),salesTeam:hlTeam()};document.querySelectorAll('.modal-box [name]').forEach(el=>{body[el.name]=el.value.trim();});
+    try{await purSend(HL_API+'/'+kind+(id==null?'':'/'+id),id==null?'POST':'PUT',body);}catch(e){alert('저장 실패: '+e.message);return;}
+    closeModal();await hlOnShow();
+}
+async function hlDel(kind,id){if(!confirm('삭제하시겠습니까?'))return;try{await purSend(HL_API+'/'+kind+'/'+id,'DELETE');}catch(e){alert('삭제 실패: '+e.message);return;}hlTab(HL.tab);}
+
+// ── 장려금·마케팅비 ──
+async function hlLoadExps(){
+    const box=document.getElementById('hl-exp');const t=hlTeam();if(!t){hlNeedTeam(box);return;}
+    try{HL.exps=await purGet(HL_API+'/expenses?ym='+getYm()+'&team='+encodeURIComponent(t))||[];}catch(e){box.innerHTML='<div class="sc" style="padding:14px;color:#dc2626;font-size:11px;">불러오기 실패: '+purEsc(e.message)+'</div>';return;}
+    const closed=hlClosed('EXPENSE');
+    const inc=HL.exps.reduce((a,r)=>a+Number(r.incentiveAmt||0),0),mkt=HL.exps.reduce((a,r)=>a+Number(r.marketingAmt||0),0);
+    let h='<div class="sc" style="overflow:hidden;">'+hlToolbar('EXPENSE','<i class="fas fa-hand-holding-usd text-indigo-500 mr-1"></i>장려금·마케팅비',HL.exps.length,'장려금 '+hlN(inc)+'원 · 마케팅비 '+hlN(mkt)+'원');
+    h+='<div style="padding:6px 16px;font-size:10px;color:#94a3b8;">장려금 = 판매처에 꼭 내는 금액 (BOX당 단가에서 빠지는 판매 장려금과 별개) · 거래처별 금액 · 비어 있으면 0</div>';
+    h+='<div style="overflow-x:auto;max-height:520px;"><table class="st" style="font-size:11px;"><thead><tr><th>거래처코드</th><th>거래처명</th><th class="r">장려금</th><th class="r">마케팅비</th><th class="r">합계</th><th>비고</th><th style="width:90px;">관리</th></tr></thead><tbody>';
+    if(!HL.exps.length)h+='<tr><td colspan="7" style="text-align:center;padding:18px;color:#94a3b8;">'+purYmDot(getYm())+' '+purEsc(t)+' 장려금·마케팅비가 없습니다</td></tr>';
+    HL.exps.forEach((r,i)=>{h+='<tr><td>'+purEsc(r.customerCode)+'</td><td>'+purEsc(r.customerName||'')+'</td><td class="r">'+hlN(r.incentiveAmt)+'</td><td class="r">'+hlN(r.marketingAmt)+'</td><td class="r" style="font-weight:700;">'+hlN(Number(r.incentiveAmt||0)+Number(r.marketingAmt||0))+'</td><td>'+purEsc(r.note||'')+'</td><td>'
+        +(closed?'<span style="color:#cbd5e1;font-size:10px;">마감</span>':'<button class="btn-g" style="font-size:10px;padding:2px 7px;" onclick="hlModalExp('+i+')">수정</button> <button class="btn-g" style="font-size:10px;padding:2px 7px;color:#dc2626;" onclick="hlDel(\'expenses\','+r.expenseId+')">삭제</button>')+'</td></tr>';});
+    if(HL.exps.length)h+='<tr style="background:#f8fafc;font-weight:700;"><td colspan="2">합계</td><td class="r">'+hlN(inc)+'</td><td class="r">'+hlN(mkt)+'</td><td class="r">'+hlN(inc+mkt)+'</td><td colspan="2"></td></tr>';
+    box.innerHTML=h+'</tbody></table></div></div>';
+}
+function hlModalExp(i){
+    const x=i==null?{}:HL.exps[i];
+    const f=(n,l,v,ro)=>'<label>'+l+'</label><input name="'+n+'" value="'+purEsc(v??'')+'"'+(ro?' readonly style="background:#f1f5f9;"':'')+'>';
+    let h='<h3><i class="fas fa-hand-holding-usd text-indigo-500"></i> 장려금·마케팅비 '+(i==null?'추가':'수정')+' <span style="font-size:11px;color:#64748b;">'+purYmDot(getYm())+' · '+purEsc(hlTeam())+'</span></h3>';
+    h+=f('customerCode','거래처코드',x.customerCode,i!=null)+f('customerName','거래처명',x.customerName)+f('incentiveAmt','장려금 (원)',x.incentiveAmt)+f('marketingAmt','마케팅비 (원)',x.marketingAmt)+f('note','비고',x.note);
+    h+='<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;"><button class="btn-g" onclick="closeModal()">취소</button><button class="btn-p" onclick="hlSaveModal(\'expenses\','+(i==null?'null':x.expenseId)+')">저장</button></div>';
+    document.getElementById('modalBox').innerHTML=h;document.getElementById('modalBg').style.display='flex';
+}
+
+// ── 팀별 요약 ──
+async function hlLoadSum(){
+    const box=document.getElementById('hl-sum');
+    try{HL.sum=await purGet(HL_API+'/summary?ym='+getYm());}catch(e){box.innerHTML='<div class="sc" style="padding:14px;color:#dc2626;font-size:11px;">불러오기 실패: '+purEsc(e.message)+'</div>';return;}
+    const s=HL.sum||{};const lock=v=>v?'<span style="color:#b91c1c;font-weight:700;"><i class="fas fa-lock"></i> 마감</span>':'<span style="color:#94a3b8;">입력 중</span>';
+    const card=(l,v,c)=>'<div class="sc" style="padding:12px 14px;border-left:3px solid '+c+';"><div style="font-size:10px;color:#64748b;">'+l+'</div><div style="font-size:18px;font-weight:800;color:#1e293b;">'+hlN(v)+'</div></div>';
+    let h='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:12px;">'
+        +card('BOX 수량',s.boxQty,'#6366f1')+card('순매출 (원)',s.netSales,'#4f46e5')+card('장려금 (원)',s.incentiveAmt,'#f59e0b')+card('마케팅비 (원)',s.marketingAmt,'#f97316')+card('순매출 − 장려금 − 마케팅비',s.netAfter,'#16a34a')+'</div>';
+    h+='<div class="sc" style="overflow:hidden;margin-bottom:12px;"><div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-users text-indigo-500 mr-1"></i>영업팀별 '+purYmDot(getYm())+'</h3></div>';
+    h+='<div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>영업팀</th><th class="r">BOX 수량</th><th class="r">순매출</th><th class="r">장려금</th><th class="r">마케팅비</th><th class="r">순매출 − 장려금 − 마케팅비</th><th>판매계획</th><th>장려금·마케팅비</th></tr></thead><tbody>';
+    const ts=s.teams||[];if(!ts.length)h+='<tr><td colspan="8" style="text-align:center;padding:18px;color:#94a3b8;">'+purYmDot(getYm())+' 등록된 데이터가 없습니다</td></tr>';
+    ts.forEach(t=>{h+='<tr><td><a href="javascript:void(0)" onclick="document.getElementById(\'hlTeam\').value=\''+purEsc(t.salesTeam).replace(/'/g,"\\'")+'\';hlTab(\'plan\')" style="color:#4f46e5;font-weight:700;">'+purEsc(t.salesTeam)+'</a></td><td class="r">'+hlN(t.boxQty,2)+'</td><td class="r">'+hlN(t.netSales)+'</td><td class="r">'+hlN(t.incentiveAmt)+'</td><td class="r">'+hlN(t.marketingAmt)+'</td><td class="r" style="font-weight:700;">'+hlN(t.netAfter)+'</td><td>'+lock(t.salesClosed)+'</td><td>'+lock(t.expenseClosed)+'</td></tr>';});
+    h+='</tbody></table></div></div>';
+    const cs=s.categories||[];
+    h+='<div class="sc" style="overflow:hidden;"><div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;"><h3 style="font-size:13px;font-weight:700;color:#1e293b;margin:0;"><i class="fas fa-tags text-indigo-500 mr-1"></i>카테고리별</h3></div><div style="overflow-x:auto;"><table class="st" style="font-size:11px;"><thead><tr><th>카테고리</th><th class="r">BOX 수량</th><th class="r">순매출</th></tr></thead><tbody>';
+    if(!cs.length)h+='<tr><td colspan="3" style="text-align:center;padding:14px;color:#94a3b8;">-</td></tr>';
+    cs.forEach(c=>{h+='<tr><td>'+purEsc(c.category)+'</td><td class="r">'+hlN(c.boxQty,2)+'</td><td class="r">'+hlN(c.netSales)+'</td></tr>';});
+    box.innerHTML=h+'</tbody></table></div></div>';
+}
+
+// ── 엑셀 양식·업로드 ──
+async function hlWriteTemplate(sheetName,cols,widths,data,numCols,formulaCol,rules,fileName){
+    try{await purLoadExcelJS();}catch(e){alert(e.message);return;}
+    const wb=new ExcelJS.Workbook();
+    const H1={type:'pattern',pattern:'solid',fgColor:{argb:'FF4F46E5'}},H2={type:'pattern',pattern:'solid',fgColor:{argb:'FF94A3B8'}};
+    const thin={style:'thin',color:{argb:'FFCBD5E1'}},BD={top:thin,left:thin,bottom:thin,right:thin};
+    const wi=wb.addWorksheet('작성규칙');
+    [[sheetName+' 업로드 양식',''],['년월',purYmDot(getYm())],['영업팀',hlTeam()],['',''],['작성 규칙','']].concat(rules.map((r,i)=>[String(i+1),r])).forEach(r=>wi.addRow(r));
+    wi.getCell('A1').font={bold:true,size:14};wi.getCell('A5').font={bold:true};wi.getColumn(1).width=14;wi.getColumn(2).width=110;
+    const ws=wb.addWorksheet(sheetName,{views:[{state:'frozen',ySplit:1}]});
+    cols.forEach((c,i)=>{const cell=ws.getCell(1,i+1);cell.value=c[1]+(i===formulaCol?' (자동)':'');cell.fill=i===formulaCol?H2:H1;cell.font={bold:true,color:{argb:'FFFFFFFF'}};cell.alignment={horizontal:'center',vertical:'middle'};cell.border=BD;});
+    ws.getRow(1).height=28;widths.forEach((w,i)=>ws.getColumn(i+1).width=w);
+    const last=Math.max(300,data.length+100);
+    const col=i=>String.fromCharCode(65+i);
+    for(let r=2;r<=last;r++){const row=ws.getRow(r),src=data[r-2];
+        cols.forEach((c,i)=>{const cell=row.getCell(i+1);cell.border=BD;
+            if(i===formulaCol){const q=col(formulaCol-2)+r,p=col(formulaCol-1)+r;cell.value={formula:'IF(AND('+q+'<>"",'+p+'<>""),'+q+'*'+p+',"")'};cell.numFmt='#,##0';cell.font={color:{argb:'FF64748B'}};return;}
+            if(numCols.includes(i))cell.numFmt='#,##0.##';else cell.numFmt='@';
+            if(src){const v=src[i];if(v!=null&&v!=='')cell.value=numCols.includes(i)?Number(v):String(v);}
+            else if(i===0)cell.value=purYmDot(getYm());else if(i===1)cell.value=hlTeam();});}
+    numCols.forEach(i=>ws.dataValidations.add(col(i)+'2:'+col(i)+last,{type:'decimal',operator:'greaterThanOrEqual',allowBlank:true,formulae:[0],showErrorMessage:true,errorTitle:'숫자 확인',error:'0 이상의 숫자만 입력하세요.'}));
+    const buf=await wb.xlsx.writeBuffer();
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+    a.download=fileName;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+}
+function hlTemplatePlan(){
+    const t=hlTeam();if(!t){alert('영업팀을 먼저 선택하세요');return;}
+    const data=HL.plans.map(r=>[purYmDot(r.ym),r.salesTeam,r.customerCode,r.customerName,r.category,r.materialCode,r.boxQty,r.boxPrice,null,r.note]);
+    hlWriteTemplate('판매계획',HL_PLAN_COLS,[10,14,14,24,14,16,12,14,16,30],data,[6,7],8,[
+        '시트 이름·머리글은 바꾸지 마세요. 한 줄 = 거래처 × 자재코드(SKU) 1건입니다. 같은 거래처·자재코드는 한 줄로 합쳐 적습니다.',
+        '년월·영업팀은 화면에서 고른 값('+purYmDot(getYm())+' · '+t+')만 올릴 수 있습니다. 비워 두면 화면 값으로 저장합니다. 다른 팀·다른 년월 행이 있으면 파일 전체가 올라가지 않습니다.',
+        'BOX 수량·BOX당 단가는 0 이상 숫자입니다. BOX당 단가는 판매 장려금을 뺀 단가(원)입니다.',
+        '순매출(자동) 칸은 참고용 계산식입니다 — 업로드할 때 읽지 않고 시스템이 BOX 수량 × BOX당 단가로 다시 계산합니다.',
+        '업로드하면 그 년월·팀 판매계획이 파일 내용으로 바뀝니다 (파일에 없는 행은 삭제 처리). 마감된 팀은 올릴 수 없습니다.'],
+        'HL판매계획_'+getYm()+'_'+t+'.xlsx');
+}
+function hlTemplateExp(){
+    const t=hlTeam();if(!t){alert('영업팀을 먼저 선택하세요');return;}
+    const data=HL.exps.map(r=>[purYmDot(r.ym),r.salesTeam,r.customerCode,r.customerName,r.incentiveAmt,r.marketingAmt,r.note]);
+    hlWriteTemplate('장려금·마케팅비',HL_EXP_COLS,[10,14,14,24,16,16,30],data,[4,5],-1,[
+        '시트 이름·머리글은 바꾸지 마세요. 한 줄 = 거래처 1건 (장려금·마케팅비를 같은 줄에 적습니다).',
+        '년월·영업팀은 화면에서 고른 값('+purYmDot(getYm())+' · '+t+')만 올릴 수 있습니다. 비워 두면 화면 값으로 저장합니다.',
+        '장려금 = 판매처에 꼭 내는 금액(원)입니다 — BOX당 단가에서 빠지는 판매 장려금과는 별개입니다. 비어 있으면 0입니다.',
+        '업로드하면 그 년월·팀 장려금·마케팅비가 파일 내용으로 바뀝니다 (파일에 없는 거래처는 삭제 처리). 마감된 팀은 올릴 수 없습니다.'],
+        'HL장려금마케팅비_'+getYm()+'_'+t+'.xlsx');
+}
+function hlParse(wb,sheetName,cols,skipKeys){
+    const ws=wb.Sheets[sheetName]||wb.Sheets[wb.SheetNames.find(n=>purStrip(n)===purStrip(sheetName))];
+    if(!ws)return {problems:[sheetName+' 시트가 없습니다 — [양식 다운로드]로 받은 파일을 사용하세요'],rows:[]};
+    const a=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});const h=(a[0]||[]).map(purStrip);
+    const use=cols.filter(c=>!skipKeys.includes(c[0]));
+    const idx=use.map(c=>h.findIndex(x=>x.startsWith(purStrip(c[1]))));
+    const missing=use.filter((c,i)=>idx[i]<0&&!['ym','salesTeam','note','customerName','category'].includes(c[0])).map(c=>c[1]);
+    if(missing.length)return {problems:[sheetName+' 시트 머리글을 찾지 못했습니다: '+missing.join(', ')],rows:[]};
+    const rows=[];
+    for(let i=1;i<a.length;i++){const r=a[i]||[];const e={rowNo:i+1};let any=false;
+        use.forEach((c,j)=>{const v=idx[j]<0?'':r[idx[j]];const s=v==null?'':v;
+            if(c[0]==='ym')e.ym=s===''?'':salYm(s);else e[c[0]]=typeof s==='string'?s.trim():s;
+            if(!['ym','salesTeam'].includes(c[0])&&String(s).trim()!=='')any=true;});
+        if(any)rows.push(e);}
+    return {problems:[],rows};
+}
+async function hlUploadGeneric(input,kind,sheetName,cols,skip,label){
+    const file=input.files&&input.files[0];input.value='';if(!file)return;
+    const fn=kind==='plans'?'Plan':'Exp';const box=document.getElementById('hlRes'+fn);const t=hlTeam();
+    box.innerHTML='<div style="font-size:11px;color:#64748b;padding:8px 0;"><i class="fas fa-spinner fa-spin mr-1"></i>'+purEsc(file.name)+' 확인 중...</div>';
+    let p;try{p=hlParse(XLSX.read(await file.arrayBuffer(),{type:'array'}),sheetName,cols,skip);}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px 0;">엑셀 읽기 실패: '+purEsc(e.message)+'</div>';return;}
+    if(!p.problems.length&&!p.rows.length)p.problems.push(sheetName+' 시트에 데이터가 없습니다');
+    if(p.problems.length){box.innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다',p.problems,'#b91c1c','#fef2f2','#fecaca');return;}
+    const old=kind==='plans'?HL.plans.length:HL.exps.length;
+    if(old&&!confirm(purYmDot(getYm())+' '+t+' '+label+' '+old+'건을 파일 내용('+p.rows.length+'건)으로 바꿉니다.\n파일에 없는 행은 삭제 처리됩니다. 계속할까요?')){box.innerHTML='';return;}
+    let res;try{res=await purSend(HL_API+'/'+kind+'/upload','POST',{ym:getYm(),salesTeam:t,fileName:file.name,rows:p.rows});}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px 0;">업로드 실패: '+purEsc(e.message)+'</div>';return;}
+    if(!res||!res.ok){box.innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다 — 오류를 고친 뒤 다시 올려 주세요.',res&&res.errors||['알 수 없는 오류'],'#b91c1c','#fef2f2','#fecaca');return;}
+    await hlOnShow();
+    const b2=document.getElementById('hlRes'+fn);
+    if(b2)b2.innerHTML='<div style="margin:8px 0;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:11px;color:#15803d;"><i class="fas fa-check-circle mr-1"></i>'+purEsc(file.name)+' — '+res.saved+'건 저장'+(res.removed?' · 파일에 없던 '+res.removed+'건 삭제 처리':'')+(res.netSales!=null?' · 순매출 '+hlN(res.netSales)+'원':'')+'</div>';
+}
+function hlUploadPlan(input){hlUploadGeneric(input,'plans','판매계획',HL_PLAN_COLS,['netSales'],'판매계획');}
+function hlUploadExp(input){hlUploadGeneric(input,'expenses','장려금·마케팅비',HL_EXP_COLS,[],'장려금·마케팅비');}
 
 // ── 기준정보: 판매 코드 (전사 공통) ──
 async function salLoadCodes(){

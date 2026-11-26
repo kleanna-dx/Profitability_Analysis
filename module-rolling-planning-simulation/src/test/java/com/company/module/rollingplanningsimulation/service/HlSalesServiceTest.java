@@ -1,0 +1,105 @@
+package com.company.module.rollingplanningsimulation.service;
+
+import com.company.module.rollingplanningsimulation.entity.HlCustomerExpense;
+import com.company.module.rollingplanningsimulation.entity.HlSalesClose;
+import com.company.module.rollingplanningsimulation.entity.HlSalesPlan;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.util.*;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** HL 판매계획·장려금/마케팅비 검사·요약 — 테스트 전용 값 */
+class HlSalesServiceTest {
+    static BigDecimal d(String v) { return new BigDecimal(v); }
+    static Map<String, Object> row(Object... kv) { Map<String, Object> m = new HashMap<>(); for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]); return m; }
+
+    @Test void netSales_isQtyTimesPrice() {
+        HlSalesPlan p = HlSalesPlan.builder().ym("202701").salesTeam("A팀").customerCode("C1").materialCode("M1")
+                .boxQty(d("1200")).boxPrice(d("15000")).build();
+        assertEquals(0, d("18000000").compareTo(p.getNetSales()));
+        p.change(null, null, d("10"), d("2.5"), null);
+        assertEquals(0, d("25").compareTo(p.getNetSales()));
+    }
+
+    @Test void checkPlans_ok_commaNumbers_blankScopeUsesSelected() {
+        var c = HlSalesService.checkPlans("202701", "A팀", List.of(
+                row("customerCode", "C1", "materialCode", "M1", "boxQty", "1,200", "boxPrice", 15000, "category", "화장지"),
+                row("ym", "2027-01", "salesTeam", "A팀", "customerCode", "C1", "materialCode", "M2", "boxQty", 0, "boxPrice", "0")));
+        assertTrue(c.ok(), c.errors().toString());
+        assertEquals(2, c.rows().size());
+        assertEquals("A팀", c.rows().get(0).getSalesTeam());
+        assertEquals("202701", c.rows().get(0).getYm());
+        assertEquals(0, d("18000000").compareTo(c.rows().get(0).getNetSales()));
+    }
+
+    @Test void checkPlans_otherTeamOrMonth_rejected() {
+        var c = HlSalesService.checkPlans("202701", "A팀", List.of(
+                row("rowNo", 2, "salesTeam", "B팀", "customerCode", "C1", "materialCode", "M1", "boxQty", 1, "boxPrice", 1),
+                row("rowNo", 3, "ym", "202702", "customerCode", "C2", "materialCode", "M1", "boxQty", 1, "boxPrice", 1)));
+        assertFalse(c.ok());
+        assertTrue(c.errors().get(0).startsWith("2행:") && c.errors().get(0).contains("B팀"));
+        assertTrue(c.errors().get(1).startsWith("3행:") && c.errors().get(1).contains("202702"));
+        assertTrue(c.rows().isEmpty());
+    }
+
+    @Test void checkPlans_requiredNegativeNotNumberDuplicate() {
+        var c = HlSalesService.checkPlans("202701", "A팀", List.of(
+                row("rowNo", 2, "materialCode", "M1", "boxQty", 1, "boxPrice", 1),
+                row("rowNo", 3, "customerCode", "C1", "materialCode", "M1", "boxQty", -1, "boxPrice", "abc"),
+                row("rowNo", 4, "customerCode", "C1", "materialCode", "M1", "boxPrice", 1),
+                row("rowNo", 5, "customerCode", "C1", "materialCode", "M1", "boxQty", 1, "boxPrice", 1)));
+        String all = String.join("\n", c.errors());
+        assertTrue(all.contains("2행: 거래처코드를 입력하세요"), all);
+        assertTrue(all.contains("3행: BOX 수량는 0 이상"), all);
+        assertTrue(all.contains("3행: BOX당 단가가 숫자가 아닙니다"), all);
+        assertTrue(all.contains("4행: BOX 수량를 입력하세요"), all);
+        assertTrue(all.contains("5행: 거래처 C1 · 자재 M1 가 3행과 중복"), all);
+    }
+
+    @Test void checkExpenses_blankAmountsZero_duplicateCustomer() {
+        var c = HlSalesService.checkExpenses("202701", "A팀", List.of(
+                row("customerCode", "C1", "incentiveAmt", "3,000,000"),
+                row("customerCode", "C2", "marketingAmt", 500)));
+        assertTrue(c.ok(), c.errors().toString());
+        assertEquals(0, d("3000000").compareTo(c.rows().get(0).getIncentiveAmt()));
+        assertEquals(0, BigDecimal.ZERO.compareTo(c.rows().get(0).getMarketingAmt()));
+        assertEquals(0, BigDecimal.ZERO.compareTo(c.rows().get(1).getIncentiveAmt()));
+
+        var dup = HlSalesService.checkExpenses("202701", "A팀", List.of(
+                row("rowNo", 2, "customerCode", "C1"), row("rowNo", 3, "customerCode", "C1", "salesTeam", "B팀")));
+        String all = String.join("\n", dup.errors());
+        assertTrue(all.contains("3행: 영업팀(B팀)"), all);
+        assertTrue(all.contains("3행: 거래처 C1 가 2행과 중복"), all);
+    }
+
+    @Test void requireYm_andType() {
+        assertEquals("202701", HlSalesService.requireYm("2027.01"));
+        assertThrows(IllegalArgumentException.class, () -> HlSalesService.requireYm("202713"));
+        assertEquals("SALES", HlSalesService.requireType("sales"));
+        assertThrows(IllegalArgumentException.class, () -> HlSalesService.requireType("X"));
+        assertThrows(IllegalArgumentException.class, () -> HlSalesService.requireTeam(" "));
+    }
+
+    @Test void summarize_netAfter_byTeam_byCategory_closed() {
+        List<HlSalesPlan> ps = List.of(
+                HlSalesPlan.builder().ym("202701").salesTeam("A팀").customerCode("C1").materialCode("M1").category("화장지").boxQty(d("10")).boxPrice(d("1000")).build(),
+                HlSalesPlan.builder().ym("202701").salesTeam("B팀").customerCode("C2").materialCode("M1").boxQty(d("5")).boxPrice(d("1000")).build());
+        List<HlCustomerExpense> es = List.of(
+                HlCustomerExpense.builder().ym("202701").salesTeam("A팀").customerCode("C1").incentiveAmt(d("1000")).marketingAmt(d("500")).build());
+        HlSalesClose cl = HlSalesClose.builder().ym("202701").salesTeam("A팀").closeType(HlSalesClose.SALES).build();
+        cl.close("u1");
+        Map<String, Object> s = HlSalesService.summarize("202701", ps, es, List.of(cl));
+        assertEquals(0, d("15000").compareTo((BigDecimal) s.get("netSales")));
+        assertEquals(0, d("13500").compareTo((BigDecimal) s.get("netAfter")));
+        @SuppressWarnings("unchecked") List<Map<String, Object>> teams = (List<Map<String, Object>>) s.get("teams");
+        assertEquals("A팀", teams.get(0).get("salesTeam"));
+        assertEquals(0, d("8500").compareTo((BigDecimal) teams.get(0).get("netAfter")));
+        assertEquals(true, teams.get(0).get("salesClosed"));
+        assertEquals(false, teams.get(0).get("expenseClosed"));
+        assertEquals(false, teams.get(1).get("salesClosed"));
+        @SuppressWarnings("unchecked") List<Map<String, Object>> cats = (List<Map<String, Object>>) s.get("categories");
+        assertEquals(List.of("(미입력)", "화장지"), cats.stream().map(m -> m.get("category")).toList());
+    }
+}
