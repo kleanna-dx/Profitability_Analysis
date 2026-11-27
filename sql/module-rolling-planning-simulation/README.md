@@ -65,9 +65,24 @@
 ## SQL 실행 순서
 
 ```
-1. sql/module-rolling-planning-simulation/01_schema.sql    -- DDL (12개 테이블)
-2. sql/module-rolling-planning-simulation/02_seed_data.sql -- 초기 데이터 (환율 등)
+01 ~ 28  기존 파일 (번호 순서대로)
+29_alter_audit_columns.sql                        -- 기존 테이블 감사 컬럼(등록자·수정자·소프트 삭제) 보강
+30_alter_energy_ref_columns.sql                   -- 스팀 구간단가·LNG 버너 원단위 MONTH, 보일러 정비 귀책구분
+31_purchase_plan.sql                              -- 구매 이동계획 (통화·환율·부대비율·버전·펄프·펄프 외)
+32_sales_plan.sql                                 -- 판매계획 PS (공통코드·등급·버전·등급별·국가별)
+33_power_sim.sql                                  -- 전력비 시뮬레이션 (호기 kW·기준정보·단가·가산차감·시나리오)
+34_material_forecast.sql                          -- 원부재료비 차월 예상
+35_hl_sales.sql                                   -- HL 판매계획·장려금/마케팅비·마감
+36_hl_production_plan.sql                         -- HL 생산계획 (EA)
+37_hl_material_master.sql                         -- HL 자재 마스터 (SAP 양식) + 이전 rpsim_hl_material_conv 삭제
+38_alter_hl_customer_expense_drop_sales_team.sql  -- 이전 버전으로 만든 HL 장려금 테이블의 SALES_TEAM 삭제
+39_update_boiler_division_plant.sql               -- 보일러 기준정보 PS → PLANT (공장 공통) 전환
 ```
+
+- 29 ~ 39 는 여러 번 실행해도 안전합니다 (IF NOT EXISTS / IF EXISTS).
+- 38 실행 전: 파일 안의 중복 확인 SELECT 결과가 0건인지 확인하세요.
+- 39 실행 전: 파일 맨 위 SELECT 로 사업부별 건수를 먼저 확인하세요.
+- MariaDB 10.5 이상 필요 (ADD COLUMN IF NOT EXISTS / DROP INDEX IF EXISTS).
 
 ## 프로젝트 구조
 
