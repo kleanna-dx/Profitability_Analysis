@@ -1138,7 +1138,7 @@ function subTab(step,key){
     if(step===1&&key==='hlexp')hlExpOnShow();
     if(step===1&&key==='hlprod')hlProdOnShow();
     if(step===4&&key==='pwsim')pwsOnShow();
-    if(step===4&&key==='energy')peLoad(false);
+    if(step===4&&key==='energy')peLoad(true);
 }
 
 // ── P/L Simulator (원가 중심 — 매출 없음, 총원가 기준) ──
@@ -1885,6 +1885,12 @@ function capaRowGoodChange(i,val){CAPA_ROWS[i].goodTon=parseFloat(val)||0;render
 
 // ── 생산계획 저장/잠금/해제 ──
 let CAPA_LOCKED=false;
+// STEP3 생산계획 저장·확정·해제 후 — 전력비·에너지비·P/L 이 예전 계산 결과(확정 전 값)를 쓰지 않도록 저장된 결과를 비움
+function invalidatePlanCaches(){
+    if(typeof PE!=='undefined'){PE.res=null;PE.key='';PE.pending=null;}
+    if(typeof PWPL!=='undefined'){PWPL.res=null;PWPL.key='';PWPL.pending=null;}
+    if(typeof PWS!=='undefined'){PWS.qkey=null;}
+}
 
 async function loadCapaPlan(){
     const mc=getCapaMc();const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
@@ -1923,21 +1929,28 @@ async function saveCapaPlan(){
     try{
         const r=await fetch(API+'/production-plans/batch',{method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({year:yr,month:mo,machineCode:mc,division:div,operationDays:opDays,createdBy:window.CURRENT_USER||'',rows})});
-        const j=await r.json();
-        if(j.data?.error==='LOCKED'){alert(j.data.message);return;}
+        const j=await r.json().catch(()=>({}));
+        if(j.data?.error==='LOCKED'){alert(j.data.message);return false;}
+        if(!r.ok){alert('저장 실패: '+(j.message||j.error||('HTTP '+r.status)));return false;}
+        invalidatePlanCaches();
         alert('생산계획 저장 완료! ('+((j.data?.saved)||0)+'건)');
-    }catch(e){alert('저장 실패: '+e.message);}
+        return true;
+    }catch(e){alert('저장 실패: '+e.message);return false;}
 }
 
 async function lockCapaPlan(){
     if(!CAPA_ROWS.some(r=>r.goodTon>0)){alert('양품량을 먼저 입력하고 저장한 후 확정하세요.');return;}
     if(!confirm('생산계획을 확정(잠금)합니다.\n확정 후에는 수정이 불가합니다.\n\n계속하시겠습니까?'))return;
-    // 먼저 저장
-    await saveCapaPlan();
+    // 먼저 저장 — 저장이 실패하면 확정하지 않음
+    if(!(await saveCapaPlan()))return;
     const mc=getCapaMc();const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
     try{
-        await fetch(API+'/production-plans/lock',{method:'POST',headers:{'Content-Type':'application/json'},
+        const r=await fetch(API+'/production-plans/lock',{method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({year:yr,month:mo,machineCode:mc,division:div,userId:window.CURRENT_USER||''})});
+        const j=await r.json().catch(()=>({}));
+        if(!r.ok){alert('확정 실패: '+(j.message||j.error||('HTTP '+r.status)));return;}
+        if(!(Number(j.data?.locked)>0)){alert('확정 실패: '+yr+'.'+String(mo).padStart(2,'0')+' '+mc+' 생산계획 행이 없어 확정된 행이 0건입니다.\n기준월·호기를 확인하세요.');return;}
+        invalidatePlanCaches();
         CAPA_LOCKED=true;
         updateLockUI(true,window.CURRENT_USER||'',new Date().toLocaleString('ko-KR'));
         renderCapaTable();
@@ -1949,8 +1962,11 @@ async function unlockCapaPlan(){
     if(!confirm('생산계획 잠금을 해제합니다.\n수정이 가능해집니다.\n\n계속하시겠습니까?'))return;
     const mc=getCapaMc();const ym=getYm();const yr=parseInt(ym.substring(0,4));const mo=parseInt(ym.substring(4,6));const div=getDiv();
     try{
-        await fetch(API+'/production-plans/unlock',{method:'POST',headers:{'Content-Type':'application/json'},
+        const r=await fetch(API+'/production-plans/unlock',{method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({year:yr,month:mo,machineCode:mc,division:div})});
+        const j=await r.json().catch(()=>({}));
+        if(!r.ok){alert('잠금 해제 실패: '+(j.message||j.error||('HTTP '+r.status)));return;}
+        invalidatePlanCaches();
         CAPA_LOCKED=false;
         updateLockUI(false);
         renderCapaTable();
