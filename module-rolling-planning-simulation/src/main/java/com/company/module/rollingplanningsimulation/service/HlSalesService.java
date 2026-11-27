@@ -6,6 +6,7 @@ import com.company.module.rollingplanningsimulation.entity.HlSalesClose;
 import com.company.module.rollingplanningsimulation.entity.HlSalesPlan;
 import com.company.module.rollingplanningsimulation.repository.HlCustomerExpenseRepository;
 import com.company.module.rollingplanningsimulation.repository.HlProductionPlanRepository;
+import com.company.module.rollingplanningsimulation.repository.HlMaterialConvRepository;
 import com.company.module.rollingplanningsimulation.repository.UnitRepository;
 import com.company.module.rollingplanningsimulation.repository.HlSalesCloseRepository;
 import com.company.module.rollingplanningsimulation.repository.HlSalesPlanRepository;
@@ -38,6 +39,7 @@ public class HlSalesService {
     private final HlSalesCloseRepository closeRepo;
     private final HlProductionPlanRepository prodRepo;
     private final UnitRepository unitRepo;
+    private final HlMaterialConvRepository convRepo;
     private final AuditSupport auditSupport;
 
     static final String[] UK_PLAN = {"ym", "salesTeam", "customerCode", "materialCode"};
@@ -395,7 +397,21 @@ public class HlSalesService {
         List<HlProductionPlan> rows = prodRepo.findByYmOrderByMachineAscMaterialCodeAsc(requireYm(ymRaw));
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("rows", rows);
-        res.put("warnings", machineWarnings(rows.stream().map(HlProductionPlan::getMachine).toList()));
+        List<String> warnings = new ArrayList<>(machineWarnings(rows.stream().map(HlProductionPlan::getMachine).toList()));
+        // 환산단위(1EA 중량 kg) — 화면 톤 표시용. 없는 자재 = 0톤 + 경고
+        Map<String, BigDecimal> kg = new LinkedHashMap<>();
+        try {
+            for (var c : convRepo.findByDivisionOrderByMaterialCodeAsc(HL)) kg.put(c.getMaterialCode().trim().toUpperCase(Locale.ROOT), c.getKgPerEa());
+            TreeSet<String> miss = new TreeSet<>();
+            for (HlProductionPlan r : rows)
+                if (r.getQtyEa().signum() > 0 && !kg.containsKey(r.getMaterialCode().trim().toUpperCase(Locale.ROOT))) miss.add(r.getMaterialCode());
+            if (!miss.isEmpty()) warnings.add("HL 환산단위(1EA 중량)가 없는 자재 " + miss.size() + "건은 전력비·에너지비에 0톤으로 계산됩니다: "
+                    + String.join(", ", miss) + " — [STEP1 › 기준정보 관리 › HL 환산단위]에 등록하세요");
+        } catch (org.springframework.dao.DataAccessException e) {
+            warnings.add("HL 환산단위 테이블(rpsim_hl_material_conv)을 읽지 못했습니다 — 테이블을 만들었는지 확인하세요");
+        }
+        res.put("kgPerEa", kg);
+        res.put("warnings", warnings);
         return res;
     }
 
