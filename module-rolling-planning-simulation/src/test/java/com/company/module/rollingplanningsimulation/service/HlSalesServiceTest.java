@@ -151,4 +151,9 @@ class HlSalesServiceTest {
         assertEquals(HlSalesClose.ALL_TEAMS, HlSalesService.closeTeam(HlSalesClose.PRODUCTION, null));
         assertEquals("PRODUCTION", HlSalesService.requireType("production"));
     }
+
+    @Test void unknownMachines_aliasKnown_diaperIgnored() {
+        assertEquals(List.of("가공1"),
+                HlSalesService.unknownMachines(List.of("가공 3호기", "RP4", "생리대 5호기", "SN6", "기저귀 2호기", "가공1"), List.of()));
+    }
 }

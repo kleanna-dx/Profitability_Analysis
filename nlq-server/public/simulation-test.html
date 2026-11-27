@@ -481,7 +481,7 @@
     <div id="s1-hlprod" style="display:none;">
         <div class="sc" style="padding:12px 16px;margin-bottom:12px;">
             <h3 style="font-size:14px;font-weight:700;color:#1e293b;margin:0 0 4px;"><i class="fas fa-industry text-indigo-500 mr-2"></i>HL 생산계획 <span id="hlProdYm" style="font-size:10px;padding:1px 6px;border-radius:6px;background:#eef2ff;color:#4f46e5;font-weight:700;"></span></h3>
-            <div style="font-size:11px;color:#64748b;line-height:1.6;">현업이 그 달 생산계획을 입력합니다 — 한 줄 = 생산 호기 × 자재코드 · 월 생산량(EA) · 전력비·에너지비에는 EA × [기준정보 › HL 환산단위] 1EA 중량 ÷ 1000 = 톤으로 반영<br>다시 올리면 그 달 전체가 파일 내용으로 바뀝니다 · [확정]하면 수정·업로드가 막힙니다 · 생산 호기가 HL 호기 마스터에 없으면 저장은 되지만 경고합니다</div>
+            <div style="font-size:11px;color:#64748b;line-height:1.6;">현업이 그 달 생산계획을 입력합니다 — 한 줄 = 생산 호기 × 자재코드 · 월 생산량(EA) · 전력비·에너지비에는 EA × [기준정보 › HL 자재 마스터] 1EA 중량 ÷ 1000 = 톤으로 반영 · 기저귀 라인은 계산 대상이 아닙니다 · 가공 3~6호기 = RP3~RP6, 생리대 5·6호기 = SN5·SN6<br>다시 올리면 그 달 전체가 파일 내용으로 바뀝니다 · [확정]하면 수정·업로드가 막힙니다 · 생산 호기가 HL 호기 마스터에 없으면 저장은 되지만 경고합니다</div>
         </div>
         <div id="hl-prod"></div>
     </div>
@@ -1068,7 +1068,7 @@ function applyDivisionLayout(){
     {const s4=document.getElementById('step-4');if(s4){const subs=SUB_MAP[4];s4.querySelectorAll('.sub-tabs .sub-tab').forEach((t,i)=>{t.style.display=on||subs[i]==='pwsim'||subs[i]==='energy'?'':'none';});}}
     const nt=document.getElementById('divScopeNote');
     if(nt){nt.style.display=on?'none':'';nt.innerHTML='<i class="fas fa-info-circle mr-1"></i>'+getDiv()+' 사업부는 생산 최적화·원가 분석 화면이 없습니다 (별도 개발 예정). 데이터 준비와 STEP 4 [에너지비·전력비 시뮬레이션]만 사용할 수 있습니다.';}
-    // 기준정보 HL 전용 탭 (HL 환산단위)
+    // 기준정보 HL 전용 탭 (HL 자재 마스터)
     if(typeof REFS!=='undefined'&&typeof cRef!=='undefined'){if(REFS[cRef]&&!refVisible(REFS[cRef]))switchRef(0);else renderRefTabs();}
     // 장려금·마케팅비 탭 — HL 전용
     {const hl=getDiv()==='HL';
@@ -3187,7 +3187,7 @@ function recalcProdSim(){
 }
 
 // ── Ref Management ──
-const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'hl-material-convs',l:'HL 환산단위',i:'fa-balance-scale',cols:['materialCode','materialName','kgPerEa','memo'],h:['자재코드','자재명','1EA 중량(kg)','비고'],noYear:true,hlOnly:true,fixedDiv:'HL'},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'_pwbasis',l:'전력 기준정보(호기)',i:'fa-bolt',custom:true,pw:'basis'},{k:'pw-line-kws',l:'호기별 전력 kW',i:'fa-plug',cols:['year','month','machineCode','runKw','idleKw','memo'],h:['연도','월','호기','가동kW','운휴kW','비고'],yearFilter:true,monthFilter:true},{k:'_pwprice',l:'월 평균 전력단가',i:'fa-won-sign',custom:true,pw:'price'},{k:'_pwadj',l:'전력 가산·차감',i:'fa-plus-minus',custom:true,pw:'adj'},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',plant:true,l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true,pivotMonths:true},{k:'boiler-maintenances',plant:true,l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','responsibility','maintName','startDate','endDate','maintHours','memo'],h:['연도','월','보일러','정비유형','귀책구분','정비명','시작일','종료일','정비시간(hr)','비고'],yearFilter:true,monthFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true,source:'에너지팀 DB'},{k:'steam-price-intervals',plant:true,l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','month','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','월','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'cogen-deductions',plant:true,l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',plant:true,l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','month','boilerCode','rateType','rateName','rateValue','rateUnit','factor'],h:['연도','월','보일러','단가유형','단가명','값','단위','FACTOR'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','month','machineCode','lngPerTon','memo'],h:['연도','월','호기','원단위(㎥/톤)','비고'],yearFilter:true,monthFilter:true},{k:'line-steam-ratios',l:'라인 스팀비중',i:'fa-chart-pie',cols:['year','machineCode','steamRatio','memo'],h:['연도','호기','스팀비중(%)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
+const REFS=[{k:'units',l:'호기 마스터',i:'fa-industry',cols:['unitCode','unitName','division','isActive'],h:['호기코드','호기명','사업부','활성'],noYear:true},{k:'hl-material-masters',l:'HL 자재 마스터',i:'fa-balance-scale',custom:true,cols:[],h:[],noYear:true,hlOnly:true,fixedDiv:'HL'},{k:'product-masters',l:'지종 마스터',i:'fa-tags',cols:['productCode','productName','productGroup','isActive'],h:['지종코드','지종명','지종그룹','활성'],noYear:true},{k:'materials',l:'원부자재 마스터',i:'fa-cubes',cols:['materialCode','materialName','category','unitOfMeasure','materialGroup','materialGroupName','materialGroupLarge','materialGroupLargeName'],h:['자재코드','자재명','구분','단위','자재그룹','자재그룹명','대분류','대분류명'],noYear:true},{k:'pw-lines',l:'전력비 호기',i:'fa-bolt',cols:['lineCode','lineName','lineGroup','kwhPerHourRun'],h:['호기','명칭','그룹','가동kWh/h']},{k:'_pwbasis',l:'전력 기준정보(호기)',i:'fa-bolt',custom:true,pw:'basis'},{k:'pw-line-kws',l:'호기별 전력 kW',i:'fa-plug',cols:['year','month','machineCode','runKw','idleKw','memo'],h:['연도','월','호기','가동kW','운휴kW','비고'],yearFilter:true,monthFilter:true},{k:'_pwprice',l:'월 평균 전력단가',i:'fa-won-sign',custom:true,pw:'price'},{k:'_pwadj',l:'전력 가산·차감',i:'fa-plus-minus',custom:true,pw:'adj'},{k:'pw-tariffs',l:'한전 요금',i:'fa-won-sign',cols:['year','season','timeZone','demandKrw','energyKrw'],h:['연도','시즌','시간대','기본요금','전력량']},{k:'logi-rates',l:'해상 운임',i:'fa-ship',cols:['yearQuarter','region','port','rateUsd'],h:['분기','지역','항구','운임(USD)']},{k:'exchange-rates',l:'월별 환율',i:'fa-exchange-alt',cols:['year','month','currency','rate'],h:['연도','월','통화','환율(원)']},{k:'logi-cost-local',l:'국내 운임',i:'fa-truck',cols:['yearQuarter','portOrigin','containerFeeKrw','extraFeeKrw'],h:['분기','출발항','컨테이너비','부대비용']},{k:'pw-timezone-defs',l:'부하별 시간대',i:'fa-clock',cols:['year','season','dayType','loadClass','startHour','endHour','hours','discountRate'],h:['연도','시즌','요일구분','부하구분','시작시','종료시','시간수','할인율']},{k:'pw-load-demands',l:'부하별 사용량',i:'fa-bolt',cols:['ym','loadClass','hourlyUsageKw','memo'],h:['연월','부하구분','시간당kW','비고']},{k:'pw-peak-demands',l:'최대수요전력',i:'fa-arrow-up',cols:['ym','measuredKw','effectiveKw','carryOriginYm','carryExpireYm'],h:['연월','측정kW','적용kW','캐리원본월','캐리만기월']},{k:'pw-machine-ratios',l:'설비배분비율',i:'fa-percentage',cols:['ym','lineCode','usageRatio','memo'],h:['연월','설비코드','배분비율','비고']},{k:'pw-fixed-items',l:'고정층 항목',i:'fa-file-invoice-dollar',cols:['ym','itemCode','itemName','amountKrw','memo'],h:['연월','항목코드','항목명','금액(원)','비고']},{k:'boiler-masters',plant:true,l:'보일러 마스터',i:'fa-fire',cols:['boilerCode','boilerName','steamPerHour','priority','capacityNote','isActive','year','month'],h:['보일러코드','보일러명','최대 스팀 용량(톤/hr)','우선순위','용량비고','활성','연도','월'],yearFilter:true,monthFilter:true,pivotMonths:true},{k:'boiler-maintenances',plant:true,l:'보일러 정비계획',i:'fa-wrench',cols:['year','month','boilerCode','maintType','responsibility','maintName','startDate','endDate','maintHours','memo'],h:['연도','월','보일러','정비유형','귀책구분','정비명','시작일','종료일','정비시간(hr)','비고'],yearFilter:true,monthFilter:true},{k:'steam-unit-rates',l:'스팀사용 원단위',i:'fa-burn',cols:['year','month','machineCode','steamPerTon','limitNote'],h:['연도','월','호기','원단위(톤/톤)','한계주석'],yearFilter:true,source:'에너지팀 DB'},{k:'steam-price-intervals',plant:true,l:'스팀 구간단가',i:'fa-money-bill-wave',cols:['contractYear','month','boilerCode','intervalSeq','intervalName','minUsageTon','maxUsageTon','pricePerTon'],h:['계약연도','월','보일러','순번','구간명','최소(톤)','최대(톤)','단가(원/톤)'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'cogen-deductions',plant:true,l:'연료비 고정차감 항목',i:'fa-minus-circle',cols:['year','month','itemType','itemName','monthlyAmount','memo'],h:['연도','월','항목유형','항목명','월금액(원)','비고'],yearFilter:true,monthFilter:true},{k:'boiler-cost-rates',plant:true,l:'보일러 연료단가',i:'fa-gas-pump',cols:['year','month','boilerCode','rateType','rateName','rateValue','rateUnit','factor'],h:['연도','월','보일러','단가유형','단가명','값','단위','FACTOR'],yearFilter:true,monthFilter:true,source:'에너지팀 DB'},{k:'burner-lng-rates',l:'LNG 버너 원단위',i:'fa-wind',cols:['year','month','machineCode','lngPerTon','memo'],h:['연도','월','호기','원단위(㎥/톤)','비고'],yearFilter:true,monthFilter:true},{k:'line-steam-ratios',l:'라인 스팀비중',i:'fa-chart-pie',cols:['year','machineCode','steamRatio','memo'],h:['연도','호기','스팀비중(%)','비고'],yearFilter:true},{k:'machine-speeds',l:'제지 생산 선속',i:'fa-tachometer-alt',cols:['year','machineCode','product','basisWeight','trimWidth','speed','theoryProdTpd'],h:['연도','호기','지종','평량(g/m²)','지폭(mm)','선속(m/min)','이론생산(톤/일)'],yearFilter:true,auto:['theoryProdTpd']},{k:'waste-rates',l:'폐품률 마스터',i:'fa-recycle',cols:['year','machineCode','product','wasteRatePct','note'],h:['연도','호기','지종','폐품률(%)','비고'],yearFilter:true},{k:'daily-operations',l:'일별 가동시간',i:'fa-calendar-day',cols:['year','month','day','machineCode','operationHours','isShutdown','shutdownReason','memo'],h:['연도','월','일','호기','가동시간(hr)','운휴','운휴사유','비고'],yearFilter:true}];
 let cRef=0,refData=[],refDataPrev=[];
 function refDiv(d){return d.plant?'PLANT':(d.fixedDiv||getDiv());}
 function refVisible(d){return !d.hlOnly||getDiv()==='HL';}
@@ -3232,7 +3232,6 @@ function renderRef(){const d=REFS[cRef];if(d.pivotMonths){renderBoilerPivot();re
     if(!refData.length){h+='<tr><td colspan="'+(d.h.length+1)+'" style="text-align:center;padding:30px;color:#94a3b8;">데이터가 없습니다.</td></tr>';}
     else{refData.forEach((row,ri)=>{const rowId=rowIdOf(row);h+='<tr id="refRow_'+ri+'">'+d.cols.map(c=>{let v=row[c];if(c==='boilerCode'&&v&&BOILER_MASTERS_LIST.length){const bm=BOILER_MASTERS_LIST.find(b=>b.boilerCode===v);let bn=bm?bm.boilerName:'';if(!bm){const gm=[...new Set(BOILER_MASTERS_LIST.filter(b=>b.boilerCode!==v&&boilerGroupCode(b.boilerCode)===v).map(b=>b.boilerName||b.boilerCode))];if(gm.length)bn=gm.join('·')+' 공통';}v=v+(bn?' <span style="font-size:10px;color:#94a3b8;">('+bn+')</span>':'');}else if(c==='isShutdown'){const _opH=parseFloat(row.operationHours)||0;const _isSD=(v===true||v==='true'||v===1)||_opH<=0;v=_isSD?'<span style="color:#ef4444;font-weight:700;">운휴</span>':'<span style="color:#16a34a;">가동</span>';}else if(DATE_COLS.includes(c)){v=toYmd(v)||'-';}else if(c==='responsibility'){v=RESP_LABEL[normResp(v)]?('<span style="font-weight:600;color:'+(normResp(v)==='OURS'?'#dc2626':'#64748b')+';">'+RESP_LABEL[normResp(v)]+'</span>'):'<span style="color:#dc2626;">미입력</span>';}else if(c==='factor'&&v!=null){v=parseFloat(v).toFixed(2);}else if(c==='steamRatio'&&v!=null){v=parseFloat(v).toFixed(1)+'%';}else if(v===true)v='<span style="color:#16a34a;font-weight:700;">활성</span>';else if(v===false)v='<span style="color:#94a3b8;">비활성</span>';else if(v==null)v='-';return '<td class="mn">'+v+'</td>';}).join('')+'<td style="white-space:nowrap;"><button onclick="editRef('+ri+')" style="font-size:10px;color:#4f46e5;cursor:pointer;background:none;border:none;margin-right:4px;" title="편집"><i class="fas fa-edit"></i></button><button onclick="delRef('+rowId+')" style="font-size:10px;color:#ef4444;cursor:pointer;background:none;border:none;" title="삭제"><i class="fas fa-trash"></i></button></td></tr>';});}
     h+='</tbody></table>';
-    if(d.k==='hl-material-convs')h+='<div style="margin-top:10px;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;font-size:11px;color:#475569;line-height:1.7;"><i class="fas fa-info-circle mr-1 text-indigo-500"></i><b>HL 생산계획 환산</b> — [STEP1 › 생산계획]의 월 생산량(EA) × 1EA 중량(kg) ÷ 1000 = 생산량(톤) → 전력비·에너지비 계산에 사용합니다.<br>자재코드는 생산계획과 같은 값으로 적습니다 (대소문자·앞뒤 공백 무시). 등록하지 않은 자재는 0톤으로 계산되고 경고가 표시됩니다. 자재 마스터 RFC가 생기면 이 값을 자동으로 받도록 바꿀 예정입니다.</div>';
     // boiler-cost-rates: 단가유형 설명 가이드
     if(d.k==='boiler-cost-rates'){
         h+='<div style="margin-top:12px;padding:12px 16px;background:linear-gradient(135deg,#f8fafc,#eef2ff);border:1px solid #e2e8f0;border-radius:10px;">';
@@ -3269,6 +3268,7 @@ function showPwRef(k){
 function goPwRef(key){const i=REFS.findIndex(r=>r.k===key);if(i<0)return;goStep(1);subTab(1,'ref');switchRef(i);}
 function renderCustomRef(key){
     {const d=REFS.find(r=>r.k===key);if(d&&d.pw){showPwRef(d.pw);return;}}
+    if(key==='hl-material-masters'){hmLoad();return;}
     const wrap=document.getElementById('refWrap');
     if(key==='_optime'){
         wrap.innerHTML='<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;"><span style="font-size:11px;color:#64748b;">입력: 분(min/월) | 시간(h) 자동 환산 표시</span><button class="btn-p" style="font-size:10px;padding:4px 10px;" onclick="openOptModal()"><i class="fas fa-plus mr-1"></i>등록</button></div><table class="st"><thead><tr><th>연월</th><th>호기</th><th class="r">계획운휴</th><th class="r">정상가동</th><th class="r">폐품</th><th class="r">초출</th><th class="r">절지</th><th class="r">가동소계</th><th class="r">정비</th><th class="r">세척</th><th class="r">사고</th><th class="r">비가동소계</th><th class="r">총계</th></tr></thead><tbody id="optTb"></tbody></table>';
@@ -3276,6 +3276,133 @@ function renderCustomRef(key){
     }
 }
 
+// ── 기준정보 › HL 자재 마스터 (SAP 자재 마스터 양식 그대로 업로드 · 향후 RFC) ──
+// 단위 체계 EA > BAG > BOX > PAL · 순중량 = 기본단위(BAG 등) 1개 중량 → 1EA 중량 = 순중량 ÷ (기본단위 1개에 든 EA 수)
+const HM_API=API+'/hl-material-masters';
+let HM={rows:[],q:''};
+// [필드, 머리글 후보(공백 무시·정확히 일치), 같은 이름 열 중 몇 번째(1부터)]
+const HM_COLS=[
+ ['brand',['브랜드','브랜드명'],1],
+ ['materialCode',['자재코드','자재','자재번호','MATNR'],1],
+ ['materialName',['자재명','자재내역','MAKTX'],1],
+ ['convQty1',['환산수량1','환산수량'],1],['convUnit1',['환산단위1','환산단위','대체단위'],1],['baseQty1',['기본수량1','기본수량'],1],['baseUnit1',['기본단위1','기본단위'],1],
+ ['convQty2',['환산수량2','환산수량'],2],['convUnit2',['환산단위2','환산단위','대체단위'],2],['baseQty2',['기본수량2','기본수량'],2],['baseUnit2',['기본단위2','기본단위'],2],
+ ['convQty5',['환산수량5','환산수량'],3],['convUnit5',['환산단위5','환산단위','대체단위'],3],['baseQty5',['기본수량5','기본수량'],3],['baseUnit5',['기본단위5','기본단위'],3],
+ ['netWeight',['순중량','NTGEW'],1],['weightUnit',['중량단위','GEWEI'],1],
+ ['baseMachine',['기본생산호기','기본호기','생산호기'],1],
+ ['hier1Code',['계층구조1코드','제품계층구조1코드','계층1코드'],1],['hier1Name',['계층구조1명','제품계층구조1명','계층1명','계층구조1'],1],
+ ['hier3Code',['계층구조3코드','제품계층구조3코드','계층3코드'],1],['hier3Name',['계층구조3명','제품계층구조3명','계층3명','계층구조3'],1],
+ ['hierCode',['제품계층구조코드','계층구조코드'],1],['hierName',['제품계층구조명','계층구조명','제품계층구조'],1]];
+const HM_HEAD=['브랜드','자재코드','자재명','환산수량','환산단위','기본수량','기본단위','환산수량','환산단위','기본수량','기본단위','환산수량','환산단위','기본수량','기본단위','순중량','중량단위','기본생산호기','계층구조1코드','계층구조1명','계층구조3코드','계층구조3명','제품계층구조코드','제품계층구조명'];
+const HM_ALIAS={'가공3':'RP3','가공4':'RP4','가공5':'RP5','가공6':'RP6','생리대5':'SN5','생리대6':'SN6'};
+function hmNorm(v){return String(v==null?'':v).replace(/\s+/g,'').replace(/호기/g,'').toLowerCase();}
+function hmMachine(v){if(!v)return '';if(hmNorm(v).includes('기저귀'))return '<span style="color:#94a3b8;">'+purEsc(v)+' <span style="font-size:9px;">(계산 제외)</span></span>';const a=HM_ALIAS[hmNorm(v)];return purEsc(v)+(a?' <span style="font-size:9px;color:#6366f1;">→ '+a+'</span>':'');}
+function hmNum(v,d){if(v==null||v==='')return '<span style="color:#cbd5e1;">-</span>';return Number(v).toLocaleString('ko-KR',{maximumFractionDigits:d==null?4:d});}
+async function hmLoad(){
+    const wrap=document.getElementById('refWrap');
+    wrap.innerHTML='<div style="padding:20px;color:#64748b;font-size:11px;"><i class="fas fa-spinner fa-spin mr-1"></i>불러오는 중...</div>';
+    try{HM.rows=await purGet(HM_API)||[];}catch(e){HM.rows=[];wrap.innerHTML='<div style="padding:16px;color:#b91c1c;font-size:11px;"><i class="fas fa-times-circle mr-1"></i>HL 자재 마스터를 불러오지 못했습니다: '+purEsc(e.message)+'<br>DB에 rpsim_hl_material_master 테이블이 있는지 확인하세요.</div>';return;}
+    hmRender();
+}
+function hmRender(){
+    const wrap=document.getElementById('refWrap');
+    const q=hmNorm(HM.q);
+    const list=q?HM.rows.filter(r=>hmNorm([r.materialCode,r.materialName,r.brand,r.baseMachine].join(' ')).includes(q)):HM.rows;
+    const bad=HM.rows.filter(r=>r.kgPerEa==null).length;
+    let h='<div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+     +'<input type="text" placeholder="자재코드·자재명·브랜드·호기 검색" value="'+purEsc(HM.q)+'" oninput="HM.q=this.value;hmRender();this.focus();this.setSelectionRange(this.value.length,this.value.length);" style="flex:1;min-width:200px;font-size:11px;padding:5px 9px;border:1px solid #e2e8f0;border-radius:6px;">'
+     +'<span style="font-size:11px;color:#64748b;">전체 '+HM.rows.length.toLocaleString()+'건'+(bad?' · <b style="color:#dc2626;">1EA 중량 계산 불가 '+bad+'건</b>':'')+'</span>'
+     +'<button class="btn-g" style="font-size:10px;padding:4px 10px;" onclick="hmTemplate()"><i class="fas fa-download mr-1"></i>'+(HM.rows.length?'엑셀 받기':'양식 다운로드')+'</button>'
+     +'<label class="btn-p" style="font-size:10px;padding:4px 10px;cursor:pointer;margin:0;"><i class="fas fa-upload mr-1"></i>SAP 자재 마스터 업로드<input type="file" accept=".xlsx,.xls" style="display:none;" onchange="hmUpload(this)"></label></div>'
+     +'<div id="hmRes" style="padding:0 16px;"></div>';
+    h+='<table class="st"><thead><tr><th>자재코드</th><th>자재명</th><th>브랜드</th><th>단위 환산</th><th class="r">순중량</th><th>중량단위</th><th class="r">1EA 중량(kg)</th><th>기본 생산 호기</th><th>계층구조</th><th style="width:50px;">관리</th></tr></thead><tbody>';
+    if(!list.length)h+='<tr><td colspan="10" style="text-align:center;padding:30px;color:#94a3b8;">'+(HM.rows.length?'검색 결과가 없습니다.':'데이터가 없습니다. SAP 자재 마스터 엑셀을 업로드하세요.')+'</td></tr>';
+    list.slice(0,500).forEach(r=>{
+        const kg=r.kgPerEa==null?'<span style="color:#dc2626;font-size:10px;" title="생산계획 환산 때 0톤으로 계산됩니다"><i class="fas fa-exclamation-triangle mr-1"></i>'+purEsc(r.weightIssue||'계산 불가')+'</span>':'<b>'+hmNum(r.kgPerEa,6)+'</b>'+(r.eaPerBase&&r.baseUnit&&r.baseUnit!=='EA'?'<div style="font-size:9px;color:#94a3b8;">'+hmNum(r.netWeight)+' ÷ '+hmNum(r.eaPerBase)+'EA/'+purEsc(r.baseUnit)+'</div>':'');
+        const hier=[r.hier1Name,r.hier3Name,r.hierName].filter(Boolean).map(purEsc).join(' › ');
+        h+='<tr><td class="mn" style="font-weight:700;">'+purEsc(r.materialCode)+'</td><td>'+purEsc(r.materialName||'')+'</td><td>'+purEsc(r.brand||'')+'</td>'
+         +'<td style="font-size:10px;">'+purEsc(r.convText||'')+'</td><td class="r mn">'+hmNum(r.netWeight)+(r.baseUnit?'<span style="font-size:9px;color:#94a3b8;"> /'+purEsc(r.baseUnit)+'</span>':'')+'</td><td>'+purEsc(r.weightUnit||'')+'</td>'
+         +'<td class="r mn">'+kg+'</td><td>'+hmMachine(r.baseMachine)+'</td><td style="font-size:10px;color:#64748b;">'+hier+'</td>'
+         +'<td><button class="btn-g" style="font-size:9px;padding:2px 6px;color:#dc2626;" onclick="hmDelete('+r.matId+')"><i class="fas fa-trash"></i></button></td></tr>';
+    });
+    h+='</tbody></table>';
+    if(list.length>500)h+='<div style="padding:8px 16px;font-size:10px;color:#94a3b8;">앞 500건만 표시합니다 — 검색으로 좁혀 보세요.</div>';
+    h+='<div style="margin:10px 16px;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;font-size:11px;color:#475569;line-height:1.7;"><i class="fas fa-info-circle mr-1 text-indigo-500"></i><b>HL 생산계획 환산</b> — [STEP1 › 생산계획] 월 생산량(EA) × 1EA 중량(kg) ÷ 1000 = 생산량(톤) → 전력비·에너지비 계산에 사용합니다.<br>'
+     +'· 단위 체계 EA &gt; BAG &gt; BOX &gt; PAL. 순중량은 기본단위(예: BAG) 1개 중량이므로 <b>1EA 중량 = 순중량 × 중량단위 환산 ÷ (기본단위 1개에 든 EA 수)</b>로 계산합니다 (예: 30 EA = 1 BAG, 순중량 3 KG → 0.1 kg/EA).<br>'
+     +'· SAP 자재 마스터 엑셀을 그대로 올립니다. 같은 이름 열(환산수량·환산단위·기본수량·기본단위)은 왼쪽부터 환산 1·2·5로 읽습니다. 자재코드가 같으면 덮어씁니다.<br>'
+     +'· 1EA 중량을 구할 수 없는 자재(순중량·중량단위·EA 환산 없음)는 0톤으로 계산되고 경고가 표시됩니다.<br>'
+     +'· 호기명 별칭: 가공 3~6호기 → RP3~RP6, 생리대 5·6호기 → SN5·SN6 · 기저귀 라인은 전력비·에너지비 계산 대상이 아닙니다.</div>';
+    wrap.innerHTML=h;
+}
+function hmParse(wb){
+    const problems=[];let best=null;
+    for(const name of wb.SheetNames){
+        const a=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,defval:'',raw:true});
+        // 머리글 행 = 앞 10행 중 '자재코드' 계열 열이 있는 첫 행
+        for(let hr=0;hr<Math.min(10,a.length);hr++){const h=(a[hr]||[]).map(purStrip);if(h.some(x=>['자재코드','자재','자재번호','MATNR'].includes(x))){best={a,hr,h,name};break;}}
+        if(best)break;
+    }
+    if(!best)return {problems:['자재코드 머리글을 찾지 못했습니다 — SAP 자재 마스터 양식(또는 [양식 다운로드] 파일)을 사용하세요'],rows:[]};
+    const idx={};
+    HM_COLS.forEach(([k,names,nth])=>{
+        // 번호가 붙은 머리글(환산수량2 등)이 있으면 그것 우선, 없으면 같은 이름 열의 nth 번째
+        const exact=best.h.findIndex(x=>x===names[0]);
+        if(exact>=0&&/\d$/.test(names[0])){idx[k]=exact;return;}
+        const hits=[];best.h.forEach((x,i)=>{if(names.includes(x))hits.push(i);});
+        idx[k]=hits.length>=nth?hits[nth-1]:-1;
+    });
+    if(idx.materialCode<0)problems.push('자재코드 열이 없습니다');
+    const miss=[['netWeight','순중량'],['weightUnit','중량단위'],['convQty1','환산수량'],['convUnit1','환산단위'],['baseQty1','기본수량'],['baseUnit1','기본단위']].filter(([k])=>idx[k]<0).map(x=>x[1]);
+    if(problems.length)return {problems,rows:[]};
+    const rows=[];
+    for(let i=best.hr+1;i<best.a.length;i++){const r=best.a[i]||[];const e={rowNo:i+1};let any=false;
+        HM_COLS.forEach(([k])=>{if(idx[k]<0)return;let v=r[idx[k]];if(v==null)v='';if(typeof v==='string')v=v.trim();e[k]=v;if(String(v)!=='')any=true;});
+        if(any)rows.push(e);}
+    return {problems:[],rows,miss,sheet:best.name};
+}
+async function hmUpload(input){
+    const file=input.files&&input.files[0];input.value='';if(!file)return;
+    const box=document.getElementById('hmRes');
+    box.innerHTML='<div style="font-size:11px;color:#64748b;padding:8px 0;"><i class="fas fa-spinner fa-spin mr-1"></i>'+purEsc(file.name)+' 확인 중...</div>';
+    let p;try{p=hmParse(XLSX.read(await file.arrayBuffer(),{type:'array'}));}catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px 0;">엑셀 읽기 실패: '+purEsc(e.message)+'</div>';return;}
+    if(!p.problems.length&&!p.rows.length)p.problems.push('데이터 행이 없습니다');
+    if(p.problems.length){box.innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다',p.problems,'#b91c1c','#fef2f2','#fecaca');return;}
+    if(p.miss.length&&!confirm('다음 열을 찾지 못했습니다: '+p.miss.join(', ')+'\n이 열이 없으면 1EA 중량을 계산할 수 없어 생산계획 환산 때 0톤이 됩니다.\n그래도 올릴까요?')){box.innerHTML='';return;}
+    if(!confirm(p.sheet+' 시트 '+p.rows.length+'건을 올립니다. 자재코드가 같은 기존 행은 덮어씁니다. 계속할까요?')){box.innerHTML='';return;}
+    try{
+        const r=await fetch(HM_API+'/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:p.rows})});
+        if(!r.ok)throw new Error(await apiErrMsg(r));
+        const d=(await r.json()).data||{};
+        if(!d.ok){box.innerHTML=purMsgList('<i class="fas fa-times-circle mr-1"></i>업로드하지 않았습니다 (한 행이라도 오류면 전부 저장 안 함)',d.errors||['알 수 없는 오류'],'#b91c1c','#fef2f2','#fecaca');return;}
+        await hmLoad();
+        const b=document.getElementById('hmRes');
+        b.innerHTML='<div style="margin-top:8px;padding:8px 12px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;font-size:11px;color:#047857;"><i class="fas fa-check-circle mr-1"></i>'+d.saved+'건 저장 (덮어쓰기 '+(d.overwritten||0)+'건)</div>'
+         +((d.warnings||[]).length?purMsgList('<i class="fas fa-exclamation-triangle mr-1"></i>확인 필요',d.warnings,'#b45309','#fffbeb','#fde68a'):'');
+        if(typeof invalidatePlanCaches==='function')invalidatePlanCaches();
+    }catch(e){box.innerHTML='<div style="color:#dc2626;font-size:11px;padding:8px 0;"><i class="fas fa-times-circle mr-1"></i>업로드 실패: '+purEsc(e.message)+'</div>';}
+}
+async function hmDelete(id){
+    if(!confirm('이 자재를 삭제하시겠습니까? 생산계획 환산 때 0톤으로 계산됩니다.'))return;
+    try{const r=await fetch(HM_API+'/'+id,{method:'DELETE'});if(!r.ok)throw new Error(await apiErrMsg(r));}catch(e){alert('삭제 실패: '+e.message);return;}
+    if(typeof invalidatePlanCaches==='function')invalidatePlanCaches();
+    hmLoad();
+}
+function hmTemplate(){
+    const keys=['brand','materialCode','materialName','convQty1','convUnit1','baseQty1','baseUnit1','convQty2','convUnit2','baseQty2','baseUnit2','convQty5','convUnit5','baseQty5','baseUnit5','netWeight','weightUnit','baseMachine','hier1Code','hier1Name','hier3Code','hier3Name','hierCode','hierName'];
+    const aoa=[HM_HEAD].concat(HM.rows.map(r=>keys.map(k=>r[k]==null?'':r[k])));
+    const ws=XLSX.utils.aoa_to_sheet(aoa);ws['!cols']=HM_HEAD.map(h=>({wch:h.length>4?16:10}));
+    const guide=XLSX.utils.aoa_to_sheet([['HL 자재 마스터 — 작성 안내'],[''],
+        ['· SAP 자재 마스터 엑셀을 그대로 올려도 됩니다. 머리글 이름으로 열을 찾습니다 (공백 무시).'],
+        ['· 같은 이름 열(환산수량·환산단위·기본수량·기본단위)은 왼쪽부터 환산 1·2·5로 읽습니다.'],
+        ['· 환산 한 칸 = 환산수량 환산단위 = 기본수량 기본단위 (예: 30 EA = 1 BAG)'],
+        ['· 순중량 = 기본단위 1개 중량 (예: BAG 1개 3 KG). 1EA 중량 = 순중량 ÷ (기본단위 1개에 든 EA 수)'],
+        ['· 중량단위: KG · G · TON'],
+        ['· 자재코드는 HL 생산계획과 같은 값으로 적습니다. 같은 자재코드가 이미 있으면 덮어씁니다.'],
+        ['· 한 행이라도 오류(자재코드 없음·중복, 숫자 칸에 글자)가 있으면 파일 전체가 저장되지 않습니다.']]);
+    guide['!cols']=[{wch:90}];
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'자재마스터');XLSX.utils.book_append_sheet(wb,guide,'작성안내');
+    XLSX.writeFile(wb,'HL자재마스터'+(HM.rows.length?'_'+new Date().toISOString().slice(0,10):'_양식')+'.xlsx');
+}
 // ── 보일러 마스터: DB는 월별 행 그대로, 화면은 연도별 피벗(1~12월 최대 스팀 용량) ──
 let BM_PIVOT=[];
 const BM_MONTHS=[1,2,3,4,5,6,7,8,9,10,11,12];
