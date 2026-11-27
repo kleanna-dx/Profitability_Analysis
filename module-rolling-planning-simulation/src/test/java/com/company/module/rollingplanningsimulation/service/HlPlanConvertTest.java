@@ -55,4 +55,28 @@ class HlPlanConvertTest {
         var p = PowerSimService.convertHlPlan(List.of(row("TM3", "M9", "롤", "0")), Map.of(), Map.of("tm3", "TM3"), true);
         assertTrue(p.warnings().isEmpty(), p.warnings().toString());
     }
+
+    @Test void alias_processingAndSanitary_mappedToRpSn() {
+        var p = PowerSimService.convertHlPlan(List.of(
+                row("가공 3호기", "M1", "롤", "1000"), row("가공6", "M1", "롤", "1000"),
+                row("생리대 5호기", "M1", "생리대", "1000"), row("생리대6호기", "M1", "생리대", "1000")),
+                Map.of("M1", d("1")), Map.of("tm3", "TM3"), true);
+        assertTrue(p.warnings().isEmpty(), p.warnings().toString());
+        assertEquals(List.of("RP3", "RP6", "SN5", "SN6"), p.rows().stream().map(r -> r.get("MACHINE_CODE")).toList());
+    }
+
+    @Test void unitMasterWinsOverAlias() {
+        var p = PowerSimService.convertHlPlan(List.of(row("가공 3호기", "M1", "롤", "1000")),
+                Map.of("M1", d("1")), Map.of("가공3", "PC3"), true);
+        assertEquals("PC3", p.rows().get(0).get("MACHINE_CODE"));
+    }
+
+    @Test void diaperLine_excluded_notCounted_warn() {
+        var p = PowerSimService.convertHlPlan(List.of(row("기저귀 1호기", "M1", "기저귀", "5000"), row("TM3", "M1", "롤", "1000")),
+                Map.of("M1", d("1")), Map.of("tm3", "TM3"), true);
+        assertEquals(1, p.rows().size());
+        assertEquals(0, d("1000").compareTo(p.totalEa()));
+        assertEquals(0, d("1").compareTo(p.totalTon()));
+        assertTrue(p.warnings().stream().anyMatch(w -> w.contains("기저귀 1호기")), p.warnings().toString());
+    }
 }

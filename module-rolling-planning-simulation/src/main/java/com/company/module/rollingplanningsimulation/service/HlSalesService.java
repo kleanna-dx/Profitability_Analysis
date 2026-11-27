@@ -6,7 +6,8 @@ import com.company.module.rollingplanningsimulation.entity.HlSalesClose;
 import com.company.module.rollingplanningsimulation.entity.HlSalesPlan;
 import com.company.module.rollingplanningsimulation.repository.HlCustomerExpenseRepository;
 import com.company.module.rollingplanningsimulation.repository.HlProductionPlanRepository;
-import com.company.module.rollingplanningsimulation.repository.HlMaterialConvRepository;
+import com.company.module.rollingplanningsimulation.repository.HlMaterialMasterRepository;
+import com.company.module.rollingplanningsimulation.support.HlConversion;
 import com.company.module.rollingplanningsimulation.repository.UnitRepository;
 import com.company.module.rollingplanningsimulation.repository.HlSalesCloseRepository;
 import com.company.module.rollingplanningsimulation.repository.HlSalesPlanRepository;
@@ -39,7 +40,7 @@ public class HlSalesService {
     private final HlSalesCloseRepository closeRepo;
     private final HlProductionPlanRepository prodRepo;
     private final UnitRepository unitRepo;
-    private final HlMaterialConvRepository convRepo;
+    private final HlMaterialMasterRepository materialRepo;
     private final AuditSupport auditSupport;
 
     static final String[] UK_PLAN = {"ym", "salesTeam", "customerCode", "materialCode"};
@@ -377,13 +378,12 @@ public class HlSalesService {
         return out;
     }
 
-    /** 호기 마스터(코드·이름)에 없는 생산 호기 — 공백·'호기' 무시, 대소문자 무시. 저장은 하되 경고 */
+    /** 호기 마스터(코드·이름)·별칭(가공3→RP3 등)으로 찾을 수 없는 생산 호기 — 공백·'호기'·대소문자 무시. 기저귀 라인은 계산 대상이 아니므로 제외. 저장은 하되 경고 */
     static List<String> unknownMachines(Collection<String> machines, List<Map<String, String>> master) {
-        Set<String> known = new HashSet<>();
-        for (Map<String, String> m : master) { known.add(EnergyDataSyncService.norm(m.get("code"))); known.add(EnergyDataSyncService.norm(m.get("name"))); }
-        known.remove("");
+        Map<String, String> byNorm = HlConversion.unitByNorm(master);
         TreeSet<String> out = new TreeSet<>();
-        for (String mc : machines) if (mc != null && !known.contains(EnergyDataSyncService.norm(mc))) out.add(mc);
+        for (String mc : machines)
+            if (mc != null && !HlConversion.excluded(mc) && HlConversion.resolveMachine(mc, byNorm) == null) out.add(mc);
         return new ArrayList<>(out);
     }
 
@@ -398,18 +398,28 @@ public class HlSalesService {
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("rows", rows);
         List<String> warnings = new ArrayList<>(machineWarnings(rows.stream().map(HlProductionPlan::getMachine).toList()));
-        // 환산단위(1EA 중량 kg) — 화면 톤 표시용. 없는 자재 = 0톤 + 경고
+        // HL 자재 마스터 → 1EA 중량(kg) — 화면 톤 표시용. 없는 자재·계산 불가 자재 = 0톤 + 경고
         Map<String, BigDecimal> kg = new LinkedHashMap<>();
         try {
-            for (var c : convRepo.findByDivisionOrderByMaterialCodeAsc(HL)) kg.put(c.getMaterialCode().trim().toUpperCase(Locale.ROOT), c.getKgPerEa());
+            Map<String, String> issue = new HashMap<>();
+            for (var m : materialRepo.findByDivisionOrderByMaterialCodeAsc(HL)) {
+                String key = m.getMaterialCode().trim().toUpperCase(Locale.ROOT);
+                if (m.getKgPerEa() != null) kg.put(key, m.getKgPerEa()); else issue.put(key, m.getWeightIssue());
+            }
             TreeSet<String> miss = new TreeSet<>();
-            for (HlProductionPlan r : rows)
-                if (r.getQtyEa().signum() > 0 && !kg.containsKey(r.getMaterialCode().trim().toUpperCase(Locale.ROOT))) miss.add(r.getMaterialCode());
-            if (!miss.isEmpty()) warnings.add("HL 환산단위(1EA 중량)가 없는 자재 " + miss.size() + "건은 전력비·에너지비에 0톤으로 계산됩니다: "
-                    + String.join(", ", miss) + " — [STEP1 › 기준정보 관리 › HL 환산단위]에 등록하세요");
+            for (HlProductionPlan r : rows) {
+                if (r.getQtyEa().signum() <= 0 || HlConversion.excluded(r.getMachine())) continue;
+                String key = r.getMaterialCode().trim().toUpperCase(Locale.ROOT);
+                if (!kg.containsKey(key)) miss.add(r.getMaterialCode() + (issue.containsKey(key) ? "(" + issue.get(key) + ")" : "(미등록)"));
+            }
+            if (!miss.isEmpty()) warnings.add("1EA 중량을 구할 수 없는 자재 " + miss.size() + "건은 전력비·에너지비에 0톤으로 계산됩니다: "
+                    + String.join(", ", miss) + " — [STEP1 › 기준정보 관리 › HL 자재 마스터]에 등록하세요");
         } catch (org.springframework.dao.DataAccessException e) {
-            warnings.add("HL 환산단위 테이블(rpsim_hl_material_conv)을 읽지 못했습니다 — 테이블을 만들었는지 확인하세요");
+            warnings.add("HL 자재 마스터 테이블(rpsim_hl_material_master)을 읽지 못했습니다 — 테이블을 만들었는지 확인하세요");
         }
+        TreeSet<String> skipped = new TreeSet<>();
+        for (HlProductionPlan r : rows) if (HlConversion.excluded(r.getMachine())) skipped.add(r.getMachine());
+        if (!skipped.isEmpty()) warnings.add("기저귀 라인은 전력비·에너지비 계산 대상이 아닙니다 (저장만 됨): " + String.join(", ", skipped));
         res.put("kgPerEa", kg);
         res.put("warnings", warnings);
         return res;

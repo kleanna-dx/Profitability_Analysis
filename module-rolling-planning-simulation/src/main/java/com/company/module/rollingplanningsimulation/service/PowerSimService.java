@@ -5,6 +5,7 @@ import com.company.module.rollingplanningsimulation.repository.*;
 import com.company.module.rollingplanningsimulation.service.PowerSimCalculator.*;
 import com.company.module.rollingplanningsimulation.support.AuditSupport;
 import com.company.module.rollingplanningsimulation.support.CurrentUser;
+import com.company.module.rollingplanningsimulation.support.HlConversion;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -715,14 +716,14 @@ public class PowerSimService {
         if (products == null) products = List.of();
         List<String> warnings = new ArrayList<>();
         String ymTxt = div + " " + ym.substring(0, 4) + "." + ym.substring(4);
-        // HL = STEP1 › 생산계획(EA) × 기준정보 › HL 환산단위(1EA 중량 kg) → 톤. 그 달 HL 생산계획이 없으면 기존 규칙(STEP3 생산계획)
+        // HL = STEP1 › 생산계획(EA) × 기준정보 › HL 자재 마스터(1EA 중량 kg) → 톤. 그 달 HL 생산계획이 없으면 기존 규칙(STEP3 생산계획)
         if (HL_DIV.equals(div)) {
             HlPlan hl = hlPlan(ym);
             if (hl != null) {
                 warnings.addAll(hl.warnings());
                 Map<String, Object> src = new LinkedHashMap<>();
                 src.put("code", hl.locked() ? "LOCKED" : "PLAN");
-                src.put("label", hl.locked() ? "HL 생산계획 확정 (EA × 환산단위)" : "HL 생산계획 미확정 (EA × 환산단위)");
+                src.put("label", hl.locked() ? "HL 생산계획 확정 (EA × 1EA 중량)" : "HL 생산계획 미확정 (EA × 1EA 중량)");
                 List<String> mcs = hl.rows().stream().map(r -> str(r.get("MACHINE_CODE"))).distinct().sorted().toList();
                 src.put("lockedMachines", hl.locked() ? mcs : List.of());
                 src.put("unlockedMachines", hl.locked() ? List.of() : mcs);
@@ -766,7 +767,7 @@ public class PowerSimService {
     public record HlPlan(List<Map<String, Object>> rows, boolean locked, List<String> warnings, BigDecimal totalEa, BigDecimal totalTon) {}
 
     /**
-     * 그 달 HL 생산계획(rpsim_hl_production_plan) × HL 환산단위(rpsim_hl_material_conv) → 호기 × 카테고리 톤.
+     * 그 달 HL 생산계획(rpsim_hl_production_plan) × HL 자재 마스터(rpsim_hl_material_master, 1EA 중량 = 순중량 ÷ 기본단위당 EA) → 호기 × 카테고리 톤.
      * 그 달 HL 생산계획이 없거나 테이블이 아직 없으면 null (기존 STEP3 규칙 사용).
      */
     HlPlan hlPlan(String ym) {
@@ -780,27 +781,30 @@ public class PowerSimService {
         Map<String, BigDecimal> kg = new HashMap<>();
         List<String> pre = new ArrayList<>();
         try {
-            for (Map<String, Object> r : jdbc.queryForList("SELECT MATERIAL_CODE, KG_PER_EA FROM rpsim_hl_material_conv WHERE DIVISION = 'HL' AND DELETED_YN = 'N'"))
-                if (r.get("KG_PER_EA") != null) kg.put(matKey(r.get("MATERIAL_CODE")), new BigDecimal(String.valueOf(r.get("KG_PER_EA"))));
+            for (Map<String, Object> r : jdbc.queryForList("SELECT MATERIAL_CODE, NET_WEIGHT, WEIGHT_UNIT,"
+                    + " CONV_QTY1, CONV_UNIT1, BASE_QTY1, BASE_UNIT1, CONV_QTY2, CONV_UNIT2, BASE_QTY2, BASE_UNIT2,"
+                    + " CONV_QTY5, CONV_UNIT5, BASE_QTY5, BASE_UNIT5"
+                    + " FROM rpsim_hl_material_master WHERE DIVISION = 'HL' AND DELETED_YN = 'N'")) {
+                HlConversion.Weight w = HlConversion.kgPerEa(HlConversion.bd(r.get("NET_WEIGHT")), str(r.get("WEIGHT_UNIT")), HlConversion.convsFromRow(r));
+                if (w.kgPerEa() != null) kg.put(matKey(r.get("MATERIAL_CODE")), w.kgPerEa());
+            }
         } catch (org.springframework.dao.DataAccessException e) {
-            pre.add("HL 환산단위 테이블(rpsim_hl_material_conv)을 읽지 못했습니다 — 모든 자재를 0톤으로 계산했습니다");
+            pre.add("HL 자재 마스터 테이블(rpsim_hl_material_master)을 읽지 못했습니다 — 모든 자재를 0톤으로 계산했습니다");
         }
         boolean locked = false;
         try {
             List<Object> c = jdbc.queryForList("SELECT IS_CLOSED FROM rpsim_hl_sales_close WHERE YM = ? AND CLOSE_TYPE = 'PRODUCTION' AND DELETED_YN = 'N'", Object.class, ym);
             locked = c.stream().anyMatch(v -> "Y".equalsIgnoreCase(String.valueOf(v)));
         } catch (org.springframework.dao.DataAccessException ignore) { /* 마감 테이블 없음 = 미확정 */ }
-        Map<String, String> unitByNorm = new HashMap<>();
+        List<Map<String, String>> master = new ArrayList<>();
         try {
             for (Map<String, Object> u : jdbc.queryForList("SELECT UNIT_CODE, UNIT_NAME FROM rpsim_unit WHERE DIVISION = 'HL' AND DELETED_YN = 'N'")) {
-                String code = str(u.get("UNIT_CODE"));
-                if (code == null) continue;
-                unitByNorm.putIfAbsent(EnergyDataSyncService.norm(code), code);
-                String nm = str(u.get("UNIT_NAME"));
-                if (nm != null) unitByNorm.putIfAbsent(EnergyDataSyncService.norm(nm), code);
+                Map<String, String> m = new HashMap<>();
+                m.put("code", str(u.get("UNIT_CODE"))); m.put("name", str(u.get("UNIT_NAME")));
+                master.add(m);
             }
-        } catch (org.springframework.dao.DataAccessException ignore) { /* 호기 마스터 없음 = 입력한 호기명 그대로 */ }
-        HlPlan p = convertHlPlan(raw, kg, unitByNorm, locked);
+        } catch (org.springframework.dao.DataAccessException ignore) { /* 호기 마스터 없음 = 별칭 또는 입력한 호기명 그대로 */ }
+        HlPlan p = convertHlPlan(raw, kg, HlConversion.unitByNorm(master), locked);
         if (pre.isEmpty()) return p;
         List<String> w = new ArrayList<>(pre); w.addAll(p.warnings());
         return new HlPlan(p.rows(), p.locked(), w, p.totalEa(), p.totalTon());
@@ -809,18 +813,21 @@ public class PowerSimService {
     static String matKey(Object v) { return v == null ? "" : v.toString().trim().toUpperCase(Locale.ROOT); }
 
     /**
-     * 순수 계산 — 월 생산량(EA) × 1EA 중량(kg) ÷ 1000 = 톤. 호기명은 HL 호기 마스터(코드·이름, 공백·'호기' 무시)로 호기코드에 맞춤.
-     * 환산단위 없는 자재 = 0톤 + 경고 (임의 값 없음). 호기 마스터에 없는 호기 = 입력한 이름 그대로 + 경고.
+     * 순수 계산 — 월 생산량(EA) × 1EA 중량(kg) ÷ 1000 = 톤.
+     * 호기명 → 호기코드: HL 호기 마스터(코드·이름) → 별칭(가공 3~6호기 = RP3~RP6, 생리대 5·6호기 = SN5·SN6).
+     * 기저귀 라인 = 전력비·에너지비 대상 아님 → 제외 (안내만). 1EA 중량 없는 자재 = 0톤 + 경고 (임의 값 없음).
      */
     static HlPlan convertHlPlan(List<Map<String, Object>> raw, Map<String, BigDecimal> kgPerEa, Map<String, String> unitByNorm, boolean locked) {
         Map<String, BigDecimal> ton = new LinkedHashMap<>();   // 호기|카테고리 → 톤
-        TreeSet<String> noConv = new TreeSet<>(), noUnit = new TreeSet<>();
+        TreeSet<String> noConv = new TreeSet<>(), noUnit = new TreeSet<>(), skipped = new TreeSet<>();
         BigDecimal totalEa = BigDecimal.ZERO, totalTon = BigDecimal.ZERO;
         BigDecimal thousand = BigDecimal.valueOf(1000);
         for (Map<String, Object> r : raw) {
             String mcRaw = str(r.get("MACHINE"));
             if (mcRaw == null) continue;
-            String mc = unitByNorm.get(EnergyDataSyncService.norm(mcRaw));
+            String cat = str(r.get("CATEGORY"));
+            if (HlConversion.excluded(mcRaw) || HlConversion.excluded(cat)) { skipped.add(mcRaw); continue; }
+            String mc = HlConversion.resolveMachine(mcRaw, unitByNorm);
             if (mc == null) { mc = mcRaw; noUnit.add(mcRaw); }
             BigDecimal ea = r.get("QTY_EA") == null ? BigDecimal.ZERO : new BigDecimal(String.valueOf(r.get("QTY_EA")));
             totalEa = totalEa.add(ea);
@@ -830,7 +837,6 @@ public class PowerSimService {
             if (kg == null) { if (ea.signum() > 0) noConv.add(mat + (str(r.get("MATERIAL_NAME")) != null ? "(" + str(r.get("MATERIAL_NAME")) + ")" : "")); }
             else t = ea.multiply(kg).divide(thousand, PowerSimCalculator.MC);
             totalTon = totalTon.add(t);
-            String cat = str(r.get("CATEGORY"));
             ton.merge(mc + "|" + (cat == null ? "(미분류)" : cat), t, BigDecimal::add);
         }
         List<Map<String, Object>> rows = new ArrayList<>();
@@ -845,9 +851,11 @@ public class PowerSimService {
         }
         List<String> w = new ArrayList<>();
         if (!noConv.isEmpty())
-            w.add("HL 환산단위(1EA 중량)가 없는 자재는 0톤으로 계산했습니다: " + String.join(", ", noConv) + " — [STEP1 › 기준정보 관리 › HL 환산단위]에 등록하세요");
+            w.add("HL 자재 마스터에서 1EA 중량을 구할 수 없는 자재는 0톤으로 계산했습니다: " + String.join(", ", noConv) + " — [STEP1 › 기준정보 관리 › HL 자재 마스터]에 순중량·EA 환산을 등록하세요");
         if (!noUnit.isEmpty())
             w.add("HL 호기 마스터에 없는 생산 호기: " + String.join(", ", noUnit) + " — 스팀 원단위·전력 기준정보와 연결되지 않아 0으로 계산될 수 있습니다. [기준정보 › 호기 마스터]의 호기코드·호기명과 맞추세요");
+        if (!skipped.isEmpty())
+            w.add("기저귀 라인은 전력비·에너지비 계산 대상이 아니라 제외했습니다: " + String.join(", ", skipped));
         return new HlPlan(rows, locked, w, totalEa, totalTon);
     }
 
